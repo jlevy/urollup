@@ -131,8 +131,18 @@ flowchart LR
 The Cargo workspace has two crates.
 `crates/urollup-core` is the library for ingestion, reconciliation, querying and report
 contracts, with no CLI, HTTP or async-runtime dependencies.
-`crates/urollup` is the executable with the CLI and HTTP adapters; it uses the core as
-an ordinary dependency, so neither adapter can reach core internals.
+`crates/urollup` is the executable; it uses the core as an ordinary dependency, so
+nothing in it can reach core internals.
+Rollups, summaries, bundles and checks are complete without any server.
+Serving is an optional UI layer kept deletable rather than merely optional, following
+fdu’s feature pattern: it lives in a self-contained `serve` module of `crates/urollup`
+behind a `serve` Cargo feature that the shipped binary enables by default, its HTTP,
+async-runtime and web-asset dependencies are `optional` and enabled only by that
+feature, it calls only the core’s public query API that CLI commands use, and no other
+CLI module imports from it.
+CI builds and tests `urollup` with `--no-default-features` and fails if the core or that
+build’s dependency tree contains an HTTP or async-runtime crate, so moving `serve` into
+its own crate later means moving one module and its optional dependencies.
 Agent adapters stay core modules registered at compile time until a real dependency or
 release boundary justifies another crate.
 The adapters are written as a reusable log-processing library: metaproc’s Python log
@@ -151,10 +161,11 @@ and gives the reason for each choice.
 Its lint floor, CI job list and first-party package list are not repeated here.
 The choices that shape this plan:
 
-- **Workspace and toolchain:** the two crates above, Edition 2024, resolver 3,
-  `rust-version = "1.85"`, an exact `rust-toolchain.toml` pin shared with CI, and a
-  release profile that keeps unwinding so a panicking `serve` handler does not end the
-  process. The license is MIT.
+- **Workspace and toolchain:** the two crates above, with `serve` as a default-on
+  feature of the executable, Edition 2024, resolver 3, `rust-version = "1.85"`, an exact
+  `rust-toolchain.toml` pin shared with CI, and a release profile that keeps unwinding
+  so a panicking `serve` handler does not end the process.
+  The license is MIT.
 - **Lints and CLI process:** a denied pedantic clippy floor; `clippy::panic` denied in
   the core and `clippy::arithmetic_side_effects` in token counter and money modules.
   `main` returns `ExitCode` from a `run` function with injected stdout and stderr
@@ -175,9 +186,9 @@ The choices that shape this plan:
   tryscript and frontend tools, and `bench/`, whose generator and harness are
   unit-tested Python standard-library programs run through uv.
 - **Embedded files:** schemas compiled from `contracts/` are committed under
-  `crates/urollup-core/schemas/`, and the web bundle and skill text under
-  `crates/urollup/assets/`, with drift checks, so installing the crate never needs Node,
-  uv or Python.
+  `crates/urollup-core/schemas/`, the skill text under `crates/urollup/assets/`, and the
+  web bundle under `crates/urollup/assets/web/`, included only by the `serve` feature,
+  with drift checks, so installing the crate never needs Node, uv or Python.
 
 ### Workflows and session selection
 
@@ -554,9 +565,10 @@ Direct cloud synchronization is a separate future integration.
 
 ### Web UI
 
-The same binary serves a loopback-only read API and embedded assets through the CLI’s
-`QuerySpec` and serializers, with report download and a copyable equivalent CLI command,
-and no Board routes, agent controls, process registry reads or credential discovery.
+The `serve` feature of the same binary serves a loopback-only read API and embedded
+assets through the core’s `QuerySpec` and serializers, with report download and a
+copyable equivalent CLI command, and no Board routes, agent controls, process registry
+reads or credential discovery.
 The frontend source lives in `web/`, and its built bundle is committed under
 `crates/urollup/assets/web/` with a drift check.
 Screens cover scope and coverage, calendar rollups, project, account, model and effort
@@ -854,6 +866,7 @@ Confirmed decisions:
 | qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
+| Serving separability | Two crates, `urollup-core` and `urollup`; rollups never need a server; `urollup serve` is a self-contained module behind a default-on `serve` Cargo feature with optional dependencies, guarded by a `--no-default-features` CI build and dependency check, so it can move to its own crate later | 2026-09-14 |
 | Web server | `127.0.0.1` on an OS-assigned port; per-launch token in the URL fragment, sent as a Bearer header; Host, Origin and Sec-Fetch-Site checks; no CORS; redirect file for `--open` | 2026-09-14 |
 | Benchmarks | Seeded synthetic corpora of about 64 MiB and 1 GiB; reference Apple silicon laptop with at least 10 cores and 16 GiB; CI against the merge base on `ubuntu-24.04`; 10% regression policy, with scheduled regressions resolved before release | 2026-09-14 |
 | Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | 2026-09-14 |
