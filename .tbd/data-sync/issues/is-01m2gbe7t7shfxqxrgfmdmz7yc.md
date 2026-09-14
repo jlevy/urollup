@@ -1,22 +1,20 @@
 ---
 type: is
-id: is-01m2f0tkfj316rc6apwjpz9sjb
-title: Handle append, replacement, deletion and late updates in cache
+id: is-01m2gbe7t7shfxqxrgfmdmz7yc
+title: Implement the default-on capture cache
 kind: task
 status: open
 priority: 2
-version: 3
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
-  - phase-3
-dependencies:
-  - type: blocks
-    target: is-01m2f0tm43qfyq1hn5s796yc42
+  - capture-cache
+dependencies: []
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
-created_at: 2026-09-14T03:54:27.186Z
-updated_at: 2026-09-14T19:58:22.931Z
+created_at: 2026-09-14T16:19:10.790Z
+updated_at: 2026-09-14T19:58:19.610Z
 ---
-Incremental cache maintenance with independently versioned pricing.
+Local idempotent capture cache of per-source captured records in the platform cache directory (UROLLUP_CACHE_DIR override), keyed by src- ID and versioned by adapter and strip policy; append segments for growing logs, prefix checks with regeneration, --no-cache, --rebuild-cache, --verify-cache, cache status and cache prune; NamedTempFile staging with persist/persist_noclobber and per-entry locks; cached, uncached and rebuilt golden equivalence in CI. Phase set by uro-1k0u.
 
 ## Notes
 
