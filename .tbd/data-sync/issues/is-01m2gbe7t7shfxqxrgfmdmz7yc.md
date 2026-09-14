@@ -1,20 +1,23 @@
 ---
 type: is
 id: is-01m2gbe7t7shfxqxrgfmdmz7yc
-title: Implement the default-on capture cache
+title: Implement the durable capture store
 kind: task
 status: open
 priority: 2
-version: 2
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - capture-cache
-dependencies: []
+  - phase-1
+dependencies:
+  - type: blocks
+    target: is-01m2gttdzk1s48d87gzvmhfmt5
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 created_at: 2026-09-14T16:19:10.790Z
-updated_at: 2026-09-14T19:58:19.610Z
+updated_at: 2026-09-14T20:47:58.962Z
 ---
-Local idempotent capture cache of per-source captured records in the platform cache directory (UROLLUP_CACHE_DIR override), keyed by src- ID and versioned by adapter and strip policy; append segments for growing logs, prefix checks with regeneration, --no-cache, --rebuild-cache, --verify-cache, cache status and cache prune; NamedTempFile staging with persist/persist_noclobber and per-entry locks; cached, uncached and rebuilt golden equivalence in CI. Phase set by uro-1k0u.
+Durable owner-only capture store in the platform data directory (UROLLUP_CAPTURE_DIR override), on by default: versioned per-dialect strip policy; one entry per logical source keyed by src- ID with manifest and zstd JSONL segments; every run writes atomic replacement entries for new or changed sources; reads captured records for sources whose logs are gone (reported as retained) and keeps previous entries as retained versions when a source is rewritten in place; --no-capture, capture status and capture prune; NamedTempFile staging with fsync, digest verification, persist_noclobber and compare-and-swap manifest replacement under an OS advisory lock; golden equivalence with and without the store.
 
 ## Notes
 
