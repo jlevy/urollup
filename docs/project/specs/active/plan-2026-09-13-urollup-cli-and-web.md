@@ -739,6 +739,12 @@ Release mechanics follow the baseline’s
 
 ## Decisions to Confirm and Open Questions
 
+Confirmed decisions:
+
+| Decision | Choice | Confirmed |
+| --- | --- | --- |
+| License | MIT, matching fdu and flowmark-rs; `LICENSE` is in the repository | 2026-09-13 |
+
 These proposed decisions are reflected in the design; each needs maintainer
 confirmation.
 
@@ -760,7 +766,7 @@ confirmation.
 | Time buckets | 15-minute UTC buckets in summaries; calendar weeks start on Monday | [Usage Summary Format](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format) |
 | JSON | An output rendering only, never a softschema artifact or merge input | [CLI and report contracts](#cli-and-report-contracts) |
 | Database input | Deferred to Phase 3, starting with urollup’s own store | [Portable summaries, bundles and cloud skills](#portable-summaries-bundles-and-cloud-skills) |
-| Engineering baseline | `make check` rather than a justfile; MIT license; insta and proptest; checked arithmetic enforced by lint; Python benchmark tooling run through uv | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
+| Engineering baseline | `make check` rather than a justfile; insta and proptest; checked arithmetic enforced by lint; Python benchmark tooling run through uv | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
 | Dev tooling | softschema 0.8.1 pinned in the root uv project with a 14-day cool-off and first-party exemption (already in place); web bundle committed under `crates/urollup/assets/web/` | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
 | Contract gate | A tested `scripts/check_contracts.py`, not Makefile shell loops | [Contract Authoring and Rust Validation](../../architecture/arch-2026-09-13-urollup-data-contracts.md#contract-authoring-and-rust-validation) |
 | Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | [CLI and report contracts](#cli-and-report-contracts) |
