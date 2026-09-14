@@ -97,8 +97,6 @@ review and attribution.
 
 ### Glossary
 
-| Harness logs | urollup reads harness-captured agent streams (`claude-stream`, `codex-exec`, `pi-events`) directly through its own adapters, with no metaproc dependency; metaproc’s log-processing code is ported into those Rust adapters with provenance, so metaproc may later depend on them; harness bugs that delete native agent logs are tracked and fixed in the harness | 2026-09-14 |
-| qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
 | Term | Meaning |
 | --- | --- |
 | **Dialect** | One log format written by one agent, such as `claude-project` or `codex-exec`; each adapter reads one dialect |
@@ -851,6 +849,8 @@ Confirmed decisions:
 | Captured records | Bundles include usage-relevant source records by default, verbatim except that content and verbose bodies become `{bytes, digest}` stubs under a versioned strip policy, so extraction can be rerun without the original logs; tables are zstd-compressed JSONL | 2026-09-14 |
 | Capture store and cache | Captured records live in a durable owner-only capture store in the platform data directory, on by default, and outlive deleted logs: Phase 1 writes it on every run and reads it for sources whose logs are gone; Phase 2 adds the speed-cache read path (`--no-cache`, `--rebuild-cache`, `--verify-cache`); all writes are atomic per tbd filesystem rules | 2026-09-14 |
 | Code reuse and licensing | Code, fixtures and docs from jlevy repositories (metaproc, squares, metabrowser, fdu, flowmark-rs, softschema) may be ported into MIT urollup regardless of their published license, with source repository and commit recorded; third-party code (ccusage and agentfdr MIT, pi MIT, Codex and Anthropic plugins Apache-2.0) is ported only with its license notice and attribution | 2026-09-14 |
+| Harness logs | urollup reads harness-captured agent streams (`claude-stream`, `codex-exec`, `pi-events`) directly through its own adapters, with no metaproc dependency; metaproc’s log-processing code is ported into those Rust adapters with provenance, so metaproc may later depend on them; harness bugs that delete native agent logs are tracked and fixed in the harness | 2026-09-14 |
+| qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
 
