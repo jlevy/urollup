@@ -1,0 +1,3 @@
+# Python dev tooling (uv)
+.venv/
+__pycache__/
