@@ -672,6 +672,10 @@ metadata.
   fixtures, `scripts/check_contracts.py` and `make contracts-check`; implement summary
   and bundle readers and writers with redaction, mixed raw, summary and bundle input,
   and overlap-safe `merge`, `validate` and `schema`, before any totals-only output.
+- [ ] Port metaproc’s log-processing code into the Rust adapters with provenance: format
+  detection from record types, `claude-stream` and `codex-exec` captured-stream parsing,
+  gzip and harness log-rewrite handling, the cross-agent tool taxonomy and its
+  bug-derived test cases, behind a library-shaped adapter API.
 - [ ] Implement the durable capture store: strip policy, atomic replacement entries in
   the platform data directory, retained reads for deleted sources, retained versions for
   rewritten sources, `--no-capture`, `capture status` and `capture prune`, with
@@ -878,6 +882,13 @@ confirmation.
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
 | Strict mode | `--strict` exits 3 on any coverage gap, including nonzero unresolved usage | [CLI and report contracts](#cli-and-report-contracts) |
+
+Further decisions raised by the source and code reviews are queued for one-at-a-time
+confirmation in bead `uro-gxen`: capture metadata for captured streams, organization or
+quota groups per account, an `unitemized` measure, branch and agent-path grouping,
+extended time measures, a shell-command classifier before stripping, per-extent
+completeness flags, inferred timestamps, anomaly detectors, and squares as the first
+integration user.
 
 Open questions:
 
