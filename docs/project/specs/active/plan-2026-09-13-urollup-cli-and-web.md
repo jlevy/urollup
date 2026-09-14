@@ -93,7 +93,7 @@ review and attribution.
 | **Dialect** | One log format written by one agent, such as `claude-project` or `codex-exec`; each adapter reads one dialect |
 | **Snapshot** | The frozen set of source files and byte extents that one run reads |
 | **Observation** | One source record’s claim about a request, thread or tool action, with a reference to its evidence; several observations of one request reconcile into one logical request |
-| **Revision** | A *usage revision* is one version of a request’s usage as streamed updates arrive, and the ledger keeps the final one; a *contract revision* is an integer that increases with each additive change to a contract within a major version |
+| **Revision** | A *usage revision* is one version of a request’s usage as streamed updates or repeated records arrive, and the ledger keeps one by a documented rule, normally the final one; a *contract revision* is an integer that increases with each additive change to a contract within a major version |
 | **Lineage** | Evidence that observations descend from others, such as a fork edge over copied history or a later export that corrects an earlier one |
 | **Scope** | Whether a session selection counts only the selected threads (`self`) or also their spawned subagent threads, transitively (`descendants`) |
 | **Owned, ambiguous and unknown request** | A request’s ownership status: one proven owner thread, several candidate threads, or no owner evidence; each counts once in grand totals |
@@ -210,23 +210,33 @@ It uses the research brief’s
 in this order:
 
 1. **Hook input:** `--hook-input` reads `agent_transcript_path` on subagent stop events,
-   otherwise `transcript_path`, checked against `session_id`.
+   otherwise `transcript_path`. A Claude Code transcript is checked against
+   `session_id`. A Codex hook’s `session_id` always names the root session, so a Codex
+   rollout is checked by `session_meta.session_id` equal to `session_id` and, when
+   `agent_id` is present, `session_meta.id` equal to `agent_id`. A null
+   `transcript_path` (an ephemeral Codex thread) exits 1 as an unsaved session.
 2. **Agent environment:** `CLAUDE_CODE_SESSION_ID` for Claude Code, `CODEX_THREAD_ID`
-   for Codex (with `CODEX_SESSION_ID` as the root), and `PI_SESSION_FILE`, else
-   `PI_SESSION_ID`, for Pi; `--agent` limits which variables count.
+   for Codex (the subagent’s own thread inside a subagent’s tools, with
+   `CODEX_SESSION_ID` as the root), and `PI_SESSION_FILE` for Pi, where `PI_SESSION_ID`
+   without `PI_SESSION_FILE` marks an unsaved session and exits 1 rather than searching
+   roots; `--agent` limits which variables count.
 3. **No fallback:** exit 2, suggesting `--session`, `--latest` or `--all`.
 
 Tools inherit their parent agent’s environment, so an agent started inside another
 exposes both agents’ variables; without `--agent`, that exits 2 naming each agent,
 variable and choosing flag.
-IDs resolve by searching every root: Claude `<root>/*/<id>.jsonl`, preferring the
-project whose recorded `cwd` matches (two matches exit 2, none exits 1 listing the
-roots); Codex `rollout-*-<thread-id>.jsonl` or `.jsonl.zst` in `sessions/` and
-`archived_sessions/`, where several files are one thread; and Pi’s `PI_SESSION_FILE`.
-Inside a Claude Code subagent the variable names the parent, so only hook input or
-`--session` selects a subagent alone.
-Transcripts are flushed asynchronously, so a current-session summary reports its
-snapshot cutoff and usually omits the in-flight request.
+Codex hooks get no `CODEX_*` variables of their own: they replay the Codex process
+environment from session start, so a hook of a Codex started inside another agent sees
+the outer agent’s variables, and a Codex hook identifies its session only through
+`--hook-input`. IDs resolve by searching every root: Claude `<root>/*/<id>.jsonl`,
+preferring the project whose recorded `cwd` matches (two matches exit 2, none exits 1
+listing the roots); Codex `rollout-*-<thread-id>.jsonl`, with an optional
+`_<rollout-id>` suffix and `.zst` extension, in `sessions/` and `archived_sessions/`,
+where several files are one thread; and Pi’s `PI_SESSION_FILE`. Inside a Claude Code
+subagent the variable names the parent, so only hook input or `--session` selects a
+subagent alone. Claude Code transcripts are flushed asynchronously, so a current-session
+summary reports its snapshot cutoff and usually omits the in-flight request; Pi writes
+the calling request before running a tool, so a Pi summary includes it.
 
 `--latest` is the only heuristic and never runs implicitly.
 It picks the session whose latest record’s `cwd` equals the working directory, explains
@@ -236,7 +246,8 @@ sandboxes defeat the guess.
 
 Session hierarchy comes from a **discovery index**, built before reconciliation from
 only thread-identifying data: Claude transcript paths and subagent `.meta.json` files,
-each Codex rollout’s first `session_meta` record, and each Pi session header.
+including those under `subagents/workflows/`, each Codex rollout’s first `session_meta`
+record, and each Pi session header.
 It covers every root and date, because Codex subagents can start in later date
 directories and descendants can have usage outside the interval.
 A crawler builds a forest of spawn, fork and inline-sidechain
@@ -266,7 +277,7 @@ gives each dialect’s fields, counters and linkage.
 
 | Agent | Default roots | Native variable honored | urollup override |
 | --- | --- | --- | --- |
-| Claude Code | `~/.claude/projects`, and `~/.config/claude/projects` when present | `CLAUDE_CONFIG_DIR`, reading its `projects/` | `UROLLUP_CLAUDE_CONFIG_DIRS` |
+| Claude Code | `~/.claude/projects`, and `$XDG_CONFIG_HOME/claude/projects` (default `~/.config/claude/projects`) when present | `CLAUDE_CONFIG_DIR`, reading its `projects/` | `UROLLUP_CLAUDE_CONFIG_DIRS` |
 | Codex | `~/.codex/sessions` and `~/.codex/archived_sessions` | `CODEX_HOME` | `UROLLUP_CODEX_HOMES` |
 | Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_SESSION_DIR`, else `PI_CODING_AGENT_DIR` plus `sessions/` | `UROLLUP_PI_SESSION_DIRS` |
 
@@ -276,11 +287,20 @@ gives each dialect’s fields, counters and linkage.
   Overrides list paths joined by the platform path separator.
   `--source` adds roots or artifacts; `--no-default-sources` removes defaults and
   variables. A missing default root is skipped, and a missing root named by a flag or
-  variable exits 1. Locations no variable describes, such as Pi’s `--session-dir`, need
+  variable exits 1. Locations no variable describes, such as Pi’s `--session-dir` or a
+  Pi `settings.json` `sessionDir` (flat directories that mix working directories), need
   `--source`.
 - Project identity comes from recorded `cwd` fields, never from decoding Claude Code or
   Pi project directory names, which encode paths lossily; worktrees map to a configured
   logical project and keep their original `cwd`.
+- Codex names rollout files and date directories in local time, adds files to a thread
+  on revert or paginated fork, and renames files into flat `archived_sessions/` on
+  archive, so times come from records and Codex sources are identified by thread and
+  rollout ID rather than path.
+- Usage that never reaches local logs, such as Codex `--ephemeral` threads, parallel
+  guardian reviews and legacy remote compaction, is reported as an unobserved coverage
+  gap, never zero. Pi RPC transcripts and Pi’s experimental v4 session store are not
+  supported dialects until tested.
 - Accounts are attributed explicitly or unknown, never guessed from model or
   subscription. Imported local or cloud exports are ordinary manifested artifacts, and no
   cloud export format is claimed without a test.
@@ -300,7 +320,9 @@ The architecture doc defines the contracts behind every report:
   histories. Conflicts follow documented rules rather than traversal order, and observed,
   configured, inferred and unknown values stay distinct.
   Purpose comes from native fields in Phase 1 and declared rules in Phase 2, never from
-  annotations.
+  annotations. A `codex-exec` capture whose `thread.started.thread_id` names a discovered
+  rollout is a capture of that thread: the rollout owns the usage, and the capture’s
+  cumulative `turn.completed.usage` totals are a reconciliation check.
 - **[Analytical identities](../../architecture/arch-2026-09-13-urollup-data-contracts.md#analytical-identities):**
   IDs are digests of recorded keys, so an observation gets the same ID on every machine
   and in every merge order.
@@ -323,10 +345,16 @@ Weeks start on Monday unless `--week-start` names another day.
 A **usage window** is a provider limit period recorded by a source; urollup never infers
 reset windows from activity gaps.
 Codex rollouts record `rate_limits.primary` and `secondary` with `window_minutes`,
-`resets_at` and `used_percent`, defining the window that ends at each reset.
+`resets_at` and `used_percent`, defining the window that ends at each reset; each
+snapshot names a `limit_id`, may carry `plan_type` and `credits`, and repeats in every
+`token_count` event.
 Claude transcripts sometimes carry an undocumented `quotaLimits` entry with a limit type
-and `resetsAt` but no length, so a Claude window needs a configured length and is
-labeled configured. Phase 1 adapters keep every limit record as a
+and `resetsAt` but no length, and saved `claude-stream` output carries
+`rate_limit_event` records with `rateLimitType`, `status`, `resetsAt` and overage fields
+but no timestamp, so a Claude window needs a configured length and is labeled
+configured. Utilization units differ by source (Codex `used_percent` is a percent, a
+`claude-stream` `utilization` a fraction), so values keep their native unit.
+Phase 1 adapters keep every limit record as a
 [provider limit observation](../../architecture/arch-2026-09-13-urollup-data-contracts.md#entities),
 so no window data is lost before a report uses it.
 The Phase 2 `windows` report groups usage by limit and window, shows the latest recorded
@@ -669,13 +697,22 @@ metadata.
   history, modern Codex ownership, ordinal gaps, nested tool calls, counter resets,
   timezone and DST boundaries, model and effort switches, unknown prices, malformed and
   oversized lines, and partial tails.
+  Dialect cases cover `codex exec` totals across a resume and beside their rollout;
+  repeated, `info: null`, compaction-estimate and context-window-full Codex
+  `token_count` events; copied `token_usage_record` lines and legacy and paginated
+  subagent prefixes; Claude block records disagreeing on `output_tokens`, advisor
+  iterations, and `progress`, `/btw` and `uuid` replays; Pi fork, clone, export and
+  nested usage copies; `claude-stream` limit records without timestamps and cumulative
+  `total_cost_usd`; nested null fields, non-millisecond timestamps, and a path briefly
+  absent during a rewrite.
   Conflicting sources yield deterministic diagnostics, never whichever record a worker
   finished first.
 - **Identities:** a session copied under different roots and hosts, merged in any order,
   keeps identical IDs; stored keys re-derive IDs under another identity version, and a
   redacted component makes that exit 2; an injected digest collision raises an
   identity-collision error; a gateway reusing message IDs across sessions yields
-  ambiguous keys, not merges.
+  ambiguous keys, not merges; an archived or compressed Codex rollout keeps its `src-`
+  ID.
 - **Merge:** `proptest` checks traversal-order invariance and merge associativity,
   commutativity and idempotence, and one selection yields identical report data from raw
   logs, merged summaries and merged bundles.
@@ -689,9 +726,11 @@ metadata.
 - **Surfaces:** CLI and HTTP return identical report data for one query and snapshot,
   and Markdown, CSV and the UI derive from it.
   CLI goldens cover exit codes, JSONL completion records, and `--current` with nested
-  agents, concurrent sessions in one directory, worktrees, forks, archived rollouts and
-  orphaned subagents. Browser tests exercise filters, exports and badges, and hostile log
-  text and quoted arguments are never executed.
+  agents, concurrent sessions in one directory, worktrees, forks, archived rollouts,
+  orphaned subagents, Codex hook input from a subagent and on `SubagentStop`, and
+  unsaved Codex and Pi sessions.
+  Browser tests exercise filters, exports and badges, and hostile log text and quoted
+  arguments are never executed.
 - **Web security:** raw HTTP requests with an attacker hostname, wrong port, missing
   `Host`, foreign or `null` `Origin`, cross-site `Sec-Fetch-Site` or `OPTIONS` get 403
   and no data; missing, malformed or wrong tokens get 401; no response has
@@ -831,6 +870,8 @@ Open questions:
 - [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md)
 - [Rust CLI engineering baseline](../../research/research-2026-09-13-rust-cli-engineering-baseline.md)
 - [urollup data contracts](../../architecture/arch-2026-09-13-urollup-data-contracts.md)
+- [squares code review](../../research/research-2026-09-14-squares-code-review.md) and
+  [metaproc and qm review](../../research/research-2026-09-14-metaproc-code-review.md)
 - [fdu](https://github.com/jlevy/fdu) and
   [flowmark-rs](https://github.com/jlevy/flowmark-rs), the reference Rust repositories
   for the baseline

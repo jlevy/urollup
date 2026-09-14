@@ -91,12 +91,20 @@ extent, fingerprint and ingestion cutoff, and reads only complete records within
 extent.
 
 - An unfinished last line is recorded as pending, distinct from interior corruption.
-- Replacement, truncation or mutation during the scan is detected and reported.
+- Replacement, truncation or mutation during the scan is detected and reported,
+  including a path that is briefly absent while another tool rewrites it.
+- A Codex `.jsonl` rollout and its `.jsonl.zst` twin with the same thread and rollout ID
+  are one logical source whose representation changed, not two sources.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a
   coverage failure, never silently skipped.
-- Symlinks are followed only within declared roots.
+- Decoding is lenient where records allow it: a line prefilter is only a hint, a record
+  is never rejected because a nested field is null, timestamps accept any RFC 3339
+  fractional precision, and every malformed, skipped or unparsable line is counted per
+  source.
+- Symlinks are followed only within declared roots, and links that leave them are
+  reported as skipped.
 - Evidence references are a source ID, byte offset and length inside the manifest.
 
 ### Capture Layers and Re-extraction
@@ -114,16 +122,23 @@ the only lasting record.
 | 3. Usage summaries | Extents and derived totals | A report needs only totals within the summary’s policy |
 
 - **Captured records** keep every record that carries usage, identity, model, effort,
-  timing, subagent or fork linkage, tool call structure or provider limits.
-  Records with none of these, such as display-only progress events, are counted in the
+  timing, turn lifecycle, subagent or fork linkage, tool call structure and outcome, or
+  provider limits. Lifecycle records include Claude `system` `compact_boundary` and
+  `stop_hook_summary` records and `queue-operation` records, and Codex `task_started`,
+  `task_complete` and timed `item_completed` events.
+  Claude `progress` records that nest a subagent’s assistant message carry usage and are
+  kept. Records with none of these, such as streaming display events, are counted in the
   manifest but not kept.
 - **Stripping** follows a versioned, per-dialect strip policy.
   Keys, types, IDs, timestamps, models, usage objects, stop reasons, tool names, working
   directories and version fields stay verbatim.
-  Prompt and response text, reasoning text, tool arguments, tool results, attachments,
-  images, file snapshots and injected context are replaced by a stub recording the
-  field’s byte length and a keyed HMAC-SHA-256 digest, so content size and repetition
-  stay measurable without the content.
+  Prompt and response text, reasoning text, tool arguments, tool results, hook output,
+  attachments, images, file snapshots and injected context are replaced by a stub
+  recording the field’s byte length and a keyed HMAC-SHA-256 digest, so content size and
+  repetition stay measurable without the content.
+  Payloads that embed other messages, such as Pi `toolResult.details` and compaction
+  `retainedTail`, are stubbed while the `usage` objects inside them stay verbatim as
+  evidence.
 - **Re-extraction:** adapters read a bundle’s captured records exactly as they read
   original logs, and each captured record keeps its original source ID, offset,
   fingerprint and dialect version.
@@ -182,9 +197,9 @@ The later ledger and query cache stores layers 2 and 3 behind the same versioned
 | Source artifact | Original identity, fingerprint, dialect and dialect version, offsets, snapshot extent, capability and coverage status |
 | Thread | Native thread key; source, initiator, purpose, execution environment, project and account as independent properties |
 | Relationship | Spawn, fork, resume, review or other native edge, with evidence and confidence; not every relationship transfers usage ownership |
-| Request/response | Native request and response IDs, ownership status with owning or candidate threads, timestamps, actual model and effort when observed, usage revision and its status |
-| Tool action | Call ID, tool name, nested command structure, result reference, outcome, timing, bytes and characters; linked to a request only when proven |
-| Provider limit observation | A usage-limit record as the source wrote it: native limit name (Codex `rate_limits.primary` or `secondary`, Claude `quotaLimits` `rateLimitType`), window length when recorded, reset time, `used_percent` or status, observation time, owning thread or request when proven, and evidence; native field names and values are kept verbatim |
+| Request/response | Native request and response IDs, ownership status with owning or candidate threads, timestamps, model with its basis (`served` when the response records it, `requested` when only the request does) and effort when observed, usage revision and its status |
+| Tool action | Call ID, tool name, nested command structure, result reference, outcome, a tool interval from call to result (which includes scheduling and permission waits, so it is never called latency or execution time), bytes and characters; linked to a request only when proven |
+| Provider limit observation | A usage-limit record as the source wrote it: native limit name (Codex `rate_limits` `limit_id` with its `primary` or `secondary` window, Claude `quotaLimits` or `claude-stream` `rate_limit_event` `rateLimitType`), window length when recorded, reset time, utilization with its native unit or status, plan, credit and overage fields, observation time with its basis, owning thread or request when proven, and evidence; native field names and values are kept verbatim |
 | Provider charge | Cost or receipt recorded by a tested source, with currency, period or request link, account and evidence; never derived from list prices |
 | Resource observation | Reserved, with no current source: CPU seconds, RSS, I/O or network, each with unit, scope, interval, collector and evidence |
 | Annotation | Labels or review findings with target IDs, author, method and version, kept separate from measured facts |
@@ -194,9 +209,29 @@ Model and effort belong to requests; a session’s model or effort label is a su
 its requests.
 Reasoning token counts and visible reasoning summaries are recorded fields,
 not access to hidden reasoning.
+Codex rollouts save only the requested model (`turn_context.model`), never the model a
+server reroute served, so Codex request models are `requested`. Placeholder model names,
+such as Codex `codex-auto-review` and Claude `<synthetic>`, stay as observed.
+
+Provider limit observations need dialect care:
+
+- Codex writes one latest snapshot per `limit_id` and repeats it in every `token_count`
+  event, so identical consecutive snapshots are one observation.
+  Carried-forward `plan_type`, `credits`, `individual_limit` and `spend_control_reached`
+  values may be stale, and when a response reports several `limit_id` buckets only the
+  last reaches the rollout.
+- `claude-stream` `rate_limit_event` records hold `status`, `rateLimitType`, `resetsAt`
+  in epoch seconds and overage fields, and carry no timestamp, so their observation time
+  is not recorded.
+- Utilization units differ by source (Codex `used_percent` is a percent, and a
+  `claude-stream` `utilization`, when present, is a fraction), so values keep their
+  native unit.
 
 A source-reported cost, such as `total_cost_usd` in `claude-stream` output or the `cost`
 breakdown Pi computes, is a source estimate, not a provider charge.
+Pi computes `cost` from the installed model catalog, so zero can mean unpriced: a zero
+source-reported cost on nonzero tokens gets a diagnostic, and a source estimate never
+stands in for a list-price estimate.
 No supported dialect records an actual charge, so no provider charge import is planned
 until a tested receipt or billing export exists.
 
@@ -210,12 +245,17 @@ The discovery index and reconciliation produce these relationship edges, describ
 the plan’s
 [session selection](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#workflows-and-session-selection):
 
-- **Spawn:** a Claude subagent file under its parent session, attached to the spawning
-  tool call through `toolUseId`, which can lie in another subagent; or a Codex rollout’s
+- **Spawn:** a Claude subagent file under its parent session (including
+  `subagents/workflows/`), attached to the spawning tool call through `toolUseId`, which
+  can lie in another subagent; a `claude-stream` subagent message delivered inline in
+  the parent stream and attached by `parent_tool_use_id`; or a Codex rollout’s
   `parent_thread_id` with its `thread_spawn`, `review`, `compact` or other subagent
-  source.
-- **Fork:** Codex `forked_from_id`, Pi `parentSession`, and Claude sessions whose copied
+  source, including `guardian_review` threads.
+- **Fork:** Codex `forked_from_id`; Pi `parentSession` (legacy `branchedFrom`), resolved
+  by file basename because the stored path is absolute; and Claude sessions whose copied
   entries carry another session’s `sessionId`, found during reconciliation.
+  Pi files that share a header `id` without a parent field are export and import copies
+  of one session, not forks.
 - **Inline sidechain:** older Claude transcripts with `isSidechain` turns and no spawn
   ID become child threads with fallback identities.
 
@@ -230,7 +270,8 @@ aggregation:
 - Repeated content blocks of one response, streamed usage updates and copied histories
   collapse into one logical request.
   Each later usage update is a new **usage revision** of that request, and the ledger
-  keeps the final one with every record as evidence.
+  keeps the final one with every record as evidence, or, where a dialect cannot order
+  its revisions, the one its selection rule picks.
 - One response repeated in several files is one logical observation with several
   evidence references.
   Forked or resumed history is not newly consumed usage.
@@ -243,6 +284,61 @@ aggregation:
 - Conflicting observations keep diagnostics and follow a documented, source-specific
   resolution rule, never first-wins traversal order.
   Conflicting account attributions for one request are diagnosed, not split.
+- A copy nested inside another record never counts, and usage that never reaches local
+  logs, such as Codex `--ephemeral` threads, parallel guardian reviews and legacy remote
+  compaction, is an unobserved coverage gap, never zero.
+
+#### Dialect Reconciliation Rules
+
+The source reviews summarized in the
+[portable research brief](../research/research-2026-09-13-portable-agent-usage.md) set
+these source-specific rules:
+
+- **Claude Code block records:** block records of one response can disagree on
+  `output_tokens`, so reconciliation selects one whole record (largest `output_tokens`,
+  then last in file order, then lowest `src-` ID), adds a diagnostic when input or cache
+  fields differ, and never merges fields.
+- **Claude Code copies:** a record that replays a parent message is a copy owned by the
+  parent, not an ambiguous key: a `progress` record nesting a subagent’s assistant
+  message, a `/btw` side-question record with the parent’s `message.id` under a new
+  `requestId`, and a fork-style subagent record with a parent record’s `uuid`.
+- **`claude-stream`:** a capture and its transcript share `session_id` and `message.id`,
+  so their requests merge by response ID.
+- **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
+  keyed by `response_id` and owned by its `thread_id`; responses without usage write
+  none. A record whose `thread_id` differs from the file’s thread is a copy, and
+  `compacted.latest_token_usage_record` is never an observation.
+- **Codex counters:** older files use cumulative `token_count` events.
+  A `last_token_usage` counts only when the running total advances and it has nonzero
+  input or output. Identical consecutive totals add nothing, `info: null` is only a
+  provider limit observation, compaction estimates and context-window-full fills (zero
+  input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
+  in any cumulative component opens a new counter epoch with a diagnostic.
+- **Codex copied history:** a child rollout’s own records start at
+  `subagent_history_start_ordinal`, else at the first `thread_settings_applied` naming
+  the child (0.152 and later).
+  Otherwise it is inferred, in order, from turn IDs also present in the parent rollout,
+  the last foreign `session_meta` record, and turns without their own `turn_context`,
+  and the excluded usage is labeled `inferred` with a diagnostic.
+  A fork or subagent continues the parent’s running total, so the child’s counters start
+  from the inherited total.
+  Legacy destinations also copy the parent’s records, including `token_count` events
+  (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
+  copied lines contribute neither usage nor times to the child; paginated forks copy
+  nothing and reference the parent’s file.
+- **`codex-exec`:** `turn.completed.usage` is the thread’s cumulative total: after
+  `codex exec resume` it includes earlier runs, it has no `total_tokens`, it excludes
+  subagents, and failed or interrupted turns report none.
+  A capture whose `thread.started.thread_id` equals a discovered rollout’s
+  `session_meta.id` is a check on that rollout, which owns the usage.
+  Without the rollout, turn usage is the difference between consecutive totals for the
+  thread, and a first total that may include earlier runs gets a diagnostic.
+- **Pi:** requests key on provider and `responseId`, else on the lineage root and a
+  digest of copy-invariant fields, never on a bare entry ID. Copied history in fork,
+  clone and export files belongs to the parent.
+  Usage nested in compaction `retainedTail`, extension `details`, and `pi-events`
+  `turn_end`, `agent_end` and `compaction_end` records never counts, and in `pi-events`
+  only `message_end` is final.
 
 #### Purpose and Annotations
 
@@ -281,9 +377,9 @@ receives the same ID on every machine and in every merge order.
 
 | Prefix | Key, in precedence order |
 | --- | --- |
-| `src-` | Source environment, dialect, root-relative locator, and a digest of the first complete record, so appends keep the ID |
+| `src-` | Source environment, dialect, locator, and a digest of the first complete record, so appends keep the ID; the locator is root-relative unless the dialect declares a stable one, such as a Codex rollout’s thread and rollout IDs, which survive archiving and compression |
 | `thr-` | Agent namespace and native thread key, such as session ID plus subagent ID; else a digest of the thread’s first complete record |
-| `req-` | Provider namespace and response ID; else provider request ID; else a native record ID or sequence number within its declared scope; else the containing `thr-` ID and a digest of adapter-declared revision-invariant fields |
+| `req-` | Provider namespace and response ID; else provider request ID; else a native record ID or sequence number within its declared scope; else the containing `thr-` ID (the lineage root’s, for dialects whose copies lack response IDs, such as Pi) and a digest of adapter-declared revision-invariant fields |
 | `act-` | Provider namespace and native tool call ID; else the owning `req-` ID and the call’s position in that response |
 | `rpt-` | Report schema, normalized `QuerySpec`, snapshot identity, and adapter, reconciliation and pricing versions; never run time, host or duration |
 
@@ -301,6 +397,10 @@ only that scope’s namespace components.
   stable account identifier from the source manifest, never a display alias.
 - Fallback keys never use byte offsets or file-relative ordinals, which shift between
   partial exports.
+- Some native IDs are unique only within a file or lineage: Pi entry IDs are 8 hex
+  characters checked for collisions within one file, and a Pi session ID can repeat
+  across files (a custom `--session-id`, or an export and import), so neither is a key
+  on its own.
 
 #### Identity Basis and Linking
 
@@ -327,8 +427,8 @@ the other IDs as aliases, so the result depends on the set rather than on merge 
 Analytical IDs are truncated digests and contain no literal names or paths.
 Every key that includes a name or path also includes a high-entropy component, a native
 ID or a record digest, so an ID cannot confirm a guessed path or project name.
-The `src-` locator is root-relative, but Claude Code and Pi project directory names
-encode the working directory, so the locator is treated as a path.
+A root-relative `src-` locator can include Claude Code and Pi project directory names,
+which encode the working directory, so every locator is treated as a path.
 
 Bundle tables carry the identity key of every row.
 Summaries carry the key of each extent’s thread, but their request indexes hold IDs
@@ -371,9 +471,25 @@ Counting rules that adapters must normalize explicitly:
   separately, as the research brief’s
   [usage table](../research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage)
   shows per dialect.
+- When a Claude Code record has `iterations`, its top-level `message.usage` equals the
+  sum of the `message` iterations and excludes `advisor_message` iterations, which
+  record their own model; an advisor iteration is further model usage within the same
+  request, priced at its own model’s rate.
+- Claude Code’s `cache_creation` breakdown separates 5-minute and 1-hour cache writes;
+  when it disagrees with `cache_creation_input_tokens`, both native values are kept with
+  a diagnostic.
+- A recorded total, such as Codex `total_tokens` (sometimes 0) or Pi `totalTokens`
+  (provider-reported for some APIs), is recomputed from its components, and a mismatch
+  is a diagnostic, never usage.
+- One usage carrier can stand for zero, one or several requests: a Pi compaction entry
+  can combine two summary calls and a Pi tool result’s usage is opaque, so their call
+  counts are unknown rather than 1, and they record no model.
 - Arithmetic on token counters is checked, and money uses exact decimals.
 - Source or provider totals, such as a stream’s final `result` usage, are reconciliation
   checks, not additional rows.
+  In `claude-stream`, top-level `result` usage covers the main model while `modelUsage`
+  covers every model, and `total_cost_usd` is cumulative across several `result` records
+  in one session.
 
 #### Ownership and Totals
 
@@ -472,11 +588,19 @@ Matching and coverage:
 
 - A request uses the rate in effect at its timestamp, matched on model, service tier,
   context band and cache-write duration.
+- A context band applies to the whole request when its inclusive input (uncached input,
+  cache reads and cache writes) exceeds the band’s threshold, and the highest matching
+  threshold wins.
 - Models match exactly or through listed aliases, never by fuzzy prefix.
+  Codex requests match their `requested` model, and placeholder names such as
+  `codex-auto-review` stay unpriced.
 - Reasoning tokens are priced within output, never twice.
 - When a dialect does not record a dimension, pricing applies the provider’s documented
   default, such as standard tier or 5-minute cache writes, and reports those tokens as
-  default-assumed. An observed but unrecognized value leaves them unpriced.
+  default-assumed. An observed but unrecognized value leaves them unpriced, and so does a
+  matched row with no rate for a token category.
+- Codex records service tier only in `thread_settings_applied` events, which short
+  rollouts can lack; pricing never takes a tier from an agent’s configuration files.
 
 Updates and overrides:
 
