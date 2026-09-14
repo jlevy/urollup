@@ -842,6 +842,7 @@ Confirmed decisions:
 
 | Decision | Choice | Confirmed |
 | --- | --- | --- |
+| Name | `urollup` for the product, crate and command, in `jlevy/urollup`; `urollup` and `urollup-core` were unregistered on crates.io and PyPI on 2026-09-13 | 2026-09-13 |
 | License | MIT, matching fdu and flowmark-rs; `LICENSE` is in the repository | 2026-09-13 |
 | Current-session detection | `--hook-input`, then agent environment variables, else exit 2 naming `--latest`, `--session` and `--all`; `--latest` is guarded and never implicit, including in interactive terminals | 2026-09-14 |
 | Data capture principle | Capture source data as close to its original form as possible, accurately and with evidence, so any later analysis is possible; keep native fields and unused records such as provider limit data | 2026-09-14 |
@@ -859,7 +860,6 @@ confirmation.
 
 | Decision | Recommendation | Where decided |
 | --- | --- | --- |
-| Name | `urollup` for the product, crate and command; `urollup` and `urollup-core` were unregistered on crates.io and PyPI on 2026-09-13 | [Rollout Plan](#rollout-plan) |
 | Provider ID scope | Provider-issued IDs are scoped to the provider only, not to host or account | [Key Scope](../../architecture/arch-2026-09-13-urollup-data-contracts.md#key-scope) |
 | Conflicting shared keys | A shared key whose observations disagree is ambiguous, never merged | [Identity Basis and Linking](../../architecture/arch-2026-09-13-urollup-data-contracts.md#identity-basis-and-linking) |
 | Ownership in totals | Owned, ambiguous and unknown requests each count once in grand totals; partial candidate selections are reported as `possible` | [Ownership and Totals](../../architecture/arch-2026-09-13-urollup-data-contracts.md#ownership-and-totals) |
