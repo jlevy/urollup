@@ -66,6 +66,14 @@ None of these documents contains private session data.
   collector adapter exists.
 - A hosted service, account authentication or automatic cloud-log synchronization in the
   initial releases.
+- Usage kept only in a harness’s own database, such as the third-party qm harness, which
+  turns native agent logs off.
+  qm is out of scope; it informs possible future workflows and is a source of MIT code
+  to borrow with attribution.
+- A dependency on metaproc or any other harness.
+  Harnesses that capture agent streams are read through urollup’s own captured-stream
+  adapters, and a harness that deletes native agent logs is fixed in that harness rather
+  than worked around here.
 - Binary or flag compatibility with ccusage or agentfdr.
   Parity is a measured feature matrix, not a promise to reproduce their accounting bugs
   or labels.
@@ -89,6 +97,8 @@ review and attribution.
 
 ### Glossary
 
+| Harness logs | urollup reads harness-captured agent streams (`claude-stream`, `codex-exec`, `pi-events`) directly through its own adapters, with no metaproc dependency; metaproc’s log-processing code is ported into those Rust adapters with provenance, so metaproc may later depend on them; harness bugs that delete native agent logs are tracked and fixed in the harness | 2026-09-14 |
+| qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
 | Term | Meaning |
 | --- | --- |
 | **Dialect** | One log format written by one agent, such as `claude-project` or `codex-exec`; each adapter reads one dialect |
@@ -127,6 +137,10 @@ contracts, with no CLI, HTTP or async-runtime dependencies.
 an ordinary dependency, so neither adapter can reach core internals.
 Agent adapters stay core modules registered at compile time until a real dependency or
 release boundary justifies another crate.
+The adapters are written as a reusable log-processing library: metaproc’s Python log
+parsing, format detection and captured-stream handling are ported into them with
+provenance, and once their API stabilizes metaproc and other tools may depend on these
+Rust implementations, which would then move into their own crate.
 Built web assets are embedded, so users install one binary, and the frontend renders
 server-calculated results rather than computing authoritative totals.
 
