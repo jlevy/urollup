@@ -313,8 +313,9 @@ The architecture doc defines the contracts behind every report:
   uses the network, `--prices` files override rates, and a staleness diagnostic appears
   when a report window ends more than 90 days after the table review.
 
-Calendar buckets use the declared timezone, and weeks start on Monday unless
-`--week-start` names another day.
+Calendar buckets use `--timezone`, which defaults to the system timezone; reports name
+the zone and the normalized `QuerySpec` records it.
+Weeks start on Monday unless `--week-start` names another day.
 A **usage window** is a provider limit period recorded by a source; urollup never infers
 reset windows from activity gaps.
 Codex rollouts record `rate_limits.primary` and `secondary` with `window_minutes`,
@@ -744,6 +745,9 @@ Confirmed decisions:
 | Decision | Choice | Confirmed |
 | --- | --- | --- |
 | License | MIT, matching fdu and flowmark-rs; `LICENSE` is in the repository | 2026-09-13 |
+| Current-session detection | `--hook-input`, then agent environment variables, else exit 2 naming `--latest`, `--session` and `--all`; `--latest` is guarded and never implicit, including in interactive terminals | 2026-09-14 |
+| Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
+| Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
 
 These proposed decisions are reflected in the design; each needs maintainer
 confirmation.
@@ -763,7 +767,6 @@ confirmation.
 | Summary and bundle | Two artifacts in one contract family; bundles are deterministic zip files | [Trade-offs and Alternatives](../../architecture/arch-2026-09-13-urollup-data-contracts.md#trade-offs-and-alternatives) |
 | Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | [Usage Summary Format](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format) |
 | Contract status | `enforced`, with an `extensions` map for new measures | [Enforced Status](../../architecture/arch-2026-09-13-urollup-data-contracts.md#decision-enforced-status-with-an-extensions-map) |
-| Time buckets | 15-minute UTC buckets in summaries; calendar weeks start on Monday | [Usage Summary Format](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format) |
 | JSON | An output rendering only, never a softschema artifact or merge input | [CLI and report contracts](#cli-and-report-contracts) |
 | Database input | Deferred to Phase 3, starting with urollup’s own store | [Portable summaries, bundles and cloud skills](#portable-summaries-bundles-and-cloud-skills) |
 | Engineering baseline | `make check` rather than a justfile; insta and proptest; checked arithmetic enforced by lint; Python benchmark tooling run through uv | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
@@ -771,8 +774,6 @@ confirmation.
 | Contract gate | A tested `scripts/check_contracts.py`, not Makefile shell loops | [Contract Authoring and Rust Validation](../../architecture/arch-2026-09-13-urollup-data-contracts.md#contract-authoring-and-rust-validation) |
 | Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | [CLI and report contracts](#cli-and-report-contracts) |
 | Release scope | No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing | [Rollout Plan](#rollout-plan) |
-| Current-session detection | `--hook-input`, then agent environment variables, else exit 2; `--latest` is guarded and never implicit | [Workflows and session selection](#workflows-and-session-selection) |
-| Selection defaults | Session commands default to `--current` and calendar and inventory commands to `--all`; session selections default to `--scope descendants` | [Workflows and session selection](#workflows-and-session-selection) |
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
 | ccusage `blocks` | Out of scope, listed as intentionally unsupported | [Ledger, identities and accounting](#ledger-identities-and-accounting) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
@@ -788,7 +789,6 @@ Open questions:
   Would an opt-in price-table download ever justify its network and supply-chain cost?
 - Which account receipts or billing exports are stable enough to reconcile estimates
   with recorded provider charges?
-- Should `--timezone` default to the system timezone or to UTC?
 - Where does the redaction HMAC key live, and how do machines that must group labeled
   properties together share it?
 

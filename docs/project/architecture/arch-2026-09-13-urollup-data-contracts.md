@@ -343,7 +343,8 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
   timezone.
 - Token usage is attributed by a declared response-timestamp policy with a documented
   fallback; duration intervals are clipped to report windows.
-- Calendar buckets are hours, days, weeks and months in the declared timezone.
+- Calendar buckets are hours, days, weeks and months in the declared timezone, which
+  defaults to the system timezone and is always recorded in the normalized query.
   Weeks start on Monday unless `--week-start` names another day.
 - Rolling windows have a declared length and anchor, never a start taken from activity.
 - Groups include time bucket, agent and dialect, account, project, session or thread,
