@@ -3,7 +3,7 @@ title: Portable Agent Usage Analytics
 description: Public-source background for urollup, a Rust CLI and local read-only web UI that produces mergeable token, cost and usage rollups from Claude Code, Codex and Pi session logs.
 date: 2026-09-13
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Complete for initial design and feeds the urollup plan; unverified dialect details and cloud export compatibility still need verification
+status: Complete for initial design and feeds the urollup plan; dialect facts and reusable code were checked against Codex, Pi, ccusage, agentfdr and Anthropic plugin source at pinned commits, while runtime behavior of source-derived facts and cloud export compatibility still need verification
 ---
 # Research: Portable Agent Usage Analytics
 
@@ -18,16 +18,17 @@ each number to its source records.
 It must also combine local histories with results exported from cloud sandboxes without
 counting copied work twice.
 
-This brief collects the public-source background for that design: existing tools, what
-each agent’s logs record, how to count each request once, and what an exported result
-must keep so it can be merged later.
+This brief collects the public-source background for that design: existing tools and the
+code and tests urollup can port from them, what each agent’s logs record, how to count
+each request once, and what an exported result must keep so it can be merged later.
 It feeds the [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md),
 which turns these findings into contracts and implementation phases.
 Private session examples are excluded.
 
 ## Questions to Answer
 
-1. Which capabilities of existing tools can urollup reuse or adapt?
+1. Which code, tests and capabilities of existing tools and agent sources can urollup
+   reuse or adapt, and under which license terms?
 2. What do Claude Code, Codex and Pi logs record about usage, session identity and
    subagents, and how can a process find the session it runs in?
 3. Which accounting distinctions are necessary for trustworthy rollups?
@@ -97,10 +98,12 @@ files and copied history, so its usage counts once.
    The resulting in-memory tree lets a rollup include a session’s descendants or only
    the session itself, and lets a summary show a thread’s own usage beside its
    subagents’ usage. Linkage differs per agent (see [Session Linkage](#session-linkage)).
-   Codex writes each thread to its own log file, called a **rollout**, under a date
-   directory, and a subagent’s rollout can start in a later date directory than its
-   parent’s. The crawler therefore indexes session headers under every root rather than
-   searching near the parent.
+   Codex writes each thread to its own log file, called a **rollout**, under a
+   local-time date directory.
+   A subagent’s rollout can start in a later date directory than its parent’s, one
+   thread can span several rollouts, and archiving moves rollouts into a flat directory.
+   The crawler therefore indexes session headers under every root rather than searching
+   near the parent.
 
 Claude Code and Codex **hooks** are user-configured commands that the agent runs at
 lifecycle events, passing them JSON input.
@@ -109,42 +112,110 @@ The ways to identify sessions trade precision for reach:
 
 | Selector | Precision | Failure modes |
 | --- | --- | --- |
-| Environment variable set by the agent | Exact session or thread ID in every tool subprocess | Inherited by nested agents and background launchers; absent in plain terminals and older releases |
-| Hook input (`session_id`, `transcript_path`) | Exact transcript path, plus the subagent transcript on stop events | Only inside hooks; the transcript can lag the in-memory turn |
+| Environment variable set by the agent | Exact session or thread ID in every tool subprocess | Inherited by nested agents and background launchers; absent in plain terminals, older releases, Codex hooks and Pi user shell commands |
+| Hook input (`session_id`, `transcript_path`) | Exact transcript path, plus the subagent transcript on stop events | Only inside hooks; Codex sends the root session’s `session_id` even inside a subagent; the transcript can lag the in-memory turn |
 | Most recent transcript for the working directory | Works in any terminal and release | Wrong with concurrent sessions in one repository; worktrees and directory changes move Claude and Pi project directories; resumes and forks copy history into other files; cloud sandboxes may not expose logs |
 | Explicit session IDs or transcript paths | Reproducible and scriptable | The caller must find the ID |
 | Agent, date, project and root filters | Broad rollups without IDs | Usage timestamps decide membership, so a session can lie partly inside a range |
 
 ### Existing Implementations
 
-[agentfdr](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90)
-provides CLI reports, JSON summaries, search, comparisons, configurable anomaly
-heuristics and a local session viewer.
-Its 0.8.0 source normalizes Claude Code and Codex logs into a shared turn
-representation. The Board, a separate Claude-specific system that joins live-process and
-desktop data, is unnecessary for retrospective analysis.
-The
-[parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/parser.js)
-groups repeated Claude message blocks, and the
-[cost module](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/cost.js)
-uses bundled pattern-matched prices with simplified cache multipliers.
-Its summaries are useful evidence, not an authoritative provider billing ledger.
-
 [ccusage](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1)
 supplies the usage-reporting model: calendar and session rollups, token, cache and model
 breakdowns, machine-readable output and price estimates.
-Its 20.0.20 features are a baseline to measure against, not an implementation to
-duplicate.
-A parity matrix should name the exact release, command, dialect and accounting
-scope, and prices missing offline must count as incomplete coverage.
+Release 20.0.20 is a Rust workspace of 16 agent adapter crates plus core, CLI, terminal
+and test-support crates, shipped through npm as a Node launcher for a native binary,
+with about 600 tests on synthetic inputs.
+It is a behavioral baseline and a source of portable code and tests (see
+[Reusable Code and Tests](#reusable-code-and-tests)), but not an accounting authority:
+
+- **No single reconciliation path:** `ccusage daily` uses a second Claude parser that
+  also reads `progress` records and double-counted when a sidechain replay preceded its
+  parent until commit
+  [`a4b8420`](https://github.com/ccusage/ccusage/commit/a4b8420ce6a93dc0fd74e685049e97a9c1d1eb84);
+  Codex daily, session and `--since` runs deduplicate with different keys
+  ([daily.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/daily.rs#L396-L462),
+  [aggregate.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/aggregate.rs#L531-L554)).
+- **Silently dropped records:** a Claude record loses its usage when its line contains a
+  nested `"id":null` or a similar null field, for example inside tool input (confirmed
+  with a synthetic probe)
+  ([lib.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L455-L500)).
+  Timestamps with other than 0 or 3 fractional digits are skipped for Claude and Pi and
+  abort a Codex report
+  ([date_utils.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/date_utils.rs#L111-L161)).
+- **Coverage gaps:** it reads none of `token_usage_record`,
+  `subagent_history_start_ordinal`, `rate_limits`, `turn_context.effort` or
+  `.jsonl.zst`, at 20.0.20 or at `main` commit `95bbc41`, and it double-counts the
+  copied history of Pi forks until commit
+  [`809eeb6`](https://github.com/ccusage/ccusage/commit/809eeb6d52a2c7d13b9c65e10d4106109247390c).
+- **Pricing:** unless `--offline`, it fetches LiteLLM prices from the `main` branch at
+  runtime; model matching is fuzzy, money is `f64`, LiteLLM long-context tiers apply per
+  token category rather than per request, unpriced tokens appear as cost 0 in JSON, and
+  an unrecorded Codex service tier follows the user’s current `config.toml`
+  ([pricing.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/pricing.rs#L644-L680),
+  [speed.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/speed.rs#L23-L61)).
+
+A parity matrix should name the exact release, command path, dialect and accounting
+scope, pin `--offline` and `--mode calculate`, and count prices missing offline as
+incomplete coverage.
+
+[agentfdr](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90)
+provides CLI reports, JSON summaries, search, comparisons, configurable anomaly
+heuristics and a local session viewer.
+Its 0.8.0 JavaScript source normalizes Claude Code and Codex logs into a shared turn
+representation. The Board, a separate Claude-specific system that joins live-process and
+desktop data, is unnecessary for retrospective analysis.
+Its accounting has gaps that a feature matrix must explain:
+
+- The
+  [parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/parser.js#L185-L200)
+  takes a Claude turn’s input and cache counts from the last `iterations` element, so
+  totals and cost under-report input when a request has several iterations.
+- The
+  [Codex parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/codex.js)
+  adds usage for every repeated `token_count` event without checking that the running
+  total advanced.
+- Nothing is deduplicated across files, and the
+  [usage view](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/usage.js#L45-L61)
+  reads only main transcripts, omitting subagent files while counting resumed copies
+  twice.
+- The
+  [cost module](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/cost.js)
+  matches prices by regular expression with one 1.25x cache-write multiplier for every
+  model.
+
+Its portable parts are the
+[anomaly detectors](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/detect.js),
+with strict configuration validation, and
+[subagent spawn placement](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js),
+both with tests. Its cache-thrash check misfires on providers that never report caching,
+and its reconstructed 5-hour windows and “billed” token metric duplicate measures
+urollup excludes or splits by category, so none is worth copying.
 
 The
 [Anthropic session-report plugin](https://github.com/anthropics/claude-plugins-official/tree/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report)
-wraps a deterministic analysis CLI in a reporting skill, and its analyzer attributes
-usage to prompts, projects, days and subagents.
-Its request-key fallbacks and summed file durations show why metrics must state their
-definitions: an assistant record is not always a provider request, and the sum of file
-spans is not elapsed time.
+wraps a deterministic analysis CLI in a reporting skill, and its
+[analyzer](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L304-L321)
+attributes usage to prompts, projects, days, skills and subagent types.
+Its request key is `requestId`, else `message.id` only when it starts with `msg_0` and
+is longer than 10 characters, else a per-record key, so a record without `requestId`
+whose message ID lacks that prefix counts once per content block.
+Within one file the record with the largest `output_tokens` wins, and across files the
+first file processed wins.
+A global first-seen `uuid` set removes replayed history, so attribution depends on
+processing order: main transcripts precede subagent files, which sends fork-style
+subagent replays to the parent, but main files follow directory-walk order, so a resumed
+session’s replay goes to whichever file is walked first.
+Its “wall clock” sums file spans, which is not elapsed time.
+
+session-report and the sibling
+[receipts plugin](https://github.com/anthropics/claude-plugins-official/tree/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts)
+share one **skill model**: the CLI emits JSON, a fixed template renders it, and the
+agent fills only short narrative slots.
+receipts adds honesty rules that fit urollup’s reporting skill: names from logs are
+inert data, each table states which columns add up, unknown is not zero, estimates carry
+no unlabeled dollar figures, and nothing is published by default
+([SKILL.md](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/SKILL.md#L139-L164)).
 
 [Metabrowser’s log adapters](https://github.com/jlevy/metabrowser/blob/37011c447cc4cad2d684045683648f641c172144/src/metabrowser/logutil/parsing.py)
 offer a streaming parser factory, dialect detection and evidence views.
@@ -155,14 +226,24 @@ records rather than sum display events.
 Pi’s event stream and its persistent branched sessions need separate fixtures, as do
 Codex’s `exec` output and its rollouts.
 
+The agents’ own source is the reference for their dialects.
+Codex’s Rust protocol, rollout and hook types can be ported directly, but Codex checks
+in no sample rollout files; its tests build records inline.
+Pi computes per-file session totals that serve as a reconciliation check for a
+`pi-session` adapter, although a fork’s total includes its copied history.
+
 ### Log Dialects and Session Linkage
 
-Field names below come from pinned public source, vendor documentation and key-name
+Field names below come from the Codex and Pi source at pinned commits, the ccusage,
+agentfdr and session-report parsers and tests, vendor documentation, and key-name
 inspection of local logs (see [Methodology](#methodology)); no values, paths or IDs were
-copied. Claude Code calls its transcript entry format internal and subject to change
-between releases
+copied. Claude Code’s source is not public, and it calls its transcript entry format
+internal and subject to change between releases
 ([sessions](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)), so
-each adapter must record the agent versions its fixtures cover.
+Claude facts rest on documentation, third-party parsers and local key names.
+Codex documents no stable rollout format either, and Pi session files do not record the
+Pi version that wrote them, so each adapter must record the agent versions its fixtures
+cover.
 
 **Pi** is built on the multi-provider `pi-ai` library.
 It was published as `@mariozechner/pi-coding-agent` from `badlogic/pi-mono`, the package
@@ -176,85 +257,208 @@ from the agent name.
 
 | Dialect | Writer | Location | Records |
 | --- | --- | --- | --- |
-| `claude-project` | Claude Code sessions with persistence | `<config>/projects/<project>/<session-id>.jsonl`, `<project>` being the cwd with non-alphanumerics replaced by `-`; subagents in `<session-id>/subagents/agent-<agent-id>.jsonl` beside `agent-<agent-id>.meta.json` | One entry per message, content block or metadata record, with `type`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch`, `version` and `isSidechain` |
+| `claude-project` | Claude Code sessions with persistence | `<config>/projects/<project>/<session-id>.jsonl`, `<config>` being `CLAUDE_CONFIG_DIR` or `~/.claude` (ccusage also searches `$XDG_CONFIG_HOME/claude`), and `<project>` the cwd with non-alphanumerics replaced by `-`; subagents in `<session-id>/subagents/agent-<agent-id>.jsonl` beside `agent-<agent-id>.meta.json`, and under `subagents/workflows/<workflow-id>/` | One entry per message, content block or metadata record, with `type`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch`, `version` and `isSidechain`; `progress` records can nest a subagent’s assistant record; user entries carry `promptId` |
 | `claude-stream` | `claude -p --output-format stream-json --verbose`, saved by the caller | Explicit input only | SDK messages: `system` `init`; `assistant` and `user` with `session_id` and `parent_tool_use_id`; a final `result` with `usage`, `modelUsage`, `total_cost_usd`, `num_turns` and `duration_ms` |
-| `codex-rollout` | Codex CLI, IDE extension and Desktop | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-time>-<thread-id>.jsonl` and `archived_sessions/`; optionally `.jsonl.zst`; a thread revert writes a new file with a `_<rollout-id>` suffix | `{timestamp, ordinal, type, payload}` lines, `ordinal` only in paginated history: `session_meta`, `turn_context`, `response_item`, `event_msg`, `compacted`, `token_usage_record` and others |
-| `codex-exec` | `codex exec --json`, saved by the caller | Explicit input only | `thread.started` (`thread_id`), `turn.started`, `item.started`, `item.updated`, `item.completed`, `turn.completed` (`usage`), `turn.failed` and `error`; no timestamps, model or response IDs |
-| `pi-session` | Pi sessions with persistence | `$PI_CODING_AGENT_DIR/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`, default `~/.pi/agent/sessions`, unless `PI_CODING_AGENT_SESSION_DIR` or `--session-dir` relocates it | A `session` header (`version`, `id`, `cwd`, optional `parentSession`), then tree entries with `id` and `parentId`: `message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom` and others |
-| `pi-events` | `pi --mode json`, saved by the caller | Explicit input only | The session header, then `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_*`, `turn_end` and `agent_end` events |
+| `codex-rollout` | Codex CLI, IDE extension, Desktop and non-ephemeral `codex exec` runs | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-time>-<thread-id>.jsonl`, with local-time date directories; archiving moves files into flat `archived_sessions/`; a thread revert adds a `_<rollout-id>` file; a default-off feature compresses week-old files to `.jsonl.zst` | `{timestamp, ordinal, type, payload}` lines, `ordinal` only in paginated history (0.145+): `session_meta`, `turn_context`, `response_item`, `event_msg`, `compacted`, `token_usage_record`, `inter_agent_communication`, `world_state`, `retained_context`, `security_risk_score`, `realtime_item` and others |
+| `codex-exec` | `codex exec --json`, saved by the caller | Explicit input only | `thread.started` (`thread_id`), `turn.started`, `item.started`, `item.updated`, `item.completed`, `turn.completed` (`usage`), `turn.failed` and `error`; one turn per stream; no timestamps, model, turn or response IDs |
+| `pi-session` | Pi sessions with persistence | `$PI_CODING_AGENT_DIR/sessions/--<cwd>--/<timestamp>_<session-id>.jsonl`, default `~/.pi/agent/sessions`; `--session-dir`, `PI_CODING_AGENT_SESSION_DIR` or a `settings.json` `sessionDir` selects one flat directory for every cwd | A `session` header (optional format `version`, `id`, `timestamp`, `cwd`, optional `parentSession`), then tree entries with `id` and `parentId`: `message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom`, `custom_message`, `label`, `session_info` and others |
+| `pi-events` | `pi --mode json`, saved by the caller | Explicit input only | The session header, even for `--no-session` runs, then `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_*`, `turn_end`, `agent_end`, `compaction_*` and `auto_retry_*` events |
+
+Pi also emits the same events, interleaved with command responses, in `--mode rpc`, a
+third captured shape that is not yet a supported dialect.
+An experimental Pi v4 session store behind `PI_EXPERIMENTAL=1` writes explicit usage
+rows and, when importing an older file, one aggregate adjustment row that is not a
+request
+([storage.ts](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/agent/src/harness/session/jsonl/storage.ts#L264-L300)).
 
 Sources: Claude Code [directory](https://code.claude.com/docs/en/claude-directory),
 [subagent](https://code.claude.com/docs/en/sub-agents) and
-[SDK message](https://code.claude.com/docs/en/agent-sdk/typescript) docs; Codex
-`rust-v0.154.0`
-[recorder](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/recorder.rs),
-[compression](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/compression.rs),
-[rollout line](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/history/src/lib.rs)
+[SDK message](https://code.claude.com/docs/en/agent-sdk/typescript) docs, and the
+ccusage
+[Claude notes](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/README.md);
+Codex `rust-v0.154.0`
+[recorder](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/recorder.rs#L1635-L1657),
+[archiving](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/thread-store/src/local/archive_thread.rs#L80-L119),
+[rollout payloads](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/history/src/rollout_payload.rs#L21-L63)
 and
 [exec events](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/exec/src/exec_events.rs);
 Pi v0.85.1
-[session format](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/session-format.md)
+[session format](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/session-format.md),
+[settings](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/settings.md#L250-L256)
 and
 [JSON mode](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/json.md).
+
+The source shows reader hazards that no format table captures:
+
+- **Time:** Codex names files and date directories in local time but writes UTC line
+  timestamps with milliseconds, and a line’s `timestamp` is its write time, so copied
+  history carries the copy’s time.
+  ccusage accepts only 0 or 3 fractional digits; a reader should accept any RFC 3339
+  precision.
+- **Malformed and torn lines:** Codex decodes lines through `serde_json::Value`, skips
+  malformed lines and takes the first `session_meta` as canonical
+  ([recorder.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/recorder.rs#L1026-L1089)).
+  When Pi loads a file whose final line is torn, it appends a newline, turning the
+  partial write into a permanent malformed interior line
+  ([session-manager.ts](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts#L513-L557)).
+  Readers should count such lines per source rather than fail or drop them silently.
+- **In-place rewrites:** Pi rewrites a v1 or v2 file with newly minted random entry IDs
+  when it loads it
+  ([session-manager.ts](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts#L230-L291)),
+  and `codex migrate-rollouts --apply` rewrites legacy rollouts as paginated at the same
+  path, dropping usage records of rolled-back turns and trimming a legacy subagent’s
+  inherited history
+  ([rollout_migration.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/thread-store/src/local/rollout_migration.rs#L1-L9)).
+  Both are replacements of a source, not appends.
+- **Prefilters and nulls:** a byte-pattern prefilter may only route lines to full
+  parsing, and a null nested field is never a reason to reject a record, as ccusage’s
+  dropped records show.
+- **Unwritten sessions:** Codex creates a rollout only when it first persists a thread,
+  and Pi creates a session file only at the first assistant message; Codex `--ephemeral`
+  threads and Pi `--no-session` runs write no file.
 
 #### Usage Fields
 
 | Usage | `claude-project` | `codex-rollout` | `pi-session` |
 | --- | --- | --- | --- |
-| Request identity | `requestId` and `message.id` on each assistant entry | `token_usage_record` payload: `response_id`, `thread_id`, `turn_id`, `root_turn_id`, `session_id`; older rollouts have only `token_count` events, with no response ID | Entry `id`; optional `message.responseId` |
-| Fields | `message.usage`: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`, `cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`, `output_tokens_details.thinking_tokens`, `server_tool_use`, `service_tier`, `speed`, `inference_geo`, `iterations` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens` | `message.usage`: `input`, `output`, `cacheRead`, `cacheWrite`, optional `cacheWrite1h` and `reasoning`, `totalTokens`, and a `cost` breakdown computed by Pi |
-| Inclusion | `input_tokens` excludes cache reads and writes; top-level counts sum server-side `iterations` | `input_tokens` includes `cached_input_tokens`; `reasoning_output_tokens` is part of `output_tokens` | `input` excludes `cacheRead` and `cacheWrite`; `reasoning` is part of `output` |
-| Counter kind | Per response, repeated on every content-block entry of one request | `token_count.info.total_token_usage` is cumulative per thread and `last_token_usage` the latest delta; `token_usage_record` holds per-response `usage` with turn and thread totals | Per assistant message |
-| Model and effort | `message.model`; entry-level `effort` | `turn_context` `model` and `effort` per turn; `thread_settings_applied` service-tier changes | `message.provider`, `message.model`, optional `responseModel` and `providerThinkingLevel`; `model_change` and `thinking_level_change` entries |
-| Provider windows | `quotaLimits` on some assistant entries: `rateLimitType`, `resetsAt`, `status` | `token_count.rate_limits.primary` and `secondary`: `used_percent`, `window_minutes`, `resets_at` | None recorded |
+| Request identity | `requestId` and `message.id` on each assistant entry | `token_usage_record` payload (since `rust-v0.153.0`): `response_id`, `thread_id`, `turn_id`, `root_turn_id`, `session_id`; older rollouts have only `token_count` events, with no response ID | `message.responseId`, absent for Bedrock and older releases; entry `id` is unique only within one file |
+| Fields | `message.usage`: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`, `cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`, `output_tokens_details.thinking_tokens`, `server_tool_use`, `service_tier`, `speed`, `inference_geo`, `iterations` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens` (0.145+), `output_tokens`, `reasoning_output_tokens`, `total_tokens`; records add `turn_token_usage` and `thread_token_usage` running sums | `usage`: `input`, `output`, `cacheRead`, `cacheWrite`, optional `cacheWrite1h` and `reasoning`, `totalTokens`, and a `cost` breakdown computed by Pi |
+| Carriers | Assistant entries; `advisor_message` items in `iterations` carry a second model’s usage | `token_usage_record` payloads and `token_count` events; `compacted.latest_token_usage_record` is a copy | Assistant messages; since 0.81.0 also `toolResult` messages, `compaction` entries and `branch_summary` entries, all without a model |
+| Inclusion | `input_tokens` excludes cache reads and writes; top-level counts equal the sum of `message` iterations and exclude `advisor_message` iterations | `input_tokens` includes `cached_input_tokens`, and whether it includes `cache_write_input_tokens` is unverified; `reasoning_output_tokens` is part of `output_tokens` | `input` excludes `cacheRead` and `cacheWrite`; `reasoning` is part of `output`; `totalTokens` is provider-reported for Google, Bedrock and Mistral and can differ from the component sum |
+| Counter kind | Per response, repeated on every content-block entry of one request | `token_count.info.total_token_usage` is cumulative per thread and `last_token_usage` the latest delta, with `info: null` before the first recorded usage; `token_usage_record.usage` is per response | Per message, written once in the file that recorded it |
+| Model and effort | `message.model`; entry-level `effort` | `turn_context` `model`, the requested model because the served model is not saved, and `effort`; `thread_settings_applied` service-tier changes | `message.provider`, `message.model`, optional `responseModel` and `providerThinkingLevel`; `model_change` and `thinking_level_change` entries |
+| Provider windows | `quotaLimits` on some assistant entries: `rateLimitType`, `resetsAt`, `status`; usage-limit error text with a reset time | `token_count.rate_limits`: `limit_id`, `plan_type`, `credits`, and `primary` and `secondary` windows with `used_percent`, `window_minutes`, `resets_at` | None recorded |
 
 Evidence and caveats for the usage fields:
 
 - **Claude:** Anthropic defines `input_tokens` as tokens after the last cache breakpoint
   ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
-  In every local request group, all entries sharing a `requestId` had one `message.id`
-  and identical usage.
-  ccusage 20.0.20 nonetheless keeps the larger total when entries share a deduplication
-  key
-  ([lib.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs)),
-  which suggests some versions record differing usage within a group (unverified).
-  agentfdr takes context size from the last `iterations` element and output from the top
-  level
-  ([parser.js](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/parser.js)).
+  In a small local sample, all entries sharing a `requestId` had one `message.id` and
+  identical usage, but Anthropic’s receipts miner reports that about 13% of block
+  records for one response disagree on `output_tokens` while it streams
+  ([mine-transcripts.mjs](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/scripts/mine-transcripts.mjs#L412-L432)).
+  Parsers resolve that disagreement differently: ccusage keeps the one whole record with
+  the largest token total, session-report the largest `output_tokens` within a file, and
+  receipts a field-wise maximum that can combine values no single record held.
+  A reconciler should select one record per request by a documented rule and diagnose
+  the disagreement. ccusage’s
+  [advisor fixture](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/main.rs#L320-L343)
+  shows that top-level usage excludes `advisor_message` iterations, which carry their
+  own `model`; agentfdr instead uses the last iteration’s input and cache counts for the
+  whole request. ccusage prefers the `cache_creation` duration breakdown over
+  `cache_creation_input_tokens` when both exist, so a mismatch needs a diagnostic, and
+  receipts found 1-hour and 5-minute cache writes near an even split on one corpus, so
+  pricing all writes at the 5-minute rate misprices them.
   `effort`, `iterations`, `speed`, `inference_geo` and `quotaLimits` were observed
-  locally and are undocumented.
+  locally and are undocumented, and `message.model` can be `<synthetic>`.
 - **Codex:** The protocol defines `TokenUsage`, `TokenUsageRecord`, `SessionMeta` and
-  `RateLimitWindow`
-  ([protocol.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs)).
-  agentfdr reports that `total_tokens` equals input plus output and that cached input
-  never exceeds input
-  ([codex.js](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/codex.js)).
-  Local `last_token_usage` records agreed: cached input never exceeded input, reasoning
-  never exceeded output, and about 99% had `total_tokens` equal to input plus output.
-  Identical consecutive cumulative snapshots were common, and one cumulative total
-  decreased, so a delta is valid only within a **counter epoch**, a span in which the
-  cumulative total does not reset.
-  `token_usage_record` appears in the `rust-v0.154.0` protocol and local 0.15x rollouts;
-  its first release is unverified.
-  Rollouts before 2025-09-06 contain no `token_count` events, and subagent rollouts that
-  inherit parent context replay the parent’s history prefix, which ccusage excludes
+  the rate-limit types
+  ([protocol.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs#L2215-L2391)),
+  and values are copied from the Responses API `usage`. `token_usage_record` first
+  shipped in `rust-v0.153.0`. Codex writes one per completed response that reports
+  usage; responses without usage, including legacy remote compaction, write none
+  ([session/mod.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/session/mod.rs#L4377-L4409)).
+  `token_count` events also appear without a new request: with `info: null` as a
+  rate-limit observation before a thread’s first recorded usage, with unchanged `info`
+  on rate-limit updates, with a compaction estimate as a `last_token_usage` holding only
+  `total_tokens`, and on a full context window with the cumulative total set to the
+  window size and its components zeroed
+  ([session/mod.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/session/mod.rs#L4447-L4536),
+  [turn.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/session/turn.rs#L1484-L1494)).
+  The last case explains the decreasing cumulative total seen locally, so a delta is
+  valid only within a **counter epoch**, a span in which no cumulative component
+  decreases. Otherwise local `last_token_usage` records agreed with agentfdr’s
+  [codex.js](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/codex.js)
+  notes: cached input never exceeded input, reasoning never exceeded output, and about
+  99% had `total_tokens` equal to input plus output.
+  Each `token_count` repeats the session’s one latest rate-limit snapshot, whose
+  carried-forward `plan_type` and `credits` may be stale, and only the last `limit_id`
+  bucket of a response reaches the rollout
+  ([state/session.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/state/session.rs#L388-L411)).
+  Rollouts before 2025-09-06 contain no `token_count` events
   ([Codex guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/codex/index.md)).
-  `codex-exec` reports only per-turn `usage`.
+- **`codex-exec`:** `turn.completed.usage` is the thread’s cumulative total, not the
+  turn’s. It has no `total_tokens`, excludes subagent threads, includes earlier runs
+  after `codex exec resume` because the total is seeded from the rollout, and is absent
+  for failed turns; interrupted turns emit no terminal event
+  ([event processor](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L117-L128),
+  [session/mod.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/session/mod.rs#L1464-L1471)).
+  A turn’s own usage is the difference between consecutive totals for one `thread_id`. A
+  non-ephemeral `codex exec` run also writes a rollout, and the only key the two share
+  is `thread.started.thread_id`, equal to `session_meta.payload.id`; the rollout owns
+  the usage, and the capture is a reconciliation check.
 - **Pi:** The v0.85.1
   [message types](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/types.ts)
   add `responseId`, `responseModel`, `providerThinkingLevel`, `cacheWrite1h` and
   `reasoning`, which the 0.62.0 session docs lack.
-  In every local assistant message, `totalTokens` equaled the sum of input, output,
-  cache reads and cache writes.
-  The locally inspected sample is small, and Pi provider adapters may differ.
+  Every provider adapter maps `input` without cache reads and writes and counts
+  `reasoning` inside `output`, but `totalTokens` equals the component sum by
+  construction only for the Anthropic and OpenAI adapters, while Google, Bedrock and
+  Mistral report their own totals
+  ([Google adapter](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/api/google-generative-ai.ts#L224-L240)).
+  It equaled the sum in the small local sample.
+  Before 0.70.0 the completions adapter double-counted reasoning tokens.
+  `cost` is an estimate from the installed model catalog at response time, zero can mean
+  unpriced, and subscription use is not recorded.
+  A session file writes each message’s usage once.
+  Repeated usage comes from copies, in fork, clone, `--fork` and export files,
+  `compaction.retainedTail` messages and extension `details` payloads, and from
+  `pi-events`, which repeats one message’s usage in `message_start`, `message_update`,
+  `message_end`, `turn_end` and `agent_end`; only `message_end` is final
+  ([agent loop](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/agent/src/agent-loop.ts#L200-L272)).
+  `message_update` dropped its cumulative `message` in 0.84.0 and gained a top-level
+  cumulative `usage` in 0.84.2.
 
 #### Session Linkage
 
 | Linkage | `claude-project` | `codex-rollout` | `pi-session` |
 | --- | --- | --- | --- |
-| Session identity | File name stem; entries copied by resume or fork keep their original `sessionId`, so one file can hold several | `session_meta.payload.id` is the thread; `session_id` is the root thread’s ID | Header `id` |
-| Subagents | Entries carry `agentId` and `isSidechain: true`; `.meta.json` has `agentType`, `description`, `toolUseId` and `spawnDepth`; `toolUseId` matches the spawning `Agent` `tool_use.id` in the parent or another subagent, whose `toolUseResult` records `agentId` | `parent_thread_id`; `source.subagent.thread_spawn` with `parent_thread_id`, `depth`, `agent_nickname`, `agent_role` and `agent_path`; other sources `review`, `compact`, `memory_consolidation` and `other`; `thread_source` is `user`, `subagent`, `guardian_review`, `memory_consolidation` or a feature name | None built in; extensions such as Pi’s subagent example start separate `pi` processes with no documented linkage |
-| Forks and resumes | `/branch` and `--fork-session` create a new session ID holding copied history; `--resume` keeps the ID; older transcripts keep subagent turns inline, marked `isSidechain`, with no spawn ID | `forked_from_id` with `forked_from_ordinal_exclusive`; `subagent_history_start_ordinal` marks where a subagent’s own records begin | Header `parentSession` path for `/fork`, `/clone` and `--fork`; in-file branches through `parentId` and `branch_summary.fromId` |
+| Session identity | File name stem; entries copied by resume or fork keep their original `sessionId`, so one file can hold several | `session_meta.payload.id` is the thread and `session_id` the root thread (since `rust-v0.142.0`); revert chains and paginated forks spread one thread over several files, and resume appends to the original file | Header `id`, a UUIDv7 since 0.67.1; `--session-id` accepts caller-chosen IDs that are unique only within a project directory, and export then import writes a second file with the same `id` |
+| Subagents | Entries carry `agentId` and `isSidechain: true`; `.meta.json` has `agentType`, `description`, `toolUseId` and `spawnDepth`; `toolUseId` matches the spawning `Agent` `tool_use.id` in the parent or another subagent, whose `toolUseResult` records `agentId`; labeled `agent-a<label>-<hex>` files are internal background forks such as `compact` | `parent_thread_id`; `source.subagent.thread_spawn` with `parent_thread_id`, `depth`, `agent_nickname`, `agent_role` and `agent_path`; other sources `review`, `compact`, `memory_consolidation` and `other`; `thread_source` is `user`, `subagent`, `guardian_review`, `memory_consolidation` or a feature name; `token_usage_record.root_turn_id` links a subagent request to its root turn | None built in; Pi’s subagent example runs children with `--no-session`, so their usage survives only inside the parent’s tool-result `details` |
+| Forks and resumes | `/branch` and `--fork-session` create a new session ID holding copied history; `--resume` keeps the ID; fork-style subagents replay parent entries with identical `uuid`s; older transcripts keep subagent turns inline, marked `isSidechain`, with no spawn ID | `forked_from_id` with `forked_from_ordinal_exclusive` (0.152+); `subagent_history_start_ordinal` (0.145+, paginated history) marks where a subagent’s own records begin | Header `parentSession`, the source file’s absolute path, for `/fork`, `/clone` and `--fork`; in-file branches through `parentId` and `branch_summary.fromId` |
+| Directory and branch | Entry `cwd` and `gitBranch` | `session_meta` `cwd` and `git` (`commit_hash`, `branch`, `repository_url`) per thread; `turn_context.cwd` per turn | Header `cwd`; no branch |
+
+Copies that must not add usage, and the evidence that identifies them:
+
+- **Claude Code:** Content-block records of one response share `message.id` and
+  `requestId`. A parent transcript can hold `progress` records whose `data.message`
+  nests a subagent’s assistant record, duplicating the subagent file
+  ([ccusage fixture](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/main.rs#L425-L484)).
+  `/btw` side-question logs, `isSidechain` files under `subagents/`, replay parent
+  messages with the same `message.id` and a different `requestId`
+  ([ccusage notes](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/README.md#L19-L31)).
+  Fork-style subagents replay parent entries with identical `uuid`s
+  ([analyzer](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L541-L554)),
+  so `uuid` equality is lineage evidence even when `requestId` differs.
+  Some gateways reuse one `message.id` across sessions without a `requestId`, so that
+  key alone is ambiguous rather than proof of a copy.
+- **Codex:** Key requests by `token_usage_record.response_id` and attribute each to the
+  record’s `thread_id`; a record whose `thread_id` differs from the file’s thread is a
+  copy. Legacy user forks copy the parent rollout, records and `token_count` events
+  included, while paginated forks copy nothing and reference the parent file through
+  `history_base`
+  ([thread_manager.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/thread_manager.rs#L1332-L1397)).
+  Subagent forks always drop `token_usage_record` but copy the parent’s `session_meta`
+  as a foreign line and, in legacy history, the parent’s `token_count` events, so the
+  child’s running total continues the parent’s
+  ([spawn.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/agent/control/spawn.rs#L65-L105)).
+  Copied lines keep the parent’s turn IDs but get new write-time timestamps.
+  A child’s own records begin at `subagent_history_start_ordinal`, else at the first
+  `thread_settings_applied` whose `thread_id` names the child (0.152+), else at a
+  heuristic boundary labeled inferred.
+  Before `rust-v0.142.0`, `session_meta` has no `session_id`, and Codex’s fallback to
+  `id` is wrong for subagents, so roots come from parent links.
+  Parallel guardian reviews and `--ephemeral` threads never reach disk.
+- **Pi:** `/fork` and `/clone` copy the root-to-current path into a new file, keeping
+  each entry’s `id`, message object and timestamp, and `--fork` copies every branch
+  verbatim
+  ([session-manager.ts](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts#L1422-L1662)).
+  Export keeps the header `id` and entry IDs with no `parentSession`. Entry IDs are 8
+  hex characters checked for collisions only within one file, so they collide across a
+  large corpus. A workable rule keys requests by provider and `responseId`, else by
+  lineage root plus a digest of copy-invariant fields; resolves `parentSession` by file
+  basename, because the stored path is machine-specific; assigns copied history to the
+  parent; and never counts nested copies.
 
 Claude Code documents the subagent directory and resume behavior
 ([subagents](https://code.claude.com/docs/en/sub-agents),
@@ -263,30 +467,32 @@ Claude Code documents the subagent directory and resume behavior
 [subagents.js](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js).
 In one inspected local session, each `.meta.json` `toolUseId` matched an `Agent` call in
 the parent, and subagent entries’ `sessionId` equaled the parent session’s ID. agentfdr
-also reads `subagents/workflows/<workflow-id>/agent-<agent-id>.jsonl`, which the
-inspected logs did not contain.
+and ccusage also read `subagents/workflows/<workflow-id>/agent-<agent-id>.jsonl`, and
+session-report a `<session>/workflows/` variant; the inspected logs contained neither.
 In recent local Codex rollouts, every `thread_spawn` source named the same parent as
 `parent_thread_id`, and `session_id` equaled `id` only for user threads.
-Whether copied Pi fork entries keep their entry IDs is unverified.
 
 #### Current-Session Signals
 
 | Signal | Claude Code | Codex | Pi |
 | --- | --- | --- | --- |
-| Tool-subprocess environment | `CLAUDE_CODE_SESSION_ID` in Bash, PowerShell and hook subprocesses, updated on `/clear`; `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION` mark nesting; `CLAUDE_PID` (v2.1.214+) is the agent process | `CODEX_THREAD_ID` (present by `rust-v0.100.0`); `CODEX_SESSION_ID`, the root session (added after `rust-v0.135.0`); `CODEX_VERSION` | `PI_SESSION_ID` and `PI_SESSION_FILE` (0.82.0+), with `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`; `AI_AGENT=pi` marks the process |
-| Hook input | `session_id`, `transcript_path`, `cwd`; `SubagentStart` and `SubagentStop` add `agent_id` and `agent_type`, and `SubagentStop` adds `agent_transcript_path` | `session_id`, `turn_id`, `transcript_path`, `cwd`, `model`, `agent_id`, `agent_type`; `SubagentStop` passes the parent transcript plus `agent_transcript_path` | Extension API only |
-| ID to transcript | `<config>/projects/*/<id>.jsonl`; `--resume <id>` searches the current project and its worktrees first | File name ending `-<thread-id>.jsonl` or `.jsonl.zst` under `sessions/` or `archived_sessions/` | `PI_SESSION_FILE` is the path |
-| Cloud | `CLAUDE_CODE_REMOTE` and `CLAUDE_CODE_REMOTE_SESSION_ID`; whether that ID names a transcript file is unverified | Not surveyed | Not applicable |
+| Tool-subprocess environment | `CLAUDE_CODE_SESSION_ID` in Bash, PowerShell and hook subprocesses, updated on `/clear`; `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION` mark nesting; `CLAUDE_PID` (v2.1.214+) is the agent process | `CODEX_THREAD_ID`, the current thread, so a subagent’s own thread inside its tools (present by `rust-v0.100.0`); `CODEX_SESSION_ID`, the root session (added after `rust-v0.135.0`); `CODEX_VERSION`; none set for hooks or MCP servers | `PI_SESSION_ID` and `PI_SESSION_FILE` (0.82.0+), with `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`, only in model-invoked `bash` and `powershell` tools; `PI_SESSION_ID` without `PI_SESSION_FILE` means an unsaved session; `AI_AGENT=pi` marks the process |
+| Hook input | `session_id`, `transcript_path`, `cwd`; `SubagentStart` and `SubagentStop` add `agent_id` and `agent_type`, and `SubagentStop` adds `agent_transcript_path` | `session_id`, always the root session; `turn_id`; `transcript_path`, the current thread’s rollout or null when ephemeral; `cwd`; `model`; `agent_id`, the child thread, and `agent_type` for spawned subagents; `SubagentStop` sets `transcript_path` to the parent’s rollout and `agent_transcript_path` to the child’s | Extension API only |
+| ID to transcript | `<config>/projects/*/<id>.jsonl`; `--resume <id>` searches the current project and its worktrees first | File name ending `-<thread-id>.jsonl`, or `_<rollout-id>.jsonl` after a revert, possibly `.zst`, under local-time date directories in `sessions/` or flat in `archived_sessions/`; SQLite `threads.rollout_path` is an optional hint | `PI_SESSION_FILE` is the path |
+| Cloud | `CLAUDE_CODE_REMOTE` and `CLAUDE_CODE_REMOTE_SESSION_ID`; whether that ID names a transcript file is unverified | Not surveyed; the thread store is local or in-memory only, and hook `transcript_path` is null without a local thread | Not applicable |
 
 Sources: Claude Code [environment variables](https://code.claude.com/docs/en/env-vars)
 and [hooks](https://code.claude.com/docs/en/hooks); Codex
 [shell_environment.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/shell_environment.rs),
 [exec_env.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/exec_env.rs),
-[hooks schema](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/hooks/src/schema.rs)
+[process_manager.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/unified_exec/process_manager.rs#L1370-L1377),
+[hooks schema](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/hooks/src/schema.rs),
+[hook registry](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/hooks/src/registry.rs#L73-L82)
 and
-[hook runtime](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/hook_runtime.rs),
+[hook runtime](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/hook_runtime.rs#L385-L444),
 with the version bounds checked at the `rust-v0.100.0` and `rust-v0.135.0` tags; Pi
-[environment variables](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/environment-variables.md)
+[environment variables](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/environment-variables.md),
+[bash tool](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/tools/bash.ts#L166-L192)
 and
 [changelog](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/CHANGELOG.md).
 
@@ -299,10 +505,20 @@ What was verified in a running process, and what was not:
   Claude subagent cannot identify its own transcript from the environment.
   `AI_AGENT` was also set there, and Claude Code keeps an undocumented live registry,
   `~/.claude/sessions/<pid>.json`, with `pid`, `sessionId`, `cwd` and `status` keys.
-- `CODEX_THREAD_ID`, `CODEX_SESSION_ID` and `PI_SESSION_ID` were verified from source
-  and documentation only.
-  Whether a Codex subagent thread’s tools receive the subagent’s thread ID or the
-  parent’s is unverified.
+- The Codex and Pi signals were verified from source and documentation only.
+  In Codex source, a subagent’s tools receive the subagent’s own `CODEX_THREAD_ID`, and
+  hooks receive no `CODEX_*` variables because they replay the Codex process environment
+  captured at session start; a hook of a Codex started from another Codex’s tool shell
+  therefore sees the outer Codex’s variables.
+  Because hook `session_id` is the root session, comparing it with the transcript’s
+  `session_meta.payload.id` fails inside subagents; match it with
+  `session_meta.payload.session_id`, and `agent_id` with `session_meta.payload.id`.
+- Pi writes the assistant message that called a tool before the tool runs, so a Pi
+  current-session summary includes the calling request
+  ([agent-session.ts](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/agent-session.ts#L672-L691)),
+  whereas a Claude transcript can lag the running turn.
+  Pi’s bash tool removes inherited `PI_SESSION_*` and model variables before setting its
+  own, but not other agents’ variables, and user-typed `!` commands receive none.
 - Claude Code documents that an MCP server subprocess keeps the ID it started with, and
   after `--continue` or `--resume` without an ID it may see the initial startup ID.
 - Environment markers are inherited.
@@ -317,7 +533,9 @@ A model request, an assistant message, a tool action, a nested local command, a 
 and a session are different entities.
 One request can produce several messages or tool calls, and a tool can invoke further
 models, so a rollup records links only where the log proves them and never treats one
-count as another.
+count as another. A usage carrier need not be one request either: a Claude advisor
+iteration is a second model’s usage inside one request, a Pi compaction entry can
+combine two summary calls, and Pi tool-result usage covers an unknown number of calls.
 
 Input tokens fall into uncached, cache-read and cache-write categories, and each
 provider decides which categories its input count includes (see
@@ -337,8 +555,10 @@ The public price datasets that ccusage embeds, LiteLLM’s
 and
 [models.dev](https://github.com/anomalyco/models.dev/tree/bff41227803631c84903fcf7f486370e9fbcde86),
 record current rates without effective dates, so they cannot reprice historical usage on
-their own. Unknown cost is not zero, and tokens, dollars, wall time and CPU time are
-separate units.
+their own. Pi’s recorded `cost` is itself an estimate from its installed catalog, and
+ccusage writes unpriced tokens as cost 0 in JSON with no flag.
+Unknown cost is not zero, and tokens, dollars, wall time and CPU time are separate
+units.
 
 A thread’s origin, purpose, execution environment and relationships to other threads are
 independent properties.
@@ -360,9 +580,11 @@ The records share `message.id` and `requestId`, but only the last one carries th
 `output_tokens`. A resumed session can also re-serialize earlier records, with their
 original `uuid`, into a new file.
 Anthropic’s
-[session-report analyzer](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L14-L27)
-documents both behaviors, deduplicates by request ID and by `uuid`, and cites 3–10x
-overcounting without the request-level step.
+[session-report analyzer](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L14-L28)
+documents both behaviors and cites 3–10x overcounting without request-level
+deduplication. It keeps the largest `output_tokens` per request key within a file and
+removes replayed records with a global first-seen `uuid` set, so processing order
+decides which file owns a replay.
 The agentfdr
 [parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/parser.js#L185-L200)
 likewise overwrites a turn’s usage instead of accumulating it.
@@ -383,17 +605,21 @@ replays its last record:
 | Naive sum: 4 requests |  |  |  |  |  | 12 | 160,000 | 1,224 |
 | Reconciled: 1 request |  |  | `msg_A` | `req_A` |  | 3 | 40,000 | 600 |
 
-The reconciled request uses the final output count and keeps all four records as
-evidence references.
+The reconciled request selects the final record’s usage and keeps all four records as
+evidence references; if block records disagreed on other fields, it would still select
+one whole record and report the disagreement.
 ccusage 20.0.20 deduplicates Claude entries by message ID and request ID across every
 scanned file, falls back to the message ID alone when a log marked `isSidechain` replays
 parent messages under new request IDs, and keeps a non-sidechain duplicate over a
 sidechain one, then the duplicate with the largest token total
-([Claude adapter](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L126-L200)).
-Such keys are policy choices, not universal identities: a later ccusage commit adds the
-session ID to its key, with a
-[test](https://github.com/ccusage/ccusage/blob/1b4f42314bf9fe2f323436d2dadba18ba9b04970/rust/adapters/claude/src/lib.rs#L748-L775)
-for gateways that reuse message IDs across distinct sessions.
+([Claude adapter](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L118-L233)).
+Entries without a `message.id` are never deduplicated, and the winning record keeps its
+own timestamp, so a request can move across a day boundary.
+Such keys are policy choices, not universal identities: ccusage commit
+[`a4b8420`](https://github.com/ccusage/ccusage/commit/a4b8420ce6a93dc0fd74e685049e97a9c1d1eb84)
+(#1661) adds the session ID to every key, with a test for gateways that reuse message
+IDs across distinct sessions, while copied transcripts that keep the original
+`sessionId` still collapse.
 
 **Codex: cumulative counters and fork replay.** Codex `token_count` events carry
 `total_token_usage`, the running thread total, and `last_token_usage`, the latest delta.
@@ -407,12 +633,24 @@ ccusage guards against an event that repeats without the running total advancing
 
 Summing the running totals gives 60,000 tokens, and summing every `last_token_usage`
 gives 40,000. The reconciled total is 25,000. The ccusage
-[Codex parser](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs#L317-L335)
+[Codex parser](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs#L320-L367)
 uses `last_token_usage` only when the running total advances and otherwise subtracts the
 previous total, so event 3 contributes nothing.
-Its
-[replay plan](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/replay.rs)
-also skips the parent token history that forked and spawned child rollouts replay.
+It trusts `last_token_usage` even when it disagrees with that difference, so a missing
+line loses its gap, and with only a running total, a reset yields zeros rather than a
+new counter epoch. A reader must also skip compaction estimates and context-window-full
+fills, whose `last_token_usage` carries only a synthetic `total_tokens`. Since
+`rust-v0.153.0`, `token_usage_record` gives each response an ID, which reduces this
+arithmetic to a fallback for older rollouts.
+
+For copied parent history, the ccusage
+[replay plan](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/replay.rs#L31-L111)
+matches a forked or spawned child’s leading usage values against the parent’s events up
+to the child’s `session_meta` timestamp, and otherwise skips a leading burst of events
+less than 1 s apart
+([parser.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs#L84-L149)).
+Both are heuristics: a child whose own first two events fall within a second loses them,
+and a compressed replay of a single event is kept.
 
 ### Portable Result Merging
 
@@ -519,9 +757,10 @@ Python, as in Metabrowser, would reuse existing adapter code and tests directly,
 needs a Python environment in every sandbox, and CPU-bound record parsing is typically
 slower. flowmark-rs reports more than 50x faster processing of large file sets than
 Python Flowmark; that is one data point for text-processing workloads, not a prediction
-for urollup.
-Rust costs slower iteration, and format knowledge must be ported rather than
-imported.
+for urollup. Rust costs slower iteration, and format knowledge from Python, JavaScript
+and TypeScript tools must be ported rather than imported, but Codex’s protocol types and
+ccusage’s readers are already Rust (see
+[Reusable Code and Tests](#reusable-code-and-tests)).
 
 Apart from the embedded browser assets, all non-Rust code is development tooling.
 A Python softschema toolchain authors and checks the summary contract, and the Rust code
@@ -537,13 +776,157 @@ Deduplication maps, group cardinality and exact percentiles can grow with the co
 even when file reads stream, so the engine needs explicit memory budgets and an
 ephemeral spill path for larger inputs.
 That temporary working storage is not a persistent incremental cache.
+In ccusage, the Claude reader holds every usage entry until a report ends while the
+Codex reader streams lines into per-worker maps, and with no log cache its statusline
+rescans all Claude files whenever its per-session output cache is stale.
 
 Persistent caching should follow a correct uncached reference, but stable source and
 observation identities are needed from the start.
-A later cache must handle appends, partial lines, replacement, deletion, late
-corrections, and changes to parser or pricing versions.
+A later cache must handle appends, partial lines, in-place replacement such as Codex
+rollout migration and Pi’s v1 rewrite, renames such as Codex archiving and compression,
+deletion, late corrections, and changes to parser or pricing versions.
 Re-importing identical data must never add usage, and cached and uncached reports must
 agree for the same source snapshot and query.
+
+### Local Log Volume and Throughput
+
+A spike measured one developer machine’s real logs to decide when the capture cache
+ships. The prototype is kept as reference in
+[explorations/log-throughput](../../../explorations/log-throughput/README.md); it opens
+logs read-only and records aggregates only, so no content, paths or IDs appear here.
+
+**Setup.** Apple M1 Pro, 10 cores, 32 GiB RAM, local SSD, release build, 2026-09-14.
+Other agents ran concurrently, so the 1-minute load average stayed around 30–40 during
+runs; times are medians of three runs and are conservative.
+Every parsing variant produced identical totals on both slices.
+
+**Volume.**
+
+| Measure | Claude Code | Codex |
+| --- | --- | --- |
+| Files | 1,224 (205 sessions, 1,019 subagent files) | 8,896 rollouts (28 gzip, 69 legacy JSON) |
+| Logical bytes | 2.02 GB | 17.5 GB |
+| Lines | 0.80 M | 3.73 M |
+| Active days, bytes per active day | 38, 53 MB | 132, 133 MB |
+| Past 30 days | 1,195 files, 1.99 GB | 2,215 rollouts, 11.2 GB |
+| File size p50, p99, max | 0.70 MB, 24 MB, 49 MB | 0.38 MB, 36 MB, 388 MB |
+| Largest line | 3.8 MB | 16 MB |
+
+Claude Code’s 30-day transcript cleanup shows directly: nearly all retained Claude bytes
+are from the past month, while Codex keeps months of rollouts.
+
+**Composition and captured size.** Usage-bearing records are a small share of bytes:
+Codex usage records are 0.59 GB of 17.5 GB, and display and structure records (with
+their embedded content) make up most of the rest.
+Stripping content to `{bytes, digest}` stubs removed 1.35 GB of Claude text and 15.2 GB
+of Codex text.
+
+| Captured records | Claude Code | Codex |
+| --- | --- | --- |
+| Records kept | 0.64 M | 2.91 M |
+| Stripped JSONL | 699 MB | 1.85 GB |
+| zstd level 3 | 76 MB | 260 MB |
+| zstd level 19 | 68 MB | 216 MB |
+| Usage records only, zstd 3 | 46 MB | 44 MB |
+
+The full captured-records cache took 340 MB on disk for 19.5 GB of logs, about 1.7%.
+Building it once with zstd level 19 took 792 s of wall time and 1.06 GiB peak RSS on 10
+threads; level 3 is the practical default for a cache.
+
+**Throughput.** Runs read 9,207 source files (about 11.4 GiB); peak RSS stayed between
+110 and 190 MiB.
+
+| Workload | All history, 10 threads | Past 30 days, 10 threads | All history, 1 thread |
+| --- | --- | --- | --- |
+| Read and decompress only | 4.5 s | 3.3 s | 17.4 s |
+| Parse every line into `serde_json::Value` | 15.6 s | 11.5 s | 63.8 s |
+| Borrowed typed parse | 8.3 s | 4.8 s | 36.7 s |
+| Byte prefilter, then typed parse | 6.7 s | 3.0 s | 27.9 s |
+| Capture cache | 3.5 s | 2.2 s | 11.7 s |
+| Capture cache with prefix check | 4.7 s | 2.3 s | 18.1 s |
+
+A first-run probe of the same files took 5.2 s just to read them (3.0 s and 2.2 s on
+repeats), and a later probe measured 6.6 s for the typed parse, 4.0 s with the prefilter
+and 2.1 s from the capture cache.
+The operating system’s page cache could not be dropped without elevated privileges, so
+no run is fully cold.
+
+**Findings.**
+
+- Uncached extraction is already fast: a typed parse with a byte prefilter covers the
+  past month in about 3 s and all history in about 7 s on 10 cores under heavy load.
+  Borrowed typed decoding plus a prefilter is about 2.3 times faster than generic
+  `serde_json::Value` parsing.
+- The capture cache saves about 1.4 times on the past month and 1.9 times on all history
+  with 10 threads, and about 2.4 times on one thread.
+  Its advantage grows on cold page caches, slower disks and constrained CPUs, because it
+  avoids reading the 85% of bytes that are content.
+- Its larger value is durability: 340 MB preserves re-extractable usage data for logs
+  that Claude Code deletes after 30 days.
+- Very large Codex rollouts (up to 388 MB, lines up to 16 MB) make streaming line reads
+  and per-file parallelism necessary; a whole-file JSON approach would not fit.
+
+**Recommendation.** Performance alone does not require the capture cache in Phase 1: the
+uncached engine meets the plan’s targets with prefiltered typed parsing and per-file
+parallelism. Captured records should still be written by Phase 1 bundles, and the
+default-on cache can follow once the uncached engine is the correctness reference,
+unless retaining captured records beyond log deletion is wanted sooner.
+
+### Reusable Code and Tests
+
+The reviewed projects offer code and tests, not only format facts.
+The table lists the most valuable items and the urollup bead each affects.
+**Port code** copies or closely translates source, which carries license obligations.
+**Port logic** reimplements a rule from its description and needs a citation.
+**Adapt tests or fixtures** rewrites cases as synthetic urollup fixtures with urollup’s
+expected results, including negative cases where the source is wrong.
+A **format fact** records dialect behavior, and **learn only** takes a lesson without
+code.
+
+Ported code keeps its license notice and attribution, as the
+[urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md) requires,
+recorded with the source path and commit in a third-party notices file.
+MIT sources need their copyright notice and license text: ccusage (Copyright (c) 2025
+ryoppippi), agentfdr (Copyright (c) 2026 kamihork) and Pi (Copyright (c) 2025 Mario
+Zechner).
+Apache-2.0 sources need the license text and a statement of changes; Codex code
+also carries the attribution in its `NOTICE` file (OpenAI Codex, Copyright 2025 OpenAI),
+and the Anthropic plugins ship no `NOTICE` file, so their ported code keeps the license
+text and attribution.
+Pi’s checked-in session fixtures and ccusage’s statusline test inputs hold real prompts
+or paths, so fixtures derived from them must keep only structure and usage.
+
+| Source | Item | File (pinned) | Reuse mode | Bead |
+| --- | --- | --- | --- | --- |
+| Codex | Usage, `token_count`, `token_usage_record` and rate-limit types, with unknown fields kept in a raw map | [protocol.rs:2215-2391](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs#L2215-L2391) | Port code with Apache-2.0 notice | uro-y2qj |
+| Codex | `SessionMeta` with its missing-`session_id` fill, and session, subagent and thread source types | [protocol.rs:2740-2840](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs#L2740-L2840), [3034-3171](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs#L3034-L3171) | Port code with Apache-2.0 notice | uro-y2qj, uro-20ck |
+| Codex | Exec event and hook input types | [exec_events.rs:8-133](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/exec/src/exec_events.rs#L8-L133), [schema.rs:278-638](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/hooks/src/schema.rs#L278-L638) | Port code with Apache-2.0 notice | uro-y2qj, uro-20ck |
+| Codex | Rollout file-name parser for plain and revert names, relabeling its time as local | [rollout_file_name.rs:39-60](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/rollout_file_name.rs#L39-L60) | Port code with Apache-2.0 notice | uro-20ck |
+| Codex | Value-first line decoding and legacy normalizers for RFC 3339 `resets_at` and retired records | [lib.rs:39-73](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/lib.rs#L39-L73), [line_parser.rs:33-135](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/thread-store/src/local/rollout_migration/line_parser.rs#L33-L135) | Port logic; adapt tests or fixtures | uro-y2qj |
+| Codex | Plain-over-compressed discovery and multi-frame zstd reading | [compression.rs:144-192](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/compression.rs#L144-L192), [seekable_reader_tests.rs:11-79](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/seekable_reader_tests.rs#L11-L79) | Port logic; adapt tests or fixtures | uro-20ck, uro-gnqj |
+| Codex | Token scenarios: records across resume, `info: null`, context-full fills, compaction estimates, subagent non-inheritance and per-type wire shapes | [token_usage_rollout.rs:31-116](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/tests/suite/token_usage_rollout.rs#L31-L116), [session/tests.rs:2808-2936](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/session/tests.rs#L2808-L2936), [control_tests.rs:1388-1523](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/agent/control_tests.rs#L1388-L1523), [client.rs:3441-3532](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/tests/suite/client.rs#L3441-L3532), [history tests.rs:393-518](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/history/src/tests.rs#L393-L518) | Adapt tests or fixtures | uro-obx5, uro-spce |
+| ccusage | Ordered, size-balanced parallel file reader, with panics replaced by errors and worker limits added | [lib.rs:49-126](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/common/src/lib.rs#L49-L126) | Port code with MIT attribution | uro-y2qj |
+| ccusage | `memmem` line prefilter and line splitter, used only to route lines to full parsing | [fast.rs:17-104](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/fast.rs#L17-L104) | Port code with MIT attribution | uro-y2qj, uro-gnqj |
+| ccusage | ANSI-aware width, truncation and boxed tables, writing to an injected writer and stripping control characters from log strings | [width.rs:1-161](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-terminal/src/width.rs#L1-L161), [table.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-terminal/src/table.rs) | Port code with MIT attribution | uro-d135 |
+| ccusage | `fs_fixture!` test macro, without the process-environment guard | [lib.rs:81-142](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-test-support/src/lib.rs#L81-L142) | Port code with MIT attribution | uro-phi8, uro-obx5 |
+| ccusage | Claude duplicate resolution (sidechain precedence, whole-record winner), rebuilt as order-independent grouping | [lib.rs:118-233](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L118-L233) | Port logic | uro-spce |
+| ccusage | Advisor iterations and `progress`-embedded subagent messages | [lib.rs:306-404](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L306-L404), [daily.rs:140-190](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/daily.rs#L140-L190) | Port logic; format fact | uro-y2qj |
+| ccusage | Codex cumulative-to-delta rule, extended with counter epochs and synthetic-event diagnostics | [parser.rs:320-367](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs#L320-L367) | Port logic | uro-y2qj, uro-spce |
+| ccusage | Codex fork replay value matching and burst heuristic, as a last-resort fallback labeled inferred | [replay.rs:31-111](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/replay.rs#L31-L111), [parser.rs:84-221](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs#L84-L221) | Port logic | uro-spce |
+| ccusage | Dedupe cases: complete and requestless duplicates, advisor and `progress` records, sidechain replay, Codex fork and legacy subagent replay, repeated snapshots, tier transitions | [main.rs:257-484](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/main.rs#L257-L484), [lib.rs:690-782](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs#L690-L782), [loader.rs:198-2011](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/loader.rs#L198-L2011) | Adapt tests or fixtures, adding ccusage’s bugs as negative cases | uro-obx5 |
+| ccusage | Claude and Codex root discovery, including `$XDG_CONFIG_HOME/claude`, a `projects/` directory value and archived rollouts | [claude paths.rs:12-68](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/paths.rs#L12-L68), [codex paths.rs:20-116](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/paths.rs#L20-L116) | Port logic | uro-20ck |
+| ccusage | DST-safe local-midnight date bounds, rejecting unknown zones instead of falling back | [date_utils.rs:212-241](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/date_utils.rs#L212-L241) | Port logic | uro-d135 |
+| Pi | Session, entry and message types, and per-provider usage mapping | [session-manager.ts:32-153](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts#L32-L153), [types.ts:383-468](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/types.ts#L383-L468), [openai-responses-shared.ts:556-582](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/api/openai-responses-shared.ts#L556-L582) | Format fact | uro-qnok |
+| Pi | Fork, clone, `--fork` and export copy rules | [session-manager.ts:1422-1662](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts#L1422-L1662), [tree-traversal.test.ts:462-516](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/session-manager/tree-traversal.test.ts#L462-L516) | Format fact; adapt tests or fixtures | uro-qnok, uro-spce |
+| Pi | Per-file session totals as a reconciliation check | [usage-totals.ts:22-70](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/usage-totals.ts#L22-L70), [agent-session.ts:3326-3381](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/agent-session.ts#L3326-L3381) | Port logic | uro-qnok |
+| Pi | Cache-miss estimator, labeled an estimate | [cache-stats.ts:1-164](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/cache-stats.ts#L1-L164), [cache-stats.test.ts:60-143](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/cache-stats.test.ts#L60-L143) | Port code with MIT attribution | uro-jpmf, uro-d135 |
+| Pi | Torn-tail repair and v1-to-v3 migration cases, generated as synthetic files | [file-operations.test.ts:71-103](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/session-manager/file-operations.test.ts#L71-L103), [migration.test.ts:5-78](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/session-manager/migration.test.ts#L5-L78) | Adapt tests or fixtures | uro-obx5, uro-qnok |
+| agentfdr | Anomaly detectors (tool loops with a retry allowance, error streaks, token spikes, stalled calls, refusals) and strict detector configuration | [detect.js:11-581](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/detect.js#L11-L581), [config.js:1-109](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/config.js#L1-L109), [detect.test.js:71-252](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/test/detect.test.js#L71-L252) | Port logic; adapt tests or fixtures | uro-jpmf |
+| agentfdr | Subagent discovery, spawn placement and inline sidechain nodes | [subagents.js:3-229](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js#L3-L229), [subagents.test.js:21-127](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/test/subagents.test.js#L21-L127) | Port logic; adapt tests or fixtures | uro-20ck |
+| session-report | Subagent type resolution: `.meta.json` `agentType`, file-name label, the spawning call’s `subagent_type`, else `fork` | [analyze-sessions.mjs:111-156](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L111-L156), [247-265](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L247-L265) | Port logic | uro-20ck, uro-52qi |
+| session-report | Prompt and skill attribution windows, labeled estimates | [analyze-sessions.mjs:420-480](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L420-L480) | Port logic | uro-52qi, uro-jpmf |
+| session-report and receipts | Skill model: CLI JSON, fixed template with short narrative slots, and honesty rules | [SKILL.md:1-42](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/SKILL.md#L1-L42), [template.html:315-352](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/template.html#L315-L352), [receipts SKILL.md:139-164](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/SKILL.md#L139-L164) | Learn only | uro-jpmf |
+| receipts | Block-record `output_tokens` disagreement and the 1-hour and 5-minute cache-write split | [mine-transcripts.mjs:170-212](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/scripts/mine-transcripts.mjs#L170-L212), [412-432](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/scripts/mine-transcripts.mjs#L412-L432) | Format fact | uro-y2qj, uro-wuby |
 
 ## Options Considered
 
@@ -561,7 +944,7 @@ The approaches differ in architecture; any new code is Rust (see
 **Cons:**
 
 - The tools’ identities, deduplication keys, scopes and pricing semantics differ and
-  stay different
+  stay different, and ccusage’s own reports disagree across command paths
 
 ### Option B: Fork an Existing Viewer
 
@@ -595,13 +978,19 @@ UI call.
 
 Adopt Option C:
 
-- Build a narrow shared engine, using existing tools as behavioral references and
+- Build a narrow shared engine: port the items in
+  [Reusable Code and Tests](#reusable-code-and-tests) with attribution, use existing
+  tools as behavioral references rather than accounting authorities, and use
   Metabrowser’s adapter boundary as a design reference.
+- Prefer native identities and boundaries over heuristics: Codex `response_id` and
+  `subagent_history_start_ordinal` before value matching or timing, Pi `responseId`
+  before digests, with every heuristic exclusion labeled inferred.
 - Support Claude Code and Codex first, then add Pi and imported cloud formats as each
   passes its own fixtures.
   Scope support by validated dialect and metric, not by vendor.
-- Encode the [synthetic double-counting cases](#synthetic-double-counting-example) as
-  golden fixtures before building reports on any adapter.
+- Encode the [synthetic double-counting cases](#synthetic-double-counting-example) and
+  the copy rules under [Session Linkage](#session-linkage) as golden fixtures before
+  building reports on any adapter.
 - Ship uncached CLI reports, usage summaries and observation bundles first, then the
   read-only web UI and workflow skill, then persistent caching.
 - Compute every number in the shared query engine; the web UI renders those results and
@@ -614,16 +1003,24 @@ This research is complete for initial design and feeds the
 implementation phases.
 These items still need verification:
 
-- [ ] Resolve the unverified dialect details: whether some Claude Code versions record
-  differing usage within one request group, the first Codex release with
-  `token_usage_record`, whether a Codex subagent’s tools receive its own thread ID or
-  its parent’s, whether copied Pi fork entries keep their entry IDs, and whether
-  `CLAUDE_CODE_REMOTE_SESSION_ID` names a transcript file.
-- [ ] Survey Codex signals in cloud environments, which this brief did not cover.
-- [ ] Recheck locally observed behavior on more agent versions: the undocumented Claude
-  Code fields (`effort`, `iterations`, `speed`, `inference_geo` and `quotaLimits`), the
-  `subagents/workflows/` layout that agentfdr reads, and Pi’s `totalTokens` sum across
-  provider adapters.
+- [ ] Confirm the source-derived Codex and Pi behavior in running processes, starting
+  with a Codex subagent’s `CODEX_THREAD_ID`, Codex hook input inside subagents, and Pi’s
+  environment in `--no-session` runs.
+- [ ] Resolve the open Codex details: whether `input_tokens` includes
+  `cache_write_input_tokens`, usage semantics for non-OpenAI `model_provider` values,
+  whether Desktop and IDE clients write paginated history, which release first wrote
+  `info: null`, subagent replay before `rust-v0.152.0`, whether memory-consolidation
+  threads link to a parent, how migration treats usage records line by line, and the
+  MultiAgent V2 replay markers that ccusage documents but no code uses.
+- [ ] Survey Codex signals in cloud environments, which this brief did not cover, and
+  whether `CLAUDE_CODE_REMOTE_SESSION_ID` names a transcript file.
+- [ ] Recheck Claude behavior known from third-party parsers or a small local sample on
+  more versions: block-record `output_tokens` disagreement, `progress` records, `/btw`
+  replays, the `subagents/workflows/` and `<session>/workflows/` layouts, whether Claude
+  Code itself writes under `$XDG_CONFIG_HOME/claude`, entry-level `effort` (agentfdr
+  claims effort appears only in command output), and the other undocumented fields.
+- [ ] Check Pi’s `totalTokens` on captures from providers that report their own totals,
+  and watch the experimental v4 session store and the `--mode rpc` shape.
 - [ ] Run a small cloud export, download and local-merge smoke test in each cloud
   environment, covering log visibility, installation and network access, artifact
   retrieval and overlapping re-export, before advertising its compatibility.
@@ -633,29 +1030,39 @@ These items still need verification:
 ## Methodology
 
 The findings come from public source at pinned revisions, vendor documentation, package
-metadata on GitHub and the npm registry, and key-name inspection of local logs:
+metadata on GitHub and the npm registry, and key-name inspection of local logs.
+On 2026-09-14, read-only partial clones of Codex, ccusage, Pi, agentfdr and the
+Anthropic plugins were reviewed at the commits below with grep and targeted reads.
+Nothing was executed except one synthetic probe, which compiled ccusage’s null-field
+filter unchanged and ran it on two synthetic records, and no local logs were read for
+that review.
 
-- **agentfdr 0.8.0, commit `e0904bf`:** The Claude and Codex parsers, the subagent
-  reader, the cost module and the live Board.
-- **ccusage 20.0.20, commit `bd7f89b` (tag `v20.0.20`):** The npm launcher, its six
-  native platform packages, the Rust Claude and Codex adapters with their deduplication,
-  cumulative-counter and fork-replay tests, and the Pi and Codex guides.
-  The `v19.0.0` TypeScript source and the later main-branch commit `1b4f423` were read
-  for comparison.
-- **Anthropic session-report plugin, commit `f0dce59`:** The `analyze-sessions.mjs`
-  analyzer and its notes on transcript structure.
+- **Codex `rust-v0.154.0`, commit `6b9826e` (Apache-2.0):** The protocol, rollout
+  recorder, file names, compression, archiving and migration, history, exec events and
+  JSON output, session and subagent spawning, shell environment, hooks, SQLite state and
+  their tests. Version bounds come from source snapshots at release tags between
+  `rust-v0.100.0` and `rust-v0.153.0`, not from bisection.
+- **ccusage 20.0.20, commit `bd7f89b` (tag `v20.0.20`, MIT):** The npm launcher, its six
+  native platform packages, the Rust Claude, Codex, Pi and common adapters, the core
+  pricing, cost, date, output and prefilter modules, the terminal and test-support
+  crates, the benchmark generator and the Pi and Codex guides.
+  The `v19.0.0` TypeScript source was read for comparison, and later `main` commits up
+  to `95bbc41`, including `a4b8420`, `15b3bef` and `809eeb6`, as evidence of fixed bugs.
+- **Pi v0.85.1, commit `d981de1` (MIT):** The coding agent’s session manager, runtime,
+  JSON mode, bash tool, usage totals, cache statistics, docs, changelog, tests and
+  fixtures; the `pi-ai` message types, cost and provider usage mapping; and the agent
+  loop and experimental v4 session store.
+- **agentfdr 0.8.0, commit `e0904bf` (MIT):** All of `src/` except the i18n and HTML UI
+  bodies, and all tests.
+- **Anthropic plugins, commit `f0dce59` (Apache-2.0):** The session-report plugin in
+  full, and the receipts plugin’s transcript miner and skill.
 - **Metabrowser, commit `37011c4`:** The log adapters in `logutil/parsing.py`.
-- **Codex `rust-v0.154.0`, commit `6b9826e`:** The rollout recorder and compression,
-  history, exec events, protocol, shell environment and hooks, with environment-variable
-  version bounds checked at the `rust-v0.100.0` and `rust-v0.135.0` tags.
-- **Pi v0.85.1, commit `d981de1`:** The session format, JSON mode and environment
-  variable docs, the message types and the changelog.
 - **Claude Code and Anthropic API documentation:** Retrieved 2026-09-13; these pages are
   not versioned.
 - **Local logs:** Key names only, from Claude Code 2.1-series transcripts, Codex Desktop
   0.15x rollouts and Pi 0.62.0 sessions, plus environment checks inside this research
-  session’s Claude Code tool processes.
-  No values, paths or IDs were copied.
+  session’s Claude Code tool processes, all on 2026-09-13. No values, paths or IDs were
+  copied.
 - **LiteLLM and models.dev price data:** The snapshots that ccusage 20.0.20 pins in its
   `flake.lock` (commits `1a183ef` and `bff4122`), checked for effective-date fields.
 - **fdu and flowmark-rs:** READMEs and build metadata at commits `afbb2ee` and
@@ -665,8 +1072,9 @@ metadata on GitHub and the npm registry, and key-name inspection of local logs:
 
 The synthetic example was checked against the cited parser code and tests, not against
 session logs or provider invoices.
-Log behaviors come from parser code, tests, vendor documentation, the session-report
-analyzer’s empirical notes and a small local sample, so they can change between agent
+Source-derived facts describe code at the pinned commits, not observed runtime behavior,
+and other log behaviors come from third-party parsers, vendor documentation, empirical
+notes in the Anthropic plugins and a small local sample, so all can change between agent
 versions.
 No benchmarks were run for this brief, and it makes no universal performance or
 billing-accuracy claim.
@@ -676,25 +1084,40 @@ Cloud acquisition and persistent caching are proposed designs, not tested integr
 
 Tools and implementations, at the inspected revisions:
 
-- [agentfdr 0.8.0 source](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90):
+- [agentfdr 0.8.0 source](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90)
+  (MIT):
   [Claude parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/parser.js),
   [Codex parser](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/codex.js),
-  [subagent reader](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js)
+  [subagent reader](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js),
+  [anomaly detectors](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/detect.js),
+  [usage view](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/usage.js)
   and
   [cost module](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/cost.js)
-- [ccusage 20.0.20 source](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1):
+- [ccusage 20.0.20 source](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1)
+  (MIT):
   [Claude adapter](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/lib.rs),
+  [Claude daily parser](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/claude/src/daily.rs),
   [Codex parser](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/parser.rs),
   [Codex replay plan](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/replay.rs),
   [Codex guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/codex/index.md)
   and
   [Pi guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/pi/index.md)
+- ccusage commits after 20.0.20:
+  [`a4b8420`](https://github.com/ccusage/ccusage/commit/a4b8420ce6a93dc0fd74e685049e97a9c1d1eb84)
+  (session-scoped Claude dedupe),
+  [`15b3bef`](https://github.com/ccusage/ccusage/commit/15b3bef85b1e0d440ca98e345b4fb5610a41a195)
+  (Codex cache writes) and
+  [`809eeb6`](https://github.com/ccusage/ccusage/commit/809eeb6d52a2c7d13b9c65e10d4106109247390c)
+  (Pi fork replay)
 - [ccusage 20.0.20 npm package](https://www.npmjs.com/package/ccusage/v/20.0.20)
 - [ccusage 19.0.0 TypeScript source](https://github.com/ccusage/ccusage/tree/c5049cef6d830a6eef216534331ea3fa3da99314/apps/ccusage/src)
-- [ccusage Claude adapter at commit `1b4f423`](https://github.com/ccusage/ccusage/blob/1b4f42314bf9fe2f323436d2dadba18ba9b04970/rust/adapters/claude/src/lib.rs)
 - [Anthropic session-report plugin](https://github.com/anthropics/claude-plugins-official/tree/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report)
-  (official plugin; its transcript notes are empirical, not a format specification):
+  (official plugin, Apache-2.0; its transcript notes are empirical, not a format
+  specification):
   [analyzer](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs)
+- [Anthropic receipts plugin](https://github.com/anthropics/claude-plugins-official/tree/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts)
+  (official plugin, Apache-2.0):
+  [transcript miner](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/scripts/mine-transcripts.mjs)
 - [Metabrowser log adapters](https://github.com/jlevy/metabrowser/blob/37011c447cc4cad2d684045683648f641c172144/src/metabrowser/logutil/parsing.py)
 - [fdu](https://github.com/jlevy/fdu/tree/afbb2eef01e94f37a4462549b0828ca8337a5f4c)
 - [flowmark-rs](https://github.com/jlevy/flowmark-rs/tree/f1e9337e2d87ba614c231f0d17a2c181a3634117)
@@ -703,19 +1126,23 @@ Tools and implementations, at the inspected revisions:
 
 Agent log formats:
 
-- [Codex `rust-v0.154.0` source](https://github.com/openai/codex/tree/6b9826e3aa83b1a5947db50f4332cb9c65f1b340):
+- [Codex `rust-v0.154.0` source](https://github.com/openai/codex/tree/6b9826e3aa83b1a5947db50f4332cb9c65f1b340)
+  (Apache-2.0):
   [rollout recorder](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/recorder.rs),
   [compression](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/rollout/src/compression.rs),
   [rollout line](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/history/src/lib.rs),
   [exec events](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/exec/src/exec_events.rs),
+  [exec JSON output](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/exec/src/event_processor_with_jsonl_output.rs),
   [protocol](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs),
   [shell environment](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/shell_environment.rs),
   [exec environment](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/exec_env.rs),
   [hooks schema](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/hooks/src/schema.rs)
   and
   [hook runtime](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/hook_runtime.rs)
-- [Pi v0.85.1 source](https://github.com/earendil-works/pi/tree/d981de1229ef899957bbe968bc8dcda02a21f477):
+- [Pi v0.85.1 source](https://github.com/earendil-works/pi/tree/d981de1229ef899957bbe968bc8dcda02a21f477)
+  (MIT):
   [session format](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/session-format.md),
+  [session manager](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/session-manager.ts),
   [JSON mode](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/json.md),
   [environment variables](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/environment-variables.md),
   [message types](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/types.ts)

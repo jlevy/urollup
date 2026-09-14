@@ -1,0 +1,25 @@
+[package]
+name = "log-throughput-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Throwaway spike: measure agent log volume and usage-extraction throughput"
+license = "MIT"
+
+# Standalone: never a member of a parent workspace.
+[workspace]
+
+# Exact pins; every version (and every Cargo.lock entry) was published at least
+# 14 days before 2026-09-14 per the supply-chain cool-off.
+[dependencies]
+flate2 = "=1.1.10"
+libc = "=0.2.189"
+memchr = "=2.8.3"
+rayon = "=1.12.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["raw_value"] }
+zstd = "=0.13.3"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

@@ -19,6 +19,12 @@ There is no code yet; the design is under review.
 | [Data contracts](docs/project/architecture/arch-2026-09-13-urollup-data-contracts.md) | Ledger, analytical identities, accounting measures, summary and bundle formats |
 | [Portable agent usage research](docs/project/research/research-2026-09-13-portable-agent-usage.md) | Existing tools, log dialects, common workflows, accounting pitfalls, merge rationale |
 | [Rust CLI engineering baseline](docs/project/research/research-2026-09-13-rust-cli-engineering-baseline.md) | Project setup practices drawn from tbd guidelines, fdu and flowmark-rs |
+| [squares code review](docs/project/research/research-2026-09-14-squares-code-review.md) | Reusable Codex and Claude parsing, time measures and tests from squares, and its integration needs |
+| [metaproc code review](docs/project/research/research-2026-09-14-metaproc-code-review.md) | Captured agent streams, harness pitfalls, accounts and quotas from metaproc and its qm harness |
+
+The portable research brief also records a throughput spike on real local logs; its
+prototype is kept in
+[explorations/log-throughput](explorations/log-throughput/README.md).
 
 ## Development
 
