@@ -147,45 +147,66 @@ the only lasting record.
 - **Records the plan does not yet report** are still captured and normalized when their
   dialect fields are known, so features like account budgets need no new capture.
 
-### Capture Cache
+### Capture Store and Cache
 
-Captured records also form a local, idempotent **capture cache**, on by default, so a
-large log is parsed once and later runs read its compact captured records instead.
+Captured records are kept in a durable local **capture store**, on by default.
+It preserves re-extractable usage data after agents delete their logs, and in Phase 2 it
+also serves as a **capture cache** so a large log is parsed once.
+A spike on 19.5 GB of real logs measured the store at about 1.7% of log size, and
+uncached extraction fast enough that the cache read path can wait for Phase 2; see the
+[portable research brief](../research/research-2026-09-13-portable-agent-usage.md).
 
-- **Location:** the platform cache directory (`$XDG_CACHE_HOME/urollup` or
-  `~/.cache/urollup` on Linux, `~/Library/Caches/urollup` on macOS,
-  `%LOCALAPPDATA%\urollup\cache` on Windows), overridden by `UROLLUP_CACHE_DIR`.
-  Directories are created owner-only, because captured records still hold paths and IDs.
-- **Entries:** one entry per source artifact, keyed by its `src-` ID, holding a manifest
+- **Location:** the platform data directory, not a purgeable cache directory:
+  `$XDG_DATA_HOME/urollup/captured` or `~/.local/share/urollup/captured` on Linux,
+  `~/Library/Application Support/urollup/captured` on macOS, and
+  `%LOCALAPPDATA%\urollup\captured` on Windows, overridden by `UROLLUP_CAPTURE_DIR`.
+  Directories and files are owner-only, because captured records still hold paths and
+  IDs.
+- **Entries:** one entry per logical source, keyed by its `src-` ID, holding a manifest
   and zstd-compressed JSONL segments of captured records.
   The manifest records the dialect, adapter and strip-policy versions, the captured byte
-  extent, the digest of the first complete record, and the digest of the captured
-  extent’s final 64 KiB.
-- **Reads:** when the versions match and the source still starts with the captured
-  prefix, a run reads cached records for the captured extent and parses only complete
-  records past it, which it appends as a new segment.
-  An unfinished last line stays pending and is never cached.
-  The default prefix check compares file identity, size, and the two recorded digests;
-  `--verify-cache` hashes the whole captured extent.
-- **Invalidation:** a version change regenerates the entry from the source; a failed
-  prefix check (replacement, truncation or mutation) regenerates it with a diagnostic.
+  extent, the source fingerprint, the digest of the first complete record, and the
+  digest of the captured extent’s final 64 KiB.
+- **Phase 1 writes:** every run that reads a source captures it when the store has no
+  current entry for it, or when its size, fingerprint or versions changed, by writing a
+  complete replacement entry.
+  An unfinished last line stays pending and is never captured.
+- **Retention:** entries outlive their sources.
+  When a source log is gone, runs read its captured records instead and report the
+  source as `retained` with its capture time.
+  When a prefix check shows a source was replaced, truncated or rewritten in place (such
+  as a Codex rollout migration), the previous entry is kept as a retained version beside
+  the new one, and reconciliation deduplicates their shared observations by analytical
+  ID, so a rewrite that drops records never silently drops usage.
+- **Phase 2 cache reads:** when versions match and the source still starts with the
+  captured prefix, a run reads captured records for the captured extent and parses only
+  complete records past it, appending them as a new segment.
+  The default prefix check compares file identity, size and the two recorded digests;
+  `--verify-cache` hashes the whole captured extent, which also catches a same-size
+  mutation that leaves both digests unchanged.
 - **Idempotence:** capturing the same bytes yields identical records, entries are keyed
   by source and extent, and reconciliation deduplicates by analytical ID, so repeating a
   run never adds usage.
-- **Controls:** `--no-cache` neither reads nor writes the cache, and `--rebuild-cache`
-  regenerates the selected sources’ entries from their original logs.
-  `urollup cache status` reports entries, sizes, versions and missing sources, and
-  `urollup cache prune` removes entries by age, version or missing source.
-- **Atomic writes** follow tbd `filesystem-rules` and `rust-filesystem-rules`. Segments
-  are written to a `NamedTempFile` in the entry directory and published with
-  `persist_noclobber`; the manifest is replaced last with `persist`, so a crash leaves
-  the previous consistent entry.
-  A per-entry advisory lock serializes concurrent writers, readers never observe a
-  partial segment, and staged files take the entry’s owner-only permissions.
-- **Equivalence:** cached, uncached and rebuilt runs produce identical ledgers and
-  reports for the same snapshot and policy, and CI runs the golden suite in each mode.
+- **Controls:** `--no-capture` neither writes nor reads the store for a run.
+  In Phase 2, `--no-cache` reads original logs instead of cached records while still
+  updating the store, and `--rebuild-cache` regenerates the selected sources’ entries
+  from their logs. `urollup capture status` reports entries, sizes, versions and retained
+  sources, and `urollup capture prune` removes entries by age, version or retained
+  status.
+- **Atomic writes** follow tbd `filesystem-rules` and `rust-filesystem-rules`:
+  - segments and manifests are staged as owner-only `NamedTempFile`s with unique names
+    in the entry directory;
+  - each segment is fsynced and its digest verified before it is published with
+    `persist_noclobber`;
+  - the entry directory is fsynced, and the manifest is replaced last with `persist`,
+    only if the manifest version the writer started from is still current;
+  - an OS advisory lock per entry serializes writers, so a crash or a concurrent run
+    leaves the previous consistent entry and readers never see a partial segment.
+- **Equivalence:** runs with the store disabled, with retained sources, with cached
+  reads and after a rebuild produce identical ledgers and reports for the same snapshot
+  and policy, and CI runs the golden suite in each mode.
 
-The capture cache stores layer 1 only.
+The capture store holds layer 1 only.
 The later ledger and query cache stores layers 2 and 3 behind the same versioned keys.
 
 ### Normalized Ledger

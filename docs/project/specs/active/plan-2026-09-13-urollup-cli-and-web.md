@@ -15,9 +15,10 @@ session reports through a CLI and a local read-only web UI. It covers ccusage’
 reports and the agentfdr investigation features that matter for retrospective analysis,
 without a live session Board, process steering or agent launcher.
 Both interfaces call one accounting and query engine.
-Reports compute from a snapshot of the logs, optionally through a capture cache of
-compact captured records, and a later phase adds a ledger and query cache behind the
-same contracts. The product, crate and command are named `urollup`, developed in
+Reports compute from a snapshot of the logs and a durable capture store of compact
+captured records that outlives deleted logs; Phase 2 also reads that store as a cache,
+and a later phase adds a ledger and query cache behind the same contracts.
+The product, crate and command are named `urollup`, developed in
 [jlevy/urollup](https://github.com/jlevy/urollup).
 
 The
@@ -385,7 +386,7 @@ Forecasts and calibrated budgets are labeled estimates too.
 | `export` | Usage summary or observation bundle | `--current` | 1 |
 | `merge` | Merged summary or bundle | `--source` inputs only | 1 |
 | `validate`, `schema` | Artifact validation; compiled contract schemas | Named files or contracts | 1 |
-| `cache status`, `cache prune` | Capture cache entries, sizes, versions and missing sources; pruning by age, version or missing source | All entries | With the capture cache |
+| `capture status`, `capture prune` | Capture store entries, sizes, versions and retained sources; pruning by age, version or retained status | All entries | 1 |
 | `compare` | Differences between two saved JSON reports | `--baseline`, `--candidate` | 2 |
 | `check` | Thresholds and coverage for a saved query | `--query` | 2 |
 | `serve` | Local read-only web UI | `--all` | 2 |
@@ -604,16 +605,21 @@ A `serve` process answers repeated queries from an immutable in-memory snapshot 
 refresh replaces atomically, and reports name the snapshot they used.
 
 The
-[capture cache](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-cache)
-stores each source’s captured records in the platform cache directory, on by default, so
-a large log is parsed once and later runs read compact zstd JSONL instead.
-Entries are keyed by source and versioned by adapter and strip policy, appended when a
-log grows, regenerated when a prefix check fails, and written atomically with
-`NamedTempFile` staging and per-entry locks.
-`--no-cache` bypasses it, `--rebuild-cache` regenerates entries from original logs,
-`--verify-cache` checks full prefixes, and `urollup cache status` and `cache prune`
-manage it. Cached, uncached and rebuilt runs must produce identical results.
-Its phase is decided from the log throughput spike (`uro-1k0u`).
+[capture store](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-store-and-cache)
+keeps each source’s captured records as owner-only zstd JSONL in the platform data
+directory, on by default, so usage data survives Claude Code’s 30-day transcript cleanup
+at about 1.7% of log size.
+In Phase 1, every run captures new or changed sources with atomic replacement entries,
+reads captured records only for sources whose logs are gone (reported as `retained`),
+and keeps a previous entry when a source is rewritten in place; `--no-capture` skips the
+store, and `urollup capture status` and `capture prune` manage it.
+In Phase 2 the store also becomes a cache: runs read captured records for unchanged
+prefixes and parse only appended records, with `--no-cache`, `--rebuild-cache` and
+`--verify-cache`. The log throughput spike showed uncached extraction is fast enough for
+Phase 1 (about 3 s for 30 days and 7 s for all history on 10 cores), so the cache read
+path can wait.
+Runs with the store disabled, with retained sources, with cached reads and
+after a rebuild must produce identical results.
 
 The Phase 3 ledger and query cache, for layers 2 and 3, has versioned boundaries
 designed now. Observations are keyed by source content revision and adapter and schema
@@ -652,6 +658,10 @@ metadata.
   fixtures, `scripts/check_contracts.py` and `make contracts-check`; implement summary
   and bundle readers and writers with redaction, mixed raw, summary and bundle input,
   and overlap-safe `merge`, `validate` and `schema`, before any totals-only output.
+- [ ] Implement the durable capture store: strip policy, atomic replacement entries in
+  the platform data directory, retained reads for deleted sources, retained versions for
+  rewritten sources, `--no-capture`, `capture status` and `capture prune`, with
+  equivalence goldens against runs without the store.
 - [ ] Add the reviewed price table, `--prices` overrides, staleness diagnostics and
   golden repricing tests.
 - [ ] Add `sources`, `sessions`, `daily`, `weekly`, `monthly`, `report`, `requests`,
@@ -666,6 +676,9 @@ metadata.
 
 ### Phase 2: Web UI, workflow reports and broader evidence
 
+- [ ] Add the capture cache read path: prefix checks, append segments, `--no-cache`,
+  `--rebuild-cache` and `--verify-cache`, with cached-versus-uncached golden
+  equivalence.
 - [ ] Add `serve`: the read-only HTTP API and embedded UI over the same snapshots and
   query engine, with its security controls and coverage badges.
 - [ ] Add the CLI-backed reporting skill, `compare` and `check`.
@@ -818,7 +831,7 @@ Confirmed decisions:
 | Data capture principle | Capture source data as close to its original form as possible, accurately and with evidence, so any later analysis is possible; keep native fields and unused records such as provider limit data | 2026-09-14 |
 | Usage windows | Phase 1 adapters keep provider limit observations (Codex `rate_limits`, Claude `quotaLimits`); the `windows` report over recorded windows moves to Phase 2; no inferred ccusage-style blocks, and any later estimate view is labeled and never feeds totals or checks | 2026-09-14 |
 | Captured records | Bundles include usage-relevant source records by default, verbatim except that content and verbose bodies become `{bytes, digest}` stubs under a versioned strip policy, so extraction can be rerun without the original logs; tables are zstd-compressed JSONL | 2026-09-14 |
-| Capture cache | Captured records double as a local idempotent cache, on by default, with `--no-cache`, `--rebuild-cache` and `--verify-cache`; all files are written atomically per tbd filesystem rules; its phase follows the log throughput spike | 2026-09-14 |
+| Capture store and cache | Captured records live in a durable owner-only capture store in the platform data directory, on by default, and outlive deleted logs: Phase 1 writes it on every run and reads it for sources whose logs are gone; Phase 2 adds the speed-cache read path (`--no-cache`, `--rebuild-cache`, `--verify-cache`); all writes are atomic per tbd filesystem rules | 2026-09-14 |
 | Code reuse and licensing | Code, fixtures and docs from jlevy repositories (metaproc, squares, metabrowser, fdu, flowmark-rs, softschema) may be ported into MIT urollup regardless of their published license, with source repository and commit recorded; third-party code (ccusage and agentfdr MIT, pi MIT, Codex and Anthropic plugins Apache-2.0) is ported only with its license notice and attribution | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
