@@ -854,6 +854,17 @@ Confirmed decisions:
 | qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
+| Web server | `127.0.0.1` on an OS-assigned port; per-launch token in the URL fragment, sent as a Bearer header; Host, Origin and Sec-Fetch-Site checks; no CORS; redirect file for `--open` | 2026-09-14 |
+| Benchmarks | Seeded synthetic corpora of about 64 MiB and 1 GiB; reference Apple silicon laptop with at least 10 cores and 16 GiB; CI against the merge base on `ubuntu-24.04`; 10% regression policy, with scheduled regressions resolved before release | 2026-09-14 |
+| Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | 2026-09-14 |
+| Contract status | `enforced`, with an `extensions` map for new measures | 2026-09-14 |
+| JSON | An output rendering only, never a softschema artifact or merge input | 2026-09-14 |
+| Database input | Deferred to Phase 3, starting with urollup’s own store | 2026-09-14 |
+| Engineering baseline | `make check` rather than a justfile; insta and proptest; checked arithmetic enforced by lint; Python benchmark tooling run through uv | 2026-09-14 |
+| Dev tooling | softschema 0.8.1 pinned in the root uv project with a 14-day cool-off and first-party exemption (already in place); web bundle committed under `crates/urollup/assets/web/` | 2026-09-14 |
+| Contract gate | A tested `scripts/check_contracts.py`, not Makefile shell loops | 2026-09-14 |
+| Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | 2026-09-14 |
+| Release scope | No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing | 2026-09-14 |
 
 These proposed decisions are reflected in the design; each needs maintainer
 confirmation.
@@ -867,18 +878,7 @@ confirmation.
 | Resources and charges | Defer resource collection; keep provider charges a separate entity with no import phase item until a tested receipt or billing export exists | [Entities](../../architecture/arch-2026-09-13-urollup-data-contracts.md#entities) |
 | Identity keys and redaction | Bundles carry every row’s identity key and summaries each thread’s, redacted with keyed HMAC labels; redacted components block re-derivation | [Identities and Redaction](../../architecture/arch-2026-09-13-urollup-data-contracts.md#identities-and-redaction) |
 | Pricing | Reviewed price table built into the binary from provider pages; LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network, `--prices` overrides, staleness warning after 90 days | [Price Table](../../architecture/arch-2026-09-13-urollup-data-contracts.md#price-table) |
-| Web server | `127.0.0.1` on an OS-assigned port; per-launch token in the URL fragment, sent as a Bearer header; Host, Origin and Sec-Fetch-Site checks; no CORS; redirect file for `--open` | [Web UI](#web-ui) |
-| Benchmarks | Seeded synthetic corpora of about 64 MiB and 1 GiB; reference Apple silicon laptop with at least 10 cores and 16 GiB; CI against the merge base on `ubuntu-24.04`; 10% regression policy, with scheduled regressions resolved before release | [Testing Strategy](#testing-strategy) |
 | Summary and bundle | Two artifacts in one contract family; bundles are deterministic zip containers of zstd-compressed JSONL tables | [Trade-offs and Alternatives](../../architecture/arch-2026-09-13-urollup-data-contracts.md#trade-offs-and-alternatives) |
-| Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | [Usage Summary Format](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format) |
-| Contract status | `enforced`, with an `extensions` map for new measures | [Enforced Status](../../architecture/arch-2026-09-13-urollup-data-contracts.md#decision-enforced-status-with-an-extensions-map) |
-| JSON | An output rendering only, never a softschema artifact or merge input | [CLI and report contracts](#cli-and-report-contracts) |
-| Database input | Deferred to Phase 3, starting with urollup’s own store | [Portable summaries, bundles and cloud skills](#portable-summaries-bundles-and-cloud-skills) |
-| Engineering baseline | `make check` rather than a justfile; insta and proptest; checked arithmetic enforced by lint; Python benchmark tooling run through uv | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
-| Dev tooling | softschema 0.8.1 pinned in the root uv project with a 14-day cool-off and first-party exemption (already in place); web bundle committed under `crates/urollup/assets/web/` | [Project setup and engineering conventions](#project-setup-and-engineering-conventions) |
-| Contract gate | A tested `scripts/check_contracts.py`, not Makefile shell loops | [Contract Authoring and Rust Validation](../../architecture/arch-2026-09-13-urollup-data-contracts.md#contract-authoring-and-rust-validation) |
-| Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | [CLI and report contracts](#cli-and-report-contracts) |
-| Release scope | No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing | [Rollout Plan](#rollout-plan) |
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
 | Strict mode | `--strict` exits 3 on any coverage gap, including nonzero unresolved usage | [CLI and report contracts](#cli-and-report-contracts) |
