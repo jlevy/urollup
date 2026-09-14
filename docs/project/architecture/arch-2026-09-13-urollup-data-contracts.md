@@ -99,6 +99,80 @@ extent.
 - Symlinks are followed only within declared roots.
 - Evidence references are a source ID, byte offset and length inside the manifest.
 
+### Capture Layers and Re-extraction
+
+urollup captures data in layers so any later feature can rerun extraction from the most
+processed layer that still holds what it needs.
+Claude Code deletes transcripts after 30 days by default, so captured layers are often
+the only lasting record.
+
+| Layer | Holds | Rerun from this layer when |
+| --- | --- | --- |
+| 0. Original logs | Every record, including prompts and tool output | A feature needs content itself, while the logs still exist |
+| 1. Captured records | Usage-relevant source records, verbatim except for stripped content | Parsing, normalization or reconciliation logic changes |
+| 2. Normalized tables | Threads, relationships, requests, tool actions, provider limit observations and diagnostics, with native fields | Pricing, grouping, ownership or report logic changes |
+| 3. Usage summaries | Extents and derived totals | A report needs only totals within the summary’s policy |
+
+- **Captured records** keep every record that carries usage, identity, model, effort,
+  timing, subagent or fork linkage, tool call structure or provider limits.
+  Records with none of these, such as display-only progress events, are counted in the
+  manifest but not kept.
+- **Stripping** follows a versioned, per-dialect strip policy.
+  Keys, types, IDs, timestamps, models, usage objects, stop reasons, tool names, working
+  directories and version fields stay verbatim.
+  Prompt and response text, reasoning text, tool arguments, tool results, attachments,
+  images, file snapshots and injected context are replaced by a stub recording the
+  field’s byte length and a keyed HMAC-SHA-256 digest, so content size and repetition
+  stay measurable without the content.
+- **Re-extraction:** adapters read a bundle’s captured records exactly as they read
+  original logs, and each captured record keeps its original source ID, offset,
+  fingerprint and dialect version.
+  A later adapter or strip-policy version applies to old bundles without the logs;
+  anything the strip policy removed needs layer 0.
+- **Records the plan does not yet report** are still captured and normalized when their
+  dialect fields are known, so features like account budgets need no new capture.
+
+### Capture Cache
+
+Captured records also form a local, idempotent **capture cache**, on by default, so a
+large log is parsed once and later runs read its compact captured records instead.
+
+- **Location:** the platform cache directory (`$XDG_CACHE_HOME/urollup` or
+  `~/.cache/urollup` on Linux, `~/Library/Caches/urollup` on macOS,
+  `%LOCALAPPDATA%\urollup\cache` on Windows), overridden by `UROLLUP_CACHE_DIR`.
+  Directories are created owner-only, because captured records still hold paths and IDs.
+- **Entries:** one entry per source artifact, keyed by its `src-` ID, holding a manifest
+  and zstd-compressed JSONL segments of captured records.
+  The manifest records the dialect, adapter and strip-policy versions, the captured byte
+  extent, the digest of the first complete record, and the digest of the captured
+  extent’s final 64 KiB.
+- **Reads:** when the versions match and the source still starts with the captured
+  prefix, a run reads cached records for the captured extent and parses only complete
+  records past it, which it appends as a new segment.
+  An unfinished last line stays pending and is never cached.
+  The default prefix check compares file identity, size, and the two recorded digests;
+  `--verify-cache` hashes the whole captured extent.
+- **Invalidation:** a version change regenerates the entry from the source; a failed
+  prefix check (replacement, truncation or mutation) regenerates it with a diagnostic.
+- **Idempotence:** capturing the same bytes yields identical records, entries are keyed
+  by source and extent, and reconciliation deduplicates by analytical ID, so repeating a
+  run never adds usage.
+- **Controls:** `--no-cache` neither reads nor writes the cache, and `--rebuild-cache`
+  regenerates the selected sources’ entries from their original logs.
+  `urollup cache status` reports entries, sizes, versions and missing sources, and
+  `urollup cache prune` removes entries by age, version or missing source.
+- **Atomic writes** follow tbd `filesystem-rules` and `rust-filesystem-rules`. Segments
+  are written to a `NamedTempFile` in the entry directory and published with
+  `persist_noclobber`; the manifest is replaced last with `persist`, so a crash leaves
+  the previous consistent entry.
+  A per-entry advisory lock serializes concurrent writers, readers never observe a
+  partial segment, and staged files take the entry’s owner-only permissions.
+- **Equivalence:** cached, uncached and rebuilt runs produce identical ledgers and
+  reports for the same snapshot and policy, and CI runs the golden suite in each mode.
+
+The capture cache stores layer 1 only.
+The later ledger and query cache stores layers 2 and 3 behind the same versioned keys.
+
 ### Normalized Ledger
 
 #### Entities
@@ -418,6 +492,21 @@ Updates and overrides:
 - A staleness diagnostic appears when a report window ends more than 90 days after the
   table review date, because that release cannot know later price changes.
 
+#### Accounts and Plans (Later)
+
+Account-level analysis on personal and team plans builds on data captured from the start
+and needs no new capture:
+
+- The ledger keeps stable account identifiers when a source records them, and every
+  provider limit observation, so usage can later roll up per account and per recorded
+  window.
+- A later configured **account registry** maps each account identifier to dated plan
+  terms: plan name, subscription price and currency, effective dates, and any window or
+  budget limits. Dates matter because accounts change plans.
+- With the registry, reports can show list-price estimates beside subscription
+  allocations for the same tokens, and usage against configured budgets or windows.
+  The Money measure already keeps these amounts separate and never mixes them.
+
 ### Usage Summary Format
 
 A **usage summary** is a pure-YAML softschema artifact, contract
@@ -644,7 +733,7 @@ layout unpacked as a directory.
 | `manifest.yaml` | `urollup:BundleManifest/v1` artifact: contract revision, producer version, identity, reconciliation and pricing versions, redaction profile and key fingerprint, snapshot cutoffs, covered exports, and each table’s record contract, `schema_sha256`, row count, byte size and SHA-256 |
 | `summary.yaml` | `urollup:UsageSummary/v1` artifact computed from the tables |
 | `schemas/*.schema.yaml` | Compiled schema for every contract used, so the unpacked YAML artifacts validate with `softschema validate` and no flags |
-| `tables/*.jsonl` | `sources`, `threads`, `relationships`, `requests` and `diagnostics`; `tools`, `provider_charges` and `resources` only when requested and available |
+| `tables/*.jsonl.zst` | zstd-compressed JSONL: `records` (layer 1 captured records, omitted with `--no-records`), `sources`, `threads`, `relationships`, `requests`, `limits` and `diagnostics`; `tools`, `provider_charges` and `resources` only when requested and available |
 
 Table contents:
 
@@ -654,10 +743,17 @@ Table contents:
   raw logs.
 - The manifest marks omitted tables and dimensions unavailable, not empty.
 
-Writers are deterministic, so identical content yields identical bytes:
+Writers are deterministic, and content identity is defined over uncompressed tables:
 
-- Entries follow the table order, with Deflate compression and a fixed timestamp.
-- Each table holds one UTF-8 JSON object per line, sorted by analytical ID.
+- Each table holds one UTF-8 JSON object per line, sorted by analytical ID, compressed
+  with zstd at a fixed level.
+- Zip entries follow the table order, are stored without further compression, and carry
+  a fixed timestamp.
+- The manifest records each table’s uncompressed SHA-256, row count and sizes, so two
+  bundles with the same content compare equal even when different zstd library versions
+  produced different compressed bytes.
+- Bundles are published atomically: written to a `NamedTempFile` beside the destination
+  and persisted, never assembled in place.
 - A bundle records no creation time.
 - Table values follow the same portable value rules as the YAML artifacts: integers stay
   within ±2^53 and money is an exact decimal string.

@@ -15,9 +15,9 @@ session reports through a CLI and a local read-only web UI. It covers ccusage’
 reports and the agentfdr investigation features that matter for retrospective analysis,
 without a live session Board, process steering or agent launcher.
 Both interfaces call one accounting and query engine.
-The first release computes reports from a snapshot of the logs with no persistent cache;
-a later phase adds idempotent incremental caching behind the same contracts.
-The product, crate and command are named `urollup`, developed in
+Reports compute from a snapshot of the logs, optionally through a capture cache of
+compact captured records, and a later phase adds a ledger and query cache behind the
+same contracts. The product, crate and command are named `urollup`, developed in
 [jlevy/urollup](https://github.com/jlevy/urollup).
 
 The
@@ -357,6 +357,7 @@ Forecasts and calibrated budgets are labeled estimates too.
 | `export` | Usage summary or observation bundle | `--current` | 1 |
 | `merge` | Merged summary or bundle | `--source` inputs only | 1 |
 | `validate`, `schema` | Artifact validation; compiled contract schemas | Named files or contracts | 1 |
+| `cache status`, `cache prune` | Capture cache entries, sizes, versions and missing sources; pruning by age, version or missing source | All entries | With the capture cache |
 | `compare` | Differences between two saved JSON reports | `--baseline`, `--candidate` | 2 |
 | `check` | Thresholds and coverage for a saved query | `--query` | 2 |
 | `serve` | Local read-only web UI | `--all` | 2 |
@@ -466,8 +467,13 @@ arguments and result bodies: a
 [usage summary](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format)
 and an
 [observation bundle](../../architecture/arch-2026-09-13-urollup-data-contracts.md#observation-bundles),
-a deterministic `*.urollup.zip` archive of JSONL request tables plus the summary
+a deterministic `*.urollup.zip` archive of zstd-compressed JSONL tables plus the summary
 computed from them. Every command that accepts a summary also accepts a bundle.
+Bundles include
+[captured records](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-layers-and-re-extraction)
+by default: usage-relevant source records kept verbatim except that content and verbose
+bodies become `{bytes, digest}` stubs, so extraction can be rerun after the original
+logs are deleted; `--no-records` omits them.
 Both declare `status: enforced` with an `extensions` map, validate against schemas that
 softschema compiles from Pydantic models, and apply a `--redact paths|names|native-ids`
 [redaction](../../architecture/arch-2026-09-13-urollup-data-contracts.md#redaction)
@@ -569,11 +575,23 @@ than report a partial total.
 A `serve` process answers repeated queries from an immutable in-memory snapshot that
 refresh replaces atomically, and reports name the snapshot they used.
 
-The Phase 3 persistent cache has versioned boundaries designed now.
-Observations are keyed by source content revision and adapter and schema version,
-reconciliation by observation identities and policy version, and prices and queries
-separately (including filters, timezone, identity mapping and coverage policy), so a
-price update never reparses logs.
+The
+[capture cache](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-cache)
+stores each source’s captured records in the platform cache directory, on by default, so
+a large log is parsed once and later runs read compact zstd JSONL instead.
+Entries are keyed by source and versioned by adapter and strip policy, appended when a
+log grows, regenerated when a prefix check fails, and written atomically with
+`NamedTempFile` staging and per-entry locks.
+`--no-cache` bypasses it, `--rebuild-cache` regenerates entries from original logs,
+`--verify-cache` checks full prefixes, and `urollup cache status` and `cache prune`
+manage it. Cached, uncached and rebuilt runs must produce identical results.
+Its phase is decided from the log throughput spike (`uro-1k0u`).
+
+The Phase 3 ledger and query cache, for layers 2 and 3, has versioned boundaries
+designed now. Observations are keyed by source content revision and adapter and schema
+version, reconciliation by observation identities and policy version, and prices and
+queries separately (including filters, timezone, identity mapping and coverage policy),
+so a price update never reparses logs.
 Import is an upsert: append-only files persist complete-line offsets and parser state,
 resuming verifies the prior prefix, truncation, replacement, mutation or a parser
 upgrade invalidates the affected contribution, and late usage updates retract old
@@ -760,6 +778,8 @@ Confirmed decisions:
 | Current-session detection | `--hook-input`, then agent environment variables, else exit 2 naming `--latest`, `--session` and `--all`; `--latest` is guarded and never implicit, including in interactive terminals | 2026-09-14 |
 | Data capture principle | Capture source data as close to its original form as possible, accurately and with evidence, so any later analysis is possible; keep native fields and unused records such as provider limit data | 2026-09-14 |
 | Usage windows | Phase 1 adapters keep provider limit observations (Codex `rate_limits`, Claude `quotaLimits`); the `windows` report over recorded windows moves to Phase 2; no inferred ccusage-style blocks, and any later estimate view is labeled and never feeds totals or checks | 2026-09-14 |
+| Captured records | Bundles include usage-relevant source records by default, verbatim except that content and verbose bodies become `{bytes, digest}` stubs under a versioned strip policy, so extraction can be rerun without the original logs; tables are zstd-compressed JSONL | 2026-09-14 |
+| Capture cache | Captured records double as a local idempotent cache, on by default, with `--no-cache`, `--rebuild-cache` and `--verify-cache`; all files are written atomically per tbd filesystem rules; its phase follows the log throughput spike | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
 
@@ -778,7 +798,7 @@ confirmation.
 | Pricing | Reviewed price table built into the binary from provider pages; LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network, `--prices` overrides, staleness warning after 90 days | [Price Table](../../architecture/arch-2026-09-13-urollup-data-contracts.md#price-table) |
 | Web server | `127.0.0.1` on an OS-assigned port; per-launch token in the URL fragment, sent as a Bearer header; Host, Origin and Sec-Fetch-Site checks; no CORS; redirect file for `--open` | [Web UI](#web-ui) |
 | Benchmarks | Seeded synthetic corpora of about 64 MiB and 1 GiB; reference Apple silicon laptop with at least 10 cores and 16 GiB; CI against the merge base on `ubuntu-24.04`; 10% regression policy, with scheduled regressions resolved before release | [Testing Strategy](#testing-strategy) |
-| Summary and bundle | Two artifacts in one contract family; bundles are deterministic zip files | [Trade-offs and Alternatives](../../architecture/arch-2026-09-13-urollup-data-contracts.md#trade-offs-and-alternatives) |
+| Summary and bundle | Two artifacts in one contract family; bundles are deterministic zip containers of zstd-compressed JSONL tables | [Trade-offs and Alternatives](../../architecture/arch-2026-09-13-urollup-data-contracts.md#trade-offs-and-alternatives) |
 | Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | [Usage Summary Format](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format) |
 | Contract status | `enforced`, with an `extensions` map for new measures | [Enforced Status](../../architecture/arch-2026-09-13-urollup-data-contracts.md#decision-enforced-status-with-an-extensions-map) |
 | JSON | An output rendering only, never a softschema artifact or merge input | [CLI and report contracts](#cli-and-report-contracts) |
