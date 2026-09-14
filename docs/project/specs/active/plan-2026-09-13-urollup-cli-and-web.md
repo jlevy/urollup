@@ -32,6 +32,10 @@ None of these documents contains private session data.
 
 ## Goals
 
+- **Capture first, analyze later.** Record source data as close to its original form as
+  possible, accurately and with evidence, so later analyses need no new parsing
+  decisions. Native field names and values are preserved beside normalized fields, and
+  data that no current report uses, such as provider limit records, is still kept.
 - Fast local analysis of Claude Code and Codex logs, in both persistent and
   captured-stream dialects, behind an extensible adapter interface, with Pi support
   following the first validated slice.
@@ -322,9 +326,14 @@ Codex rollouts record `rate_limits.primary` and `secondary` with `window_minutes
 `resets_at` and `used_percent`, defining the window that ends at each reset.
 Claude transcripts sometimes carry an undocumented `quotaLimits` entry with a limit type
 and `resetsAt` but no length, so a Claude window needs a configured length and is
-labeled configured.
-`windows` groups usage by limit and window, shows the latest recorded
+labeled configured. Phase 1 adapters keep every limit record as a
+[provider limit observation](../../architecture/arch-2026-09-13-urollup-data-contracts.md#entities),
+so no window data is lost before a report uses it.
+The Phase 2 `windows` report groups usage by limit and window, shows the latest recorded
 utilization, and reports usage outside every recorded window as uncovered.
+Limits are shared with surfaces whose usage never reaches local logs, such as web chat
+and other machines, so only a provider-recorded `used_percent` measures a window’s
+consumption; local token totals within a window are labeled partial.
 
 ccusage `blocks` parity is out of scope: its 5-hour blocks start at the UTC hour of the
 first activity after the previous block ends
@@ -341,7 +350,7 @@ Forecasts and calibrated budgets are labeled estimates too.
 | `sources` | Roots, dialects, coverage and earliest retained records | `--all` | 1 |
 | `sessions` | One row per session | `--all` | 1 |
 | `daily`, `weekly`, `monthly` | Calendar rollups | `--all` | 1 |
-| `windows` | Usage by provider-recorded usage window | `--all` | 1 |
+| `windows` | Usage by provider-recorded usage window | `--all` | 2 |
 | `report` | Session report: totals, breakdowns, sizes, tools and limitations | `--current` | 1 |
 | `requests`, `tools` | Request rows with sizes and ownership; tool and command totals | `--current` | 1 |
 | `tree` | Session hierarchy with own and descendant totals | `--current` | 1 |
@@ -588,8 +597,9 @@ metadata.
 - [ ] Implement analytical identities, the normalized ledger, reconciliation, ownership
   status and coverage, with collision detection and re-derivation from stored keys.
 - [ ] Implement the `claude-project`, `claude-stream`, `codex-rollout` and `codex-exec`
-  adapters with default discovery, override variables, snapshot manifests and source
-  links; document unsupported fields and the agent versions each fixture covers.
+  adapters with default discovery, override variables, snapshot manifests, source links
+  and provider limit observations; document unsupported fields and the agent versions
+  each fixture covers.
 - [ ] Implement the selection flags, `--current` detection, `--latest`, the discovery
   index, and the hierarchy crawler behind `tree` and `--scope descendants`.
 - [ ] Author the `UsageSummary`, `BundleManifest` and table record contracts with
@@ -598,10 +608,10 @@ metadata.
   and overlap-safe `merge`, `validate` and `schema`, before any totals-only output.
 - [ ] Add the reviewed price table, `--prices` overrides, staleness diagnostics and
   golden repricing tests.
-- [ ] Add `sources`, `sessions`, `daily`, `weekly`, `monthly`, `windows`, `report`,
-  `requests`, `tools` and `export` with project, account, model, effort and observed
-  purpose grouping, request sizes, deterministic output in every format, query files,
-  `--strict` and `--require-priced`.
+- [ ] Add `sources`, `sessions`, `daily`, `weekly`, `monthly`, `report`, `requests`,
+  `tools` and `export` with project, account, model, effort and observed purpose
+  grouping, request sizes, deterministic output in every format, query files, `--strict`
+  and `--require-priced`.
 - [ ] Build the benchmark generator, harness and CI jobs, record the first
   reference-laptop results, and measure summary size with the request index on the
   representative corpus.
@@ -613,6 +623,8 @@ metadata.
 - [ ] Add `serve`: the read-only HTTP API and embedded UI over the same snapshots and
   query engine, with its security controls and coverage badges.
 - [ ] Add the CLI-backed reporting skill, `compare` and `check`.
+- [ ] Add the `windows` report over recorded provider limit observations, with Claude
+  window lengths configured and labeled, and local totals labeled partial.
 - [ ] Run the cloud smoke test covering log visibility, reachable hosts, the binary
   acquisition path, execution, artifact retrieval, local merge and overlapping
   re-export; document unsupported environments.
@@ -746,6 +758,8 @@ Confirmed decisions:
 | --- | --- | --- |
 | License | MIT, matching fdu and flowmark-rs; `LICENSE` is in the repository | 2026-09-13 |
 | Current-session detection | `--hook-input`, then agent environment variables, else exit 2 naming `--latest`, `--session` and `--all`; `--latest` is guarded and never implicit, including in interactive terminals | 2026-09-14 |
+| Data capture principle | Capture source data as close to its original form as possible, accurately and with evidence, so any later analysis is possible; keep native fields and unused records such as provider limit data | 2026-09-14 |
+| Usage windows | Phase 1 adapters keep provider limit observations (Codex `rate_limits`, Claude `quotaLimits`); the `windows` report over recorded windows moves to Phase 2; no inferred ccusage-style blocks, and any later estimate view is labeled and never feeds totals or checks | 2026-09-14 |
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
 
@@ -775,7 +789,6 @@ confirmation.
 | Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | [CLI and report contracts](#cli-and-report-contracts) |
 | Release scope | No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing | [Rollout Plan](#rollout-plan) |
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
-| ccusage `blocks` | Out of scope, listed as intentionally unsupported | [Ledger, identities and accounting](#ledger-identities-and-accounting) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
 | Strict mode | `--strict` exits 3 on any coverage gap, including nonzero unresolved usage | [CLI and report contracts](#cli-and-report-contracts) |
 

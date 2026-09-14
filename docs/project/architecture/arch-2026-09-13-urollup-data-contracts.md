@@ -35,6 +35,10 @@ rationale. Terms such as observation, extent and unresolved are defined in the p
 
 ### Goals
 
+- Source data is captured as close to its original form as possible, accurately and with
+  evidence: native field names and values are kept beside normalized fields, and records
+  no current report uses are kept rather than dropped, so later analyses never depend on
+  an earlier parsing decision.
 - Every logical request counts once, whatever the order or number of files, exports and
   merges it arrives through.
 - Uncertainty stays visible: ambiguous ownership, unresolved overlap, unpriced tokens
@@ -106,6 +110,7 @@ extent.
 | Relationship | Spawn, fork, resume, review or other native edge, with evidence and confidence; not every relationship transfers usage ownership |
 | Request/response | Native request and response IDs, ownership status with owning or candidate threads, timestamps, actual model and effort when observed, usage revision and its status |
 | Tool action | Call ID, tool name, nested command structure, result reference, outcome, timing, bytes and characters; linked to a request only when proven |
+| Provider limit observation | A usage-limit record as the source wrote it: native limit name (Codex `rate_limits.primary` or `secondary`, Claude `quotaLimits` `rateLimitType`), window length when recorded, reset time, `used_percent` or status, observation time, owning thread or request when proven, and evidence; native field names and values are kept verbatim |
 | Provider charge | Cost or receipt recorded by a tested source, with currency, period or request link, account and evidence; never derived from list prices |
 | Resource observation | Reserved, with no current source: CPU seconds, RSS, I/O or network, each with unit, scope, interval, collector and evidence |
 | Annotation | Labels or review findings with target IDs, author, method and version, kept separate from measured facts |
