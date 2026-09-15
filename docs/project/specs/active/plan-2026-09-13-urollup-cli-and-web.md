@@ -36,8 +36,8 @@ None of these documents contains private session data.
 
 | Phase | Delivers | Design sections implemented |
 | --- | --- | --- |
-| Phase 1: accounting core and useful uncached CLI (milestones 0.1–0.5) | Claude Code and Codex adapters for persistent and captured-stream dialects, the reconciled ledger, accounting, prices, summaries, bundles, the capture store and the Phase 1 CLI | [§2](../../../urollup-design.md#2-sources-and-capture-layer) without Pi dialects or cache reads; [§3](../../../urollup-design.md#3-ledger-and-identity-layer) with observed purpose only; [§4.1](../../../urollup-design.md#41-measure-contracts)–[§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles) and [§4.5](../../../urollup-design.md#45-price-table), plus provider limit observations; [§5](../../../urollup-design.md#5-artifact-layer) without database input; [§6.1](../../../urollup-design.md#61-workflows-and-session-selection)–[§6.6](../../../urollup-design.md#66-report-content-and-examples) without Phase 2 commands; [§8.1](../../../urollup-design.md#81-workspace-and-crate-structure)–[§8.2](../../../urollup-design.md#82-engineering-conventions) and the [uncached engine](../../../urollup-design.md#uncached-engine) |
-| Phase 2: web UI, workflow reports and broader evidence | Capture cache reads, `serve`, the reporting skill, `compare`, `check`, the `windows` report, Pi adapters, and configured purpose with annotation sets | [§2.5](../../../urollup-design.md#25-capture-store-and-cache) cache reads; [§7](../../../urollup-design.md#7-serving-layer-optional); [§6.7](../../../urollup-design.md#67-reporting-skill-and-cloud-workflow); [§6.3](../../../urollup-design.md#63-commands) Phase 2 commands; [§4.4](../../../urollup-design.md#44-usage-windows); [§2.1](../../../urollup-design.md#21-dialects-and-discovery) and [§6.2](../../../urollup-design.md#62-current-session-detection) for Pi; [§3.5](../../../urollup-design.md#35-purpose-and-annotations) |
+| Phase 1: accounting core and useful uncached CLI (milestones 0.1–0.5) | Claude Code and Codex adapters for persistent and captured-stream dialects, the reconciled ledger, accounting, prices, summaries, bundles, the capture store and the Phase 1 CLI | [§2](../../../urollup-design.md#2-sources-and-capture-layer) without Pi dialects or cache reads; [§3](../../../urollup-design.md#3-ledger-and-identity-layer) with observed purpose only; [§4.1](../../../urollup-design.md#41-measure-contracts)–[§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles) and [§4.5](../../../urollup-design.md#45-price-table), plus provider limit observations; [§5](../../../urollup-design.md#5-artifact-layer) without database input; [§6.1](../../../urollup-design.md#61-workflows-and-session-selection)–[§6.6](../../../urollup-design.md#66-report-content-and-examples) without Phase 2 commands, and the [§6.8](../../../urollup-design.md#68-status-line) session segment if confirmed; [§8.1](../../../urollup-design.md#81-workspace-and-crate-structure)–[§8.2](../../../urollup-design.md#82-engineering-conventions) and the [uncached engine](../../../urollup-design.md#uncached-engine) |
+| Phase 2: web UI, workflow reports and broader evidence | Capture cache reads, `serve`, the reporting skill, `compare`, `check`, the `windows` report, Pi adapters, and configured purpose with annotation sets | [§2.5](../../../urollup-design.md#25-capture-store-and-cache) cache reads; [§7](../../../urollup-design.md#7-serving-layer-optional); [§6.7](../../../urollup-design.md#67-reporting-skill-and-cloud-workflow); [§6.3](../../../urollup-design.md#63-commands) Phase 2 commands; [§4.4](../../../urollup-design.md#44-usage-windows); [§2.1](../../../urollup-design.md#21-dialects-and-discovery) and [§6.2](../../../urollup-design.md#62-current-session-detection) for Pi; [§3.5](../../../urollup-design.md#35-purpose-and-annotations); the [§6.8](../../../urollup-design.md#68-status-line) today segment if confirmed |
 | Phase 3: idempotent persistent cache | The ledger and query cache, and urollup’s own store as input | [Ledger and query cache](../../../urollup-design.md#ledger-and-query-cache-later); [§5.1](../../../urollup-design.md#51-portable-inputs-and-artifacts) database input |
 
 Items the design marks Later without a phase, such as the
@@ -56,7 +56,7 @@ The capture store lands only after the uncached engine is the correctness refere
 
 #### Milestone 0.1: Uncached Claude Code and Codex reports
 
-- [ ] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
+- [x] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
   pin, lint and format configuration, supply-chain policy, `make check` and `make fix`,
   the npm dev project for tryscript, and the CI jobs those gates need; prove each gate
   fails on a committed violation
@@ -93,6 +93,12 @@ The capture store lands only after the uncached engine is the correctness refere
   [§6.5](../../../urollup-design.md#65-exit-codes),
   [§4.1](../../../urollup-design.md#41-measure-contracts),
   [§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles)).
+- [ ] Add the [ccusage reconciliation harness](#ccusage-reconciliation-harness) for
+  token totals: pinned ccusage, per-day and per-session token comparison on the
+  `claude-project` and `codex-rollout` fixtures in CI, the explained-differences ledger,
+  and the privacy-tested local aggregate diff script
+  ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
+  [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
 
 #### Milestone 0.2: Contracts, summaries, bundles and merge
 
@@ -129,6 +135,11 @@ The capture store lands only after the uncached engine is the correctness refere
 - [ ] Add the reviewed price table and its `PriceTable` contract, `--prices` and
   config-directory overrides, staleness diagnostics, `--require-priced` and golden
   repricing tests ([§4.5](../../../urollup-design.md#45-price-table)).
+- [ ] Extend the [ccusage reconciliation harness](#ccusage-reconciliation-harness) to
+  costs: `--mode calculate` runs under shared rates, per-model cost rows, pricing ledger
+  entries, and an informational comparison with the bundled table
+  ([§4.5](../../../urollup-design.md#45-price-table),
+  [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
 
 #### Milestone 0.5: Full Phase 1 surface, benchmarks and parity
 
@@ -156,9 +167,19 @@ The capture store lands only after the uncached engine is the correctness refere
   ([performance targets](#performance-targets),
   [Decision 17](../../../urollup-design.md#decision-17-request-index-on-by-default)).
 - [ ] Establish the feature matrix against pinned ccusage and agentfdr, explaining
-  disagreements from source records rather than treating either as an oracle
+  disagreements from source records rather than treating either as an oracle: extend the
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness) to every shared use
+  case and record measured status in the design’s coverage table
   ([§1.5](../../../urollup-design.md#15-non-goals),
-  [existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations)).
+  [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
+  [existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations),
+  [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
+- [ ] If the candidates are confirmed, add the `statusline` session segment and the
+  report presentation options: responsive and `--compact` tables, `--color`,
+  `--no-cost`, `--last` and the pooled cache-read share
+  ([§6.8](../../../urollup-design.md#68-status-line),
+  [statusline command](../../../urollup-design.md#statusline-command),
+  [report presentation](../../../urollup-design.md#report-presentation)).
 
 ### Phase 2: Web UI, workflow reports and broader evidence
 
@@ -179,9 +200,13 @@ The capture store lands only after the uncached engine is the correctness refere
   re-export; document unsupported environments
   ([§6.7](../../../urollup-design.md#67-reporting-skill-and-cloud-workflow)).
 - [ ] Validate the `pi-session` and `pi-events` adapters with Pi `--current` detection,
-  and imported multi-account and cloud-export fixtures, individually
+  and imported multi-account and cloud-export fixtures, individually; add `ccusage pi`
+  cases to the [ccusage reconciliation harness](#ccusage-reconciliation-harness)
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
   [§6.2](../../../urollup-design.md#62-current-session-detection)).
+- [ ] If the [statusline command](../../../urollup-design.md#statusline-command) is
+  confirmed, add its today segment once capture cache reads meet its latency gate
+  ([§6.8](../../../urollup-design.md#68-status-line)).
 - [ ] Add configured purpose rules and `--annotation-set` imports with provenance;
   semantic review stays downstream of accounting
   ([§3.5](../../../urollup-design.md#35-purpose-and-annotations)).
@@ -215,6 +240,7 @@ Each area tests the rules in these design sections:
 | Capture and privacy | [§2.4](../../../urollup-design.md#24-capture-and-export-strip-policies), [§2.5](../../../urollup-design.md#25-capture-store-and-cache), [§5.5](../../../urollup-design.md#55-redaction) |
 | Surfaces | [§6.2](../../../urollup-design.md#62-current-session-detection), [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams), [§6.5](../../../urollup-design.md#65-exit-codes), [§7.2](../../../urollup-design.md#72-web-ui) |
 | Web security | [§7.3](../../../urollup-design.md#73-security-controls) |
+| Parity | [§1.5](../../../urollup-design.md#15-non-goals), [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage) |
 
 - **Accounting:** golden fixtures and conservation and property tests cover streaming
   updates, synthetic messages, repeated imports, request IDs spanning files, forked
@@ -278,6 +304,161 @@ Each area tests the rules in these design sections:
   Evidence tests cover unknown IDs, out-of-extent or overflowing offsets, path-like and
   percent-encoded IDs, changed files and the byte cap, and a browser test confirms a
   second local origin cannot read responses and evidence HTML renders inert.
+- **Parity:** the [ccusage reconciliation harness](#ccusage-reconciliation-harness) runs
+  pinned ccusage and urollup on the same inputs and fails on any difference that the
+  explained-differences ledger does not cite.
+
+### ccusage reconciliation harness
+
+urollup must roll up usage at least as effectively as ccusage, so a side-by-side harness
+runs a pinned ccusage and urollup on the same inputs and compares their results.
+ccusage is a comparator, not an oracle: every known disagreement is a ledger entry that
+cites its source, and any other difference fails.
+The research brief’s
+[ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
+gives the release, command paths and output fields compared, and the design’s
+[ccusage use-case coverage](../../../urollup-design.md#106-ccusage-use-case-coverage)
+lists the use cases the harness measures.
+
+- **Layout:** the harness lives in `tests/parity/`. Its Python programs are unit-tested
+  standard-library scripts run through `uv --config-file uv.toml run --frozen`, like the
+  benchmark harness, and read TOML with `tomllib`. `make parity` runs the fixture cases
+  and `make parity-local` the local diff.
+  - `ccusage/`: an npm project that pins ccusage, with its lockfile
+  - `cases.toml`: each case’s fixture set, urollup command, ccusage command path, join
+    keys, urollup scope and compared metrics
+  - `ledger.toml`: the explained-differences ledger
+  - `compare.py`: the comparator
+  - `local_diff.py`: the local aggregate diff
+  - `test_*.py`: standard-library `unittest` tests, which pytest also collects,
+    including the privacy sentinel test
+- **Pinned ccusage:**
+  - ccusage 20.0.20, published on 2026-08-15 and past the 14-day cool-off, is an exact
+    `devDependencies` entry in `tests/parity/ccusage/package.json`, a separate npm
+    project, so only parity jobs install it.
+  - Its committed lockfile records the integrity of the launcher and of each native
+    platform package. The platform packages are exact-version optional dependencies with
+    no install scripts, so `npm ci --ignore-scripts` followed by `npm audit signatures`
+    installs a runnable binary, and the supply-chain validator checks this lockfile like
+    the root npm project’s.
+  - The comparator runs the platform binary from `node_modules/@ccusage/` directly and
+    requires `--version` to print the pinned version.
+  - Runs never use `npx`, `bunx`, `pnpm dlx`, `nix run` or `@latest`. If no platform
+    package fits a runner, the fallback is a `cargo build --locked` of the release tag’s
+    commit, with the same version check.
+  - Updating the pin is a pull request that moves to the latest release past the
+    cool-off, reruns every case and retires the ledger entries that stop matching.
+- **Isolated, deterministic runs:**
+  - Both tools read a temporary copy of the same fixture roots.
+    `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` point at an empty directory, and
+    `CLAUDE_CONFIG_DIR` and `CODEX_HOME` point at the copy.
+    The working directory has no `.ccusage/` folder, so neither tool sees other logs or
+    configuration.
+  - urollup discovers the same roots through those native variables, and from milestone
+    0.3 it runs with `--no-capture`.
+  - ccusage always runs with `--offline` and `--json`, and costs use `--mode calculate`.
+    `NO_COLOR=1` and `LOG_LEVEL=0` are set.
+  - Every case sets the same `--timezone` on both sides: `UTC`, plus
+    `America/Los_Angeles` for DST fixtures.
+    Weekly cases set the week start explicitly on both sides.
+  - Interval cases map ccusage’s inclusive `--until` date to urollup’s half-open bound.
+  - Cases use per-agent command paths such as `ccusage claude daily` and
+    `ccusage codex session`. The unified `ccusage daily` is a separate case.
+  - The report records each command line, tool version and exit code, and an expected
+    ccusage failure is itself a ledger entry.
+- **Comparison:**
+  - **Normalized rows:** the comparator normalizes both JSON outputs into rows keyed by
+    case, agent, period or top-level session, and model.
+    Each row carries uncached input, output, cache writes, cache reads and total tokens,
+    plus reasoning tokens for Codex.
+  - **Field mapping:** fields map per agent: ccusage `inputTokens` is uncached input for
+    Claude Code and Codex, and Codex `cacheCreationTokens` is always 0 at 20.0.20.
+  - **Session join:** sessions join on native session ID, taken from ccusage’s
+    `sessionId` or from the thread ID in a Codex `sessionFile`. Each case declares the
+    urollup `--scope` that matches the ccusage path, so a difference in subagent
+    attribution becomes a ledger entry, not a tolerance.
+  - **Model rows:** per-model rows compare ccusage `modelBreakdowns`, or Codex `models`,
+    with urollup `--group-by model`.
+  - **One-sided rows:** a row present in only one tool is a difference.
+  - **Tokens:** token counts compare exactly on fixtures, and every nonzero delta needs
+    a ledger entry that states that exact delta.
+  - **Shared rates:** from milestone 0.4, costs compare under shared rates.
+    A generator writes a `urollup:PriceTable/v1` override for the fixture models from
+    the LiteLLM snapshot that ccusage 20.0.20 embeds (commit `1a183ef`), and urollup
+    reads it with `--prices`, so rate sources cannot differ.
+  - **Cost tolerance:** ccusage’s `f64` amounts must match urollup’s exact decimals
+    within USD 0.000001 per row.
+  - **Bundled-table run:** a second run with urollup’s bundled table reports rate-source
+    differences for information and never fails.
+- **Explained-differences ledger:**
+  - **Entry fields:** each entry in `ledger.toml` has an ID and the case, key and metric
+    patterns it explains.
+    It also records the expected delta, which is exact for fixtures and a sign and bound
+    for the local corpus, and its cause: `ccusage-bug`, `dedupe`, `semantics`, `pricing`
+    or `unsupported`. Every entry cites the research brief or a pinned ccusage source
+    line, links the urollup design section, and states a retirement condition, such as
+    the ccusage commit that fixes it.
+  - **Failures:** the comparator fails when a difference matches no entry, when an entry
+    matches no difference, when two entries match one difference, or when an entry lacks
+    a citation. A stale entry fails too, so a ccusage fix retires its entry at the next
+    pin update.
+  - **Seed entries:** the ledger starts from the brief’s documented behaviors:
+
+| Cause | ccusage 20.0.20 behavior | Source | First case |
+| --- | --- | --- | --- |
+| `ccusage-bug` | A Claude Code record whose line holds a nested null field loses its usage | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.1 |
+| `ccusage-bug` | `daily` double-counts a sidechain replay that precedes its parent; fixed on `main` in `a4b8420` | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.1 |
+| `dedupe` | Codex `daily`, `session` and `--since` runs deduplicate with different keys | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.1 |
+| `ccusage-bug` | Timestamps without 0 or 3 fractional digits are skipped for Claude Code and abort a Codex report | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.1 |
+| `unsupported` | `.jsonl.zst` rollouts, `token_usage_record` and `subagent_history_start_ordinal` are not read | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.1 |
+| `semantics` | Codex cache creation tokens are always 0; fixed on `main` in `15b3bef` | [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory) | 0.1 |
+| `semantics` | Session reports filter by last-activity date and drop zero-token sessions; `<synthetic>` and advisor models are listed differently | [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory) | 0.1 |
+| `pricing` | Fuzzy model matching, marginal per-category long-context rates, unpriced tokens as cost 0, and Codex tiers from `config.toml` | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.4 |
+| `ccusage-bug` | Pi fork replays count twice; fixed on `main` in `809eeb6` | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | Phase 2 |
+
+- **Excluded from comparison:** `blocks` is never compared
+  ([Decision 10](../../../urollup-design.md#decision-10-recorded-usage-windows)), and
+  neither is `--mode auto` or `display`, which mix recorded `costUSD` with calculated
+  cost. Other agents’ usage appears only in local unified runs, as `unsupported` entries.
+- **Local corpus:**
+  - **Runs:** the maintainer runs `local_diff.py` with `make parity-local`, by hand or
+    from a local scheduler, never in CI. It runs both tools on the default roots with
+    the same timezone and per-agent ccusage paths.
+    The interval ends at the start of the current local day, so sessions still being
+    written cannot move totals between the two runs, and urollup runs with
+    `--no-capture`, so usage retained from deleted logs is not counted on one side only.
+  - **Output:** rows are joined in memory, and the script writes only aggregates: tool
+    versions, platform, timezone and interval, per-metric totals for each tool, per-day
+    and per-model deltas, counts of matched and one-sided sessions, a histogram of
+    per-session relative deltas, and the delta each ledger entry explains with the
+    unexplained residual.
+  - **Explained amounts:** until milestone 0.5, local entries give a sign and bound.
+    Once `requests` exists, each local ledger entry names the urollup diagnostic or
+    request property that identifies the affected requests, such as a nested null field
+    or a compressed rollout, and the script sums those requests’ tokens in memory.
+  - **Privacy:** the script never writes or prints content, paths, project names, or
+    session, request or thread IDs.
+    A model name appears only when it matches urollup’s price table or the pinned
+    LiteLLM snapshot, and other models count as `other`. A CI test runs the script on a
+    sentinel fixture whose paths, project names, IDs, prompt text and custom model names
+    carry unique markers, and fails if any marker reaches stdout, stderr or the output
+    file.
+  - **Records:** after review, the maintainer commits one record per urollup release to
+    `bench/results/parity/`, beside the benchmark records, since both are
+    reference-machine aggregates of the consented corpus.
+    An unexplained residual above 0.1% of a metric’s daily total, a proposed threshold
+    revised from recorded results, gets a bead.
+- **CI results:** CI uploads each fixture run’s per-case report as a job artifact;
+  fixture results are regenerated rather than committed.
+
+The harness grows with the milestones:
+
+| Milestone | Cases | Compared |
+| --- | --- | --- |
+| 0.1 | `ccusage claude` and `ccusage codex` `daily` and `session`, with and without `--since`, plus unified `daily`, on the `claude-project` and `codex-rollout` fixtures; the local diff | Token categories per day and per session |
+| 0.4 | The same paths with `--mode calculate` under shared rates, plus `--breakdown` | Costs per day, session and model, and the informational bundled-table run |
+| 0.5 | `weekly` and `monthly`, `--instances` and `--project` against project grouping and filters, DST and interval-boundary fixtures, unified reports, and every other [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage) row with a ccusage counterpart; request-attributed explained amounts in the local diff | The full feature matrix, recorded in §10.6 |
+| Phase 2 | `ccusage pi` paths with the Pi adapters, and `statusline` if confirmed | Pi tokens and costs, and status line session cost |
 
 ### Performance targets
 
@@ -292,6 +473,7 @@ Gated commands write no capture entries
 | Small CLI report | `bench-small`, about 64 MiB | `daily` and `report --session`, end to end | Median wall time under 1 s |
 | Standard rollups | `bench-1g`, 1 GiB | `daily`, `monthly --group-by account,model,effort` and `sessions` | Median under 10 s; peak RSS under 512 MiB |
 | Resident queries | `bench-1g` loaded by `urollup serve` | Fixed UI query set over HTTP after the snapshot is ready | p95 server latency under 200 ms per query |
+| Status line, if the candidate is confirmed | A `bench-small` session with subagents | `statusline` from hook input, session segment, end to end | p95 wall time under 250 ms, within Claude Code’s 300 ms debounce |
 | Capture writes | `bench-small` and `bench-1g` | `sessions --capture --capture-idle 0`, writing zstd level 3 entries into an empty store | Recorded throughput and peak RSS, not gated |
 
 - **Corpora:** a seeded generator expands sanitized fixture templates and writes a
@@ -360,8 +542,11 @@ The design doc records every decision and open question:
 
 - **Confirmed:** 27 decisions, each with its choice, rationale, tradeoffs and date, in
   [§10.1](../../../urollup-design.md#101-design-decisions).
-- **Candidate:** 9 proposed decisions already reflected in the design, pending
-  maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions).
+- **Candidate:** 14 proposed decisions already reflected in the design, pending
+  maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions),
+  including five from the 2026-09-15
+  [ccusage use-case coverage](../../../urollup-design.md#106-ccusage-use-case-coverage)
+  review.
 - **Queued:** 10 review decisions raised by the squares and metaproc code reviews,
   walked through one at a time in bead `uro-gxen`, in
   [§9.2](../../../urollup-design.md#92-queued-review-decisions).
@@ -371,10 +556,13 @@ The design doc records every decision and open question:
 ## References
 
 - [urollup design specification](../../../urollup-design.md)
-- [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md)
+- [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md),
+  including its
+  [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
 - [Rust CLI engineering baseline](../../research/research-2026-09-13-rust-cli-engineering-baseline.md)
 - [squares code review](../../research/research-2026-09-14-squares-code-review.md) and
   [metaproc and qm review](../../research/research-2026-09-14-metaproc-code-review.md)
+- [Agent tool source reviews](../../research/research-2026-09-14-agent-tool-source-reviews.md)
 - [Log throughput spike](../../../../explorations/log-throughput/README.md)
 - [fdu](https://github.com/jlevy/fdu) and
   [flowmark-rs](https://github.com/jlevy/flowmark-rs), the reference Rust repositories
