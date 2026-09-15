@@ -117,7 +117,12 @@ commits.
   and are removed after every attempt, keeping only files an adapter declares
   diagnostic, such as Claude’s `claude-code-debug.log`
   ([`metaproc/docs/arch/arch-authentication.md:1076-1107`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/docs/arch/arch-authentication.md#L1076-L1107)).
-  Any transcript or rollout written under a slot is lost.
+  Any transcript or rollout written under a slot was lost.
+  *(Fixed 2026-09-15.)* [metaproc#82](https://github.com/jlevy/metaproc/pull/82)
+  (`32cde09`, closing [#81](https://github.com/jlevy/metaproc/issues/81)) copies pooled
+  Codex rollouts, and Claude transcripts when persistence is on, to
+  `<run>/.logs/native/<step>[/<item>]/<session-stem>.codex-sessions/` and
+  `.claude-projects/` before teardown, never copying credential files.
 - **Cloud runs:** run state and logs live on shared NFS under
   `/mnt/filestore/runs/<run_id>/`, container homes are ephemeral, and archiving is an
   operator command with no documented retention policy

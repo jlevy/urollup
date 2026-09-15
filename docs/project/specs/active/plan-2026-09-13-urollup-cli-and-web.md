@@ -317,6 +317,11 @@ gives each dialect’s fields, counters and linkage.
 - Project identity comes from recorded `cwd` fields, never from decoding Claude Code or
   Pi project directory names, which encode paths lossily; worktrees map to a configured
   logical project and keep their original `cwd`.
+- A metaproc run directory holds captured streams under `.logs/tasks/` and, from
+  metaproc `32cde09`, preserved native logs under `.logs/native/` (Codex
+  `<session-stem>.codex-sessions/` rollouts and Claude `<session-stem>.claude-projects/`
+  transcripts). Both are discovered by content under `--source`, and a preserved rollout
+  owns the usage that its `codex-exec` capture only checks.
 - Codex names rollout files and date directories in local time, adds files to a thread
   on revert or paginated fork, and renames files into flat `archived_sessions/` on
   archive, so times come from records and Codex sources are identified by thread and
