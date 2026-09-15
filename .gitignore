@@ -10,3 +10,6 @@ target/
 
 # Node-based development tools (tryscript, taplo)
 node_modules/
+
+# Agent worktrees are nested working copies with their own gates (ci-and-gates-rules).
+.claude/worktrees/

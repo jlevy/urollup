@@ -1,0 +1,9 @@
+
+#[cfg(test)]
+mod gate_probe_tests {
+    #[test]
+    fn gate_probe_fails() {
+        let observed = super::VERSION.len();
+        assert_eq!(observed, 0, "gate probe: this test must fail");
+    }
+}

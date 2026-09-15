@@ -1,0 +1,4 @@
+# Generated agent skills have one owner, the generator that wrote them (`tbd setup`,
+# `softschema skill --install`); regenerate them rather than reformatting them.
+/.agents/skills/
+/.claude/skills/
