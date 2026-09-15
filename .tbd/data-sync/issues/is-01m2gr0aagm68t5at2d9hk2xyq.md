@@ -5,7 +5,7 @@ title: Walk through design decisions from code reviews
 kind: task
 status: open
 priority: 1
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - planning
@@ -14,9 +14,9 @@ dependencies:
     target: is-01m2f0snm56a9zh7xm2zh4hw13
 parent_id: is-01m2ew7x8t5sh3h5997e0rz0t2
 created_at: 2026-09-14T19:58:46.095Z
-updated_at: 2026-09-15T00:17:28.932Z
+updated_at: 2026-09-15T20:15:21.540Z
 ---
-Walk the maintainer through the design decisions raised by the source and code reviews one at a time, recording each confirmed decision in the plan and data contracts and creating or updating beads.
+Walk the maintainer through the design decisions raised by the source and code reviews one at a time, recording each confirmed decision in the design doc (docs/urollup-design.md §10.1 Design Decisions, with the queue in §9.2) and creating or updating beads.
 
 ## Notes
 
