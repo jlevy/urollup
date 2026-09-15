@@ -16,7 +16,7 @@ under review.
 
 | Doc | Purpose |
 | --- | --- |
-| [Design specification](docs/urollup-design.md) | Entry point: goals, sources and capture, ledger and identities, accounting, summary and bundle formats, CLI, web UI, decisions and open questions |
+| [Design specification](docs/urollup-design.md) | Entry point: goals, sources and capture, ledger and identities, accounting, summary and bundle formats, CLI, web UI, open and confirmed decisions, glossary and flag index |
 | [Plan spec](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Phases and milestones, testing strategy and performance targets, rollout |
 | [Portable agent usage research](docs/project/research/research-2026-09-13-portable-agent-usage.md) | Existing tools, log dialects, common workflows, accounting pitfalls, merge rationale |
 | [Rust CLI engineering baseline](docs/project/research/research-2026-09-13-rust-cli-engineering-baseline.md) | Project setup practices drawn from tbd guidelines, fdu and flowmark-rs |

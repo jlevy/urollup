@@ -3,7 +3,7 @@ title: Rust CLI Engineering Baseline
 description: Practice-by-practice comparison of the tbd Rust guidelines, fdu and flowmark-rs, with the repository, gate, release and dev-tooling baseline adopted for urollup.
 date: 2026-09-13
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Complete for scaffolding; channel, target and tooling decisions listed under Recommendations await confirmation
+status: Complete for scaffolding; the decisions marked under Recommendations were confirmed on 2026-09-13 and 2026-09-14 as urollup design Decisions 2, 14, 23 and 27
 ---
 # Research: Rust CLI Engineering Baseline
 
@@ -40,7 +40,9 @@ tooling, agent skill packaging and agent-facing docs.
 
 Excluded: accounting design, the bundle and summary formats, the exact contract check
 commands, pricing, web security and performance targets.
-The plan owns those.
+The plan owned those when this brief was written.
+*(Updated 2026-09-15: the [urollup design](../../urollup-design.md) now owns them,
+except performance targets, which stay in the plan.)*
 
 Sources, read on 2026-09-13:
 
@@ -154,7 +156,7 @@ publishes artifact attestations.
 | Practice | Guidelines | fdu | flowmark-rs | urollup baseline |
 | --- | --- | --- | --- | --- |
 | Cool-off | 14-day floor; exceptions on record; no unpinned runners | `supply-chain-policy.json` with a tested validator for crate publication dates, npm integrity, PyPI hashes, action SHAs and toolchain manifests; first-party packages exempt by identity | Dependabot for Cargo and actions with no cooldown | fdu’s policy file and validator |
-| uv | `UV_EXCLUDE_NEWER="14 days"` | Each `uv.toml` sets `exclude-newer = "14 days"` and `[exclude-newer-package] softschema = "2099-12-31"`; a preflight requires uv 0.12.1, since older uv cannot parse relative durations | `python/pyproject.toml` with ranged dependencies and no cool-off | Project `[tool.uv]` with exemptions and the same preflight |
+| uv | `UV_EXCLUDE_NEWER="14 days"` | Each `uv.toml` sets `exclude-newer = "14 days"` and `[exclude-newer-package] softschema = "2099-12-31"`; a preflight requires uv 0.12.1, since older uv cannot parse relative durations | `python/pyproject.toml` with ranged dependencies and no cool-off | Project `[tool.uv]` with exemptions and the same preflight *(Updated 2026-09-15: a root `uv.toml`, always passed as `uv --config-file uv.toml`)* |
 | cargo-deny | Advisories, licenses, sources, bans; `unused-allowed-license = "allow"` | No ignores; commented policy (`fdu/deny.toml`) | Three advisory ignores without tracker or removal condition (`flowmark-rs/deny.toml`) | fdu; any ignore names a bead and a removal condition |
 | npm | Scripts disabled, lockfile, audit | `.npmrc` `ignore-scripts` and `save-exact`; `npm ci --ignore-scripts`; `npm audit signatures` | `npm install -g tryscript@0.1.7` in CI | fdu |
 | Schema tooling | Generated files have one owner and a drift check | `softschema==0.6.0` in a dev group; `make perf-schema-check` runs `softschema compile … --check` | None | softschema 0.8.1 with a drift gate (see Recommendations) |
@@ -182,8 +184,9 @@ publishes artifact attestations.
   a bundled docs copy inside the package and checks it against the upstream file.
 - **A shared exit code hides a failure class.** fdu returns 2 for both clap usage errors
   and partial scans, so automation cannot tell a bad invocation from missing coverage.
-  The plan separates runtime failure, invalid invocation, unmet coverage and exceeded
-  thresholds, so urollup gives each its own code.
+  The [design](../../urollup-design.md#65-exit-codes) separates runtime failure, invalid
+  invocation, unmet coverage and exceeded thresholds, so urollup gives each its own
+  code.
 - **Pinned digests cannot come from the release they verify.** A `SHA256SUMS` downloaded
   beside an archive detects corruption, not a replaced release.
   fdu’s `supply-chain-policy.json` records reviewed per-asset digests for the GitHub CLI
@@ -253,7 +256,7 @@ urollup/
 │   ├── corpora/               # committed manifests; generated corpora are gitignored
 │   └── results/               # reference-laptop records committed for each release
 ├── scripts/                   # tested gate and release programs
-├── pyproject.toml  uv.lock    # dev-only uv project: softschema, flowmark-rs
+├── pyproject.toml  uv.toml  uv.lock   # dev-only uv project: softschema, flowmark-rs
 ├── package.json  package-lock.json  .npmrc   # dev-only Node tools
 ├── supply-chain-policy.json   SUPPLY-CHAIN-SECURITY.md  SECURITY.md  CHANGELOG.md
 ├── .agents/skills/  .claude/skills/
@@ -296,7 +299,7 @@ warnings = "deny"
 
 - Deny `clippy::panic` in `urollup-core`.
 - **Decision:** Deny `clippy::arithmetic_side_effects` at module scope in token counter
-  and money modules, which enforces the plan’s checked arithmetic where it matters
+  and money modules, which enforces the design’s checked arithmetic where it matters
   without applying a restriction lint to the whole workspace.
 - Add `clippy.toml` with `allow-unwrap-in-tests` and `allow-expect-in-tests`.
 - `rustfmt.toml`: `edition = "2024"`, `max_width = 100`, `use_small_heuristics = "Max"`
@@ -412,6 +415,8 @@ be. Run counts, corpus definitions and thresholds live in the plan’s Testing S
   environment. **Decision:** defer Homebrew, npm and binstall.
   Confirm the `urollup` and `urollup-core` names are available on crates.io and PyPI
   before the first release.
+  *(Checked 2026-09-13: both names were unregistered, though not reserved; see design
+  [Decision 1](../../urollup-design.md#decision-1-product-name).)*
 - Integrity: one `SHA256SUMS`, GitHub build-provenance attestations for every archive
   and wheel, the fdu evidence manifest, and wheel SBOM inspection.
   **Decision:** no separate GPG or minisign signature initially.
@@ -479,23 +484,32 @@ softschema = "2099-12-31"
 flowmark-rs = "2099-12-31"
 ```
 
+- *(Updated 2026-09-15: the cool-off and first-party exemptions now live in a root
+  `uv.toml` that every command passes as `uv --config-file uv.toml`, so user-level uv
+  configuration never changes resolution, and `pyproject.toml` keeps only
+  `[tool.uv] package = false` beside the dev group above.)*
 - Keep fdu’s `uv` version preflight so an old uv fails with a version message rather
   than a TOML date error.
 
 ### softschema Contract Toolchain
 
 - **Authoring:** Pydantic contract models live in `contracts/` and run only through the
-  root uv project: `uv run --frozen softschema …`. softschema is a dev dependency, never
-  a runtime or build dependency.
+  root uv project: `uv --config-file uv.toml run --frozen softschema …`. softschema is a
+  dev dependency, never a runtime or build dependency.
 - **Output:** compiled schemas are committed under `crates/urollup-core/schemas/`, so
   `include_str!` works from a crates.io build.
   The plan decides how the core validates against them; any Rust validator crate goes
   through the same dependency review as other runtime dependencies.
+  *(Decided 2026-09-15: typed serde structs with `deny_unknown_fields` validate every
+  read and write, and the compiled JSON Schema runs only in `urollup validate` and
+  tests, so the read path needs no validator crate; see
+  [design §5.7](../../urollup-design.md#57-contract-authoring-and-validation).)*
 - **Gate:** `make contracts-check` is part of `make check`, and a `contracts` CI job
   runs it with a SHA-pinned `setup-uv` at the pinned uv version and `uv sync --locked`.
   It fails when recompiling changes a committed schema and when a fixture or golden gets
   the wrong verdict. A committed stale-schema probe proves the gate fails.
   The plan owns the exact commands.
+  *(Updated 2026-09-15: design §5.7 now holds them.)*
 - **Gate program:** Put fixture loops and expected-failure checks in a tested script
   that `make contracts-check` calls, not in Makefile shell.
   An inline `! softschema validate "$f"` passes when uv cannot find softschema or a glob
@@ -508,13 +522,20 @@ flowmark-rs = "2099-12-31"
   `.agents/skills/softschema/SKILL.md` and `.claude/skills/softschema/SKILL.md`.
   Regenerate them when the pin changes rather than editing them.
   Their zero-install fallback resolves `softschema@latest`, so `AGENTS.md` should route
-  agents in this repository to `uv run softschema`.
+  agents in this repository to the pinned
+  `uv --config-file uv.toml run --frozen softschema`, as it now does.
 
 ## Next Steps
 
 - [ ] Scaffold the repository to this baseline (the plan’s first Phase 1 task).
-- [ ] Confirm the decisions marked above.
-- [ ] Check crates.io and PyPI name availability for `urollup` and `urollup-core`.
+- [x] Confirm the decisions marked above.
+  *(Confirmed 2026-09-13 and 2026-09-14 as design Decisions
+  [2](../../urollup-design.md#decision-2-mit-license),
+  [14](../../urollup-design.md#decision-14-exit-codes),
+  [23](../../urollup-design.md#decision-23-engineering-baseline) and
+  [27](../../urollup-design.md#decision-27-release-scope).)*
+- [x] Check crates.io and PyPI name availability for `urollup` and `urollup-core`.
+  *(Both were unregistered on 2026-09-13.)*
 - [ ] Configure crates.io and PyPI trusted publishers and the protected `release`
   environment before the first release.
 - [ ] Measure the musl release build on a representative corpus before choosing an

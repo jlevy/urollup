@@ -3,7 +3,7 @@ title: metaproc and qm Review for urollup
 description: What urollup can port, reuse or learn from metaproc's agent adapters, captured-stream parsing, usage and quota handling, design documents and engineering gates, and from the qm multiplayer agent harness, reconciled with the squares review and the log dialect survey.
 author: Joshua Levy (github.com/jlevy) with LLM assistance
 date: 2026-09-14
-status: Complete for review and reconciled with Codex and Pi source facts (uro-ly32); some claude-stream details still need verification
+status: Complete for review and reconciled with Codex and Pi source facts (uro-ly32); some claude-stream details still need verification; recommendations are reflected in the urollup design or queued as review decisions in bead uro-gxen
 ---
 # Research: metaproc and qm Review for urollup
 
@@ -39,7 +39,8 @@ Three facts frame the recommendations:
   ([`metaproc/LICENSE:1-2`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/LICENSE#L1-L2)),
   but it is the maintainer’s own repository, so its code, fixtures, tests and documents
   can be ported into MIT urollup, recording the source repository (`jlevy/metaproc`) and
-  commit, per the plan’s confirmed code reuse decision.
+  commit, per the design’s confirmed
+  [code reuse decision](../../urollup-design.md#decision-3-code-reuse-and-licensing).
   qm is third-party MIT code
   ([`qm/LICENSE:1-3`](https://github.com/yc-software/qm/blob/78dd4cc3a7e1e6b1d538f3dfdd7ef127e567db76/LICENSE#L1-L3)),
   so ported qm code also keeps its license notice.
@@ -147,10 +148,11 @@ commits.
 - **Inherited variables:** metaproc removes only `CLAUDECODE` and
   `CLAUDE_CODE_ENTRYPOINT` from child environments
   ([`metaproc/src/metaproc/adapters/claude_code.py:623-639`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/claude_code.py#L623-L639)),
-  so other agent variables reach nested agents, as the plan’s ambiguity rule for
-  `--current` assumes.
-  Codex narrows the ambiguity for its own tools: a tool process gets its own thread’s
-  `CODEX_THREAD_ID` (a subagent’s, inside a subagent) and the root `CODEX_SESSION_ID`
+  so other agent variables reach nested agents, as the design’s
+  [ambiguity rule](../../urollup-design.md#62-current-session-detection) for `--current`
+  assumes. Codex narrows the ambiguity for its own tools: a tool process gets its own
+  thread’s `CODEX_THREAD_ID` (a subagent’s, inside a subagent) and the root
+  `CODEX_SESSION_ID`
   ([`codex-rs/core/src/unified_exec/process_manager.rs:1370-1377`](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/unified_exec/process_manager.rs#L1370-L1377),
   [`codex-rs/core/src/exec_env.rs:40-50`](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/core/src/exec_env.rs#L40-L50)).
   Codex hooks receive no `CODEX_*` identity variables of their own, only the Codex
@@ -983,6 +985,10 @@ Reuse modes: **port code** (translate the implementation into Rust, recording th
 commit), **port tests** (rewrite the cases as urollup fixtures and goldens), **reuse
 fixtures** (copy data after scrubbing), **share format** (recognize or adopt a format),
 **learn only** (a lesson or pitfall).
+*(Updated 2026-09-15: the plan and data contract sections named in the fourth column,
+such as “contracts: Capture Cache”, are now sections of the
+[urollup design](../../urollup-design.md), such as
+[§2.5](../../urollup-design.md#25-capture-store-and-cache).)*
 
 | Item | Where | Reuse mode | urollup bead or plan section | Notes and risks |
 | --- | --- | --- | --- | --- |
@@ -1081,6 +1087,16 @@ Items marked *(Updated)* were revised on 2026-09-14 against Codex and Pi source;
 [squares review](research-2026-09-14-squares-code-review.md) recommends the rollout
 parsing, replay, `token_count` and time-measure changes cited here by number.
 
+*(Updated 2026-09-15: the [urollup design](../../urollup-design.md) replaced the plan
+sections and the data contracts document that these changes target.
+P2 to P4, C2, C4, C5 and C7 are reflected there, and P1, P7, C6 and C8 in part.
+P1’s capture metadata, P5, C1 and C3 are queued review decisions in
+[design §9.2](../../urollup-design.md#92-queued-review-decisions), bead `uro-gxen`. P6
+is settled by [Decision 5](../../urollup-design.md#decision-5-qm-out-of-scope) and the
+licensing half of P9 by
+[Decision 3](../../urollup-design.md#decision-3-code-reuse-and-licensing); P8 and C9 are
+not yet reflected.)*
+
 ### Plan Changes
 
 - **P1 (Sources and snapshot boundary):** name harness run directories as a captured
@@ -1124,10 +1140,12 @@ parsing, replay, `token_count` and time-measure changes cited here by number.
 - **P8 (Testing Strategy, benchmarks):** record macOS peak `phys_footprint` beside
   `getrusage` peak RSS, report cold and warm runs as distributions, and add a scale test
   that catches quadratic reconciliation.
-- **P9 (Project setup):** *(Updated: the plan’s code reuse decision now covers the
-  licensing half.)* Record the source repository and commit for every ported file, test
-  or fixture in a provenance notice, add the license notice for third-party code such as
-  qm, and scrub fixtures of timestamps, IDs and signatures before committing them.
+- **P9 (Project setup):** *(Updated: the design’s code reuse decision,
+  [Decision 3](../../urollup-design.md#decision-3-code-reuse-and-licensing), now covers
+  the licensing half.)* Record the source repository and commit for every ported file,
+  test or fixture in a provenance notice, add the license notice for third-party code
+  such as qm, and scrub fixtures of timestamps, IDs and signatures before committing
+  them.
 
 ### Data Contract Changes
 
@@ -1221,6 +1239,8 @@ parsing, replay, `token_count` and time-measure changes cited here by number.
   child threads: in source it does not, but a forked child’s total starts from its
   parent’s.
 - [ ] Review and apply the plan, contract and bead changes above.
+  *(Updated 2026-09-15: plan and contract changes are reviewed into the design or
+  queued, as noted under [Recommendations](#recommendations).)*
 - [ ] Optionally file metaproc beads for its bugs (tailer partial lines, rate-limit
   merge order and `blocked` check, null-skipping rollups, Pi zero cost, stale documents)
   and report qm’s Claude inclusion bug and UI double count upstream.

@@ -3,7 +3,7 @@ title: Portable Agent Usage Analytics
 description: Public-source background for urollup, a Rust CLI and local read-only web UI that produces mergeable token, cost and usage rollups from Claude Code, Codex and Pi session logs.
 date: 2026-09-13
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Complete for initial design and feeds the urollup plan; dialect facts and reusable code were checked against Codex, Pi, ccusage, agentfdr and Anthropic plugin source at pinned commits, while runtime behavior of source-derived facts and cloud export compatibility still need verification
+status: Complete for initial design and feeds the urollup design and plan; dialect facts and reusable code were checked against Codex, Pi, ccusage, agentfdr and Anthropic plugin source at pinned commits, while runtime behavior of source-derived facts and cloud export compatibility still need verification
 ---
 # Research: Portable Agent Usage Analytics
 
@@ -898,6 +898,10 @@ uncached engine meets the plan’s targets with prefiltered typed parsing and pe
 parallelism. Captured records should still be written by Phase 1 bundles, and the
 default-on cache can follow once the uncached engine is the correctness reference,
 unless retaining captured records beyond log deletion is wanted sooner.
+*(Decided 2026-09-15: retention was wanted sooner, so the durable capture store ships
+default-on in Phase 1, milestone 0.3, writing idle default-discovered sources, and its
+cache read path follows in Phase 2; see design
+[Decision 8](../../urollup-design.md#decision-8-capture-store-and-cache).)*
 
 ### Reusable Code and Tests
 
@@ -1020,14 +1024,17 @@ Adopt Option C:
   building reports on any adapter.
 - Ship uncached CLI reports, usage summaries and observation bundles first, then the
   read-only web UI and workflow skill, then persistent caching.
+  *(Decided 2026-09-15: the capture store also ships in Phase 1; its cache read path
+  arrives with the web UI in Phase 2, and the ledger and query cache in Phase 3.)*
 - Compute every number in the shared query engine; the web UI renders those results and
   computes no authoritative totals of its own.
 
 ## Next Steps
 
 This research is complete for initial design and feeds the
-[urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md), which owns the
-implementation phases.
+[urollup design](../../urollup-design.md), which owns the design and its decisions, and
+the [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md), which owns
+the implementation phases.
 These items still need verification:
 
 - [ ] Confirm the source-derived Codex and Pi behavior in running processes, starting

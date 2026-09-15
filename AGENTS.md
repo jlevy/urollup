@@ -43,7 +43,7 @@ read-only web UI that produces usage rollups (tokens, cost, request sizes, tools
 coding-agent session logs, per session or aggregated across sessions.
 
 The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
-decisions and open questions.
+decisions, open questions and the CLI flag index.
 Planning docs live under `docs/project/`:
 
 - `specs/active/`: the plan spec, with phases, milestones, testing and rollout.

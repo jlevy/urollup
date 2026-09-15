@@ -3,7 +3,7 @@ title: squares Code Review for urollup
 description: What urollup should port, test, share or avoid from the squares research repository's Claude Code and Codex usage rollups, session cost ledger and PR cost reporting, and what squares would need as a first urollup user.
 date: 2026-09-14
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Complete for bead uro-o53w and reconciled with Codex source facts and the metaproc review (uro-ly32); recommendations await maintainer review
+status: Complete for bead uro-o53w and reconciled with Codex source facts and the metaproc review (uro-ly32); recommendations are reflected in the urollup design or queued as review decisions in bead uro-gxen
 ---
 # Research: squares Code Review for urollup
 
@@ -80,7 +80,8 @@ Citations use `squares/<path>` with line ranges linked at the pinned commit.
 ([`squares/LICENSE:1-25`](https://github.com/jlevy/squares/blob/f2e24e07be8c94fa3ac603c3534dce7c454da99b/LICENSE#L1-L25)),
 but it is the maintainer’s own repository, so urollup may port its code, tests and
 documents freely; each ported item records the source repository (`jlevy/squares`) and
-commit, per the plan’s confirmed code reuse decision.
+commit, per the design’s confirmed
+[code reuse decision](../../urollup-design.md#decision-3-code-reuse-and-licensing).
 
 **Related reviews:** the [metaproc review](research-2026-09-14-metaproc-code-review.md)
 covers captured streams, harnesses, accounts and quotas, and holds the reconciliation
@@ -643,7 +644,13 @@ Items marked *(Updated)* were revised on 2026-09-14 against Codex source; the
 [metaproc review](research-2026-09-14-metaproc-code-review.md) recommends the
 captured-stream, account and quota changes and cites these recommendations by number.
 
-**Architecture doc, reconciliation and capture:**
+*(Updated 2026-09-15: the architecture doc and plan sections these groups target were
+replaced by the [urollup design](../../urollup-design.md).
+Recommendations 1 to 3 and 9 are reflected there, and 11, 13 and 14 in part.
+Recommendations 4 to 8, 10, 12 and 19 are queued review decisions in
+[design §9.2](../../urollup-design.md#92-queued-review-decisions), bead `uro-gxen`.)*
+
+**Architecture doc (now the design doc), reconciliation and capture:**
 
 1. *(Updated: replay facts settled by source.)* Add an ordered child-boundary rule for
    Codex child rollouts: `subagent_history_start_ordinal`; else the first
@@ -679,7 +686,7 @@ captured-stream, account and quota changes and cites these recommendations by nu
 6. Add a per-extent completeness field for open and abandoned turns at the snapshot, and
    make `--strict` treat open turns as a coverage gap.
 
-**Plan and contracts, selection and output:**
+**Plan and contracts (now the design doc), selection and output:**
 
 7. *(Updated: Codex records the branch.)* Add `branch` as an observed request property
    from Claude `gitBranch`, an observed thread property from Codex
@@ -722,7 +729,8 @@ captured-stream, account and quota changes and cites these recommendations by nu
 ## Next Steps
 
 - [ ] Maintainer review of the recommendations above, alongside the metaproc review
-  (uro-ankt).
+  (uro-ankt). *(Updated 2026-09-15: the queued recommendations continue in bead
+  `uro-gxen`, as noted under [Recommendations](#recommendations).)*
 - [x] Verify against Codex source what `info: null` token events mean and whether legacy
   subagent replays keep their parent turn IDs: at `rust-v0.154.0`, null `info` precedes
   a thread’s first recorded usage and replays keep parent turn IDs; the first release
