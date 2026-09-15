@@ -1,0 +1,6 @@
+# Python dev tooling (uv)
+.venv/
+__pycache__/
+
+# Third-party checkouts and spikes (tbd checkout-third-party-repo convention)
+attic/

@@ -1,0 +1,13 @@
+# uv settings for the development-only Python tooling. Always invoke uv with
+# `--config-file uv.toml` so user-level uv configuration never changes resolution, and the
+# lockfile is identical on every machine and in CI.
+
+# Supply-chain cool-off (tbd supply-chain-hardening): resolve only releases at least
+# 14 days old. uv 0.12.1 or newer is required to parse the relative duration.
+exclude-newer = "14 days"
+
+# First-party packages are exempt from the cool-off by identity; lockfile hashes still
+# apply.
+[exclude-newer-package]
+softschema = "2099-12-31"
+flowmark-rs = "2099-12-31"

@@ -1,0 +1,14 @@
+# Development-only Python tooling for urollup. Nothing here is a runtime or build
+# dependency of the Rust crates. Run tools with `uv --config-file uv.toml run --frozen <tool>`.
+[project]
+name = "urollup-dev"
+version = "0.0.0"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["softschema==0.8.1", "flowmark-rs==0.4.0"]
+
+[tool.uv]
+package = false
+# Resolution settings (cool-off and first-party exemptions) live in uv.toml; run uv with
+# `--config-file uv.toml`.
