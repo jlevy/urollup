@@ -3,9 +3,9 @@ type: is
 id: is-01m2f0tdzbrnzahscvp1e5ffe8
 title: Scaffold repository to the engineering baseline
 kind: task
-status: open
+status: closed
 priority: 2
-version: 9
+version: 10
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -21,7 +21,11 @@ dependencies:
     target: is-01m2keggm34ksgr8bfxr9sr7jz
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:21.546Z
-updated_at: 2026-09-15T21:10:34.343Z
+updated_at: 2026-09-15T22:02:27.739Z
+closed_at: 2026-09-15T22:02:27.738Z
+close_reason: "Scaffold landed on milestone-0.1 (081ae1c..b524f22, fix 375028d): two-crate workspace with default-on empty serve feature, Rust 1.98.0 pin and MSRV 1.85, lint floor, rustfmt/taplo/cargo-deny, supply-chain policy and validator, tryscript goldens, make check/fix, CI with four-OS tests and dependency guard, 25 gate proofs; ported from fdu afbb2ee (PROVENANCE.md)."
+resolution: null
+duplicate_of: null
 ---
 Workspace (urollup-core, urollup), toolchain pin, lint and format configuration, make check and make fix, CI workflows, supply-chain policy, npm dev project, pytest and flowmark-rs in the uv project, bench/ layout and AGENTS.md routes; prove each gate fails on a committed violation. See plan: Project setup and engineering conventions.
 
