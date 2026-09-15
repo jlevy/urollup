@@ -114,6 +114,35 @@ of these on every run; this record explains the choices.
 | dtolnay/rust-toolchain | `2c7215f` | 2026-07-16 | Toolchain version given as an input |
 | astral-sh/setup-uv | `37802ad` (v7) | 2026-03-16 |  |
 
+## Reviewed Versions (Milestone 0.1 Core: Ledger and Snapshot Reading)
+
+Checked on 2026-09-15 against the crates.io API, when the cool-off cutoff was
+2026-09-01, for beads `uro-spce` and `uro-26dh`. Every crate below builds on the 1.85
+MSRV. `urollup-core` gained no CLI, HTTP or async-runtime crate; `make dependency-guard`
+checks that.
+
+| Crate | Version | Published | Why, and what was held back |
+| --- | --- | --- | --- |
+| serde (derive) | 1.0.229 | 2026-07-18 | Typed lenient record decoding |
+| serde_json | 1.0.151 | 2026-07-20 | JSONL record parsing; its `memchr` is shared with the prefilter |
+| sha2 | 0.11.0 | 2026-03-25 | SHA-256 for analytical IDs and fingerprints; MSRV 1.85 |
+| thiserror | 2.0.20 | 2026-08-08 | Typed library errors (`rust-rules`) |
+| memchr | 2.8.3 | 2026-07-08 | `memmem` line prefilter ported from ccusage |
+| jiff (`std` only) | 0.2.35 | 2026-07-25 | RFC 3339 timestamps; 0.2.36 and 0.2.37 (2026-09-12) held back; no time zone database features yet |
+| zstd (no default features) | 0.13.3 | 2025-02-20 | `.jsonl.zst` decoding; 0.14.0 (2026-09-04) held back |
+| zstd-safe | 7.2.4 | 2025-03-20 | 7.3.0 (2026-09-04, relicensed BSD-3-Clause) held back |
+| zstd-sys | 2.0.16+zstd.1.5.7 | 2025-09-04 | Bundled libzstd 1.5.7, built with `cc`; 2.1.0 (2026-09-04) held back |
+| proptest (dev, `std` only) | 1.11.0 | 2026-03-24 | Property tests; no `fork` or `timeout` features |
+| tempfile (dev) | 3.27.0 | 2026-03-11 | Isolated filesystem test roots |
+
+Transitive crates pinned below their newest release with `cargo update --precise`: `cc`
+1.4.4 (1.4.6 is 2026-09-13), `find-msvc-tools` 0.1.11, `hybrid-array` 0.4.14,
+`jiff-core` 0.1.0, `portable-atomic-util` 0.2.7, `zerocopy` and `zerocopy-derive`
+0.8.56, and `bitflags` 2.13.1. The newest locked crate is `cpufeatures` 0.3.1, published
+2026-08-26. Of jiff’s locked dependencies, `defmt` and `log` are optional features left
+off, `portable-atomic` builds only for targets without pointer-width atomics, and
+`jiff-static` sits behind a never-true `cfg(any())`.
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->
