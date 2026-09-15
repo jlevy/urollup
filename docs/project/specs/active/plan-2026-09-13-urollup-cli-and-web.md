@@ -56,7 +56,7 @@ The capture store lands only after the uncached engine is the correctness refere
 
 #### Milestone 0.1: Uncached Claude Code and Codex reports
 
-- [ ] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
+- [x] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
   pin, lint and format configuration, supply-chain policy, `make check` and `make fix`,
   the npm dev project for tryscript, and the CI jobs those gates need; prove each gate
   fails on a committed violation
