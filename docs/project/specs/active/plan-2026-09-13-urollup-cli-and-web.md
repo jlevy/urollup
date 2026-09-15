@@ -16,7 +16,8 @@ read-only web UI, with portable usage summaries that merge without double counti
 The [urollup design specification](../../../urollup-design.md) is the source of truth
 for the design: its [goals](../../../urollup-design.md#13-design-goals),
 [non-goals](../../../urollup-design.md#15-non-goals), layers, confirmed and candidate
-decisions, and [glossary](../../../urollup-design.md#93-glossary).
+decisions, [glossary](../../../urollup-design.md#103-glossary) and
+[flag index](../../../urollup-design.md#104-flag-index).
 This plan covers how that design is built and accepted: the phases and milestones, the
 testing strategy with its performance targets, and the rollout.
 Checklist items link to the design sections they implement rather than repeating their
@@ -42,9 +43,9 @@ None of these documents contains private session data.
 Items the design marks Later without a phase, such as the
 [account registry](../../../urollup-design.md#46-accounts-and-plans-later), are listed
 in the design’s
-[future enhancements](../../../urollup-design.md#92-future-enhancements).
+[future enhancements](../../../urollup-design.md#102-future-enhancements).
 Queued review decisions get phase items only once confirmed
-([§10.2](../../../urollup-design.md#102-queued-review-decisions)).
+([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
 ## Implementation Plan
 
@@ -112,11 +113,12 @@ The capture store lands only after the uncached engine is the correctness refere
 #### Milestone 0.3: Capture store
 
 - [ ] Implement the durable capture store: the capture strip policy with unknown-key
-  diagnostics, `--capture-idle`, default-discovery scope and `--capture`, atomic
-  replacement entries in the platform data directory, retained reads for deleted
-  sources, retained versions linked by thread for rewritten sources, runs without
-  capture when the store is unwritable, `--no-capture`, `capture status` and
-  `capture prune`, with equivalence goldens against the uncached engine
+  diagnostics, `--capture-idle`, default-discovery scope including source manifest
+  roots, `--capture` for `--source` logs and manifest artifacts, atomic replacement
+  entries in the platform data directory, retained reads for deleted sources, retained
+  versions linked by thread for rewritten sources, runs without capture when the store
+  is unwritable, `--no-capture`, `capture status` and `capture prune`, with equivalence
+  goldens against the uncached engine
   ([§2.4](../../../urollup-design.md#24-capture-and-export-strip-policies),
   [§2.5](../../../urollup-design.md#25-capture-store-and-cache)).
 - [ ] Measure and record capture-write throughput at zstd level 3 before capture ships
@@ -257,8 +259,9 @@ Each area tests the rules in these design sections:
   Validation diagnostics never echo values from redacted or stripped fields.
   Default `paths` exports contain no absolute path, working directory or path-shaped
   locator, and `names` or `native-ids` without a key exits 2. Capture goldens cover the
-  idle threshold, uncaptured `--source` logs, an unwritable store, retained and
-  rewritten sources, and identical results with the store disabled.
+  idle threshold, captured manifest roots, uncaptured `--source` logs and manifest
+  artifacts, an unwritable store, retained and rewritten sources, and identical results
+  with the store disabled.
 - **Surfaces:** CLI and HTTP return identical report data for one query and snapshot,
   and Markdown, CSV and the UI derive from it.
   CLI goldens cover exit codes, JSONL completion records, and `--current` with nested
@@ -356,15 +359,14 @@ within the confirmed
 The design doc records every decision and open question:
 
 - **Confirmed:** 27 decisions, each with its choice, rationale, tradeoffs and date, in
-  [§9.1](../../../urollup-design.md#91-design-decisions).
+  [§10.1](../../../urollup-design.md#101-design-decisions).
 - **Candidate:** 9 proposed decisions already reflected in the design, pending
-  maintainer confirmation, in
-  [§10.1](../../../urollup-design.md#101-candidate-decisions).
+  maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions).
 - **Queued:** 10 review decisions raised by the squares and metaproc code reviews,
   walked through one at a time in bead `uro-gxen`, in
-  [§10.2](../../../urollup-design.md#102-queued-review-decisions).
-- **Open questions** on cloud export formats, pricing bases and billing exports are in
-  [§10.3](../../../urollup-design.md#103-open-questions).
+  [§9.2](../../../urollup-design.md#92-queued-review-decisions).
+- **Open:** 3 questions on cloud export formats, pricing bases and billing exports, in
+  [§9.3](../../../urollup-design.md#93-open-questions).
 
 ## References
 

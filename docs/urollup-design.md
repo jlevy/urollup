@@ -10,16 +10,16 @@ Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session
 
 **Last updated**: 2026-09-15
 
-Sections 1 to 8 and each item in §10 carry a **Status:** line.
-**Confirmed** marks settled design that awaits no §10 decision; where a maintainer
-decision applies, the line cites it from [§9.1](#91-design-decisions).
+Sections 1 to 8 and each item in §9 carry a **Status:** line.
+**Confirmed** marks settled design that awaits no §9 decision; where a maintainer
+decision applies, the line cites it from [§10.1](#101-design-decisions).
 **Candidate** marks behavior that is proposed and reflected in the design but pending
 maintainer confirmation in
-[§10](#10-cross-cutting-candidate-decisions-and-open-questions), **Later** marks
-behavior designed now for a future phase, the queued items in
-[§10.2](#102-queued-review-decisions) are **Candidate, queued** (proposed but not yet
-reflected in the design), and the questions in [§10.3](#103-open-questions) are
-**Open**. Phases and milestones are defined in the
+[§9](#9-cross-cutting-candidate-decisions-and-open-questions), **Later** marks behavior
+designed now for a future phase, the queued items in [§9.2](#92-queued-review-decisions)
+are **Candidate, queued** (proposed but not yet reflected in the design), and the
+questions in [§9.3](#93-open-questions) are **Open**. Phases and milestones are defined
+in the
 [implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md).
 
 * * *
@@ -93,15 +93,16 @@ reflected in the design), and the questions in [§10.3](#103-open-questions) are
     - [Ledger and Query Cache (Later)](#ledger-and-query-cache-later)
   - [8.4 Security Considerations](#84-security-considerations)
   - [8.5 Operational Concerns](#85-operational-concerns)
-- [9. Appendices](#9-appendices)
-  - [9.1 Design Decisions](#91-design-decisions)
-  - [9.2 Future Enhancements](#92-future-enhancements)
-  - [9.3 Glossary](#93-glossary)
-  - [9.4 Research and References](#94-research-and-references)
-- [10. Cross-Cutting Candidate Decisions and Open Questions](#10-cross-cutting-candidate-decisions-and-open-questions)
-  - [10.1 Candidate Decisions](#101-candidate-decisions)
-  - [10.2 Queued Review Decisions](#102-queued-review-decisions)
-  - [10.3 Open Questions](#103-open-questions)
+- [9. Cross-Cutting Candidate Decisions and Open Questions](#9-cross-cutting-candidate-decisions-and-open-questions)
+  - [9.1 Candidate Decisions](#91-candidate-decisions)
+  - [9.2 Queued Review Decisions](#92-queued-review-decisions)
+  - [9.3 Open Questions](#93-open-questions)
+- [10. Appendices](#10-appendices)
+  - [10.1 Design Decisions](#101-design-decisions)
+  - [10.2 Future Enhancements](#102-future-enhancements)
+  - [10.3 Glossary](#103-glossary)
+  - [10.4 Flag Index](#104-flag-index)
+  - [10.5 Research and References](#105-research-and-references)
 
 * * *
 
@@ -146,7 +147,7 @@ The design has these parts:
 
 Validated format knowledge and fixtures from existing tools are reused with license
 review and attribution ([Decision 3](#decision-3-code-reuse-and-licensing)). Terms such
-as observation, extent and unresolved are defined in the [glossary](#93-glossary).
+as observation, extent and unresolved are defined in the [glossary](#103-glossary).
 
 ### 1.2 Why urollup Exists
 
@@ -319,7 +320,7 @@ ledger; bundles re-enter reconciliation.
 ### 2.1 Dialects and Discovery
 
 **Status:** Confirmed, except the dialect IDs and `UROLLUP_*` override variables, which
-are Candidate ([§10.1](#dialect-ids-and-override-variables)); the Pi adapters are Later
+are Candidate ([§9.1](#dialect-ids-and-override-variables)); the Pi adapters are Later
 (Phase 2).
 
 A **dialect** is one log format written by one agent, and each adapter reads one
@@ -490,7 +491,7 @@ support re-extraction while portable artifacts leave the machine:
   length, so text under a key that a new agent release adds never reaches an export.
 
 A structural command summary computed before tool arguments are stubbed is a queued
-review decision ([§10.2](#structural-command-summary)).
+review decision ([§9.2](#structural-command-summary)).
 
 ### 2.5 Capture Store and Cache
 
@@ -601,7 +602,7 @@ and [Decision 5](#decision-5-qm-out-of-scope)).
 - Usage kept only in a harness’s own database, such as qm’s, is out of scope.
 
 Capture metadata that harnesses might write beside captured streams is a queued review
-decision ([§10.2](#capture-metadata-for-captured-streams)).
+decision ([§9.2](#capture-metadata-for-captured-streams)).
 
 * * *
 
@@ -610,7 +611,7 @@ decision ([§10.2](#capture-metadata-for-captured-streams)).
 ### 3.1 Entities
 
 **Status:** Confirmed, except resource observations and provider charges, which are
-Candidate ([§10.1](#resources-and-charges)).
+Candidate ([§9.1](#resources-and-charges)).
 
 The normalized ledger holds these entities, which adapters write and every report reads:
 
@@ -784,8 +785,8 @@ set these source-specific rules:
 
 ### 3.5 Purpose and Annotations
 
-**Status:** Candidate ([§10.1](#purpose-sources)); configured purpose and annotation
-sets are Later (Phase 2).
+**Status:** Candidate ([§9.1](#purpose-sources)); configured purpose and annotation sets
+are Later (Phase 2).
 
 Purpose values record their basis; core accounting never infers them.
 
@@ -804,7 +805,7 @@ it, and results cite the set’s author, method and version.
 ### 3.6 Analytical Identities
 
 **Status:** Confirmed, except provider ID scope and conflicting shared keys, which are
-Candidate ([§10.1](#provider-id-scope) and [§10.1](#conflicting-shared-keys)).
+Candidate ([§9.1](#provider-id-scope) and [§9.1](#conflicting-shared-keys)).
 
 #### ID Derivation
 
@@ -841,7 +842,7 @@ only that scope’s namespace components.
 
 - Provider-issued IDs are scoped to the issuing provider, not to host, source
   environment or account, so copies of one request merge wherever they were collected
-  (Candidate, [§10.1](#provider-id-scope)).
+  (Candidate, [§9.1](#provider-id-scope)).
 - Account enters a key only for ID kinds unique within an account, and then as the
   stable account identifier from the source manifest, never a display alias.
 - Fallback keys never use byte offsets or file-relative ordinals, which shift between
@@ -862,7 +863,7 @@ Thread, request and action IDs record their **identity basis**:
 A key is also ambiguous when observations sharing it disagree on revision-invariant
 fields, as when a gateway reuses message IDs across sessions, or when records sharing a
 fallback key cannot be shown to be revisions of one request (Candidate,
-[§10.1](#conflicting-shared-keys)). Either case yields a diagnostic, not a merge.
+[§9.1](#conflicting-shared-keys)). Either case yields a diagnostic, not a merge.
 An ambiguous observation gets an artifact-local ID from its `src-` ID and record offset,
 so only a re-read of the same record merges by ID; other matches become candidates.
 
@@ -949,12 +950,12 @@ Counting rules that adapters must normalize explicitly:
   in one session.
 
 An `unitemized` measure for source totals that exceed reconciled requests, and extended
-time measures, are queued review decisions ([§10.2](#unitemized-usage) and
-[§10.2](#extended-time-measures)).
+time measures, are queued review decisions ([§9.2](#unitemized-usage) and
+[§9.2](#extended-time-measures)).
 
 ### 4.2 Ownership and Totals
 
-**Status:** Candidate ([§10.1](#ownership-in-totals)); scope defaults are Confirmed
+**Status:** Candidate ([§9.1](#ownership-in-totals)); scope defaults are Confirmed
 ([Decision 13](#decision-13-selection-defaults)).
 
 Every logical request has an **ownership status**:
@@ -1019,8 +1020,8 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
   error metadata.
 
 Branch and agent-path grouping and inferred timestamps for records without one are
-queued review decisions ([§10.2](#branch-and-agent-grouping) and
-[§10.2](#inferred-timestamps)).
+queued review decisions ([§9.2](#branch-and-agent-grouping) and
+[§9.2](#inferred-timestamps)).
 
 ### 4.4 Usage Windows
 
@@ -1059,7 +1060,7 @@ Forecasts and calibrated budgets are labeled estimates too.
 
 ### 4.5 Price Table
 
-**Status:** Candidate ([§10.1](#pricing-policy)).
+**Status:** Candidate ([§9.1](#pricing-policy)).
 
 Phase 1 list-price estimates use a reviewed, versioned price table compiled into the
 binary. Maintainers transcribe rates from provider pricing pages, such as
@@ -1145,7 +1146,7 @@ and needs no new capture:
   The Money measure already keeps these amounts separate and never mixes them.
 
 Organization or quota-group identifiers per account are a queued review decision
-([§10.2](#organization-and-quota-groups-per-account)).
+([§9.2](#organization-and-quota-groups-per-account)).
 
 * * *
 
@@ -1156,7 +1157,7 @@ Organization or quota-group identifiers per account are a queued review decision
 **Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering),
 [Decision 16](#decision-16-summary-and-bundle-artifacts) and
 [Decision 20](#decision-20-database-input-in-phase-3)); the `--per-session` export flag
-is Candidate ([§10.1](#cli-surface)); database input is Later (Phase 3).
+is Candidate ([§9.1](#cli-surface)); database input is Later (Phase 3).
 
 Raw JSON and JSONL logs, compressed logs, usage summaries and observation bundles all
 enter the same reconciliation pipeline and can be mixed.
@@ -1514,7 +1515,8 @@ response identities.
 
 Summaries and bundles never contain prompts, tool arguments or result bodies, and the
 [export policy](#24-capture-and-export-strip-policies) stubs every value outside its
-allow-list. Redaction never affects deduplication, which uses analytical IDs.
+allow-list. `--redact` selects one of three profiles, and redaction never affects
+deduplication, which uses analytical IDs.
 
 - **`paths` (default):** removes absolute paths, working directories and path-shaped
   locators, and needs no key.
@@ -1649,7 +1651,7 @@ manifests written by urollup to pass `softschema validate` and
 ### 6.1 Workflows and Session Selection
 
 **Status:** Confirmed ([Decision 13](#decision-13-selection-defaults)); the
-`--sessions-from` and `--whole-sessions` flags are Candidate ([§10.1](#cli-surface)).
+`--sessions-from` and `--whole-sessions` flags are Candidate ([§9.1](#cli-surface)).
 
 The research brief’s
 [common workflows](project/research/research-2026-09-13-portable-agent-usage.md#common-workflows)
@@ -1747,7 +1749,7 @@ cloud sandboxes defeat the guess.
 **Status:** Confirmed for default selections and `tree`
 ([Decision 13](#decision-13-selection-defaults)) and for `windows`
 ([Decision 10](#decision-10-recorded-usage-windows)); `weekly` and the single `--source`
-input flag are Candidate ([§10.1](#cli-surface)); Phase 2 commands are Later.
+input flag are Candidate ([§9.1](#cli-surface)); Phase 2 commands are Later.
 
 | Command | Output | Default selection | Phase |
 | --- | --- | --- | --- |
@@ -1781,21 +1783,22 @@ urollup serve --project example --open
 ### 6.4 Queries, Output Formats and Streams
 
 **Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering));
-`--strict` semantics are Candidate ([§10.1](#strict-mode)); `--annotation-set` is
-Candidate ([§10.1](#cli-surface)) and Later (Phase 2).
+`--strict` semantics are Candidate ([§9.1](#strict-mode)); `--annotation-set` is
+Candidate ([§9.1](#cli-surface)) and Later (Phase 2).
 
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
-  pagination and pricing policy, including `--prices` files; `--query <file>` reruns a
-  saved one. A relative `--since` or `--until` resolves to an absolute instant in the
-  normalized `QuerySpec`, so every report records the interval it used.
+  pagination and pricing policy, including `--prices` files; `--sort` and `--limit` set
+  ordering and pagination, and `--query <file>` reruns a saved one.
+  A relative `--since` or `--until` resolves to an absolute instant in the normalized
+  `QuerySpec`, so every report records the interval it used.
   `--group-by` covers project, account, model, effort, purpose and tool views, and
   `--annotation-set <file>` (Phase 2) adds a named annotation set
   ([§3.5](#35-purpose-and-annotations)).
-- **Formats:** terminal tables, JSON, JSONL, CSV and Markdown, plus `summary` and
-  `bundle` for `export` and `merge`. JSON results carry schema version, normalized
-  query, source coverage, diagnostics, pricing version, aggregate rows and stable
-  evidence references.
+- **Formats:** `--format` selects terminal tables, JSON, JSONL, CSV or Markdown, plus
+  `summary` and `bundle` for `export` and `merge`. JSON results carry schema version,
+  normalized query, source coverage, diagnostics, pricing version, aggregate rows and
+  stable evidence references.
   JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
 - **Streams and completeness:** stdout carries only the requested format, and
   diagnostics, progress and logs go to stderr.
@@ -1805,6 +1808,8 @@ Candidate ([§10.1](#cli-surface)) and Later (Phase 2).
 - **Coverage:** partial data is explicit even when a query succeeds.
   `--strict` exits 3 on any coverage gap, including nonzero unresolved usage, and
   `--require-priced` exits 3 when any tokens are unpriced.
+  In Phase 2, `check` takes threshold flags such as `--max-input-tokens` and exits 4
+  when one is exceeded ([§6.5](#65-exit-codes)).
 
 ### 6.5 Exit Codes
 
@@ -1896,7 +1901,7 @@ and never uses an unpinned runner, `latest`, a branch build or the visible chat.
 Direct cloud synchronization is a separate future integration.
 
 Anomaly detectors in `check` or the skill are a queued review decision
-([§10.2](#anomaly-detectors)).
+([§9.2](#anomaly-detectors)).
 
 * * *
 
@@ -2160,9 +2165,289 @@ read-only snapshot input ([§5.1](#51-portable-inputs-and-artifacts)).
 
 * * *
 
-## 9. Appendices
+## 9. Cross-Cutting Candidate Decisions and Open Questions
 
-### 9.1 Design Decisions
+This section records decisions that still need maintainer confirmation and questions
+without a recommendation yet.
+Confirmed decisions are in [§10.1](#101-design-decisions).
+
+### 9.1 Candidate Decisions
+
+These proposed decisions are reflected in the design; each needs maintainer
+confirmation.
+
+#### Provider ID Scope
+
+**Status:** Candidate.
+
+**Recommendation:** Provider-issued IDs are scoped to the provider only, not to host or
+account.
+
+**Designed in:** [§3.6 Key Scope](#key-scope).
+
+#### Conflicting Shared Keys
+
+**Status:** Candidate.
+
+**Recommendation:** A shared key whose observations disagree is ambiguous, never merged.
+
+**Designed in:** [§3.6 Identity Basis and Linking](#identity-basis-and-linking).
+
+#### Ownership in Totals
+
+**Status:** Candidate.
+
+**Recommendation:** Owned, ambiguous and unknown requests each count once in grand
+totals; partial candidate selections are reported as `possible`.
+
+**Designed in:** [§4.2](#42-ownership-and-totals).
+
+#### Purpose Sources
+
+**Status:** Candidate.
+
+**Recommendation:** Native fields in Phase 1, configured rules in Phase 2; annotations
+never set purpose.
+
+**Designed in:** [§3.5](#35-purpose-and-annotations).
+
+#### Resources and Charges
+
+**Status:** Candidate.
+
+**Recommendation:** Defer resource collection; keep provider charges a separate entity
+with no import phase item until a tested receipt or billing export exists.
+
+**Designed in:** [§3.1](#31-entities).
+
+#### Pricing Policy
+
+**Status:** Candidate.
+
+**Recommendation:** Reviewed price table built into the binary from provider pages;
+LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network,
+`--prices` overrides, staleness warning after 90 days.
+
+**Designed in:** [§4.5](#45-price-table).
+
+#### Dialect IDs and Override Variables
+
+**Status:** Candidate.
+
+**Recommendation:** Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`,
+`codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables.
+
+**Designed in:** [§2.1](#21-dialects-and-discovery).
+
+#### CLI Surface
+
+**Status:** Candidate.
+
+**Recommendation:** Add `weekly`, `--per-session`, `--whole-sessions`, `--sessions-from`
+and `--annotation-set`, and use one `--source` flag for every input, with no `--input`.
+The proposal also named `tree` and `windows`, but `tree` is part of confirmed
+[Decision 13](#decision-13-selection-defaults) and the `windows` report of confirmed
+[Decision 10](#decision-10-recorded-usage-windows), so only the items above remain to
+confirm.
+
+**Designed in:** [§6.3](#63-commands), [§6.1](#61-workflows-and-session-selection),
+[§6.4](#64-queries-output-formats-and-streams) and
+[§5.1](#51-portable-inputs-and-artifacts).
+
+#### Strict Mode
+
+**Status:** Candidate.
+
+**Recommendation:** `--strict` exits 3 on any coverage gap, including nonzero unresolved
+usage.
+
+**Designed in:** [§6.4](#64-queries-output-formats-and-streams).
+
+### 9.2 Queued Review Decisions
+
+The 2026-09-14
+[squares code review](project/research/research-2026-09-14-squares-code-review.md) and
+[metaproc and qm review](project/research/research-2026-09-14-metaproc-code-review.md)
+raised these decisions; they are queued for one-at-a-time maintainer confirmation in
+bead `uro-gxen`. None is reflected in the design above yet.
+The same walkthrough already resolved the capture store and its Phase 2 cache read path
+([Decision 8](#decision-8-capture-store-and-cache)), harness logs read through urollup’s
+own adapters ([Decision 4](#decision-4-harness-logs-through-urollup-adapters)) and qm
+([Decision 5](#decision-5-qm-out-of-scope)). The PR #3 design review queued one more
+item, whether source manifest roots and artifacts are captured, and it was confirmed on
+2026-09-15 as part of [Decision 9](#decision-9-capture-scope).
+
+#### Capture Metadata for Captured Streams
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Choose whether urollup defines a small softschema capture-metadata
+contract (capture time, requested model and effort, `cwd`, account, harness) that
+harnesses write beside captured streams, reads metaproc’s `.invocation.json` as-is, or
+uses records only plus source mappings.
+metaproc#82 (2026-09-15) preserves pooled Codex rollouts, and Claude transcripts when
+persistence is on, so metadata matters mainly for Claude and Pi runs with persistence
+off and for non-pool cloud runs.
+The metaproc review recommends treating optional `<log>.invocation.json` sidecars as
+part of the harness run-directory layout.
+
+**Links:** [§2.6](#26-harness-captures); metaproc review
+[plan changes](project/research/research-2026-09-14-metaproc-code-review.md#plan-changes)
+(P1).
+
+#### Organization and Quota Groups per Account
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Allow an optional organization or quota-group identifier per
+account, record `apiKeySource` as an observed property, and keep principals distinct
+from billing accounts; windows become groupable by quota group, feeding the account
+registry (`uro-um7n`).
+
+**Links:** [§4.6](#46-accounts-and-plans-later), [§4.4](#44-usage-windows); metaproc
+review
+[plan changes](project/research/research-2026-09-14-metaproc-code-review.md#plan-changes)
+(P5).
+
+#### Unitemized Usage
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Record source totals (`claude-stream` `modelUsage`, Pi `agent_end`)
+that exceed reconciled requests as an `unitemized` measure beside totals, never inside
+them, because it has no request identity to merge on; `--strict` exits 3.
+
+**Links:** [§4.1](#41-measure-contracts); metaproc review
+[data contract changes](project/research/research-2026-09-14-metaproc-code-review.md#data-contract-changes)
+(C1).
+
+#### Branch and Agent Grouping
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Record the observed branch (Claude `gitBranch` per request, Codex
+`session_meta.git.branch` per thread), and Codex `agent_path`, `agent_role` and
+`agent_nickname` as thread properties; add `--group-by branch` and `agent_path`.
+
+**Links:** [§4.3](#43-time-grouping-and-percentiles), [§3.1](#31-entities); squares
+review
+[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
+(7 and 8) and
+[integration needs](project/research/research-2026-09-14-squares-code-review.md#integration-needs).
+
+#### Extended Time Measures
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Add agent-active seconds versus busy union and parallel overlap,
+overlap-safe tool intervals by category, context compaction time, and model-time bounds
+with per-dialect availability.
+
+**Links:** [§4.1](#41-measure-contracts); squares review
+[tallying time and parallel work](project/research/research-2026-09-14-squares-code-review.md#tallying-time-and-parallel-work)
+and
+[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
+(5).
+
+#### Structural Command Summary
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Run a versioned shell-command classifier, ported from squares,
+before tool arguments are stubbed, so command statistics survive stripping.
+
+**Links:** [§2.4](#24-capture-and-export-strip-policies); squares review
+[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
+(4).
+
+#### Per-Extent Completeness
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Flag open and abandoned turns at the snapshot in each extent;
+`--strict` treats open turns as a coverage gap.
+
+**Links:** [§5.2](#52-usage-summary-format),
+[§6.4](#64-queries-output-formats-and-streams); squares review
+[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
+(6).
+
+#### Inferred Timestamps
+
+**Status:** Candidate, queued.
+
+**Recommendation:** For records without timestamps, infer from neighboring records, then
+capture metadata and file modification time, labeled `inferred`; never epoch zero.
+
+**Links:** [§4.3](#43-time-grouping-and-percentiles); metaproc review
+[data contract changes](project/research/research-2026-09-14-metaproc-code-review.md#data-contract-changes)
+(C3).
+
+#### Anomaly Detectors
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Port agentfdr’s loop, error-streak, token-spike and stalled-call
+detectors as labeled estimates in `check` or the reporting skill.
+
+**Links:** [§6.3](#63-commands), [§6.7](#67-reporting-skill-and-cloud-workflow);
+research brief
+[existing implementations](project/research/research-2026-09-13-portable-agent-usage.md#existing-implementations).
+
+#### squares as First Integration User
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Create a bead to replace squares’ log rollups with urollup
+summaries, recording the expected drop in totals, plus its needs: a `softschema.schema`
+pointer on export, flowmark-stable Markdown, and priority for a PyPI wheel.
+
+**Links:** [§5.2](#52-usage-summary-format); squares review
+[integration needs](project/research/research-2026-09-14-squares-code-review.md#integration-needs)
+and
+[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
+(10, 12 and 19).
+
+### 9.3 Open Questions
+
+#### Cloud Export Formats
+
+**Status:** Open.
+
+**Question:** Which tested cloud export formats are available locally, and what account
+lineage evidence survives export?
+
+**Current position:** Adapter coverage follows evidence rather than vendor names;
+imported exports are ordinary manifested artifacts, and no cloud export format is
+claimed without a test ([§2.1](#projects-and-accounts)).
+
+#### Pricing Bases
+
+**Status:** Open.
+
+**Question:** Which pricing bases should follow first-party list prices: Bedrock and
+Google Cloud rates, negotiated discounts, or subscription plan allocations?
+Would an opt-in price-table download ever justify its network and supply-chain cost?
+
+**Current position:** The price table’s billing channel is initially the first-party
+API, pricing never makes network requests ([§4.5](#45-price-table)), and subscription
+allocations wait for the account registry ([§4.6](#46-accounts-and-plans-later)).
+
+#### Receipts and Billing Exports
+
+**Status:** Open.
+
+**Question:** Which account receipts or billing exports are stable enough to reconcile
+estimates with recorded provider charges?
+
+**Current position:** The provider charge entity is reserved, and no import is planned
+until a tested receipt or billing export exists ([§3.1](#31-entities)).
+
+* * *
+
+## 10. Appendices
+
+### 10.1 Design Decisions
 
 These decisions are confirmed by the maintainer, grouped by area:
 
@@ -2328,8 +2613,8 @@ artifacts.
 **Tradeoffs:** Raw logs read only through `--source` are not preserved when deleted
 unless `--capture` was passed or they were exported.
 
-**Confirmed:** 2026-09-15, with manifest roots and artifacts confirmed the same day (PR
-#3 review finding R8); see [§2.5](#25-capture-store-and-cache).
+**Confirmed:** 2026-09-15, with manifest roots and artifacts confirmed the same day
+after review finding R8 on PR #3; see [§2.5](#25-capture-store-and-cache).
 
 #### Decision 10: Recorded Usage Windows
 
@@ -2623,7 +2908,7 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 **Confirmed:** 2026-09-14; see the plan’s
 [rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan).
 
-### 9.2 Future Enhancements
+### 10.2 Future Enhancements
 
 | Enhancement | Phase | Designed in |
 | --- | --- | --- |
@@ -2633,13 +2918,13 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | `compare` and `check` commands | Phase 2 | [§6.3](#63-commands) |
 | `windows` report over provider limit observations | Phase 2 | [§4.4](#44-usage-windows) |
 | `pi-session` and `pi-events` adapters, with Pi `--current` detection | Phase 2 | [§2.1](#21-dialects-and-discovery), [§6.2](#62-current-session-detection) |
-| Imported multi-account and cloud-export fixtures | Phase 2 | [§2.1](#projects-and-accounts), [§10.3](#cloud-export-formats) |
+| Imported multi-account and cloud-export fixtures | Phase 2 | [§2.1](#projects-and-accounts), [§9.3](#cloud-export-formats) |
 | Configured purpose rules and `--annotation-set` imports | Phase 2 | [§3.5](#35-purpose-and-annotations) |
 | Ledger and query cache for capture layers 2 and 3 | Phase 3 | [§8.3](#ledger-and-query-cache-later) |
 | Read-only snapshot of urollup’s own store as input | Phase 3 | [§5.1](#51-portable-inputs-and-artifacts) |
-| Account registry with dated plan terms, subscription allocations and budgets | Later | [§4.6](#46-accounts-and-plans-later), [§10.2](#organization-and-quota-groups-per-account) |
-| Anomaly detectors ported from agentfdr | Later, if confirmed | [§10.2](#anomaly-detectors) |
-| Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§10.3](#receipts-and-billing-exports) |
+| Account registry with dated plan terms, subscription allocations and budgets | Later | [§4.6](#46-accounts-and-plans-later), [§9.2](#organization-and-quota-groups-per-account) |
+| Anomaly detectors ported from agentfdr | Later, if confirmed | [§9.2](#anomaly-detectors) |
+| Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§9.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |
 | agentfdr-style timeline in the web UI | Later | [§7.2](#72-web-ui) |
@@ -2648,7 +2933,7 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | Adapters, and `serve`, moved into their own crates | Later | [§8.1](#81-workspace-and-crate-structure), [§7.1](#71-the-serve-feature) |
 | Homebrew, npm, cargo-binstall and Windows arm64 releases | On demand | [Decision 27](#decision-27-release-scope) |
 
-### 9.3 Glossary
+### 10.3 Glossary
 
 | Term | Meaning |
 | --- | --- |
@@ -2670,7 +2955,108 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | **Unresolved** | Usage that may duplicate counted usage but cannot be proven the same or distinct, such as extra members of a candidate set or summary extents that overlap without either covering the other; reported separately, never added to totals |
 | **Usage window** | A provider limit period recorded by a source, never inferred from activity gaps ([§4.4](#44-usage-windows)) |
 
-### 9.4 Research and References
+### 10.4 Flag Index
+
+This index lists every command-line flag the design names, grouped by area, with the
+section that specifies it.
+Phase comes from the
+[implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md), with
+the Phase 1 milestone in parentheses where the plan assigns one.
+**Candidate** marks flags that await the [CLI Surface](#cli-surface) or
+[Strict Mode](#strict-mode) decision.
+Commands and their default selections are in [§6.3](#63-commands).
+
+Sources and session selection, accepted by every reading command:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--current` | Select the session running the command, from hook input or agent environment variables | [§6.2](#62-current-session-detection) | 1 (0.1); Pi in 2 |
+| `--hook-input` | Select the session named by Claude Code or Codex hook input JSON | [§6.2](#62-current-session-detection) | 1 (0.5) |
+| `--session` | Select a session by native ID, `thr-` ID or transcript path; repeatable | [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
+| `--sessions-from` | Read session selectors from a file, one per line | [§6.1](#61-workflows-and-session-selection) | 1 (0.5), Candidate |
+| `--latest` | Select the most recently active session for the working directory, the only guarded heuristic | [§6.2](#62-current-session-detection) | 1 (0.5) |
+| `--all` | Select every discovered session on all dates | [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
+| `--agent` | Select sessions written by one agent, and choose among nested agents for `--current`; repeatable | [§6.1](#61-workflows-and-session-selection), [§6.2](#62-current-session-detection) | 1 (0.5) |
+| `--project` | Select sessions by logical project name | [§6.1](#61-workflows-and-session-selection), [§2.1](#projects-and-accounts) | 1 (0.5) |
+| `--cwd` | Select sessions by recorded working directory | [§6.1](#61-workflows-and-session-selection) | 1 (0.5) |
+| `--since` | Start a half-open time interval; relative values resolve to an absolute instant | [§6.1](#61-workflows-and-session-selection), [§6.4](#64-queries-output-formats-and-streams) | 1 |
+| `--until` | End a half-open time interval; on summary input, bounds clip to 15-minute buckets | [§6.1](#61-workflows-and-session-selection), [§5.2](#52-usage-summary-format) | 1 |
+| `--timezone` | Set the zone for time filters and calendar buckets, the system timezone by default | [§4.3](#43-time-grouping-and-percentiles) | 1 |
+| `--week-start` | Set the first day of calendar weeks, Monday by default | [§4.3](#43-time-grouping-and-percentiles) | 1 |
+| `--whole-sessions` | Include all usage of every session with usage inside the interval | [§6.1](#61-workflows-and-session-selection) | 1 (0.5), Candidate |
+| `--scope` | Choose `self` or `descendants`, whether selected sessions bring their spawned subagent threads | [§4.2](#42-ownership-and-totals), [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
+| `--source` | Add a root, log, summary or bundle; the one input flag for every kind; repeatable | [§2.1](#21-dialects-and-discovery), [§6.3](#63-commands) | 1, Candidate |
+| `--sources-file` | Read a source manifest from a file instead of the config directory | [§2.1](#source-manifest) | 1 (0.2) |
+| `--no-default-sources` | Read no default roots or override variables | [§2.1](#21-dialects-and-discovery) | 1 |
+
+Queries and output:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--format` | Choose table, JSON, JSONL, CSV or Markdown output, or `summary` or `bundle` for `export` and `merge` | [§6.4](#64-queries-output-formats-and-streams), [§5.1](#51-portable-inputs-and-artifacts) | 1 (0.1–0.5) |
+| `--output` | Write the result to a file or bundle, published atomically | [§6.4](#64-queries-output-formats-and-streams) | 1 |
+| `--group-by` | Group rows by properties such as project, account, model, effort, purpose or tool | [§4.3](#43-time-grouping-and-percentiles), [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1–0.5) |
+| `--query` | Rerun a saved `QuerySpec`, which is also the input to `check` | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5); `check` in 2 |
+| `--sort` | Set the ordering of result rows | [§6.4](#64-queries-output-formats-and-streams) | 1 |
+| `--limit` | Cap the number of result rows | [§6.4](#64-queries-output-formats-and-streams) | 1 |
+| `--strict` | Exit 3 on any coverage gap, including unresolved usage | [§6.4](#64-queries-output-formats-and-streams), [§5.3](#53-exact-aggregation) | 1 (0.5), Candidate |
+| `--require-priced` | Exit 3 when any tokens are unpriced | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.4) |
+| `--annotation-set` | Group by a named, imported annotation set | [§3.5](#35-purpose-and-annotations) | 2, Candidate |
+| `--baseline` | Name the baseline saved JSON report for `compare` | [§6.3](#63-commands) | 2 |
+| `--candidate` | Name the saved JSON report that `compare` checks against the baseline | [§6.3](#63-commands) | 2 |
+| `--max-input-tokens` | Set a `check` threshold on input tokens, exiting 4 when exceeded | [§6.4](#64-queries-output-formats-and-streams) | 2 |
+
+Summary and bundle export:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--per-session` | Write one summary per selected top-level session instead of one for the selection | [§5.1](#51-portable-inputs-and-artifacts) | 1 (0.2), Candidate |
+| `--output-dir` | Name the directory for `--per-session` summaries | [§5.1](#51-portable-inputs-and-artifacts) | 1 (0.2) |
+| `--no-records` | Omit the captured records table from a bundle | [§5.4](#54-observation-bundles) | 1 (0.2) |
+| `--no-index` | Omit a summary’s request index | [§5.2](#52-usage-summary-format) | 1 (0.2) |
+
+Capture store and cache:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--capture` | Also capture raw logs passed with `--source` or listed as manifest artifacts | [§2.5](#25-capture-store-and-cache) | 1 (0.3) |
+| `--no-capture` | Neither write nor read the capture store for a run | [§2.5](#25-capture-store-and-cache) | 1 (0.3) |
+| `--capture-idle` | Set how long a source must be unmodified before capture, 5 minutes by default | [§2.5](#25-capture-store-and-cache) | 1 (0.3) |
+| `--no-cache` | Read original logs instead of cached records while still updating the store | [§2.5](#25-capture-store-and-cache) | 2 |
+| `--rebuild-cache` | Regenerate the selected sources’ store entries from their logs | [§2.5](#25-capture-store-and-cache) | 2 |
+| `--verify-cache` | Hash the whole captured extent instead of running the default prefix check | [§2.5](#25-capture-store-and-cache) | 2 |
+
+Redaction and prices:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--redact` | Choose the `paths`, `names` or `native-ids` export redaction profile, `paths` by default | [§5.5](#55-redaction) | 1 (0.2) |
+| `--redaction-key-file` | Read the key that the `names` and `native-ids` profiles need | [§5.5](#55-redaction) | 1 (0.2) |
+| `--prices` | Add a YAML price override file; repeatable | [§4.5](#45-price-table) | 1 (0.4) |
+
+Serving:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--port` | Pin the loopback port instead of taking an OS-assigned one | [§7.3](#73-security-controls) | 2 |
+| `--open` | Open the browser through a user-only redirect file that keeps the token out of process arguments | [§7.3](#73-security-controls) | 2 |
+
+Flags the design names that urollup does not accept:
+
+| Flag | Purpose | Home section | Phase |
+| --- | --- | --- | --- |
+| `--input` | None: there is no input flag, because `--source` names every input | [§6.3](#63-commands) | None |
+| `--ephemeral` | Codex flag for threads that write no rollout, whose usage is reported as unobserved | [§2.1](#21-dialects-and-discovery) | None |
+| `--session-dir` | Pi flag for a flat session directory, which urollup reads only through `--source` | [§2.1](#21-dialects-and-discovery) | None |
+| `--session-id` | Pi flag for a custom session ID, which can repeat across files and so is never a key alone | [§3.6](#key-scope) | None |
+| `--locked` | Cargo flag that CI workflows and release builds pass | [§8.2](#82-engineering-conventions) | None |
+| `--no-default-features` | Cargo flag for the CI build and dependency check without the `serve` feature | [§7.1](#71-the-serve-feature) | None |
+
+Agent, uv and softschema flags that appear only inside quoted commands, such as
+`claude -p --output-format stream-json` in [§2.1](#21-dialects-and-discovery) and the
+contract gate commands in [§5.7](#57-contract-authoring-and-validation), are not listed.
+
+### 10.5 Research and References
 
 Project documents, none of which contains private session data:
 
@@ -2701,284 +3087,6 @@ External references:
   and [guide](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-guide.md)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
 - [DDSketch](https://arxiv.org/abs/1908.10693), for mergeable log-bucket histograms
-
-* * *
-
-## 10. Cross-Cutting Candidate Decisions and Open Questions
-
-This section records decisions that still need maintainer confirmation and questions
-without a recommendation yet.
-Confirmed decisions are in [§9.1](#91-design-decisions).
-
-### 10.1 Candidate Decisions
-
-These proposed decisions are reflected in the design; each needs maintainer
-confirmation.
-
-#### Provider ID Scope
-
-**Status:** Candidate.
-
-**Recommendation:** Provider-issued IDs are scoped to the provider only, not to host or
-account.
-
-**Designed in:** [§3.6 Key Scope](#key-scope).
-
-#### Conflicting Shared Keys
-
-**Status:** Candidate.
-
-**Recommendation:** A shared key whose observations disagree is ambiguous, never merged.
-
-**Designed in:** [§3.6 Identity Basis and Linking](#identity-basis-and-linking).
-
-#### Ownership in Totals
-
-**Status:** Candidate.
-
-**Recommendation:** Owned, ambiguous and unknown requests each count once in grand
-totals; partial candidate selections are reported as `possible`.
-
-**Designed in:** [§4.2](#42-ownership-and-totals).
-
-#### Purpose Sources
-
-**Status:** Candidate.
-
-**Recommendation:** Native fields in Phase 1, configured rules in Phase 2; annotations
-never set purpose.
-
-**Designed in:** [§3.5](#35-purpose-and-annotations).
-
-#### Resources and Charges
-
-**Status:** Candidate.
-
-**Recommendation:** Defer resource collection; keep provider charges a separate entity
-with no import phase item until a tested receipt or billing export exists.
-
-**Designed in:** [§3.1](#31-entities).
-
-#### Pricing Policy
-
-**Status:** Candidate.
-
-**Recommendation:** Reviewed price table built into the binary from provider pages;
-LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network,
-`--prices` overrides, staleness warning after 90 days.
-
-**Designed in:** [§4.5](#45-price-table).
-
-#### Dialect IDs and Override Variables
-
-**Status:** Candidate.
-
-**Recommendation:** Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`,
-`codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables.
-
-**Designed in:** [§2.1](#21-dialects-and-discovery).
-
-#### CLI Surface
-
-**Status:** Candidate.
-
-**Recommendation:** Add `weekly`, `--per-session`, `--whole-sessions`, `--sessions-from`
-and `--annotation-set`, and use one `--source` flag for every input, with no `--input`.
-The proposal also named `tree` and `windows`, but `tree` is part of confirmed
-[Decision 13](#decision-13-selection-defaults) and the `windows` report of confirmed
-[Decision 10](#decision-10-recorded-usage-windows), so only the items above remain to
-confirm.
-
-**Designed in:** [§6.3](#63-commands), [§6.1](#61-workflows-and-session-selection),
-[§6.4](#64-queries-output-formats-and-streams) and
-[§5.1](#51-portable-inputs-and-artifacts).
-
-#### Strict Mode
-
-**Status:** Candidate.
-
-**Recommendation:** `--strict` exits 3 on any coverage gap, including nonzero unresolved
-usage.
-
-**Designed in:** [§6.4](#64-queries-output-formats-and-streams).
-
-### 10.2 Queued Review Decisions
-
-The 2026-09-14
-[squares code review](project/research/research-2026-09-14-squares-code-review.md) and
-[metaproc and qm review](project/research/research-2026-09-14-metaproc-code-review.md)
-raised these decisions; they are queued for one-at-a-time maintainer confirmation in
-bead `uro-gxen`. None is reflected in the design above yet.
-The same walkthrough already resolved the capture store and its Phase 2 cache read path
-([Decision 8](#decision-8-capture-store-and-cache)), harness logs read through urollup’s
-own adapters ([Decision 4](#decision-4-harness-logs-through-urollup-adapters)) and qm
-([Decision 5](#decision-5-qm-out-of-scope)).
-
-#### Capture Metadata for Captured Streams
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Choose whether urollup defines a small softschema capture-metadata
-contract (capture time, requested model and effort, `cwd`, account, harness) that
-harnesses write beside captured streams, reads metaproc’s `.invocation.json` as-is, or
-uses records only plus source mappings.
-metaproc#82 (2026-09-15) preserves pooled Codex rollouts, and Claude transcripts when
-persistence is on, so metadata matters mainly for Claude and Pi runs with persistence
-off and for non-pool cloud runs.
-The metaproc review recommends treating optional `<log>.invocation.json` sidecars as
-part of the harness run-directory layout.
-
-**Links:** [§2.6](#26-harness-captures); metaproc review
-[plan changes](project/research/research-2026-09-14-metaproc-code-review.md#plan-changes)
-(P1).
-
-#### Organization and Quota Groups per Account
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Allow an optional organization or quota-group identifier per
-account, record `apiKeySource` as an observed property, and keep principals distinct
-from billing accounts; windows become groupable by quota group, feeding the account
-registry (`uro-um7n`).
-
-**Links:** [§4.6](#46-accounts-and-plans-later), [§4.4](#44-usage-windows); metaproc
-review
-[plan changes](project/research/research-2026-09-14-metaproc-code-review.md#plan-changes)
-(P5).
-
-#### Unitemized Usage
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Record source totals (`claude-stream` `modelUsage`, Pi `agent_end`)
-that exceed reconciled requests as an `unitemized` measure beside totals, never inside
-them, because it has no request identity to merge on; `--strict` exits 3.
-
-**Links:** [§4.1](#41-measure-contracts); metaproc review
-[data contract changes](project/research/research-2026-09-14-metaproc-code-review.md#data-contract-changes)
-(C1).
-
-#### Branch and Agent Grouping
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Record the observed branch (Claude `gitBranch` per request, Codex
-`session_meta.git.branch` per thread), and Codex `agent_path`, `agent_role` and
-`agent_nickname` as thread properties; add `--group-by branch` and `agent_path`.
-
-**Links:** [§4.3](#43-time-grouping-and-percentiles), [§3.1](#31-entities); squares
-review
-[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
-(7 and 8) and
-[integration needs](project/research/research-2026-09-14-squares-code-review.md#integration-needs).
-
-#### Extended Time Measures
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Add agent-active seconds versus busy union and parallel overlap,
-overlap-safe tool intervals by category, context compaction time, and model-time bounds
-with per-dialect availability.
-
-**Links:** [§4.1](#41-measure-contracts); squares review
-[tallying time and parallel work](project/research/research-2026-09-14-squares-code-review.md#tallying-time-and-parallel-work)
-and
-[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
-(5).
-
-#### Structural Command Summary
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Run a versioned shell-command classifier, ported from squares,
-before tool arguments are stubbed, so command statistics survive stripping.
-
-**Links:** [§2.4](#24-capture-and-export-strip-policies); squares review
-[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
-(4).
-
-#### Per-Extent Completeness
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Flag open and abandoned turns at the snapshot in each extent;
-`--strict` treats open turns as a coverage gap.
-
-**Links:** [§5.2](#52-usage-summary-format),
-[§6.4](#64-queries-output-formats-and-streams); squares review
-[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
-(6).
-
-#### Inferred Timestamps
-
-**Status:** Candidate, queued.
-
-**Recommendation:** For records without timestamps, infer from neighboring records, then
-capture metadata and file modification time, labeled `inferred`; never epoch zero.
-
-**Links:** [§4.3](#43-time-grouping-and-percentiles); metaproc review
-[data contract changes](project/research/research-2026-09-14-metaproc-code-review.md#data-contract-changes)
-(C3).
-
-#### Anomaly Detectors
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Port agentfdr’s loop, error-streak, token-spike and stalled-call
-detectors as labeled estimates in `check` or the reporting skill.
-
-**Links:** [§6.3](#63-commands), [§6.7](#67-reporting-skill-and-cloud-workflow);
-research brief
-[existing implementations](project/research/research-2026-09-13-portable-agent-usage.md#existing-implementations).
-
-#### squares as First Integration User
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Create a bead to replace squares’ log rollups with urollup
-summaries, recording the expected drop in totals, plus its needs: a `softschema.schema`
-pointer on export, flowmark-stable Markdown, and priority for a PyPI wheel.
-
-**Links:** [§5.2](#52-usage-summary-format); squares review
-[integration needs](project/research/research-2026-09-14-squares-code-review.md#integration-needs)
-and
-[recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
-(10, 12 and 19).
-
-### 10.3 Open Questions
-
-#### Cloud Export Formats
-
-**Status:** Open.
-
-**Question:** Which tested cloud export formats are available locally, and what account
-lineage evidence survives export?
-
-**Current position:** Adapter coverage follows evidence rather than vendor names;
-imported exports are ordinary manifested artifacts, and no cloud export format is
-claimed without a test ([§2.1](#projects-and-accounts)).
-
-#### Pricing Bases
-
-**Status:** Open.
-
-**Question:** Which pricing bases should follow first-party list prices: Bedrock and
-Google Cloud rates, negotiated discounts, or subscription plan allocations?
-Would an opt-in price-table download ever justify its network and supply-chain cost?
-
-**Current position:** The price table’s billing channel is initially the first-party
-API, pricing never makes network requests ([§4.5](#45-price-table)), and subscription
-allocations wait for the account registry ([§4.6](#46-accounts-and-plans-later)).
-
-#### Receipts and Billing Exports
-
-**Status:** Open.
-
-**Question:** Which account receipts or billing exports are stable enough to reconcile
-estimates with recorded provider charges?
-
-**Current position:** The provider charge entity is reserved, and no import is planned
-until a tested receipt or billing export exists ([§3.1](#31-entities)).
 
 * * *
 
