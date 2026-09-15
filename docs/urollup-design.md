@@ -80,6 +80,7 @@ in the
     - [Example: Session Report](#example-session-report)
     - [Example: Weekly Rollup from Merged Summaries](#example-weekly-rollup-from-merged-summaries)
   - [6.7 Reporting Skill and Cloud Workflow](#67-reporting-skill-and-cloud-workflow)
+  - [6.8 Status Line](#68-status-line)
 - [7. Serving Layer (Optional)](#7-serving-layer-optional)
   - [7.1 The serve Feature](#71-the-serve-feature)
   - [7.2 Web UI](#72-web-ui)
@@ -103,6 +104,7 @@ in the
   - [10.3 Glossary](#103-glossary)
   - [10.4 Flag Index](#104-flag-index)
   - [10.5 Research and References](#105-research-and-references)
+  - [10.6 ccusage Use-Case Coverage](#106-ccusage-use-case-coverage)
 
 * * *
 
@@ -320,8 +322,9 @@ ledger; bundles re-enter reconciliation.
 ### 2.1 Dialects and Discovery
 
 **Status:** Confirmed, except the dialect IDs and `UROLLUP_*` override variables, which
-are Candidate ([§9.1](#dialect-ids-and-override-variables)); the Pi adapters are Later
-(Phase 2).
+are Candidate ([§9.1](#dialect-ids-and-override-variables)), and the policy for other
+agents, which is Candidate ([§9.1](#additional-agent-adapters)); the Pi adapters are
+Later (Phase 2).
 
 A **dialect** is one log format written by one agent, and each adapter reads one
 dialect. The research brief’s
@@ -369,6 +372,11 @@ gives each dialect’s fields, counters and linkage.
   unobserved coverage gap, never zero.
 - **Unsupported formats:** Pi RPC transcripts and Pi’s experimental v4 session store are
   not supported dialects until tested.
+- **Other agents:** ccusage 20.0.20 also reads 13 agents that urollup does not, such as
+  OpenCode, Gemini CLI and GitHub Copilot CLI, as the research brief’s
+  [ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
+  lists. Each would be a new dialect added by the candidate policy in
+  [§9.1](#additional-agent-adapters).
 
 #### Source Manifest
 
@@ -1749,7 +1757,8 @@ cloud sandboxes defeat the guess.
 **Status:** Confirmed for default selections and `tree`
 ([Decision 13](#decision-13-selection-defaults)) and for `windows`
 ([Decision 10](#decision-10-recorded-usage-windows)); `weekly` and the single `--source`
-input flag are Candidate ([§9.1](#cli-surface)); Phase 2 commands are Later.
+input flag are Candidate ([§9.1](#cli-surface)), and so is `statusline`
+([§9.1](#statusline-command)); Phase 2 commands are Later.
 
 | Command | Output | Default selection | Phase |
 | --- | --- | --- | --- |
@@ -1760,6 +1769,7 @@ input flag are Candidate ([§9.1](#cli-surface)); Phase 2 commands are Later.
 | `report` | Session report: totals, breakdowns, sizes, tools and limitations | `--current` | 1 |
 | `requests`, `tools` | Request rows with sizes and ownership; tool and command totals | `--current` | 1 |
 | `tree` | Session hierarchy with own and descendant totals | `--current` | 1 |
+| `statusline` | One status line for a Claude Code status line command ([§6.8](#68-status-line)) | Hook input on stdin | 1 (0.5), Candidate |
 | `export` | Usage summary or observation bundle | `--current` | 1 |
 | `merge` | Merged summary or bundle | `--source` inputs only | 1 |
 | `validate`, `schema` | Artifact validation; compiled contract schemas | Named files or contracts | 1 |
@@ -1784,7 +1794,8 @@ urollup serve --project example --open
 
 **Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering));
 `--strict` semantics are Candidate ([§9.1](#strict-mode)); `--annotation-set` is
-Candidate ([§9.1](#cli-surface)) and Later (Phase 2).
+Candidate ([§9.1](#cli-surface)) and Later (Phase 2); terminal presentation and presets
+are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
 
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
@@ -1800,6 +1811,22 @@ Candidate ([§9.1](#cli-surface)) and Later (Phase 2).
   normalized query, source coverage, diagnostics, pricing version, aggregate rows and
   stable evidence references.
   JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
+- **Terminal presentation (Candidate, [§9.1](#report-presentation)):** tables fit the
+  terminal width, and below 100 columns on a terminal, or with `--compact`, they keep
+  only the period or group, token totals and cost; piped output never switches layout.
+  Formatting is locale-independent, with ISO 8601 dates and no `--locale` flag, and
+  JSON, JSONL and CSV values are never formatted for display.
+  Color still appears only on a terminal ([§8.2](#82-engineering-conventions)), and
+  `--color never` or `NO_COLOR` turns it off.
+  `--no-cost` omits amounts from tables and JSON while pricing coverage still appears.
+  `--last <n>` selects the n most recent calendar periods of a calendar report,
+  including the current one, in the report’s timezone and week start, and resolves to
+  absolute bounds in the normalized `QuerySpec`.
+- **Presets (Candidate, [§9.1](#configuration-defaults)):** saved `QuerySpec` files
+  passed with `--query` are the only report presets.
+  No configuration file sets default flags, so a report depends only on its command
+  line, query file, sources and price files, and the platform config directory holds
+  only `sources.yaml` and `prices.yaml`.
 - **Streams and completeness:** stdout carries only the requested format, and
   diagnostics, progress and logs go to stderr.
   A JSON document is written only after the query completes, a JSONL export ends with a
@@ -1830,10 +1857,13 @@ thresholds. A consumer closing stdout after the work completed is success.
 
 ### 6.6 Report Content and Examples
 
-**Status:** Confirmed.
+**Status:** Confirmed; the pooled cache-read share is Candidate
+([§9.1](#report-presentation)).
 
 A report covers scope, totals, model, effort and cache breakdowns, cost coverage,
 request-size outliers, major tool categories, time definitions and limitations.
+Cache breakdowns include the pooled cache-read share, cache reads divided by inclusive
+input, computed from token sums and never averaged across rows.
 It omits raw prompts, tool arguments and absolute private paths unless detailed evidence
 is requested, and producing a report never publishes it.
 
@@ -1886,7 +1916,7 @@ Week of 2026-09-07 (weeks start on Monday), UTC.
 
 ### 6.7 Reporting Skill and Cloud Workflow
 
-**Status:** Later (Phase 2).
+**Status:** Later (Phase 2); a later MCP server is Candidate ([§9.1](#mcp-surface)).
 
 The reporting skill invokes the CLI and explains evidence, never recalculating.
 The same skill runs locally or in Claude Code Cloud: it locates accessible logs, runs a
@@ -1901,7 +1931,46 @@ and never uses an unpinned runner, `latest`, a branch build or the visible chat.
 Direct cloud synchronization is a separate future integration.
 
 Anomaly detectors in `check` or the skill are a queued review decision
-([§9.2](#anomaly-detectors)).
+([§9.2](#anomaly-detectors)). Agents reach usage through the CLI’s JSON output and this
+skill; an MCP server is a candidate for later ([§9.1](#mcp-surface)).
+
+### 6.8 Status Line
+
+**Status:** Candidate ([§9.1](#statusline-command)); the session segment is Phase 1
+(milestone 0.5), and the today segment is Later (Phase 2).
+
+`urollup statusline` prints one line for a Claude Code status line command, the use case
+of ccusage’s `statusline`, without inferred blocks.
+Claude Code passes session JSON on stdin after each assistant message and a few other
+events, debounces runs at 300 ms, sets `COLUMNS`, and cancels a run still in progress
+when a newer update arrives
+([status line docs](https://code.claude.com/docs/en/statusline)). The research brief’s
+[ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
+compares the two commands’ inputs and segments.
+
+- **Session:** the session comes only from the input’s `session_id` and
+  `transcript_path` under the `--hook-input` rules in
+  [§6.2](#62-current-session-detection), never from `--latest`, and exit codes follow
+  [§6.5](#65-exit-codes).
+- **Segments:** the model; the session’s tokens over own and descendant usage, with a
+  list-price estimate and an unpriced marker from milestone 0.4; the recorded
+  `used_percentage` and `resets_at` of each window in the input’s `rate_limits`, shown
+  as Claude Code reported them; and context from `context_window`, with a percentage
+  only against the recorded `context_window_size`. A today segment for the report
+  timezone follows in Phase 2, when capture cache reads keep it within the latency gate.
+- **Labels:** Claude Code’s `cost.total_cost_usd` is a source-reported estimate
+  ([§3.1](#31-entities)) and appears only as a separately labeled value, never in place
+  of the list-price estimate.
+  There are no blocks, burn rates or projections
+  ([Decision 10](#decision-10-recorded-usage-windows)).
+- **Latency:** the command reads only the selected session’s sources, never pays capture
+  cost for the active transcript ([§2.5](#25-capture-store-and-cache)), keeps no
+  time-based output cache, and writes the line only once it is complete, so a cancelled
+  run prints nothing. The plan’s performance targets carry its proposed gate.
+- **Width:** the line fits `COLUMNS` by dropping trailing segments rather than wrapping.
+
+Hook input is not a source log, so its `rate_limits` values are displayed but never
+captured or counted as provider limit observations.
 
 * * *
 
@@ -2260,6 +2329,79 @@ confirm.
 
 **Recommendation:** `--strict` exits 3 on any coverage gap, including nonzero unresolved
 usage.
+
+**Designed in:** [§6.4](#64-queries-output-formats-and-streams).
+
+The next five candidates close gaps found by the
+[ccusage use-case coverage](#106-ccusage-use-case-coverage) review on 2026-09-15.
+
+#### Statusline Command
+
+**Status:** Candidate.
+
+**Recommendation:** Add `urollup statusline` for Claude Code’s status line command, with
+the session segment in milestone 0.5 and a today segment in Phase 2 after capture cache
+reads. It selects the session only from hook input, shows list-price estimates and
+recorded `rate_limits` utilization, and never shows blocks, burn rates or Claude Code’s
+own cost in place of the estimate.
+Whether urollup should also record status line `rate_limits` as provider limit
+observations, which Claude Code transcripts rarely carry, is a separate later question.
+
+**Designed in:** [§6.8](#68-status-line), [§6.3](#63-commands).
+
+#### MCP Surface
+
+**Status:** Candidate.
+
+**Recommendation:** No MCP server in Phases 1 and 2. Agents run the CLI with
+`--format json` or use the reporting skill, just as ccusage relies on its CLI and JSON
+since it removed its MCP package in v19.0.0. A later `urollup mcp` stdio server may
+expose read-only query tools that compile to `QuerySpec`, as a deletable feature beside
+`serve` ([Decision 21](#decision-21-serving-separability)) with no evidence reads by
+default.
+
+**Designed in:** [§6.7](#67-reporting-skill-and-cloud-workflow),
+[§10.2](#102-future-enhancements).
+
+#### Additional Agent Adapters
+
+**Status:** Candidate.
+
+**Recommendation:** Support only Claude Code, Codex and Pi through Phase 2. Add another
+agent, such as one of the 13 that ccusage reads beyond these, one dialect at a time and
+only once fixtures from that agent’s source or a consented corpus exist.
+Each new dialect needs its own strip policies, reconciliation rules and a parity case
+against the matching `ccusage <agent>` path.
+Agents whose usage lives in SQLite (OpenCode, Hermes Agent, Goose and Kilo) wait for
+database input ([Decision 20](#decision-20-database-input-in-phase-3)). ccusage’s MIT
+adapters are format-fact sources under
+[Decision 3](#decision-3-code-reuse-and-licensing).
+
+**Designed in:** [§2.1](#21-dialects-and-discovery), [§10.2](#102-future-enhancements).
+
+#### Report Presentation
+
+**Status:** Candidate.
+
+**Recommendation:** Terminal tables fit the terminal width, with essential columns below
+100 columns or with `--compact`; formatting is locale-independent with no `--locale`;
+`--color never` and `NO_COLOR` turn off terminal color; `--no-cost` omits amounts;
+`--last <n>` selects recent calendar periods as absolute bounds; and reports show the
+pooled cache-read share computed from token sums.
+
+**Designed in:** [§6.4](#64-queries-output-formats-and-streams),
+[§6.6](#66-report-content-and-examples).
+
+#### Configuration Defaults
+
+**Status:** Candidate.
+
+**Recommendation:** No configuration file of default flags, unlike ccusage’s
+`ccusage.json`. Saved `QuerySpec` files passed with `--query` are the presets, so a
+report depends only on its command line, query file, sources and price files, and
+hook-driven and CI reports reproduce anywhere.
+The alternative is a presentation-only defaults file recorded in the normalized
+`QuerySpec`, which could be added later if users need it.
 
 **Designed in:** [§6.4](#64-queries-output-formats-and-streams).
 
@@ -2920,10 +3062,13 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | `pi-session` and `pi-events` adapters, with Pi `--current` detection | Phase 2 | [§2.1](#21-dialects-and-discovery), [§6.2](#62-current-session-detection) |
 | Imported multi-account and cloud-export fixtures | Phase 2 | [§2.1](#projects-and-accounts), [§9.3](#cloud-export-formats) |
 | Configured purpose rules and `--annotation-set` imports | Phase 2 | [§3.5](#35-purpose-and-annotations) |
+| `statusline` today segment, if the candidate is confirmed | Phase 2 | [§6.8](#68-status-line), [§9.1](#statusline-command) |
 | Ledger and query cache for capture layers 2 and 3 | Phase 3 | [§8.3](#ledger-and-query-cache-later) |
 | Read-only snapshot of urollup’s own store as input | Phase 3 | [§5.1](#51-portable-inputs-and-artifacts) |
 | Account registry with dated plan terms, subscription allocations and budgets | Later | [§4.6](#46-accounts-and-plans-later), [§9.2](#organization-and-quota-groups-per-account) |
 | Anomaly detectors ported from agentfdr | Later, if confirmed | [§9.2](#anomaly-detectors) |
+| `urollup mcp` stdio server with read-only query tools | Later, if confirmed | [§9.1](#mcp-surface) |
+| Adapters for further agents, such as those ccusage reads, one tested dialect at a time | Later, if confirmed; SQLite-backed agents no earlier than Phase 3 | [§2.1](#21-dialects-and-discovery), [§9.1](#additional-agent-adapters) |
 | Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§9.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |
@@ -2962,8 +3107,8 @@ section that specifies it.
 Phase comes from the
 [implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md), with
 the Phase 1 milestone in parentheses where the plan assigns one.
-**Candidate** marks flags that await the [CLI Surface](#cli-surface) or
-[Strict Mode](#strict-mode) decision.
+**Candidate** marks flags that await the [CLI Surface](#cli-surface),
+[Strict Mode](#strict-mode) or [Report Presentation](#report-presentation) decision.
 Commands and their default selections are in [§6.3](#63-commands).
 
 Sources and session selection, accepted by every reading command:
@@ -2983,6 +3128,7 @@ Sources and session selection, accepted by every reading command:
 | `--until` | End a half-open time interval; on summary input, bounds clip to 15-minute buckets | [§6.1](#61-workflows-and-session-selection), [§5.2](#52-usage-summary-format) | 1 |
 | `--timezone` | Set the zone for time filters and calendar buckets, the system timezone by default | [§4.3](#43-time-grouping-and-percentiles) | 1 |
 | `--week-start` | Set the first day of calendar weeks, Monday by default | [§4.3](#43-time-grouping-and-percentiles) | 1 |
+| `--last` | Select the n most recent calendar periods of a calendar report, resolved to absolute bounds | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
 | `--whole-sessions` | Include all usage of every session with usage inside the interval | [§6.1](#61-workflows-and-session-selection) | 1 (0.5), Candidate |
 | `--scope` | Choose `self` or `descendants`, whether selected sessions bring their spawned subagent threads | [§4.2](#42-ownership-and-totals), [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
 | `--source` | Add a root, log, summary or bundle; the one input flag for every kind; repeatable | [§2.1](#21-dialects-and-discovery), [§6.3](#63-commands) | 1, Candidate |
@@ -3001,6 +3147,9 @@ Queries and output:
 | `--limit` | Cap the number of result rows | [§6.4](#64-queries-output-formats-and-streams) | 1 |
 | `--strict` | Exit 3 on any coverage gap, including unresolved usage | [§6.4](#64-queries-output-formats-and-streams), [§5.3](#53-exact-aggregation) | 1 (0.5), Candidate |
 | `--require-priced` | Exit 3 when any tokens are unpriced | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.4) |
+| `--compact` | Force the narrow terminal table layout | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
+| `--color` | Choose `auto` or `never` for terminal color; `NO_COLOR` also turns it off | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
+| `--no-cost` | Omit amounts from tables and JSON while pricing coverage still appears | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
 | `--annotation-set` | Group by a named, imported annotation set | [§3.5](#35-purpose-and-annotations) | 2, Candidate |
 | `--baseline` | Name the baseline saved JSON report for `compare` | [§6.3](#63-commands) | 2 |
 | `--candidate` | Name the saved JSON report that `compare` checks against the baseline | [§6.3](#63-commands) | 2 |
@@ -3046,6 +3195,7 @@ Flags the design names that urollup does not accept:
 | Flag | Purpose | Home section | Phase |
 | --- | --- | --- | --- |
 | `--input` | None: there is no input flag, because `--source` names every input | [§6.3](#63-commands) | None |
+| `--locale` | None: formatting is locale-independent (Candidate) | [§6.4](#64-queries-output-formats-and-streams) | None |
 | `--ephemeral` | Codex flag for threads that write no rollout, whose usage is reported as unobserved | [§2.1](#21-dialects-and-discovery) | None |
 | `--session-dir` | Pi flag for a flat session directory, which urollup reads only through `--source` | [§2.1](#21-dialects-and-discovery) | None |
 | `--session-id` | Pi flag for a custom session ID, which can repeat across files and so is never a key alone | [§3.6](#key-scope) | None |
@@ -3055,6 +3205,9 @@ Flags the design names that urollup does not accept:
 Agent, uv and softschema flags that appear only inside quoted commands, such as
 `claude -p --output-format stream-json` in [§2.1](#21-dialects-and-discovery) and the
 contract gate commands in [§5.7](#57-contract-authoring-and-validation), are not listed.
+Neither are the ccusage flags that [§10.6](#106-ccusage-use-case-coverage) and
+[§9.1](#91-candidate-decisions) name, such as `--breakdown` and `--mode`, which belong
+to ccusage.
 
 ### 10.5 Research and References
 
@@ -3066,7 +3219,9 @@ Project documents, none of which contains private session data:
   public-source comparisons, dialect evidence and the case for mergeable results,
   including the
   [portable result merging](project/research/research-2026-09-13-portable-agent-usage.md#portable-result-merging)
-  rationale
+  rationale and the
+  [ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
+  behind [§10.6](#106-ccusage-use-case-coverage)
 - [Rust CLI engineering baseline](project/research/research-2026-09-13-rust-cli-engineering-baseline.md):
   the reasons behind the project conventions
 - [squares code review](project/research/research-2026-09-14-squares-code-review.md) and
@@ -3087,6 +3242,79 @@ External references:
   and [guide](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-guide.md)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
 - [DDSketch](https://arxiv.org/abs/1908.10693), for mergeable log-bucket histograms
+
+### 10.6 ccusage Use-Case Coverage
+
+urollup should roll up usage at least as effectively as ccusage.
+This table records how the design handles each user-facing ccusage use case at release
+20.0.20 (commit `bd7f89b`), the latest release on 2026-09-15. The research brief’s
+[ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
+holds the evidence, command paths and unreleased changes on `main`. The plan’s
+[ccusage reconciliation harness](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#ccusage-reconciliation-harness)
+measures agreement on the shared use cases, and milestone 0.5 adds measured results to
+this table. Parity means covering the use case, not matching flags, labels or accounting
+bugs ([§1.5](#15-non-goals)).
+
+- **Covered:** the design handles the use case.
+- **Covered better:** the design handles it with more exact accounting, evidence or
+  coverage.
+- **Partial:** part of the use case is not designed, as the row says.
+- **Gap:** not designed yet.
+- **Intentionally unsupported:** excluded by a confirmed decision.
+
+A row whose design link says *Candidate* is covered only once that
+[§9.1](#91-candidate-decisions) decision is confirmed.
+The 2026-09-15 review found gaps in status line output, compact tables, color control,
+recent-period shortcuts, cost hiding, cache-hit reporting, configuration defaults and
+other agents’ logs. Candidates close the first six and set a policy for the other two.
+
+| Use case | ccusage 20.0.20 | urollup | Status | Design |
+| --- | --- | --- | --- | --- |
+| Calendar rollups | `daily`, `weekly` and `monthly`; Codex and most other agents have no `weekly` | `daily`, `weekly` and `monthly` for every agent | Covered | [§6.3](#63-commands) |
+| Session rollups | `session`, filtered by last-activity date; Codex sessions keyed by rollout path | `sessions` and `report` keyed by thread, with own and descendant usage clipped to the interval | Covered better | [§6.1](#61-workflows-and-session-selection), [§4.2](#42-ownership-and-totals) |
+| One session’s entries | `claude session --id` | `requests` and `report` with `--session` | Covered better | [§6.3](#63-commands) |
+| All agents in one report | Unified report by default; `--by-agent` | Calendar commands default to `--all`; `--group-by agent`; `sources` lists detected roots | Covered | [§6.3](#63-commands), [§4.3](#43-time-grouping-and-percentiles) |
+| Several reports from one load | `--sections` | One report per command; an exported summary regroups without rereading logs | Partial: no multi-report invocation | [§5.1](#51-portable-inputs-and-artifacts) |
+| 5-hour billing blocks | `blocks`, `--active`, `--recent` and `--session-length`, inferred from activity | None | Intentionally unsupported | [Decision 10](#decision-10-recorded-usage-windows) |
+| Usage against plan limits | `blocks --token-limit`, or percent of the largest past block | `windows` over recorded Codex and Claude limit utilization (Phase 2) | Covered better | [§4.4](#44-usage-windows) |
+| Burn rate and projections | Block burn rate and projected tokens and cost | Forecasts only as labeled estimates, Later and not yet specified | Partial: forecasts not designed | [§4.4](#44-usage-windows), [§10.2](#102-future-enhancements) |
+| Status line | `statusline`: session, today and block cost, burn rate, context | `statusline`: session estimate, recorded `rate_limits` and context against the recorded window; today in Phase 2 | Covered better | [§6.8](#68-status-line) (Candidate) |
+| Agent access and MCP | No MCP server since v19.0.0; agents run the CLI with `--json` | CLI JSON and the reporting skill; an MCP server Later | Covered | [§6.7](#67-reporting-skill-and-cloud-workflow), [§9.1](#mcp-surface) (Candidate) |
+| Library API | None; the CLI and its JSON are the public surface | `urollup-core` crate and versioned, schema-checked contracts | Covered better | [§8.1](#81-workspace-and-crate-structure), [§5.6](#56-versioning-and-compatibility) |
+| npm and Nix installation | npm launcher with native binaries, `npx` and `bunx`, Nix flake | GitHub Release archives, crates.io and PyPI; npm waits for demand | Intentionally unsupported | [Decision 27](#decision-27-release-scope) |
+| Claude Code logs | `CLAUDE_CONFIG_DIR` list and default directories; usage dropped on nested null fields | `claude-project` and `claude-stream` with lenient decoding, the native variable and an override | Covered better | [§2.1](#21-dialects-and-discovery), [§2.2](#22-snapshot-boundary), [§3.4](#34-dialect-reconciliation-rules) |
+| Codex logs | `CODEX_HOME`, active and archived rollouts, `codex exec --json` directories; no `.jsonl.zst` or `token_usage_record` | `codex-rollout` with compressed rollouts and `token_usage_record`, and `codex-exec` | Covered better | [§2.1](#21-dialects-and-discovery), [§3.4](#34-dialect-reconciliation-rules) |
+| Pi logs | `pi` reports, `--pi-path`, extra stores in the config file | `pi-session` and `pi-events` in Phase 2; extra roots through `--source` or the source manifest | Covered | [§2.1](#21-dialects-and-discovery) |
+| Other agents’ logs | 13 more agents, such as OpenCode, Gemini CLI and GitHub Copilot CLI | Not read | Gap | [§9.1](#additional-agent-adapters) (Candidate) |
+| Custom log locations | Agent directory variables and path flags | `--source`, the source manifest and `UROLLUP_*` overrides | Covered | [§2.1](#21-dialects-and-discovery) |
+| Date range | `--since` and `--until` as inclusive local dates | Half-open intervals; relative values resolve to instants in the `QuerySpec` | Covered | [§4.3](#43-time-grouping-and-percentiles), [§6.4](#64-queries-output-formats-and-streams) |
+| Recent periods | `--last <N>` | `--last <n>`, resolved to absolute bounds | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Timezone | `--timezone`, the system zone by default | `--timezone`, the system zone by default, named in every report | Covered | [Decision 11](#decision-11-time-handling) |
+| Week start | `claude weekly --start-of-week`, Sunday by default; unified weeks start on Monday | `--week-start`, Monday by default | Covered | [Decision 11](#decision-11-time-handling) |
+| Project grouping and filter | `claude daily --instances`, `--project` and `--project-aliases`, by Claude Code project directory | `--group-by project` and `--project` from recorded fields, with manifest mappings for worktrees | Covered better | [§2.1](#projects-and-accounts) |
+| Per-model breakdown | `--breakdown` rows and `modelBreakdowns`; Codex ignores `--breakdown` | `--group-by model` for every agent, with advisor iterations under their own model | Covered better | [§4.1](#41-measure-contracts), [§4.3](#43-time-grouping-and-percentiles) |
+| Model display aliases | `CCUSAGE_MODEL_ALIASES` renames models | Models stay as observed; price table aliases affect matching only | Partial: no display aliases | [§3.1](#31-entities), [§4.5](#45-price-table) |
+| Sort order | `--order asc\|desc` | `--sort` and `--limit` | Covered | [§6.4](#64-queries-output-formats-and-streams) |
+| Terminal tables | Boxed tables with a Models column and a totals row | Terminal tables rendered from the shared report data | Covered | [§6.4](#64-queries-output-formats-and-streams) |
+| Compact and responsive tables | Narrow layout below 100 columns or with `--compact` | The same rule, with `--compact` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | Color only on a terminal; `--color never` and `NO_COLOR` turn it off | Partial: no forced color in pipes | [§8.2](#82-engineering-conventions), [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Locale | `--locale` removed; fixed formats | Locale-independent formatting with no `--locale` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| JSON output | `--json` with per-command shapes and no output schema | JSON with schema version, normalized query, coverage and diagnostics; also JSONL, CSV and Markdown | Covered better | [§6.4](#64-queries-output-formats-and-streams), [Decision 15](#decision-15-json-as-an-output-rendering) |
+| JSON filtering | `--jq`, through an external `jq` binary | stdout carries only the requested format, so output pipes to `jq` | Covered | [§6.4](#64-queries-output-formats-and-streams) |
+| Hiding costs | `--no-cost` | `--no-cost`, keeping pricing coverage | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Cache tokens and hit rate | Cache create and read columns; Codex cache creation always 0; no hit rate | Cache reads, 5-minute and 1-hour writes, and the pooled cache-read share | Covered better | [§4.1](#41-measure-contracts), [§6.6](#66-report-content-and-examples) (share Candidate) |
+| Reasoning tokens | Codex only | The reasoning subset of output wherever a dialect records it | Covered better | [§4.1](#41-measure-contracts) |
+| Diagnostics and parallelism | `--debug` scan counts; `--single-thread` | Diagnostics, coverage and phase timings on stderr; explicit worker limits | Covered | [§6.4](#64-queries-output-formats-and-streams), [§8.3](#83-execution-and-performance) |
+| Cost modes | `--mode auto\|calculate\|display`, mixing recorded `costUSD` with calculated cost | List-price and source-reported estimates kept as separate measures | Covered better | [§4.1](#41-measure-contracts), [§3.1](#31-entities) |
+| Price data | Embedded LiteLLM and models.dev snapshots, a live LiteLLM fetch unless `--offline`, `f64` money, fuzzy matching | Reviewed dated table, exact decimals, exact or alias matching, no network | Covered better | [§4.5](#45-price-table) |
+| Price overrides | `pricingOverrides` per raw model name | `--prices` and `prices.yaml`, dated and labeled configured | Covered better | [§4.5](#45-price-table) |
+| Missing prices | A stderr warning and cost 0 | Unpriced coverage and `--require-priced` exiting 3 | Covered better | [§4.5](#45-price-table), [§6.4](#64-queries-output-formats-and-streams) |
+| Fast mode and service tier | Claude `speed`; Codex `--speed`, else `config.toml` for unrecorded tiers | Tier and speed from recorded fields; an unrecorded tier is default-assumed and labeled | Partial: no way to assume another tier | [§4.5](#45-price-table) |
+| Configuration defaults | `ccusage.json` defaults per command and agent, with a JSON schema | `sources.yaml`, `prices.yaml` and saved `--query` presets; no defaults file | Partial: no default flags | [§6.4](#64-queries-output-formats-and-streams), [§9.1](#configuration-defaults) (Candidate) |
+| Environment variables | Agent directory variables, `LOG_LEVEL` and `NO_COLOR` | Native agent variables and `UROLLUP_*` overrides | Covered | [§2.1](#21-dialects-and-discovery) |
+
+Of these 42 use cases, 17 are covered, 16 covered better, 6 partial, 1 a gap and 2
+intentionally unsupported.
 
 * * *
 
