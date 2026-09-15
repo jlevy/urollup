@@ -22,6 +22,7 @@ under review.
 | [Rust CLI engineering baseline](docs/project/research/research-2026-09-13-rust-cli-engineering-baseline.md) | Project setup practices drawn from tbd guidelines, fdu and flowmark-rs |
 | [squares code review](docs/project/research/research-2026-09-14-squares-code-review.md) | Reusable Codex and Claude parsing, time measures and tests from squares, and its integration needs |
 | [metaproc code review](docs/project/research/research-2026-09-14-metaproc-code-review.md) | Captured agent streams, harness pitfalls, accounts and quotas from metaproc and its qm harness |
+| [Agent tool source reviews](docs/project/research/research-2026-09-14-agent-tool-source-reviews.md) | Detailed evidence from the Codex, ccusage, Pi, agentfdr and Anthropic plugin source reviews: dialect facts, reuse tables, pitfalls and recommendation status |
 
 The portable research brief also records a throughput spike on real local logs; its
 prototype is kept in
