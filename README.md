@@ -8,9 +8,9 @@ Its portable output is a softschema usage summary: one session and an aggregate 
 sessions use the same format, and summaries merge into larger summaries without double
 counting.
 
-**Status:** planning.
-There is no product code yet, only one exploration under `explorations/`; the design is
-under review.
+**Status:** milestone 0.1 in progress.
+The Rust workspace and its gates are scaffolded, but no report is implemented yet: the
+`report`, `daily` and `sessions` commands exit 2 as not implemented.
 
 ## Planning Docs
 
@@ -29,16 +29,25 @@ prototype is kept in
 
 ## Development
 
-Work is tracked as [tbd](https://github.com/jlevy/tbd) beads (prefix `uro`).
-Development-only Python tooling is pinned with [uv](https://docs.astral.sh/uv/):
+The workspace has two crates: `crates/urollup-core`, the accounting library, and
+`crates/urollup`, the executable.
+Rust 1.98.0 is pinned in `rust-toolchain.toml`, and the minimum supported Rust version
+is 1.85. Work is tracked as [tbd](https://github.com/jlevy/tbd) beads (prefix `uro`).
+Development-only tools are pinned with [uv](https://docs.astral.sh/uv/) (softschema,
+flowmark) and npm (tryscript, taplo).
 
 ```bash
-uv --config-file uv.toml sync --locked                   # install pinned dev tools
-uv --config-file uv.toml run --frozen softschema --help  # summary contract tooling
-tbd ready                                                # beads ready to work on
+make build   # debug build
+make test    # Rust tests and CLI goldens
+make check   # the handoff gate CI also runs
+make fix     # format Rust, TOML and Markdown
+tbd ready    # beads ready to work on
 ```
 
-See [AGENTS.md](AGENTS.md) for agent and contributor conventions.
+See [AGENTS.md](AGENTS.md) for toolchain setup and contributor conventions,
+[SUPPLY-CHAIN-SECURITY.md](SUPPLY-CHAIN-SECURITY.md) before changing dependencies,
+[SECURITY.md](SECURITY.md) to report a vulnerability, and [PROVENANCE.md](PROVENANCE.md)
+for code ported from other repositories.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

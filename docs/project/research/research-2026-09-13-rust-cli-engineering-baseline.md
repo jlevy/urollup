@@ -527,7 +527,9 @@ flowmark-rs = "2099-12-31"
 
 ## Next Steps
 
-- [ ] Scaffold the repository to this baseline (the plan’s first Phase 1 task).
+- [x] Scaffold the repository to this baseline (the plan’s first Phase 1 task).
+  *(Done 2026-09-15 in bead `uro-phi8`; see
+  [Implementation Notes](#implementation-notes-milestone-01-scaffold).)*
 - [x] Confirm the decisions marked above.
   *(Confirmed 2026-09-13 and 2026-09-14 as design Decisions
   [2](../../urollup-design.md#decision-2-mit-license),
@@ -541,6 +543,70 @@ flowmark-rs = "2099-12-31"
 - [ ] Measure the musl release build on a representative corpus before choosing an
   allocator.
 - [ ] Record reachable hosts for each cloud environment in the cloud smoke test.
+
+## Implementation Notes (Milestone 0.1 Scaffold)
+
+*(Added 2026-09-15, bead `uro-phi8`.)* The scaffold adopts Option A and the
+Recommendations above for everything milestone 0.1 exercises.
+Files ported from fdu `afbb2ee` are listed in [PROVENANCE.md](../../../PROVENANCE.md);
+versions and publication dates are in
+[SUPPLY-CHAIN-SECURITY.md](../../../SUPPLY-CHAIN-SECURITY.md).
+
+**Followed as recommended:**
+
+- **Workspace:** two crates, resolver 3, Edition 2024, `rust-version = "1.85"`, MIT, a
+  release profile that keeps unwinding, and a default-on empty `serve` feature
+  ([Cargo.toml](../../../Cargo.toml)). Rust 1.85.0 builds and tests the workspace, so
+  the MSRV needs no raise.
+- **Lint floor:** the block under [Lint Floor](#lint-floor), `clippy.toml` and
+  `rustfmt.toml`. `clippy::panic` is denied by a crate attribute in `urollup-core`,
+  because Cargo rejects member lints beside `[lints] workspace = true`.
+- **CLI process:** `main` returns `ExitCode` from `run` with injected writers; only exit
+  classes 0, 1 and 2 exist until a feature produces the others; clap’s `color` feature
+  is off, so nothing is styled yet.
+- **Gates:** `make check` and `make fix` in the [Makefile](../../../Makefile), each
+  gate’s logic in a tested script, and CI jobs in
+  [ci.yml](../../../.github/workflows/ci.yml) that wait for the supply-chain job, with
+  read-only permissions, SHA-pinned actions, `--locked` and no caches.
+- **Floor proof:** a `cargo metadata` lint-policy check plus 25 committed violation
+  probes run by `make gate-proofs`
+  ([tests/gate-probes](../../../tests/gate-probes/README.md)). On 2026-09-15 every probe
+  failed its gate with the expected diagnostic, covering the toolchain and uv
+  preflights, supply chain, lint policy, rustfmt, taplo, flowmark, `uv lock --check`,
+  six clippy floor rules and `--all-targets`, a failing test, four golden failure modes,
+  rustdoc, both dependency guards, MSRV and cargo-deny.
+  `npm-audit` has no probe, with the reason recorded in `probes.json`.
+
+**Deviations, each for a stated reason:**
+
+- **Toolchain pin:** 1.98.0, not fdu’s 1.97.1; it was the newest release past the 14-day
+  cool-off.
+- **taplo:** installed from npm `@taplo/cli` 0.7.0 (taplo 0.9.0) in the locked
+  `package-lock.json`, so local and CI format TOML with the same verified build and no
+  Rust compile.
+- **cargo-deny:** CI installs the 0.20.2 release binary through the digest-verified
+  `scripts/install-cargo-deny.sh` instead of fdu’s Docker action, so the audit job and
+  the gate proofs share one binary; a toolchain preflight requires the same version
+  locally.
+- **Supply-chain validator:** beyond fdu, it requires read-only top-level permissions in
+  every workflow, forbids write grants in pull-request jobs, fails on expired exceptions
+  and skips nested agent worktrees.
+  The first-party list is npm `get-tbd` and `tryscript` and PyPI `softschema` and
+  `flowmark-rs`; PyPI `flowmark` is not in the lock, and the locked `frontmatter-format`
+  already clears the cool-off.
+- **Dependency guard:** it denies HTTP and async-runtime crates in both trees and CLI
+  crates in the core, over `cargo tree -e normal --target all`.
+- **Markdown:** `.flowmarkignore` leaves generated skills under `.agents/skills/` and
+  `.claude/skills/` to their generators.
+
+**Deferred to the milestone that needs them:** `insta` and `proptest` (no ledger or
+report data yet), `tracing`, `thiserror` and `anyhow`, the strict cross-target clippy
+job (no platform-gated code yet), the version-stamping `build.rs`, pytest and contract
+gates (milestone 0.2), `bench/` (milestone 0.5), coverage, `cargo-semver-checks`,
+release workflows and a `THIRD-PARTY-NOTICES` file (once third-party code is ported).
+Every tool the gate needs was installable locally, including tryscript.
+The CI workflow has not yet run, so the Windows and Linux arm64 golden runs are
+unverified.
 
 ## Methodology
 

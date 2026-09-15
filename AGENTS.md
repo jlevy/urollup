@@ -35,12 +35,21 @@ Python tooling is development-only and pinned in `pyproject.toml`, `uv.toml` and
 - Dependencies follow a 14-day release cool-off (`exclude-newer` in `uv.toml`);
   first-party packages such as softschema are exempt.
 
+Node tooling is also development-only: `package.json` and `package-lock.json` pin
+tryscript (CLI goldens) and `@taplo/cli` (TOML formatting), and `.npmrc` disables
+lifecycle scripts. Install it with `npm ci --ignore-scripts`; make targets do this on
+demand.
+
 ## Project Status
 
-urollup is in planning; there is no product code yet, only one exploration (a Rust log
-throughput spike) under `explorations/log-throughput/`. It will be a Rust CLI and local
-read-only web UI that produces usage rollups (tokens, cost, request sizes, tools) from
-coding-agent session logs, per session or aggregated across sessions.
+urollup is in Phase 1, milestone 0.1. The Cargo workspace is scaffolded to the
+engineering baseline: `crates/urollup-core` is a documented module skeleton with no
+dependencies, and `crates/urollup` parses `--help`, `--version` and stub `report`,
+`daily` and `sessions` commands that exit 2 as not implemented.
+There is one exploration (a Rust log throughput spike) under
+`explorations/log-throughput/`. urollup will be a Rust CLI and local read-only web UI
+that produces usage rollups (tokens, cost, request sizes, tools) from coding-agent
+session logs, per session or aggregated across sessions.
 
 The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
 decisions, open questions and the CLI flag index.
@@ -54,15 +63,45 @@ spec.
 
 ## Build & Test
 
-No build exists yet.
-The Rust workspace, `make check` gate and CI are defined in the design doc’s “Workspace
-and Crate Structure” and “Engineering Conventions” sections, and scaffolding them is the
-first Phase 1 bead.
+```bash
+make build   # debug build of the workspace
+make test    # Rust tests (default and no-default features) and tryscript CLI goldens
+make check   # handoff gate: everything CI enforces, fastest first
+make fix     # format Rust (rustfmt), TOML (taplo) and Markdown (flowmark)
+```
+
+`make check` is the required handoff gate; if it passes, CI should.
+It runs the toolchain and uv preflights, the supply-chain gate, the lint-policy check,
+rustfmt, taplo and flowmark checks, `uv lock --check`, clippy and tests with and without
+default features, rustdoc, the dependency guard, the MSRV build and tests, cargo-deny,
+npm audit, and `make gate-proofs`, which proves each gate fails on its committed
+violation in `tests/gate-probes/`. Each gate’s decision logic lives in a tested script
+under `scripts/`; `make help` lists the targets, and `.github/workflows/ci.yml` runs the
+same targets.
+
+A fresh machine needs these before `make check`, at the versions the Makefile pins
+(`make toolchain` and `make uv-version` say which is missing):
 
 ```bash
-uv --config-file uv.toml sync --locked                   # install pinned dev tooling
-uv --config-file uv.toml run --frozen softschema --help  # schema contract tooling
+rustup toolchain install 1.98.0 --profile minimal --component clippy,rustfmt  # rust-toolchain.toml
+rustup toolchain install 1.85.0 --profile minimal                             # MSRV
+cargo install cargo-deny --locked --version 0.20.2                            # make audit
+uv --config-file uv.toml sync --locked                                        # softschema, flowmark
+npm ci --ignore-scripts                                                       # tryscript, taplo
 ```
+
+- **CLI goldens:** sessions in `tests/golden/*.tryscript.md` run against
+  `target/debug/urollup` through `$UROLLUP_BIN`. After an intentional output change run
+  `make golden-update` and read the diff; `--update` writes what it saw, and
+  `make golden-lint` rejects machine-specific paths.
+- **Serving boundary:** the `serve` feature of `crates/urollup` is default-on and empty
+  until Phase 2. HTTP, async-runtime and web-asset crates may enter only as `optional`
+  dependencies behind it; `make dependency-guard` fails if one reaches `urollup-core` or
+  a `--no-default-features` build.
+- **Dependencies:** follow [SUPPLY-CHAIN-SECURITY.md](SUPPLY-CHAIN-SECURITY.md) before
+  adding or upgrading any crate, npm package, PyPI package, action or toolchain.
+- **Ported code:** record every file adapted from another repository in
+  [PROVENANCE.md](PROVENANCE.md) with its source path and commit.
 
 ## Conventions & Patterns
 

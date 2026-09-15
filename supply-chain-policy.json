@@ -1,4 +1,5 @@
 {
+  "$comment": "Validated by scripts/check-supply-chain.mjs (make supply-chain). The reviewed version record with publication dates and held-back releases is in SUPPLY-CHAIN-SECURITY.md.",
   "schema": 1,
   "minimumAgeDays": 14,
   "exceptions": [],
