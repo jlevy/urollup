@@ -1,6 +1,6 @@
 ---
 title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
-description: Shared Rust request accounting and query engine for local agent logs, CLI reports, and a read-only web UI, with persistent caching deferred.
+description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
 status: Draft
@@ -89,6 +89,7 @@ The capture store lands only after the uncached engine is the correctness refere
   goldens; list-price estimates wait for 0.4
   ([§6.3](../../../urollup-design.md#63-commands),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams),
+  [§6.5](../../../urollup-design.md#65-exit-codes),
   [§4.1](../../../urollup-design.md#41-measure-contracts),
   [§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles)).
 
@@ -359,8 +360,8 @@ The design doc records every decision and open question:
 - **Candidate:** 9 proposed decisions already reflected in the design, pending
   maintainer confirmation, in
   [§10.1](../../../urollup-design.md#101-candidate-decisions).
-- **Queued:** 10 review decisions raised by the squares and metaproc code reviews,
-  walked through one at a time in bead `uro-gxen`, in
+- **Queued:** 11 review decisions raised by the squares and metaproc code reviews and
+  the PR #3 design review, walked through one at a time in bead `uro-gxen`, in
   [§10.2](../../../urollup-design.md#102-queued-review-decisions).
 - **Open questions** on cloud export formats, pricing bases and billing exports are in
   [§10.3](../../../urollup-design.md#103-open-questions).

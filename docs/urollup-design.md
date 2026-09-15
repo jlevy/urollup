@@ -10,12 +10,14 @@ Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session
 
 **Last updated**: 2026-09-15
 
-Sections 1 to 8 and each item in §10 carry a **Status:** line using three labels:
-**Confirmed** (decided, with the decision recorded in [§9.1](#91-design-decisions)),
-**Candidate** (proposed and reflected in the design, pending maintainer confirmation in
-[§10](#10-cross-cutting-candidate-decisions-and-open-questions)) and **Later** (designed
-now for a future phase).
-Phases and milestones are defined in the
+Sections 1 to 8 and each item in §10 carry a **Status:** line.
+**Confirmed** marks settled design that awaits no §10 decision; where a maintainer
+decision applies, the line cites it from [§9.1](#91-design-decisions).
+**Candidate** marks behavior that is proposed and reflected in the design but pending
+maintainer confirmation in
+[§10](#10-cross-cutting-candidate-decisions-and-open-questions), **Later** marks
+behavior designed now for a future phase, and the questions in
+[§10.3](#103-open-questions) are **Open**. Phases and milestones are defined in the
 [implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md).
 
 * * *
@@ -31,6 +33,8 @@ Phases and milestones are defined in the
   - [1.6 Layer Overview](#16-layer-overview)
 - [2. Sources and Capture Layer](#2-sources-and-capture-layer)
   - [2.1 Dialects and Discovery](#21-dialects-and-discovery)
+    - [Source Manifest](#source-manifest)
+    - [Projects and Accounts](#projects-and-accounts)
   - [2.2 Snapshot Boundary](#22-snapshot-boundary)
   - [2.3 Capture Layers and Re-extraction](#23-capture-layers-and-re-extraction)
   - [2.4 Capture and Export Strip Policies](#24-capture-and-export-strip-policies)
@@ -43,6 +47,10 @@ Phases and milestones are defined in the
   - [3.4 Dialect Reconciliation Rules](#34-dialect-reconciliation-rules)
   - [3.5 Purpose and Annotations](#35-purpose-and-annotations)
   - [3.6 Analytical Identities](#36-analytical-identities)
+    - [ID Derivation](#id-derivation)
+    - [Key Scope](#key-scope)
+    - [Identity Basis and Linking](#identity-basis-and-linking)
+    - [Identities and Redaction](#identities-and-redaction)
 - [4. Accounting Layer](#4-accounting-layer)
   - [4.1 Measure Contracts](#41-measure-contracts)
   - [4.2 Ownership and Totals](#42-ownership-and-totals)
@@ -53,6 +61,8 @@ Phases and milestones are defined in the
 - [5. Artifact Layer](#5-artifact-layer)
   - [5.1 Portable Inputs and Artifacts](#51-portable-inputs-and-artifacts)
   - [5.2 Usage Summary Format](#52-usage-summary-format)
+    - [Example: Current-Session Summary](#example-current-session-summary)
+    - [Example: Aggregate Summary](#example-aggregate-summary)
   - [5.3 Exact Aggregation](#53-exact-aggregation)
   - [5.4 Observation Bundles](#54-observation-bundles)
   - [5.5 Redaction](#55-redaction)
@@ -65,6 +75,8 @@ Phases and milestones are defined in the
   - [6.4 Queries, Output Formats and Streams](#64-queries-output-formats-and-streams)
   - [6.5 Exit Codes](#65-exit-codes)
   - [6.6 Report Content and Examples](#66-report-content-and-examples)
+    - [Example: Session Report](#example-session-report)
+    - [Example: Weekly Rollup from Merged Summaries](#example-weekly-rollup-from-merged-summaries)
   - [6.7 Reporting Skill and Cloud Workflow](#67-reporting-skill-and-cloud-workflow)
 - [7. Serving Layer (Optional)](#7-serving-layer-optional)
   - [7.1 The serve Feature](#71-the-serve-feature)
@@ -74,6 +86,9 @@ Phases and milestones are defined in the
   - [8.1 Workspace and Crate Structure](#81-workspace-and-crate-structure)
   - [8.2 Engineering Conventions](#82-engineering-conventions)
   - [8.3 Execution and Performance](#83-execution-and-performance)
+    - [Uncached Engine](#uncached-engine)
+    - [Capture Cache](#capture-cache)
+    - [Ledger and Query Cache (Later)](#ledger-and-query-cache-later)
   - [8.4 Security Considerations](#84-security-considerations)
   - [8.5 Operational Concerns](#85-operational-concerns)
 - [9. Appendices](#9-appendices)
@@ -154,7 +169,7 @@ authorities:
   deduplicate with different keys, it drops a Claude record’s usage when the line holds
   a nested null field, it reads neither `token_usage_record` nor `rate_limits` nor
   `.jsonl.zst` files, and it prices with fuzzy model matching, floating-point money and
-  LiteLLM rates fetched at runtime, showing unpriced tokens as cost 0.
+  LiteLLM rates fetched at runtime, showing unpriced tokens as cost 0 in JSON.
 - **agentfdr** (0.8.0) supplies reports, search, anomaly heuristics and a session
   viewer, but it under-reports Claude input when a request has several `iterations`,
   adds every repeated Codex `token_count` event, deduplicates nothing across files,
@@ -496,7 +511,9 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
   and zstd-compressed JSONL segments of captured records.
   The manifest records the dialect, adapter and capture policy versions, the captured
   byte extent, the source fingerprint, the digest of the first complete record, and the
-  digest of the captured extent’s final 64 KiB.
+  digest of the captured extent’s final 64 KiB. The default **prefix check** compares
+  file identity, size and these two digests to decide whether a source still starts with
+  its captured prefix.
 - **Scope:** capture applies only to sources found by default discovery, the user’s own
   agent logs. Raw logs passed with `--source` are read but captured only with
   `--capture`, and summaries and bundles are never captured.
@@ -514,8 +531,8 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
   When a source log is gone, runs read its captured records instead and report the
   source as `retained` with its capture time; until the Phase 2 cache, runs read
   captured records only for such sources.
-  When a prefix check shows a source was replaced, truncated or rewritten in place, the
-  previous entry is kept as a retained version.
+  When the prefix check shows a source was replaced, truncated or rewritten in place,
+  the previous entry is kept as a retained version.
   A rewrite that changes the source’s first complete record, such as a Codex rollout
   migration or a Pi v1 or v2 file rewritten on load, yields a new `src-` ID, and the old
   entry becomes `retained` under its own ID. Runs read both, reconciliation deduplicates
@@ -526,9 +543,8 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
 - **Phase 2 cache reads:** when versions match and the source still starts with the
   captured prefix, a run reads captured records for the captured extent and parses only
   complete records past it, appending them as a new segment.
-  The default prefix check compares file identity, size and the two recorded digests;
-  `--verify-cache` hashes the whole captured extent, which also catches a same-size
-  mutation that leaves both digests unchanged.
+  `--verify-cache` replaces the default prefix check with a hash of the whole captured
+  extent, which also catches a same-size mutation that leaves both digests unchanged.
 - **Idempotence:** capturing the same bytes yields identical records, entries are keyed
   by source and extent, and reconciliation deduplicates by analytical ID, so repeating a
   run never adds usage.
@@ -611,9 +627,8 @@ Codex rollouts save only the requested model (`turn_context.model`), never the m
 server reroute served, so Codex request models are `requested`. Placeholder model names,
 such as Codex `codex-auto-review` and Claude `<synthetic>`, stay as observed.
 
-Phase 1 adapters keep every limit record as a provider limit observation, so no window
-data is lost before a report uses it ([§4.4](#44-usage-windows)). Provider limit
-observations need dialect care:
+Provider limit observations feed the Phase 2 `windows` report
+([§4.4](#44-usage-windows)) and need dialect care:
 
 - Codex writes one latest snapshot per `limit_id` and repeats it in every `token_count`
   event, so identical consecutive snapshots are one observation.
@@ -667,9 +682,8 @@ The discovery index and reconciliation produce these relationship edges:
   ID become child threads with fallback identities.
 
 A crawler builds a forest of spawn, fork and inline-sidechain edges.
-Spawn edges define `descendants` scope ([§4.2](#42-ownership-and-totals)):
-`--scope descendants` follows spawn edges transitively and never fork edges, because
-copied history is deduplicated rather than owned twice.
+Spawn edges define `descendants` scope ([§4.2](#42-ownership-and-totals)) and fork edges
+never do, because copied history is deduplicated rather than owned twice.
 `urollup tree` shows each node’s agent, dialect, source kind, depth, and own and
 descendant totals. A thread with an undiscovered parent becomes a root with an orphan
 diagnostic, and an edge that would close a cycle is dropped with a diagnostic.
@@ -992,10 +1006,9 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
   Null is an explicit group.
 - Percentiles are recomputed from observations or from mergeable histograms, never
   averaged across groups.
-  Query reports compute exact percentiles under a memory budget: a ledger or exact
-  percentile over that budget spills to an ephemeral external-sort store, and past that
-  store’s limit the run fails with a capacity diagnostic (exit 1) rather than report a
-  partial total. Approximate percentiles require recorded method and error metadata.
+  Query reports compute exact percentiles under the memory budget in
+  [§8.3](#uncached-engine), and approximate percentiles require recorded method and
+  error metadata.
 
 Branch and agent-path grouping and inferred timestamps for records without one are
 queued review decisions ([§10.2](#branch-and-agent-grouping) and
@@ -1018,8 +1031,7 @@ reset windows from activity gaps.
   `rate_limit_event` records with `rateLimitType`, `status`, `resetsAt` and overage
   fields but no timestamp, so a Claude window needs a configured length and is labeled
   configured.
-- **Units:** utilization units differ by source (Codex `used_percent` is a percent, a
-  `claude-stream` `utilization` a fraction), so values keep their native unit.
+- **Units:** utilization keeps its native unit ([§3.1](#31-entities)).
 
 Phase 1 adapters keep every limit record as a
 [provider limit observation](#31-entities), so no window data is lost before a report
@@ -1135,8 +1147,8 @@ Organization or quota-group identifiers per account are a queued review decision
 
 **Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering),
 [Decision 16](#decision-16-summary-and-bundle-artifacts) and
-[Decision 20](#decision-20-database-input-in-phase-3)); database input is Later (Phase
-3).
+[Decision 20](#decision-20-database-input-in-phase-3)); the `--per-session` export flag
+is Candidate ([§10.1](#cli-surface)); database input is Later (Phase 3).
 
 Raw JSON and JSONL logs, compressed logs, usage summaries and observation bundles all
 enter the same reconciliation pipeline and can be mixed.
@@ -1216,8 +1228,8 @@ inputs.
 | `exports` | `rpt-` IDs of the exports the summary covers |
 | `sessions[]` | Extents: `thread`, its redacted `key`, `parent`, `ownership`, `candidates`, `status` (`counted` or `unresolved`), `extent`, `properties`, `usage`, `sizes`, `tools`, `busy` and `top` |
 | `extent` | Request count; digest of the sorted request IDs and the `nonfinal` map; optional request `index`; `nonfinal`, a map from request ID to usage revision for each request whose usage may still change; and first and last timestamps |
-| `usage[]` | Additive counters per 15-minute UTC bucket and per price-matching dimension: model, effort, service tier and cache-write duration |
-| `totals` | Derived: scope, requests and tokens by ownership, `unresolved` requests and extents, `possible` sums, list-price estimate with pricing basis and coverage, snapshot cutoff |
+| `usage[]` | Additive counters per 15-minute UTC bucket and per pricing dimension: model, effort, service tier, cache-write duration, the context band that applied under the export’s pricing basis (or none), and which of tier and cache-write duration were default-assumed rather than observed |
+| `totals` | Derived: scope, requests and tokens by ownership, `unresolved` (candidate-set members counted as unresolved in [§4.2](#42-ownership-and-totals), and the number of unresolved extents, whose usage stays inside those extents), `possible` sums, list-price estimate with pricing basis and coverage, snapshot cutoff |
 | `extensions` | Open map for measures not yet in the contract, carried per extent and never totaled |
 
 Design rules:
@@ -1229,10 +1241,18 @@ Design rules:
   precision diagnostic naming the effective interval.
 - Rows carry every dimension the price table matches on, so merge recomputes money under
   one pricing basis rather than adding amounts.
-  A rate boundary inside a bucket is a pricing-coverage diagnostic.
+  The context band is decided per request ([§4.5](#45-price-table)), so a row records
+  the band its requests fell in under the export’s pricing basis, and repricing under a
+  table with different band thresholds is a pricing-coverage diagnostic, as is a rate
+  boundary inside a bucket.
+  Rows also record which dimensions were default-assumed, so the pricing coverage in
+  `totals` recomputes from extents.
 - The request index costs roughly 40 bytes per request and is on by default, so
   re-exported and time-windowed summaries merge exactly.
   `--no-index` omits it for summaries that only need to merge with other sessions.
+  Without an index, merge cannot see a request that two exports attribute to different
+  owner threads ([§5.3](#53-exact-aggregation)), so `--no-index` is safe only for inputs
+  that cannot share a request.
 - A Markdown session report may use softschema’s `frontmatter-md` profile with the same
   payload, while large aggregates stay pure YAML, following softschema’s
   [inline-small, companion-large](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-guide.md#playbook-inline-frontmatter-vs-companion-data)
@@ -1270,9 +1290,11 @@ sessions:
     properties: {agent: claude, dialect: claude-project, project: example, account: null}
     usage:
       - {bucket: "2026-09-12T14:00:00Z", model: example-model, effort: high,
-         tier: standard, cache_write: 5m, requests: 12, uncached_input: 1200,
-         cache_read: 88100, cache_write_tokens: 2400, output: 4100, reasoning: 1300}
-      # ...one row per bucket and price dimension
+         tier: standard, cache_write: 5m, band: null, assumed: [],
+         requests: 12, uncached_input: 1200, cache_read: 88100,
+         cache_write_tokens: 2400, output: 4100, reasoning: 1300}
+      # ...one row per bucket and pricing dimension; band names the long-context
+      # threshold that applied, and assumed lists default-assumed dimensions
     sizes: {input_tokens: {count: 148, sum: 6402000, min: 1830, max: 176900,
             hist: [[86, 1], ..., [139, 2]]}}  # [bucket index, count]
     tools: {Bash: 58, Read: 44, Edit: 31}
@@ -1339,7 +1361,7 @@ totals:
   requests: {owned: 3019, ambiguous: 5, unknown: 0}
   tokens: {uncached_input: 2105200, cache_read: 104020000, cache_write: 3625000,
            output: 1214300, reasoning: 402000}
-  unresolved: {requests: 0, extents: 2}     # usage stays in the unresolved extents
+  unresolved: {requests: 0, extents: 2}     # no candidate-set members; 78 requests stay in the 2 extents
   possible: {requests: 0}
   list_estimate: {currency: USD, amount: "139.35"}
   pricing: {table: example-2026.09, reviewed: "2026-09-01", priced_requests: 3010,
@@ -1389,7 +1411,7 @@ Request observations are required when:
 - the larger of two nested extents has an older usage revision for a shared request,
   such as a stream finalized after the larger export was taken
 - one request appears under different threads because inputs had different ownership
-  evidence
+  evidence; an index exposes this, and without one the extents count as disjoint
 - two extents of one thread have different digests and either lacks an index
 - inputs use different identity versions, because request indexes hold IDs without keys
 - a query needs exact percentiles over the merged requests
@@ -1473,8 +1495,8 @@ It is associative, commutative and idempotent for compatible inputs, and it pres
 conflicts and lineage when later exports correct earlier requests.
 Session IDs alone are insufficient: overlapping partial exports need request and
 response identities.
-`merge --format bundle` requires every input to carry observations; otherwise `merge`
-writes a summary.
+`merge --format bundle` requires observation inputs
+([§5.1](#51-portable-inputs-and-artifacts)).
 
 ### 5.5 Redaction
 
@@ -1490,10 +1512,8 @@ allow-list. Redaction never affects deduplication, which uses analytical IDs.
   keyed HMAC-SHA-256 labels.
 - **`native-ids`:** also drops native ID fields and labels native IDs inside keys.
 
-`project` is always exported as a plain name, never a path.
-Export resolves it from the source manifest’s project mapping when one matches, else the
-git top-level directory basename when the dialect records it, else the basename of the
-recorded `cwd`; `names` then labels that name.
+`project` is always exported as a plain name, never a path, resolved by the rule in
+[§2.1](#projects-and-accounts); `names` then labels that name.
 Under the default profile, agent, dialect, model, effort, project, account alias, time
 buckets and tool categories therefore group identically across machines, while working
 directory does not survive.
@@ -1618,9 +1638,8 @@ manifests written by urollup to pass `softschema validate` and
 
 ### 6.1 Workflows and Session Selection
 
-**Status:** Confirmed ([Decision 13](#decision-13-selection-defaults)); the added
-`--sessions-from`, `--whole-sessions` and `--per-session` flags are Candidate
-([§10.1](#cli-surface)).
+**Status:** Confirmed ([Decision 13](#decision-13-selection-defaults)); the
+`--sessions-from` and `--whole-sessions` flags are Candidate ([§10.1](#cli-surface)).
 
 The research brief’s
 [common workflows](project/research/research-2026-09-13-portable-agent-usage.md#common-workflows)
@@ -1715,10 +1734,10 @@ cloud sandboxes defeat the guess.
 
 ### 6.3 Commands
 
-**Status:** Confirmed for default selections
-([Decision 13](#decision-13-selection-defaults)); the `tree`, `weekly` and `windows`
-additions and the single `--source` input flag are Candidate ([§10.1](#cli-surface));
-Phase 2 commands are Later.
+**Status:** Confirmed for default selections and `tree`
+([Decision 13](#decision-13-selection-defaults)) and for `windows`
+([Decision 10](#decision-10-recorded-usage-windows)); `weekly` and the single `--source`
+input flag are Candidate ([§10.1](#cli-surface)); Phase 2 commands are Later.
 
 | Command | Output | Default selection | Phase |
 | --- | --- | --- | --- |
@@ -1752,8 +1771,8 @@ urollup serve --project example --open
 ### 6.4 Queries, Output Formats and Streams
 
 **Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering));
-`--strict` semantics are Candidate ([§10.1](#strict-mode)); `--annotation-set` is Later
-(Phase 2).
+`--strict` semantics are Candidate ([§10.1](#strict-mode)); `--annotation-set` is
+Candidate ([§10.1](#cli-surface)) and Later (Phase 2).
 
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
@@ -1767,7 +1786,7 @@ urollup serve --project example --open
   `bundle` for `export` and `merge`. JSON results carry schema version, normalized
   query, source coverage, diagnostics, pricing version, aggregate rows and stable
   evidence references.
-  JSON and CSV rows have no session extents, so they are never merge inputs.
+  JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
 - **Streams and completeness:** stdout carries only the requested format, and
   diagnostics, progress and logs go to stderr.
   A JSON document is written only after the query completes, a JSONL export ends with a
@@ -1939,8 +1958,8 @@ and
   headers or logs. The UI moves it to `sessionStorage`, clears the fragment, and sends
   `Authorization: Bearer <token>` on every API request; the server compares it in
   constant time and sets no cookies.
-  Static assets load without the token, every API route requires it, and `--open` uses a
-  user-only
+  Static assets load without the token, every API route requires it and answers 401
+  without a valid one, and `--open` uses a user-only
   [redirect file](https://github.com/jupyter-server/jupyter_server/blob/67aca0c1703b3aa42bbbcb35e05c2b5bf2304c3f/jupyter_server/serverapp.py#L1402-L1409),
   keeping the token out of process arguments.
 - **Requests:** 403 unless `Host` is exactly `127.0.0.1:<port>` or `localhost:<port>`,
@@ -2056,24 +2075,19 @@ acceptance criteria in the plan’s
 The uncached engine uses buffered streaming reads, lightweight dialect decoding, bounded
 parallelism across files, deterministic merges and compact typed records, and keeps
 source offsets instead of in-memory transcript copies.
-Discovery skips a file only when manifest metadata proves it cannot contribute
-([§2.2](#22-snapshot-boundary)), and filters apply to reconciled requests.
+Discovery follows the skip rule in [§2.2](#22-snapshot-boundary).
 Runs have explicit memory and worker limits and record scan bytes, records per second,
 phase timings, peak RSS and output size.
 A ledger or exact percentile over its memory budget spills to an ephemeral external-sort
 store, and past that store’s limit the run exits 1 with a capacity diagnostic rather
 than report a partial total.
-A `serve` process answers repeated queries from an immutable in-memory snapshot
-([§7.1](#71-the-serve-feature)).
 
 #### Capture Cache
 
 In Phase 2 the [capture store](#25-capture-store-and-cache) also becomes a cache: runs
-read captured records for unchanged prefixes and parse only appended records, with
-`--no-cache`, `--rebuild-cache` and `--verify-cache`. The log throughput spike showed
-uncached extraction is fast enough for Phase 1, so the cache read path can wait.
-Runs with the store disabled, with retained sources, with cached reads and after a
-rebuild must produce identical results.
+read captured records for unchanged prefixes and parse only appended records, under the
+controls and equivalence rule in [§2.5](#25-capture-store-and-cache), which also records
+why the read path waits for Phase 2.
 
 #### Ledger and Query Cache (Later)
 
@@ -2433,7 +2447,9 @@ corpus before the first release.
 **Rationale:** The index lets re-exported and time-windowed summaries merge exactly.
 
 **Tradeoffs:** It costs roughly 40 bytes per request; a summary without it merges
-exactly only with other sessions.
+exactly only with inputs that cannot share a request, because index-less extents with
+different owner threads count as disjoint even when inputs attributed one request to
+different threads.
 
 **Confirmed:** 2026-09-14; see [§5.2](#52-usage-summary-format) and
 [§5.3](#53-exact-aggregation).
@@ -2608,7 +2624,7 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | Ledger and query cache for capture layers 2 and 3 | Phase 3 | [§8.3](#ledger-and-query-cache-later) |
 | Read-only snapshot of urollup’s own store as input | Phase 3 | [§5.1](#51-portable-inputs-and-artifacts) |
 | Account registry with dated plan terms, subscription allocations and budgets | Later | [§4.6](#46-accounts-and-plans-later), [§10.2](#organization-and-quota-groups-per-account) |
-| Anomaly detectors ported from agentfdr | Candidate | [§10.2](#anomaly-detectors) |
+| Anomaly detectors ported from agentfdr | Later, if confirmed | [§10.2](#anomaly-detectors) |
 | Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§10.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |
@@ -2752,14 +2768,16 @@ LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no 
 
 **Status:** Candidate.
 
-**Recommendation:** Add `tree`, `weekly`, `windows`, `--per-session`,
-`--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for
-every input, with no `--input`. `tree` is already part of confirmed
+**Recommendation:** Add `weekly`, `--per-session`, `--whole-sessions`, `--sessions-from`
+and `--annotation-set`, and use one `--source` flag for every input, with no `--input`.
+The proposal also named `tree` and `windows`, but `tree` is part of confirmed
 [Decision 13](#decision-13-selection-defaults) and the `windows` report of confirmed
-[Decision 10](#decision-10-recorded-usage-windows), so this candidate settles the
-remaining additions.
+[Decision 10](#decision-10-recorded-usage-windows), so only the items above remain to
+confirm.
 
-**Designed in:** [§6.3](#63-commands) and [§6.1](#61-workflows-and-session-selection).
+**Designed in:** [§6.3](#63-commands), [§6.1](#61-workflows-and-session-selection),
+[§6.4](#64-queries-output-formats-and-streams) and
+[§5.1](#51-portable-inputs-and-artifacts).
 
 #### Strict Mode
 
@@ -2775,8 +2793,9 @@ usage.
 The 2026-09-14
 [squares code review](project/research/research-2026-09-14-squares-code-review.md) and
 [metaproc and qm review](project/research/research-2026-09-14-metaproc-code-review.md)
-raised these decisions, queued for one-at-a-time maintainer confirmation in bead
-`uro-gxen`. None is reflected in the design above yet.
+raised these decisions, and the PR #3 design review added the last one; they are queued
+for one-at-a-time maintainer confirmation in bead `uro-gxen` (the last in `uro-6y0j`).
+None is reflected in the design above yet.
 The same walkthrough already resolved the capture store and its Phase 2 cache read path
 ([Decision 8](#decision-8-capture-store-and-cache)), harness logs read through urollup’s
 own adapters ([Decision 4](#decision-4-harness-logs-through-urollup-adapters)) and qm
@@ -2912,6 +2931,18 @@ pointer on export, flowmark-stable Markdown, and priority for a PyPI wheel.
 and
 [recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
 (10, 12 and 19).
+
+#### Capture Scope for Manifest Roots
+
+**Status:** Candidate, queued.
+
+**Recommendation:** Treat roots declared in a source manifest as default discovery, so
+the capture store preserves them like the user’s other own logs, and treat
+manifest-declared artifacts like `--source`. [Decision 9](#decision-9-capture-scope)
+names default discovery and `--source` but not manifest roots.
+
+**Links:** [§2.5](#25-capture-store-and-cache), [Source Manifest](#source-manifest); PR
+#3 review finding R8.
 
 ### 10.3 Open Questions
 
