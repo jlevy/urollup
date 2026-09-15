@@ -3,9 +3,9 @@ type: is
 id: is-01m2k1xg6q5hna1tf7v1sd9x4e
 title: "Address review: PR #3 — design doc review"
 kind: task
-status: open
+status: closed
 priority: 1
-version: 18
+version: 19
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels: []
 dependencies: []
@@ -29,6 +29,10 @@ child_order_hints:
   - is-01m2k2n10gq2rwan6gh74xbsmc
   - is-01m2k2n195kyww7b3t8wg5sma4
 created_at: 2026-09-15T17:30:28.437Z
-updated_at: 2026-09-15T17:43:19.588Z
+updated_at: 2026-09-15T17:46:53.587Z
+closed_at: 2026-09-15T17:46:53.586Z
+close_reason: "PR #3 review rounds 1-3 addressed: 15 fixed, 0 rebutted; R8 (uro-6y0j) and S2 (uro-bzoa) deferred and re-parented to uro-lpow"
+resolution: null
+duplicate_of: null
 ---
 Track and address every finding of the senior engineering review on https://github.com/jlevy/urollup/pull/3 (docs/urollup-design.md restructure). One child bead per finding R1..R11; each gets a disposition (fixed, rebutted or deferred).
