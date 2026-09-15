@@ -9,7 +9,8 @@ sessions use the same format, and summaries merge into larger summaries without 
 counting.
 
 **Status:** planning.
-There is no code yet; the design is under review.
+There is no product code yet, only one exploration under `explorations/`; the design is
+under review.
 
 ## Planning Docs
 
@@ -32,9 +33,9 @@ Work is tracked as [tbd](https://github.com/jlevy/tbd) beads (prefix `uro`).
 Development-only Python tooling is pinned with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync --locked                   # install pinned dev tools
-uv run --frozen softschema --help  # summary contract tooling
-tbd ready                          # beads ready to work on
+uv --config-file uv.toml sync --locked                   # install pinned dev tools
+uv --config-file uv.toml run --frozen softschema --help  # summary contract tooling
+tbd ready                                                # beads ready to work on
 ```
 
 See [AGENTS.md](AGENTS.md) for agent and contributor conventions.

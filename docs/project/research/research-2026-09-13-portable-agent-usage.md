@@ -851,6 +851,32 @@ and 2.1 s from the capture cache.
 The operating system’s page cache could not be dropped without elevated privileges, so
 no run is fully cold.
 
+**Reconciliation diagnostics.** The same runs counted, in aggregate, what naive summing
+would have miscounted over all history, using the spike’s own keys (which
+[differ](../../../explorations/log-throughput/README.md#known-divergences-from-the-urollup-contracts)
+from the contract’s rules):
+
+| Diagnostic | Count |
+| --- | --- |
+| Claude usage observations | 311,532 |
+| Claude unique requests | 141,343 |
+| Claude duplicates within one file (repeated block records) | 151,193 |
+| Claude duplicates across files (replays and copies) | 18,996 |
+| Claude duplicates whose usage disagrees | 23,571 |
+| Codex `token_count` events | 285,286 |
+| Codex identical consecutive snapshots | 16,648 |
+| Codex `info: null` events (limit-only) | 3,708 |
+| Codex counter resets (new epochs) | 105 |
+| Codex forked and subagent rollouts | 538 and 2,215 |
+| Codex `token_usage_record` lines, all unique | 81,609 |
+
+Summing every Claude observation would count 2.2 times as many requests as actually
+occurred, and about one duplicate in seven disagrees on usage, so the record-selection
+rule changes totals.
+For Codex, summing cumulative totals per counter epoch and summing per-response
+`last_token_usage` differ by about 7 times on the same files, which is why the
+contract’s copy, epoch and estimate rules are needed rather than either naive sum.
+
 **Findings.**
 
 - Uncached extraction is already fast: a typed parse with a byte prefilter covers the

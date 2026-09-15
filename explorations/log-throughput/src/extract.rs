@@ -95,7 +95,13 @@ pub struct TokenCountAcc {
 
 impl TokenCountAcc {
     /// Returns false when the snapshot repeats the previous one and was skipped.
-    fn observe(&mut self, total: CodexUsage, last: CodexUsage, day: u32, days: &mut BTreeMap<u32, CodexUsage>) -> bool {
+    fn observe(
+        &mut self,
+        total: CodexUsage,
+        last: CodexUsage,
+        day: u32,
+        days: &mut BTreeMap<u32, CodexUsage>,
+    ) -> bool {
         match self.prev_total {
             Some(prev) if prev == total => {
                 self.identical += 1;
@@ -106,12 +112,10 @@ impl TokenCountAcc {
                 self.epoch_final_sum += self.epoch_max;
                 self.epoch_max = 0;
             }
-            Some(prev) => {
-                if total.total - prev.total != last.total {
-                    self.delta_mismatch += 1;
-                }
+            Some(prev) if total.total - prev.total != last.total => {
+                self.delta_mismatch += 1;
             }
-            None => {}
+            Some(_) | None => {}
         }
         self.prev_total = Some(total);
         self.epoch_max = self.epoch_max.max(total.total);
@@ -173,12 +177,20 @@ pub fn prefilter(agent: Agent, line: &[u8]) -> bool {
     match agent {
         Agent::Claude => F_USAGE.find(line).is_some() || F_QUOTA.find(line).is_some(),
         Agent::Codex => {
-            F_TOKEN.find(line).is_some() || F_META.find(line).is_some() || F_TURN.find(line).is_some()
+            F_TOKEN.find(line).is_some()
+                || F_META.find(line).is_some()
+                || F_TURN.find(line).is_some()
         }
     }
 }
 
-pub fn process_line(agent: Agent, decoder: Decoder, use_prefilter: bool, line: &[u8], acc: &mut FileAcc) {
+pub fn process_line(
+    agent: Agent,
+    decoder: Decoder,
+    use_prefilter: bool,
+    line: &[u8],
+    acc: &mut FileAcc,
+) {
     acc.lines += 1;
     if line.iter().all(u8::is_ascii_whitespace) {
         return;
@@ -199,13 +211,21 @@ pub fn process_line(agent: Agent, decoder: Decoder, use_prefilter: bool, line: &
 
 fn snapshot_key(timestamp: &[u8], total: &CodexUsage) -> u64 {
     let mut bytes = timestamp.to_vec();
-    for n in [total.input, total.cached, total.cache_write, total.output, total.reasoning, total.total] {
+    for n in
+        [total.input, total.cached, total.cache_write, total.output, total.reasoning, total.total]
+    {
         bytes.extend_from_slice(&n.to_le_bytes());
     }
     fnv64(&bytes)
 }
 
-fn observe_snapshot(acc: &mut FileAcc, timestamp: &[u8], total: CodexUsage, last: CodexUsage, day: u32) {
+fn observe_snapshot(
+    acc: &mut FileAcc,
+    timestamp: &[u8],
+    total: CodexUsage,
+    last: CodexUsage,
+    day: u32,
+) {
     if acc.tc.observe(total, last, day, &mut acc.tc_days) {
         acc.tc_snapshots.push((snapshot_key(timestamp, &total), last.total));
     }
@@ -221,14 +241,23 @@ fn raw_string(r: &RawValue) -> Option<Cow<'_, str>> {
 
 /// Day from a raw JSON string value such as `"2026-09-14T..."`.
 fn raw_day(r: Option<&RawValue>) -> u32 {
-    r.map(|r| r.get().as_bytes()).filter(|b| b.first() == Some(&b'"')).map(|b| iso_day(&b[1..])).unwrap_or(0)
+    r.map(|r| r.get().as_bytes())
+        .filter(|b| b.first() == Some(&b'"'))
+        .map(|b| iso_day(&b[1..]))
+        .unwrap_or(0)
 }
 
 fn value_day(v: &Value) -> u32 {
     v.get("timestamp").and_then(Value::as_str).map(|s| iso_day(s.as_bytes())).unwrap_or(0)
 }
 
-fn push_claude(acc: &mut FileAcc, message_id: Option<&str>, request_id: Option<&str>, usage: ClaudeUsage, day: u32) {
+fn push_claude(
+    acc: &mut FileAcc,
+    message_id: Option<&str>,
+    request_id: Option<&str>,
+    usage: ClaudeUsage,
+    day: u32,
+) {
     match message_id {
         Some(mid) => {
             let rid = request_id.unwrap_or("");
@@ -290,7 +319,11 @@ fn claude_typed(line: &[u8], acc: &mut FileAcc) {
     let rec: ClaudeLine<'_> = match serde_json::from_slice(line) {
         Ok(r) => r,
         Err(e) => {
-            if e.is_data() { acc.shape_errors += 1 } else { acc.parse_errors += 1 }
+            if e.is_data() {
+                acc.shape_errors += 1
+            } else {
+                acc.parse_errors += 1
+            }
             return;
         }
     };
@@ -428,7 +461,11 @@ fn codex_typed(line: &[u8], acc: &mut FileAcc) {
     let rec: CodexLine<'_> = match serde_json::from_slice(line) {
         Ok(r) => r,
         Err(e) => {
-            if e.is_data() { acc.shape_errors += 1 } else { acc.parse_errors += 1 }
+            if e.is_data() {
+                acc.shape_errors += 1
+            } else {
+                acc.parse_errors += 1
+            }
             return;
         }
     };
@@ -440,13 +477,19 @@ fn codex_typed(line: &[u8], acc: &mut FileAcc) {
                 acc.limits += 1;
             }
             acc.tc.events += 1;
-            let info = p.info.filter(|i| !raw_is_null(i)).map(|i| serde_json::from_str::<CodexInfo>(i.get()));
+            let info = p
+                .info
+                .filter(|i| !raw_is_null(i))
+                .map(|i| serde_json::from_str::<CodexInfo>(i.get()));
             match info {
                 None => acc.tc.null_info += 1,
                 Some(Err(_)) => acc.shape_errors += 1,
                 Some(Ok(info)) => match (info.total_token_usage, info.last_token_usage) {
                     (Some(t), Some(l)) => {
-                        let ts = rec.timestamp.map(|r| r.get().trim_matches('"').as_bytes()).unwrap_or(b"");
+                        let ts = rec
+                            .timestamp
+                            .map(|r| r.get().trim_matches('"').as_bytes())
+                            .unwrap_or(b"");
                         observe_snapshot(acc, ts, t.into(), l.into(), day)
                     }
                     _ => acc.tc.null_info += 1,
@@ -455,7 +498,10 @@ fn codex_typed(line: &[u8], acc: &mut FileAcc) {
         }
         "\"token_usage_record\"" => {
             let rid = p.response_id.and_then(raw_string);
-            let usage = p.usage.filter(|u| !raw_is_null(u)).map(|u| serde_json::from_str::<CodexUsageJson>(u.get()));
+            let usage = p
+                .usage
+                .filter(|u| !raw_is_null(u))
+                .map(|u| serde_json::from_str::<CodexUsageJson>(u.get()));
             match (rid, usage) {
                 (Some(rid), Some(Ok(u))) => acc.codex_records.push(CodexRecordObs {
                     response_id: rid.into_owned().into_boxed_str(),
@@ -502,7 +548,9 @@ fn codex_value(line: &[u8], acc: &mut FileAcc) {
             return;
         }
     };
-    let (Some(ty), Some(p)) = (v.get("type").and_then(Value::as_str), v.get("payload")) else { return };
+    let (Some(ty), Some(p)) = (v.get("type").and_then(Value::as_str), v.get("payload")) else {
+        return;
+    };
     if !p.is_object() {
         return;
     }
@@ -523,14 +571,16 @@ fn codex_value(line: &[u8], acc: &mut FileAcc) {
                 _ => acc.tc.null_info += 1,
             }
         }
-        "token_usage_record" => match (p.get("response_id").and_then(Value::as_str), p.get("usage")) {
-            (Some(rid), Some(u)) if u.is_object() => acc.codex_records.push(CodexRecordObs {
-                response_id: rid.into(),
-                usage: codex_usage_value(u),
-                day,
-            }),
-            _ => acc.shape_errors += 1,
-        },
+        "token_usage_record" => {
+            match (p.get("response_id").and_then(Value::as_str), p.get("usage")) {
+                (Some(rid), Some(u)) if u.is_object() => acc.codex_records.push(CodexRecordObs {
+                    response_id: rid.into(),
+                    usage: codex_usage_value(u),
+                    day,
+                }),
+                _ => acc.shape_errors += 1,
+            }
+        }
         "session_meta" => {
             acc.session_meta += 1;
             if nonnull("forked_from_id") {
@@ -593,7 +643,8 @@ pub(crate) mod tests {
         assert!(!typed.claude[2].has_request_id);
         assert_eq!(typed.limits, 1);
         assert_eq!(typed.parse_errors, 1);
-        for (dec, pre) in [(Decoder::Value, false), (Decoder::Typed, true), (Decoder::Value, true)] {
+        for (dec, pre) in [(Decoder::Value, false), (Decoder::Typed, true), (Decoder::Value, true)]
+        {
             let other = run(Agent::Claude, CLAUDE, dec, pre);
             assert_eq!(claude_summary(&typed), claude_summary(&other), "{dec:?} prefilter={pre}");
             assert_eq!(typed.limits, other.limits);
@@ -610,12 +661,19 @@ pub(crate) mod tests {
         assert_eq!(typed.tc.delta_mismatch, 0);
         assert_eq!(typed.tc.sum_last.total, 110 + 220 + 55);
         assert_eq!(typed.tc.epoch_final_sum, 330 + 55);
-        assert_eq!((typed.session_meta, typed.forked, typed.subagent, typed.turn_contexts), (1, 1, 1, 1));
+        assert_eq!(
+            (typed.session_meta, typed.forked, typed.subagent, typed.turn_contexts),
+            (1, 1, 1, 1)
+        );
         assert_eq!(typed.codex_records.len(), 1);
         assert_eq!(typed.limits, 1);
-        for (dec, pre) in [(Decoder::Value, false), (Decoder::Typed, true), (Decoder::Value, true)] {
+        for (dec, pre) in [(Decoder::Value, false), (Decoder::Typed, true), (Decoder::Value, true)]
+        {
             let o = run(Agent::Codex, CODEX, dec, pre);
-            assert_eq!(serde_json::to_string(&typed.tc).unwrap(), serde_json::to_string(&o.tc).unwrap());
+            assert_eq!(
+                serde_json::to_string(&typed.tc).unwrap(),
+                serde_json::to_string(&o.tc).unwrap()
+            );
             assert_eq!(typed.tc_days, o.tc_days);
             assert_eq!(typed.codex_records.len(), o.codex_records.len());
             assert_eq!((o.session_meta, o.forked, o.subagent, o.limits), (1, 1, 1, 1));

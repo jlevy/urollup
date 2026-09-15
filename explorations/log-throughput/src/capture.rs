@@ -2,9 +2,10 @@
 //!
 //! Each source file becomes `<capture-dir>/<path hash>.jsonl.zst`, holding the
 //! records the capture policy keeps with content replaced by `{"$b": bytes, "$d": digest}`
-//! stubs. File names carry no source path. The digest here is a keyed-hash stand-in for
-//! the architecture doc's HMAC-SHA-256: same 64-hex length and incompressibility, not
-//! cryptographic.
+//! stubs. File names carry no source path. The digest here is an unkeyed, deterministic
+//! stand-in for the architecture doc's keyed HMAC-SHA-256: `DefaultHasher::new()` uses
+//! fixed SipHash keys, so identical content gets the same digest on every machine. It
+//! matches only the 64-hex length and incompressibility, and is not cryptographic.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
@@ -37,7 +38,8 @@ pub enum Class {
     Display,
 }
 
-pub const CLASSES: [Class; 4] = [Class::Usage, Class::Structure, Class::Conversation, Class::Display];
+pub const CLASSES: [Class; 4] =
+    [Class::Usage, Class::Structure, Class::Conversation, Class::Display];
 
 impl Class {
     fn name(self) -> &'static str {
@@ -70,7 +72,11 @@ fn str_at<'a>(v: &'a Value, keys: &[&str]) -> &'a str {
 /// Sanitized record type label, safe to print in aggregates.
 fn type_label(agent: Agent, v: &Value) -> String {
     let clean = |s: &str| -> String {
-        if !s.is_empty() && s.len() <= 48 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-') {
+        if !s.is_empty()
+            && s.len() <= 48
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        {
             s.to_string()
         } else if s.is_empty() {
             "-".into()
@@ -99,7 +105,8 @@ pub fn classify(agent: Agent, v: &Value) -> Class {
     match agent {
         Agent::Claude => match str_at(v, &["type"]) {
             "assistant" => {
-                let has_usage = v.get("message").and_then(|m| m.get("usage")).is_some_and(Value::is_object);
+                let has_usage =
+                    v.get("message").and_then(|m| m.get("usage")).is_some_and(Value::is_object);
                 let has_limits = v.get("quotaLimits").is_some_and(|q| !q.is_null());
                 if has_usage || has_limits { Class::Usage } else { Class::Structure }
             }
@@ -113,9 +120,17 @@ pub fn classify(agent: Agent, v: &Value) -> Class {
             ("inter_agent_communication_metadata", _) => Class::Structure,
             (
                 "event_msg",
-                "task_started" | "task_complete" | "turn_aborted" | "thread_settings_applied" | "context_compacted"
-                | "thread_rolled_back" | "sub_agent_activity" | "entered_review_mode" | "exited_review_mode"
-                | "error" | "stream_error",
+                "task_started"
+                | "task_complete"
+                | "turn_aborted"
+                | "thread_settings_applied"
+                | "context_compacted"
+                | "thread_rolled_back"
+                | "sub_agent_activity"
+                | "entered_review_mode"
+                | "exited_review_mode"
+                | "error"
+                | "stream_error",
             ) => Class::Structure,
             ("response_item", "message" | "reasoning" | "agent_message") => Class::Conversation,
             ("response_item", _) => Class::Structure,
@@ -125,21 +140,70 @@ pub fn classify(agent: Agent, v: &Value) -> Class {
 }
 
 const CLAUDE_CONTENT: &[&str] = &[
-    "content", "text", "thinking", "signature", "input", "wireToolInputs", "attachment", "snapshot",
-    "trackedFileBackups", "originalFile", "oldString", "newString", "stdout", "stderr", "prompt", "lastPrompt",
-    "summary", "data", "normalizedMessages", "structuredPatch", "result", "output", "query", "results",
-    "questions", "answers", "todos", "oldTodos", "newTodos", "filenames", "matches", "plan",
+    "content",
+    "text",
+    "thinking",
+    "signature",
+    "input",
+    "wireToolInputs",
+    "attachment",
+    "snapshot",
+    "trackedFileBackups",
+    "originalFile",
+    "oldString",
+    "newString",
+    "stdout",
+    "stderr",
+    "prompt",
+    "lastPrompt",
+    "summary",
+    "data",
+    "normalizedMessages",
+    "structuredPatch",
+    "result",
+    "output",
+    "query",
+    "results",
+    "questions",
+    "answers",
+    "todos",
+    "oldTodos",
+    "newTodos",
+    "filenames",
+    "matches",
+    "plan",
 ];
 
 const CODEX_CONTENT: &[&str] = &[
-    "content", "text", "summary", "encrypted_content", "arguments", "input", "output", "message",
-    "replacement_history", "base_instructions", "instructions", "user_instructions", "developer_instructions",
-    "last_agent_message", "patch", "stdout", "stderr", "aggregated_output", "formatted_output", "changes",
-    "unified_diff", "action", "results", "query",
+    "content",
+    "text",
+    "summary",
+    "encrypted_content",
+    "arguments",
+    "input",
+    "output",
+    "message",
+    "replacement_history",
+    "base_instructions",
+    "instructions",
+    "user_instructions",
+    "developer_instructions",
+    "last_agent_message",
+    "patch",
+    "stdout",
+    "stderr",
+    "aggregated_output",
+    "formatted_output",
+    "changes",
+    "unified_diff",
+    "action",
+    "results",
+    "query",
 ];
 
 /// Keys whose values are never stubbed as a whole (they are recursed instead).
-const NEVER_STUB: &[&str] = &["usage", "info", "rate_limits", "message_usage", "iterations", "payload"];
+const NEVER_STUB: &[&str] =
+    &["usage", "info", "rate_limits", "message_usage", "iterations", "payload"];
 
 const SHORT: usize = 16;
 const LONG: usize = 256;
@@ -179,8 +243,8 @@ fn stub_for(value: &Value) -> (Value, u64) {
             serde_json::to_writer(&mut hc, other).ok();
         }
     }
-    // Expand the 64-bit keyed hash to 256 pseudo-random bits (splitmix64), matching the
-    // size and entropy of a hex HMAC-SHA-256 digest.
+    // Expand the unkeyed 64-bit hash to 256 pseudo-random-looking bits (splitmix64),
+    // matching the size of a hex HMAC-SHA-256 digest; it holds only 64 bits of entropy.
     let mut x = hc.hasher.finish();
     let mut hex = String::with_capacity(64);
     for _ in 0..4 {
@@ -196,7 +260,9 @@ fn stub_for(value: &Value) -> (Value, u64) {
 }
 
 fn is_long_string_array(a: &[Value]) -> bool {
-    !a.is_empty() && a.iter().all(Value::is_string) && a.iter().map(|s| s.as_str().map_or(0, str::len)).sum::<usize>() > LONG
+    !a.is_empty()
+        && a.iter().all(Value::is_string)
+        && a.iter().map(|s| s.as_str().map_or(0, str::len)).sum::<usize>() > LONG
 }
 
 fn strip_value(v: &mut Value, content_keys: &[&str], stats: &mut StripStats) {
@@ -303,12 +369,23 @@ struct FileSurvey {
     window_captured_raw: u64,
 }
 
-fn survey_file(entry: &Entry, out_dir: &Path, level19: bool, cutoff_day: u32, cutoff: i64) -> Result<FileSurvey> {
-    let mut fs_acc = FileSurvey { agent: Some(entry.agent), in_mtime_window: entry.mtime >= cutoff, ..Default::default() };
+fn survey_file(
+    entry: &Entry,
+    out_dir: &Path,
+    level19: bool,
+    cutoff_day: u32,
+    cutoff: i64,
+) -> Result<FileSurvey> {
+    let mut fs_acc = FileSurvey {
+        agent: Some(entry.agent),
+        in_mtime_window: entry.mtime >= cutoff,
+        ..Default::default()
+    };
     let out_path = out_dir.join(entry.capture_name());
     let file = fs::File::create(&out_path)?;
     let mut enc3 = zstd::stream::write::Encoder::new(io::BufWriter::new(file), 3)?;
-    let mut enc19 = if level19 { Some(zstd::stream::write::Encoder::new(CountWriter(0), 19)?) } else { None };
+    let mut enc19 =
+        if level19 { Some(zstd::stream::write::Encoder::new(CountWriter(0), 19)?) } else { None };
     let mut enc_usage = zstd::stream::write::Encoder::new(CountWriter(0), 3)?;
     let mut buf = Vec::with_capacity(4096);
     let mut write_err: Option<io::Error> = None;
@@ -334,7 +411,8 @@ fn survey_file(entry: &Entry, out_dir: &Path, level19: bool, cutoff_day: u32, cu
         let class = classify(entry.agent, &v);
         let label = type_label(entry.agent, &v);
         let bytes = line.len() as u64 + 1;
-        let day = v.get("timestamp").and_then(Value::as_str).map(|s| iso_day(s.as_bytes())).unwrap_or(0);
+        let day =
+            v.get("timestamp").and_then(Value::as_str).map(|s| iso_day(s.as_bytes())).unwrap_or(0);
         let in_window = if day == 0 {
             fs_acc.no_timestamp += 1;
             fs_acc.in_mtime_window
@@ -414,11 +492,14 @@ pub fn cmd(args: &Args) -> Result<()> {
 
     let t0 = Instant::now();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
-    let entries: Vec<&Entry> = manifest.entries.iter().filter(|e| e.kind != Kind::LegacyJson).collect();
+    let entries: Vec<&Entry> =
+        manifest.entries.iter().filter(|e| e.kind != Kind::LegacyJson).collect();
     let results: Vec<(String, Result<FileSurvey>)> = pool.install(|| {
         entries
             .par_iter()
-            .map(|e| (e.capture_name(), survey_file(e, &out_dir, level19, cutoff_day, manifest.cutoff)))
+            .map(|e| {
+                (e.capture_name(), survey_file(e, &out_dir, level19, cutoff_day, manifest.cutoff))
+            })
             .collect()
     });
     let wall_s = t0.elapsed().as_secs_f64();
@@ -434,7 +515,11 @@ pub fn cmd(args: &Args) -> Result<()> {
                 Ok(_) => continue,
                 Err(e) => return Err(format!("capture failed for entry {idx}: {e}").into()),
             };
-            writeln!(index, "{idx}\t{}\t{}\t{}\t{}", s.logical_bytes, s.lines, s.captured_records, s.captured_zst3)?;
+            writeln!(
+                index,
+                "{idx}\t{}\t{}\t{}\t{}",
+                s.logical_bytes, s.lines, s.captured_records, s.captured_zst3
+            )?;
             total.logical_bytes += s.logical_bytes;
             total.lines += s.lines;
             total.pending_bytes += s.pending_bytes;
@@ -470,7 +555,7 @@ pub fn cmd(args: &Args) -> Result<()> {
             total.window_captured_raw += s.window_captured_raw;
         }
         let mut types: Vec<_> = total.types.iter().collect();
-        types.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        types.sort_by_key(|a| std::cmp::Reverse(a.1.1));
         let types: Vec<Value> = types
             .iter()
             .take(40)
@@ -590,9 +675,14 @@ mod tests {
                 process_line(agent, Decoder::Typed, false, l.as_bytes(), &mut acc);
             }
             acc.finish();
-            let keys = |a: &FileAcc| a.claude.iter().map(|o| (o.key.to_string(), o.usage)).collect::<Vec<_>>();
+            let keys = |a: &FileAcc| {
+                a.claude.iter().map(|o| (o.key.to_string(), o.usage)).collect::<Vec<_>>()
+            };
             assert_eq!(keys(&source), keys(&acc));
-            assert_eq!(serde_json::to_string(&source.tc).unwrap(), serde_json::to_string(&acc.tc).unwrap());
+            assert_eq!(
+                serde_json::to_string(&source.tc).unwrap(),
+                serde_json::to_string(&acc.tc).unwrap()
+            );
             assert_eq!(source.codex_records.len(), acc.codex_records.len());
             assert_eq!(source.limits, acc.limits);
         }

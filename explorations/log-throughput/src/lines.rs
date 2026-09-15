@@ -24,7 +24,9 @@ pub fn open_entry(entry: &Entry) -> io::Result<Box<dyn Read + Send>> {
     let file = File::open(&entry.path)?.take(entry.size);
     Ok(match entry.comp {
         Comp::Plain => Box::new(file),
-        Comp::Gzip => Box::new(flate2::read::MultiGzDecoder::new(BufReader::with_capacity(CHUNK, file))),
+        Comp::Gzip => {
+            Box::new(flate2::read::MultiGzDecoder::new(BufReader::with_capacity(CHUNK, file)))
+        }
         Comp::Zstd => Box::new(zstd::stream::read::Decoder::new(file)?),
     })
 }
@@ -128,13 +130,17 @@ mod tests {
         let long = "x".repeat(3 * CHUNK);
         let data = format!("a\n{long}\n\nlast-without-newline");
         let mut seen = Vec::new();
-        let stats = for_each_line(Trickle { data: data.as_bytes(), step: 7919 }, |l| seen.push(l.len()))
-            .unwrap();
+        let stats =
+            for_each_line(Trickle { data: data.as_bytes(), step: 7919 }, |l| seen.push(l.len()))
+                .unwrap();
         assert_eq!(seen, vec![1, 3 * CHUNK, 0]);
         assert_eq!(stats.lines, 3);
         assert_eq!(stats.pending_bytes, "last-without-newline".len() as u64);
         assert_eq!(stats.bytes, data.len() as u64);
         let raw = read_only(Trickle { data: data.as_bytes(), step: 7919 }).unwrap();
-        assert_eq!((raw.lines, raw.pending_bytes, raw.bytes), (3, stats.pending_bytes, stats.bytes));
+        assert_eq!(
+            (raw.lines, raw.pending_bytes, raw.bytes),
+            (3, stats.pending_bytes, stats.bytes)
+        );
     }
 }

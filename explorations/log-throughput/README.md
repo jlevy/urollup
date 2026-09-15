@@ -52,6 +52,29 @@ by UTC day. `summarize` checks that every parsing mode produced identical totals
 A `--slice window` run reads files modified within the manifest’s `--days`; `all` reads
 every file. Legacy pre-JSONL Codex `rollout-*.json` files are counted but not parsed.
 
+## Known Divergences from the urollup Contracts
+
+This spike is a measurement tool, not a reference implementation.
+Its rules were chosen to size volume and parse cost, and they differ from the
+[data contracts](../../docs/project/architecture/arch-2026-09-13-urollup-data-contracts.md),
+so do not copy its extraction or stripping logic:
+
+- **Claude dedupe key:** requests are keyed by `message.id` plus `requestId`, whereas
+  the contract’s `req-` key precedence uses the response ID first, so the `dup_*`
+  diagnostics do not measure the design’s rule.
+  Conflicting block records also keep the larger total usage rather than the largest
+  `output_tokens`, then last in file order.
+- **Codex counters:** `sum_last` adds every non-identical snapshot’s `last_token_usage`,
+  including compaction estimates and context-window-full fills (zero input and output
+  with nonzero `total_tokens`) that the contract treats as estimate diagnostics.
+- **Stub digest:** `$d` comes from `DefaultHasher::new()`, which has fixed SipHash keys,
+  so it is an unkeyed, deterministic stand-in for the contract’s keyed HMAC-SHA-256 and
+  is identical across machines.
+- **Strip policy:** stripping uses a deny-list of known content keys and keeps strings
+  of up to 16 bytes under those keys and up to 256 bytes under any other key, whereas
+  the contract’s policy starts from the fields that stay verbatim, an allow-list
+  direction.
+
 ## Tests
 
 ```bash

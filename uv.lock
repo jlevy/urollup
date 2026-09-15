@@ -7,25 +7,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-flowmark-rs = "2100-01-01T08:00:00Z"
-kash-media = "2100-01-01T08:00:00Z"
-kash-docs = "2100-01-01T08:00:00Z"
-deep-transcribe = "2100-01-01T08:00:00Z"
-flowmark = "2100-01-01T08:00:00Z"
 softschema = "2100-01-01T08:00:00Z"
-chopdiff = "2100-01-01T08:00:00Z"
-flexdoc = "2100-01-01T08:00:00Z"
-kpress = "2100-01-01T08:00:00Z"
-sidematter-format = "2100-01-01T08:00:00Z"
-tminify = "2100-01-01T08:00:00Z"
-clideps = "2100-01-01T08:00:00Z"
-pprose = "2100-01-01T08:00:00Z"
-prettyfmt = "2100-01-01T08:00:00Z"
-metabrowser = "2100-01-01T08:00:00Z"
-frontmatter-format = "2100-01-01T08:00:00Z"
-kash-shell = "2100-01-01T08:00:00Z"
-strif = "2100-01-01T08:00:00Z"
-funlog = "2100-01-01T08:00:00Z"
+flowmark-rs = "2100-01-01T08:00:00Z"
 
 [[package]]
 name = "annotated-types"
@@ -43,6 +26,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c03148528be8cac2408564a6c9a0cc7e9171802bc1d26985/attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32", size = 952055, upload-time = "2026-03-19T14:22:25.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309", size = 67548, upload-time = "2026-03-19T14:22:23.645Z" },
+]
+
+[[package]]
+name = "flowmark-rs"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/f8/338dbafc657eb06bd7dd66a6793674a6b21ad3e2d9d1067c2c9d43765b64/flowmark_rs-0.4.0.tar.gz", hash = "sha256:6a2f90e015a7f83f18922999bbdccddd576709c62af2a8113c39ee71dd9fe96b", size = 321905, upload-time = "2026-09-04T11:25:19.593Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/75/096dafda85ed810bab026b6eb294ab431362a37e586bfc42d32abc3b9090/flowmark_rs-0.4.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:5c033d9ffdeda857a184d3d898667d1eafe9c19e8118768ba2d97542470b0cde", size = 2986011, upload-time = "2026-09-04T11:25:11.844Z" },
+    { url = "https://files.pythonhosted.org/packages/51/4b/9479f06c68bff4cfa233a9bfbbd2a1b7f9867bbadf76c3e1265b49c85c7a/flowmark_rs-0.4.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d046143d5b843126afd6706b7ced671ec5eaa3c5b44dba4b302038593e2b93e5", size = 2731157, upload-time = "2026-09-04T11:25:13.685Z" },
+    { url = "https://files.pythonhosted.org/packages/19/e1/5621ca91f71de15a764524df2e19f18405144cb9d6d34971707b1160b754/flowmark_rs-0.4.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4c6138c619b08aec5b4c81f2e44c05a361da649efb35cc3f41bfabfb76c944f2", size = 2989882, upload-time = "2026-09-04T11:25:15.052Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/ad/13eb03ac699ed1407b83b12eaec0e03a13a3581bc7b33324a73d46199dd5/flowmark_rs-0.4.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b21fb6754d867328fd6a515cf1807b6c7a0533002d3261092cf1cd5fcc72a214", size = 3164406, upload-time = "2026-09-04T11:25:16.623Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/11/fa033a133ab753b0c697bf0399dc61ae9c55de5a22a73665cc14e00b21c6/flowmark_rs-0.4.0-py3-none-win_amd64.whl", hash = "sha256:6dd67c6b0c80337c52b650f030c7be861c32af2d20c257ce0e8a0432190c03b6", size = 2898993, upload-time = "2026-09-04T11:25:18.324Z" },
 ]
 
 [[package]]
@@ -346,10 +342,14 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "flowmark-rs" },
     { name = "softschema" },
 ]
 
 [package.metadata]
 
 [package.metadata.requires-dev]
-dev = [{ name = "softschema", specifier = "==0.8.1" }]
+dev = [
+    { name = "flowmark-rs", specifier = "==0.4.0" },
+    { name = "softschema", specifier = "==0.8.1" },
+]

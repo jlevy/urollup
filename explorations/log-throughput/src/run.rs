@@ -107,7 +107,8 @@ fn process(entry: &Entry, mode: Mode, capture_dir: Option<&Path>) -> FileOut {
             let decoder = if mode == Mode::Value { Decoder::Value } else { Decoder::Typed };
             let pre = mode == Mode::Prefilter;
             let acc = &mut out.acc;
-            open_entry(entry).and_then(|r| for_each_line(r, |l| process_line(entry.agent, decoder, pre, l, acc)))
+            open_entry(entry)
+                .and_then(|r| for_each_line(r, |l| process_line(entry.agent, decoder, pre, l, acc)))
         }
         Mode::Cache | Mode::CacheVerify => {
             if mode == Mode::CacheVerify {
@@ -118,7 +119,9 @@ fn process(entry: &Entry, mode: Mode, capture_dir: Option<&Path>) -> FileOut {
             }
             let path = capture_dir.expect("capture dir").join(entry.capture_name());
             let acc = &mut out.acc;
-            open_zstd(&path).and_then(|r| for_each_line(r, |l| process_line(entry.agent, Decoder::Typed, false, l, acc)))
+            open_zstd(&path).and_then(|r| {
+                for_each_line(r, |l| process_line(entry.agent, Decoder::Typed, false, l, acc))
+            })
         }
     };
     match result {
@@ -216,14 +219,21 @@ fn merge(outs: &[(usize, FileOut)]) -> (Totals, Diagnostics) {
                     first_output.insert(&obs.key, obs.usage.output);
                 }
                 Some(prev) => {
-                    if prev.1 == *idx { t.claude.dup_same_file += 1 } else { t.claude.dup_cross_file += 1 }
+                    if prev.1 == *idx {
+                        t.claude.dup_same_file += 1
+                    } else {
+                        t.claude.dup_cross_file += 1
+                    }
                     if prev.0 != obs.usage {
                         t.claude.conflicting_usage += 1;
                         if prev.1 == *idx {
                             g.claude_conflicts_same_file += 1;
                         }
                         let (p, u) = (prev.0, obs.usage);
-                        if p.input == u.input && p.cache_create == u.cache_create && p.cache_read == u.cache_read {
+                        if p.input == u.input
+                            && p.cache_create == u.cache_create
+                            && p.cache_read == u.cache_read
+                        {
                             g.claude_conflicts_output_only += 1;
                         }
                         if obs.usage.sum() > prev.0.sum() {
@@ -243,7 +253,11 @@ fn merge(outs: &[(usize, FileOut)]) -> (Totals, Diagnostics) {
                     codex.insert(&obs.response_id, (obs.usage, *idx, obs.day));
                 }
                 Some(prev) => {
-                    if prev.1 == *idx { t.codex.record_dup_same_file += 1 } else { t.codex.record_dup_cross_file += 1 }
+                    if prev.1 == *idx {
+                        t.codex.record_dup_same_file += 1
+                    } else {
+                        t.codex.record_dup_cross_file += 1
+                    }
                     if prev.0 != obs.usage {
                         t.codex.record_conflicting_usage += 1;
                     }
@@ -361,13 +375,19 @@ pub fn cmd(args: &Args) -> Result<()> {
         Some(dir) if matches!(mode, Mode::Cache | Mode::CacheVerify) => {
             let index = load_index(dir)?;
             let pick = |i: usize| {
-                entries.iter().map(|e| index.get(&e.capture_name()).map_or(0, |v| [v.0, v.1, v.2][i])).sum::<u64>()
+                entries
+                    .iter()
+                    .map(|e| index.get(&e.capture_name()).map_or(0, |v| [v.0, v.1, v.2][i]))
+                    .sum::<u64>()
             };
             (pick(0), pick(1), pick(2))
         }
         _ => (read_bytes, sum(&|o| o.stats.lines), 0),
     };
-    let digest = totals.as_ref().map(|t| format!("{:016x}", fnv64(serde_json::to_string(t).unwrap_or_default().as_bytes())));
+    let digest = totals
+        .as_ref()
+        .map(|t| serde_json::to_string(t).map(|s| format!("{:016x}", fnv64(s.as_bytes()))))
+        .transpose()?;
     let out = json!({
         "mode": mode.name(),
         "threads": threads,
