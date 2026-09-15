@@ -377,7 +377,10 @@ alias. It is a YAML file validated by the `urollup:SourceManifest/v1` softschema
 contract, read from `--sources-file`, else from `sources.yaml` in the platform config
 directory: `$XDG_CONFIG_HOME/urollup/` (default `~/.config/urollup/`) on Linux,
 `~/Library/Application Support/urollup/` on macOS and `%APPDATA%\urollup\` on Windows.
-Price overrides use the same directory ([§4.5](#45-price-table)).
+Price overrides use the same directory ([§4.5](#45-price-table)). Roots a manifest
+declares are part of default discovery, so the capture store preserves them like other
+default roots, while individual artifacts it lists are treated like `--source` inputs
+([Decision 9](#decision-9-capture-scope)).
 
 #### Projects and Accounts
 
@@ -519,8 +522,9 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
   file identity, size and these two digests to decide whether a source still starts with
   its captured prefix.
 - **Scope:** capture applies only to sources found by default discovery, the user’s own
-  agent logs. Raw logs passed with `--source` are read but captured only with
-  `--capture`, and summaries and bundles are never captured.
+  agent logs, which includes roots declared in the [source manifest](#source-manifest).
+  Raw logs passed with `--source`, and individual artifacts listed in the manifest, are
+  read but captured only with `--capture`, and summaries and bundles are never captured.
 - **Phase 1 writes:** a run captures an in-scope source when the store has no current
   entry for it, or when its size, fingerprint or versions changed, by writing a complete
   atomic replacement entry.
@@ -553,13 +557,13 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
   by source and record their captured extent, and reconciliation deduplicates by
   analytical ID, so repeating a run never adds usage.
 - **Controls:** `--no-capture` neither writes nor reads the store for a run, `--capture`
-  also captures raw logs passed with `--source`, and `--capture-idle` sets the idle
-  threshold. In Phase 2, `--no-cache` reads original logs instead of cached records while
-  still updating the store, and `--rebuild-cache` regenerates the selected sources’
-  entries from their logs.
-  `urollup capture status` reports entries, sizes, versions and retained sources, with
-  rewritten sources linked by thread, and `urollup capture prune` removes entries by
-  age, version or retained status.
+  also captures raw logs passed with `--source` or listed as manifest artifacts, and
+  `--capture-idle` sets the idle threshold.
+  In Phase 2, `--no-cache` reads original logs instead of cached records while still
+  updating the store, and `--rebuild-cache` regenerates the selected sources’ entries
+  from their logs. `urollup capture status` reports entries, sizes, versions and retained
+  sources, with rewritten sources linked by thread, and `urollup capture prune` removes
+  entries by age, version or retained status.
 - **Atomic writes** follow tbd `filesystem-rules` and `rust-filesystem-rules`:
   - segments and manifests are staged as owner-only `NamedTempFile`s with unique names
     in the entry directory;
@@ -2310,18 +2314,22 @@ default prefix check misses a same-size mutation that `--verify-cache` catches.
 
 #### Decision 9: Capture Scope
 
-**Choice:** Default-on capture applies only to sources found by default discovery; raw
-logs passed with `--source` are read but captured only with `--capture`; summaries and
-bundles are never captured.
+**Choice:** Default-on capture applies only to sources found by default discovery,
+including roots declared in a source manifest; raw logs passed with `--source`, and
+individual artifacts listed in a manifest, are read but captured only with `--capture`;
+summaries and bundles are never captured.
 
 **Rationale:** Default discovery finds the user’s own agent logs, which the store exists
-to preserve; other raw logs are captured only on request, and summaries and bundles are
-already portable artifacts.
+to preserve, and a manifest root is a standing declaration of more of the user’s own log
+locations; one-off inputs, whether passed with `--source` or listed individually in a
+manifest, are captured only on request, and summaries and bundles are already portable
+artifacts.
 
 **Tradeoffs:** Raw logs read only through `--source` are not preserved when deleted
 unless `--capture` was passed or they were exported.
 
-**Confirmed:** 2026-09-15; see [§2.5](#25-capture-store-and-cache).
+**Confirmed:** 2026-09-15, with manifest roots and artifacts confirmed the same day (PR
+#3 review finding R8); see [§2.5](#25-capture-store-and-cache).
 
 #### Decision 10: Recorded Usage Windows
 
@@ -2799,9 +2807,8 @@ usage.
 The 2026-09-14
 [squares code review](project/research/research-2026-09-14-squares-code-review.md) and
 [metaproc and qm review](project/research/research-2026-09-14-metaproc-code-review.md)
-raised these decisions, and the PR #3 design review added the last one; they are queued
-for one-at-a-time maintainer confirmation in bead `uro-gxen` (the last in `uro-6y0j`).
-None is reflected in the design above yet.
+raised these decisions; they are queued for one-at-a-time maintainer confirmation in
+bead `uro-gxen`. None is reflected in the design above yet.
 The same walkthrough already resolved the capture store and its Phase 2 cache read path
 ([Decision 8](#decision-8-capture-store-and-cache)), harness logs read through urollup’s
 own adapters ([Decision 4](#decision-4-harness-logs-through-urollup-adapters)) and qm
@@ -2937,18 +2944,6 @@ pointer on export, flowmark-stable Markdown, and priority for a PyPI wheel.
 and
 [recommendations](project/research/research-2026-09-14-squares-code-review.md#recommendations)
 (10, 12 and 19).
-
-#### Capture Scope for Manifest Roots
-
-**Status:** Candidate, queued.
-
-**Recommendation:** Treat roots declared in a source manifest as default discovery, so
-the capture store preserves them like the user’s other own logs, and treat
-manifest-declared artifacts like `--source`. [Decision 9](#decision-9-capture-scope)
-names default discovery and `--source` but not manifest roots.
-
-**Links:** [§2.5](#25-capture-store-and-cache), [Source Manifest](#source-manifest); PR
-#3 review finding R8.
 
 ### 10.3 Open Questions
 

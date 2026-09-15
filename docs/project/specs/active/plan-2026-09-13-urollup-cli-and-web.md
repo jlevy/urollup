@@ -360,9 +360,9 @@ The design doc records every decision and open question:
 - **Candidate:** 9 proposed decisions already reflected in the design, pending
   maintainer confirmation, in
   [§10.1](../../../urollup-design.md#101-candidate-decisions).
-- **Queued:** 11 review decisions raised by the squares and metaproc code reviews and
-  the PR #3 design review, walked through one at a time in beads `uro-gxen` and
-  `uro-6y0j`, in [§10.2](../../../urollup-design.md#102-queued-review-decisions).
+- **Queued:** 10 review decisions raised by the squares and metaproc code reviews,
+  walked through one at a time in bead `uro-gxen`, in
+  [§10.2](../../../urollup-design.md#102-queued-review-decisions).
 - **Open questions** on cloud export formats, pricing bases and billing exports are in
   [§10.3](../../../urollup-design.md#103-open-questions).
 
