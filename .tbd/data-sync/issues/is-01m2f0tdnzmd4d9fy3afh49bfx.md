@@ -5,7 +5,7 @@ title: "Spec: urollup CLI and web UI implementation"
 kind: epic
 status: open
 priority: 1
-version: 27
+version: 32
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 docs:
   - path: docs/urollup-design.md
@@ -37,7 +37,12 @@ child_order_hints:
   - is-01m2gbe8dfq3sccza48hc7rm03
   - is-01m2gttdzk1s48d87gzvmhfmt5
   - is-01m2gvvvpc0hrbp287e8a08ras
+  - is-01m2ke36qgfvdvnhw7c7v5esm6
+  - is-01m2ke45tasy262pas37jxwss5
+  - is-01m2ke4qtjw7gzyjmmzxxs64mf
+  - is-01m2ke55tfcy92ct96d9446j5p
+  - is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-14T03:54:21.246Z
-updated_at: 2026-09-15T17:14:25.393Z
+updated_at: 2026-09-15T21:04:34.440Z
 ---
 Implementation of the urollup plan spec in three phases (Phase 1 sequenced as milestones 0.1-0.5): accounting core and uncached CLI, then web UI, workflow reports and broader evidence, then the ledger and query cache. The design, data contracts and decisions live in docs/urollup-design.md. Starts after the plan decisions are confirmed (uro-b7kc).

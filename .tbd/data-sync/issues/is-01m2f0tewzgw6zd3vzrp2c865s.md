@@ -1,14 +1,15 @@
 ---
 type: is
 id: is-01m2f0tewzgw6zd3vzrp2c865s
-title: Implement Claude and Codex adapters
+title: Implement claude-project and codex-rollout adapters
 kind: task
 status: open
 priority: 2
-version: 6
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
+  - milestone-0.1
 dependencies:
   - type: blocks
     target: is-01m2f0tf88qgvz2kjm2dx4kvr1
@@ -16,11 +17,11 @@ dependencies:
     target: is-01m2f0tjd5bfn52eg9sztbzh7x
   - type: blocks
     target: is-01m2gbe7t7shfxqxrgfmdmz7yc
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.494Z
-updated_at: 2026-09-14T19:58:23.224Z
+updated_at: 2026-09-15T21:09:20.180Z
 ---
-claude-project, claude-stream, codex-rollout and codex-exec adapters with default discovery, UROLLUP_* override variables, snapshot manifests, source links and provider limit observations (Codex rate_limits, Claude quotaLimits) kept verbatim; document unsupported fields and fixture agent versions. Follow the capture-first principle: keep native fields beside normalized ones.
+Milestone 0.1: claude-project and codex-rollout adapters with default discovery (CLAUDE_CONFIG_DIR, ~/.claude/projects, XDG_CONFIG_HOME/claude, subagents/ and subagents/workflows/; CODEX_HOME sessions/ and archived_sessions/, .jsonl and .jsonl.zst), UROLLUP_* override variables, snapshot manifests, source links and provider limit observations, following design §2.1, §2.2, §3.4 and §4.4; document unsupported fields and the agent versions each fixture covers. Captured-stream dialects (claude-stream, codex-exec) and the metaproc port are milestone 0.5 (uro-i6o2).
 
 ## Notes
 

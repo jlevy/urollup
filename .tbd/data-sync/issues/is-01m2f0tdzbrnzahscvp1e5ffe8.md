@@ -5,18 +5,23 @@ title: Scaffold repository to the engineering baseline
 kind: task
 status: open
 priority: 2
-version: 5
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
+  - milestone-0.1
 dependencies:
   - type: blocks
     target: is-01m2f0te8wwa4jmh6zzamt27zb
   - type: blocks
     target: is-01m2f0tej82vk57g0eaapfr88r
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+  - type: blocks
+    target: is-01m2keezphdvk2jf3rj921mws0
+  - type: blocks
+    target: is-01m2keggm34ksgr8bfxr9sr7jz
+parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:21.546Z
-updated_at: 2026-09-14T23:57:36.375Z
+updated_at: 2026-09-15T21:10:34.343Z
 ---
 Workspace (urollup-core, urollup), toolchain pin, lint and format configuration, make check and make fix, CI workflows, supply-chain policy, npm dev project, pytest and flowmark-rs in the uv project, bench/ layout and AGENTS.md routes; prove each gate fails on a committed violation. See plan: Project setup and engineering conventions.
 

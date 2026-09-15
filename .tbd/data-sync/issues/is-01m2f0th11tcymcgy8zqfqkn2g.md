@@ -5,14 +5,15 @@ title: Establish feature matrix against ccusage and agentfdr
 kind: task
 status: open
 priority: 2
-version: 2
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
+  - milestone-0.5
 dependencies: []
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-14T03:54:24.672Z
-updated_at: 2026-09-14T19:58:20.250Z
+updated_at: 2026-09-15T21:09:06.814Z
 ---
 Measured report matrix against pinned ccusage and agentfdr, explaining disagreements from source records rather than treating either tool as an oracle.
 
