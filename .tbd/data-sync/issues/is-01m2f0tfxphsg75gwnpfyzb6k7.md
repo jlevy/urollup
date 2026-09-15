@@ -5,15 +5,17 @@ title: Add reviewed price table and repricing
 kind: task
 status: open
 priority: 2
-version: 6
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
   - milestone-0.4
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m2khsqrw2qc4khnkxmca2p88
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-14T03:54:23.542Z
-updated_at: 2026-09-15T21:09:39.486Z
+updated_at: 2026-09-15T22:08:02.330Z
 ---
 Built-in reviewed, versioned price table, --prices overrides, staleness diagnostics and golden repricing tests. See design doc (docs/urollup-design.md): Price Table.
 
