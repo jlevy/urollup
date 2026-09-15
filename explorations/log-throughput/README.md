@@ -72,8 +72,8 @@ so do not copy its extraction or stripping logic:
   is identical across machines.
 - **Strip policy:** stripping uses a deny-list of known content keys and keeps strings
   of up to 16 bytes under those keys and up to 256 bytes under any other key, whereas
-  the contract’s policy starts from the fields that stay verbatim, an allow-list
-  direction.
+  the contract stubs known content fields completely in the local capture store (keeping
+  unknown keys there) and applies a strict allow-list to every export.
 
 ## Tests
 

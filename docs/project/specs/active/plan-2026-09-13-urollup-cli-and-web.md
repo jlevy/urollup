@@ -178,13 +178,14 @@ The choices that shape this plan:
   and toolchains, with first-party packages exempt from release age only.
   Every `deny.toml` ignore names a bead and a removal condition.
 - **Dev tooling already in place:** the root dev-only uv project (`pyproject.toml` and
-  `uv.lock`) pins `softschema==0.8.1` with `exclude-newer = "14 days"` and a softschema
-  exemption, and `softschema skill --install` wrote the project skill in
-  `.agents/skills/` and `.claude/skills/`, regenerated rather than edited when the pin
-  changes.
-- **Dev tooling to add:** pytest and flowmark-rs in the uv project, a `package.json` for
-  tryscript and frontend tools, and `bench/`, whose generator and harness are
-  unit-tested Python standard-library programs run through uv.
+  `uv.lock`) pins `softschema==0.8.1` and `flowmark-rs==0.4.0`, its `uv.toml` sets
+  `exclude-newer = "14 days"` with first-party exemptions and is always passed as
+  `uv --config-file uv.toml`, and `softschema skill --install` wrote the project skill
+  in `.agents/skills/` and `.claude/skills/`, regenerated rather than edited when the
+  pin changes.
+- **Dev tooling to add:** pytest in the uv project, a `package.json` for tryscript and
+  frontend tools, and `bench/`, whose generator and harness are unit-tested Python
+  standard-library programs run through uv.
 - **Embedded files:** schemas compiled from `contracts/` are committed under
   `crates/urollup-core/schemas/`, the skill text under `crates/urollup/assets/`, and the
   web bundle under `crates/urollup/assets/web/`, included only by the `serve` feature,
@@ -212,13 +213,16 @@ session. Every reading command accepts these flags, which compile into the `Quer
 | `--since`, `--until`, `--timezone` | Usage inside a half-open interval |
 | `--whole-sessions` | All usage of every session with usage inside the interval |
 | `--project <name>`, `--cwd <path>` | Sessions by logical project or recorded working directory |
-| `--source <path>`, `--no-default-sources` | Extra roots, logs, summaries or bundles, and whether default roots are read |
+| `--source <path>`, `--sources-file <file>`, `--no-default-sources` | Extra roots, logs, summaries or bundles; a [source manifest](#sources-and-snapshot-boundary); and whether default roots are read |
 | `--scope self\|descendants` | Whether selected sessions bring their subagent trees |
 
 - Different flags intersect, and repeated values of one flag form a union.
   Each command’s default selection is in the [command table](#cli-and-report-contracts);
   given only `--source`, session commands select every session in those sources.
 - Time filters clip a session’s usage to the interval unless `--whole-sessions` is set.
+  On summary input they clip to
+  [15-minute bucket boundaries](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format)
+  with a precision diagnostic.
 - `--scope` defaults to `descendants` for session selections (`--current`,
   `--hook-input`, `--session`, `--sessions-from` and `--latest`), because subagents do a
   session’s work, and to `self` for filter selections, which already match subagent
@@ -244,6 +248,8 @@ in this order:
    `CODEX_SESSION_ID` as the root), and `PI_SESSION_FILE` for Pi, where `PI_SESSION_ID`
    without `PI_SESSION_FILE` marks an unsaved session and exits 1 rather than searching
    roots; `--agent` limits which variables count.
+   Until the Pi adapters ship in Phase 2, a detected Pi session (`PI_SESSION_FILE` or
+   `PI_SESSION_ID`) exits 2 with an unsupported-dialect diagnostic.
 3. **No fallback:** exit 2, suggesting `--session`, `--latest` or `--all`.
 
 Tools inherit their parent agent’s environment, so an agent started inside another
@@ -286,7 +292,13 @@ diagnostic, and an edge that would close a cycle is dropped with a diagnostic.
 
 A **source manifest** declares roots and artifacts, dialect hints, source environment,
 project mappings, and each known account’s stable identifier with an optional display
-alias. The research brief’s
+alias. It is a YAML file validated by the `urollup:SourceManifest/v1` softschema
+contract, read from `--sources-file`, else from `sources.yaml` in the platform config
+directory: `$XDG_CONFIG_HOME/urollup/` (default `~/.config/urollup/`) on Linux,
+`~/Library/Application Support/urollup/` on macOS and `%APPDATA%\urollup\` on Windows.
+Price overrides use the same directory
+([price table](../../architecture/arch-2026-09-13-urollup-data-contracts.md#price-table)).
+The research brief’s
 [dialect survey](../../research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage)
 gives each dialect’s fields, counters and linkage.
 
@@ -314,9 +326,12 @@ gives each dialect’s fields, counters and linkage.
   variable exits 1. Locations no variable describes, such as Pi’s `--session-dir` or a
   Pi `settings.json` `sessionDir` (flat directories that mix working directories), need
   `--source`.
-- Project identity comes from recorded `cwd` fields, never from decoding Claude Code or
-  Pi project directory names, which encode paths lossily; worktrees map to a configured
-  logical project and keep their original `cwd`.
+- Project identity comes from recorded fields, never from decoding Claude Code or Pi
+  project directory names, which encode paths lossily.
+  A thread’s `project` is a plain name, never a path: the manifest’s project mapping
+  when one matches (so worktrees map to one logical project and keep their original
+  `cwd`), else the git top-level directory basename when the dialect records it, else
+  the basename of the recorded `cwd`.
 - A metaproc run directory holds captured streams under `.logs/tasks/` and, from
   metaproc `32cde09`, preserved native logs under `.logs/native/` (Codex
   `<session-stem>.codex-sessions/` rollouts and Claude `<session-stem>.claude-projects/`
@@ -414,7 +429,7 @@ Forecasts and calibrated budgets are labeled estimates too.
 | `export` | Usage summary or observation bundle | `--current` | 1 |
 | `merge` | Merged summary or bundle | `--source` inputs only | 1 |
 | `validate`, `schema` | Artifact validation; compiled contract schemas | Named files or contracts | 1 |
-| `capture status`, `capture prune` | Capture store entries, sizes, versions and retained sources; pruning by age, version or retained status | All entries | 1 |
+| `capture status`, `capture prune` | Capture store entries, sizes, versions and retained sources, with rewritten sources linked by thread; pruning by age, version or retained status | All entries | 1 |
 | `compare` | Differences between two saved JSON reports | `--baseline`, `--candidate` | 2 |
 | `check` | Thresholds and coverage for a saved query | `--query` | 2 |
 | `serve` | Local read-only web UI | `--all` | 2 |
@@ -431,8 +446,10 @@ urollup serve --project example --open
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
   pagination and pricing policy, including `--prices` files; `--query <file>` reruns a
-  saved one. `--group-by` covers project, account, model, effort, purpose and tool views,
-  and `--annotation-set <file>` (Phase 2) adds a named annotation set.
+  saved one. A relative `--since` or `--until` resolves to an absolute instant in the
+  normalized `QuerySpec`, so every report records the interval it used.
+  `--group-by` covers project, account, model, effort, purpose and tool views, and
+  `--annotation-set <file>` (Phase 2) adds a named annotation set.
 - **Formats:** terminal tables, JSON, JSONL, CSV and Markdown, plus `summary` and
   `bundle` for `export` and `merge`. JSON results carry schema version, normalized
   query, source coverage, diagnostics, pricing version, aggregate rows and stable
@@ -528,18 +545,30 @@ a deterministic `*.urollup/` folder of zstd-compressed JSONL tables plus the sum
 computed from them. Every command that accepts a summary also accepts a bundle.
 Bundles include
 [captured records](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-layers-and-re-extraction)
-by default: usage-relevant source records kept verbatim except that content and verbose
-bodies become `{bytes, digest}` stubs, so extraction can be rerun after the original
-logs are deleted; `--no-records` omits them.
-Both declare `status: enforced` with an `extensions` map, validate against schemas that
-softschema compiles from Pydantic models, and apply a `--redact paths|names|native-ids`
+by default, so extraction can be rerun after the original logs are deleted;
+`--no-records` omits them.
+Exports apply a strict per-dialect allow-list: only enumerated keys and paths, such as
+types, IDs, timestamps, models and usage objects, keep values, and every other string,
+array or object becomes a `{type, bytes}` stub, whatever its length.
+Both artifacts declare `status: enforced` with an `extensions` map, validate against
+schemas that softschema compiles from Pydantic models, and apply a
+`--redact paths|names|native-ids`
 [redaction](../../architecture/arch-2026-09-13-urollup-data-contracts.md#redaction)
-profile, `paths` by default.
+profile. The default `paths` profile removes absolute paths, working directories and
+path-shaped locators and needs no key, and `project` is always a plain name, so agent,
+dialect, model, effort, project, account alias, time bucket and tool category groupings
+work across machines.
+The opt-in `names` and `native-ids` profiles use keyed labels and exit 2 unless
+`UROLLUP_REDACTION_KEY` or `--redaction-key-file` provides the key.
 
 ```bash
+# On the laptop
 urollup export --all --per-session --format summary --output-dir summaries
 urollup merge --source summaries --output team.usage.yaml
+urollup export --all --format bundle --output local.urollup
+# In a cloud sandbox, then download cloud.urollup to the laptop
 urollup export --source ./logs --format bundle --output cloud.urollup
+# On the laptop; both bundles use the default paths profile
 urollup merge --source local.urollup --source cloud.urollup --format bundle --output all.urollup
 urollup daily --source all.urollup --no-default-sources --group-by account,project,model
 urollup validate team.usage.yaml all.urollup
@@ -605,10 +634,11 @@ and
   [redirect file](https://github.com/jupyter-server/jupyter_server/blob/67aca0c1703b3aa42bbbcb35e05c2b5bf2304c3f/jupyter_server/serverapp.py#L1402-L1409),
   keeping the token out of process arguments.
 - **Requests:** 403 unless `Host` is exactly `127.0.0.1:<port>` or `localhost:<port>`,
-  and 403 when a present `Origin` is foreign or `null` or a present `Sec-Fetch-Site` is
-  neither `same-origin` nor `none`. Reads use GET; snapshot refresh, the only POST,
-  requires `Content-Type: application/json` and runs one rebuild at a time.
-  No CORS headers or JSONP, and `OPTIONS` gets 403.
+  and 403 when a present `Origin` is `null` or foreign (not `http://` followed by a
+  value in that allowed `Host` set, so a UI opened through either name works) or a
+  present `Sec-Fetch-Site` is neither `same-origin` nor `none`. Reads use GET; snapshot
+  refresh, the only POST, requires `Content-Type: application/json` and runs one rebuild
+  at a time. No CORS headers or JSONP, and `OPTIONS` gets 403.
 - **Responses:** API responses set `Content-Type: application/json`,
   `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` and
   `Cross-Origin-Resource-Policy: same-origin`; pages set a `Content-Security-Policy` of
@@ -638,10 +668,18 @@ The
 keeps each source’s captured records as owner-only zstd JSONL in the platform data
 directory, on by default, so usage data survives Claude Code’s 30-day transcript cleanup
 at about 1.7% of log size.
-In Phase 1, every run captures new or changed sources with atomic replacement entries,
-reads captured records only for sources whose logs are gone (reported as `retained`),
-and keeps a previous entry when a source is rewritten in place; `--no-capture` skips the
-store, and `urollup capture status` and `capture prune` manage it.
+Unlike exports, the store keeps values under keys its capture policy does not recognize,
+so extraction can be rerun for newly discovered fields.
+In Phase 1, a run writes atomic replacement entries for new or changed sources found by
+default discovery once they have been idle for `--capture-idle` (5 minutes by default),
+so `report --current` and hook-driven reports never pay capture cost for the active
+transcript; raw logs passed with `--source` are captured only with `--capture`, and
+summaries and bundles never are.
+Runs read captured records only for sources whose logs are gone (reported as
+`retained`), a source rewritten in place keeps its previous entry as a retained version,
+and an unwritable store, such as a read-only home in a sandbox, yields a diagnostic and
+a run without capture rather than exit 1. `--no-capture` skips the store, and
+`urollup capture status` and `capture prune` manage it.
 In Phase 2 the store also becomes a cache: runs read captured records for unchanged
 prefixes and parse only appended records, with `--no-cache`, `--rebuild-cache` and
 `--verify-cache`. The log throughput spike showed uncached extraction is fast enough for
@@ -669,41 +707,71 @@ metadata.
 
 ### Phase 1: Accounting core and useful uncached CLI
 
-- [ ] Scaffold the repository to the engineering baseline: workspace, toolchain pin,
-  lint and format configuration, `make check` and `make fix`, CI workflows, supply-chain
-  policy, the npm dev project, pytest and flowmark-rs in the uv project, `bench/` and
-  `AGENTS.md` routes; prove each gate fails on a committed violation.
+Phase 1 ships as five milestones, each a usable and tested pre-1.0 release.
+The capture store lands only after the uncached engine is the correctness reference.
+
+#### Milestone 0.1: Uncached Claude Code and Codex reports
+
+- [ ] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
+  pin, lint and format configuration, supply-chain policy, `make check` and `make fix`,
+  the npm dev project for tryscript, and the CI jobs those gates need; prove each gate
+  fails on a committed violation.
 - [ ] Freeze public sanitized fixtures, including the research brief’s double-counting
-  cases, and a consented representative corpus manifest.
+  cases.
 - [ ] Implement analytical identities, the normalized ledger, reconciliation, ownership
   status and coverage, with collision detection and re-derivation from stored keys.
-- [ ] Implement the `claude-project`, `claude-stream`, `codex-rollout` and `codex-exec`
-  adapters with default discovery, override variables, snapshot manifests, source links
-  and provider limit observations; document unsupported fields and the agent versions
-  each fixture covers.
-- [ ] Implement the selection flags, `--current` detection, `--latest`, the discovery
-  index, and the hierarchy crawler behind `tree` and `--scope descendants`.
-- [ ] Author the `UsageSummary`, `BundleManifest` and table record contracts with
-  fixtures, `scripts/check_contracts.py` and `make contracts-check`; implement summary
-  and bundle readers and writers with redaction, mixed raw, summary and bundle input,
-  and overlap-safe `merge`, `validate` and `schema`, before any totals-only output.
+- [ ] Implement the `claude-project` and `codex-rollout` adapters with default
+  discovery, override variables, snapshot manifests, source links and provider limit
+  observations; document unsupported fields and the agent versions each fixture covers.
+- [ ] Implement `--current` environment detection, `--session`, `--all`, and the
+  discovery index and hierarchy crawler behind `--scope`; a detected Pi session exits 2
+  with an unsupported-dialect diagnostic.
+- [ ] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
+  account, model and effort grouping, request sizes, deterministic output and CLI
+  goldens; list-price estimates wait for 0.4.
+
+#### Milestone 0.2: Contracts, summaries, bundles and merge
+
+- [ ] Add pytest to the uv project, and author the `UsageSummary`, `BundleManifest`,
+  `SourceManifest` and table record contracts with fixtures,
+  `scripts/check_contracts.py` and `make contracts-check`; implement typed serde
+  validators and tests that they agree with softschema on every fixture.
+- [ ] Implement `export` and summary and bundle readers and writers with the export
+  allow-list, redaction profiles and `--sources-file`; mixed raw, summary and bundle
+  input; and overlap-safe `merge`, `validate` and `schema`, before any totals-only
+  output.
+
+#### Milestone 0.3: Capture store
+
+- [ ] Implement the durable capture store: the capture strip policy with unknown-key
+  diagnostics, `--capture-idle`, default-discovery scope and `--capture`, atomic
+  replacement entries in the platform data directory, retained reads for deleted
+  sources, retained versions linked by thread for rewritten sources, runs without
+  capture when the store is unwritable, `--no-capture`, `capture status` and
+  `capture prune`, with equivalence goldens against the uncached engine.
+- [ ] Measure and record capture-write throughput at zstd level 3 before capture ships
+  on by default.
+
+#### Milestone 0.4: Prices
+
+- [ ] Add the reviewed price table and its `PriceTable` contract, `--prices` and
+  config-directory overrides, staleness diagnostics, `--require-priced` and golden
+  repricing tests.
+
+#### Milestone 0.5: Full Phase 1 surface, benchmarks and parity
+
 - [ ] Port metaproc’s log-processing code into the Rust adapters with provenance: format
   detection from record types, `claude-stream` and `codex-exec` captured-stream parsing,
   gzip and harness log-rewrite handling, the cross-agent tool taxonomy and its
   bug-derived test cases, behind a library-shaped adapter API.
-- [ ] Implement the durable capture store: strip policy, atomic replacement entries in
-  the platform data directory, retained reads for deleted sources, retained versions for
-  rewritten sources, `--no-capture`, `capture status` and `capture prune`, with
-  equivalence goldens against runs without the store.
-- [ ] Add the reviewed price table, `--prices` overrides, staleness diagnostics and
-  golden repricing tests.
-- [ ] Add `sources`, `sessions`, `daily`, `weekly`, `monthly`, `report`, `requests`,
-  `tools` and `export` with project, account, model, effort and observed purpose
-  grouping, request sizes, deterministic output in every format, query files, `--strict`
-  and `--require-priced`.
-- [ ] Build the benchmark generator, harness and CI jobs, record the first
-  reference-laptop results, and measure summary size with the request index on the
-  representative corpus.
+- [ ] Complete selection with `--hook-input`, `--sessions-from`, `--latest`, `--agent`,
+  `--project`, `--cwd` and `--whole-sessions`.
+- [ ] Add `sources`, `weekly`, `monthly`, `requests`, `tools` and `tree`, observed
+  purpose and tool grouping, JSONL, CSV and Markdown output, query files and `--strict`.
+- [ ] Add flowmark-rs to the uv project, the remaining CI jobs and `AGENTS.md` routes.
+- [ ] Build the benchmark generator and harness in `bench/` with its CI jobs, record the
+  first reference-laptop results with capture writes recorded separately, and measure
+  summary size with the request index on a consented representative corpus.
 - [ ] Establish the feature matrix against pinned ccusage and agentfdr, explaining
   disagreements from source records rather than treating either as an oracle.
 
@@ -720,8 +788,8 @@ metadata.
 - [ ] Run the cloud smoke test covering log visibility, reachable hosts, the binary
   acquisition path, execution, artifact retrieval, local merge and overlapping
   re-export; document unsupported environments.
-- [ ] Validate the `pi-session` and `pi-events` adapters, and imported multi-account and
-  cloud-export fixtures, individually.
+- [ ] Validate the `pi-session` and `pi-events` adapters with Pi `--current` detection,
+  and imported multi-account and cloud-export fixtures, individually.
 - [ ] Add configured purpose rules and `--annotation-set` imports with provenance;
   semantic review stays downstream of accounting.
 
@@ -753,22 +821,36 @@ metadata.
   absent during a rewrite.
   Conflicting sources yield deterministic diagnostics, never whichever record a worker
   finished first.
+- **Ground truth:** before 1.0, one consented corpus is checked against a provider usage
+  export (Anthropic Console or OpenAI usage), at least for totals, with differences
+  explained from source records.
 - **Identities:** a session copied under different roots and hosts, merged in any order,
   keeps identical IDs; stored keys re-derive IDs under another identity version, and a
   redacted component makes that exit 2; an injected digest collision raises an
   identity-collision error; a gateway reusing message IDs across sessions yields
   ambiguous keys, not merges; an archived or compressed Codex rollout keeps its `src-`
-  ID.
+  ID, and a rewrite that changes a source’s first record gets a new `src-` ID whose
+  retained predecessor still counts dropped usage once.
 - **Merge:** `proptest` checks traversal-order invariance and merge associativity,
   commutativity and idempotence, and one selection yields identical report data from raw
-  logs, merged summaries and merged bundles.
+  logs, merged summaries and merged bundles, including bundles exported on two machines
+  under the default `paths` profile and grouped by account, project and model.
   Unresolved-overlap cases (diverged exports, overlapping windows, an older usage
   revision in the larger extent, differing ownership evidence, missing indexes, mixed
   identity versions) never add usage, make `--strict` exit 3, and resolve when bundles
   merge. Partial candidate selections appear only as `possible`.
 - **Contracts:** golden summaries and manifests pass `softschema validate` and
-  `softschema repair --check`, and readers reject portable-value violations, unsafe
-  paths, links and files whose digests disagree with the manifest.
+  `softschema repair --check`; the serde validators, the compiled JSON Schema validator
+  and softschema agree on every fixture; and readers reject portable-value violations,
+  unsafe paths, links and files whose digests disagree with the manifest.
+- **Capture and privacy:** a leak fixture whose record carries text under an unknown key
+  yields no plaintext in the summary, bundle or records table, while the capture store
+  keeps the value and reports the unknown key.
+  Validation diagnostics never echo values from redacted or stripped fields.
+  Default `paths` exports contain no absolute path, working directory or path-shaped
+  locator, and `names` or `native-ids` without a key exits 2. Capture goldens cover the
+  idle threshold, uncaptured `--source` logs, an unwritable store, retained and
+  rewritten sources, and identical results with the store disabled.
 - **Surfaces:** CLI and HTTP return identical report data for one query and snapshot,
   and Markdown, CSV and the UI derive from it.
   CLI goldens cover exit codes, JSONL completion records, and `--current` with nested
@@ -788,12 +870,14 @@ metadata.
 
 Performance gates are proposed targets, not measured claims; correctness comes first,
 and targets change here only with recorded results.
+Gated commands write no capture entries.
 
 | Target | Corpus | Measured commands | Proposed gate |
 | --- | --- | --- | --- |
 | Small CLI report | `bench-small`, about 64 MiB | `daily` and `report --session`, end to end | Median wall time under 1 s |
 | Standard rollups | `bench-1g`, 1 GiB | `daily`, `monthly --group-by account,model,effort` and `sessions` | Median under 10 s; peak RSS under 512 MiB |
 | Resident queries | `bench-1g` loaded by `urollup serve` | Fixed UI query set over HTTP after the snapshot is ready | p95 server latency under 200 ms per query |
+| Capture writes | `bench-small` and `bench-1g` | `sessions --capture --capture-idle 0`, writing zstd level 3 entries into an empty store | Recorded throughput and peak RSS, not gated |
 
 - **Corpora:** a seeded generator expands sanitized fixture templates and writes a
   manifest of bytes, files, sessions, requests and dialect mix.
@@ -864,8 +948,8 @@ Confirmed decisions:
 | Current-session detection | `--hook-input`, then agent environment variables, else exit 2 naming `--latest`, `--session` and `--all`; `--latest` is guarded and never implicit, including in interactive terminals | 2026-09-14 |
 | Data capture principle | Capture source data as close to its original form as possible, accurately and with evidence, so any later analysis is possible; keep native fields and unused records such as provider limit data | 2026-09-14 |
 | Usage windows | Phase 1 adapters keep provider limit observations (Codex `rate_limits`, Claude `quotaLimits`); the `windows` report over recorded windows moves to Phase 2; no inferred ccusage-style blocks, and any later estimate view is labeled and never feeds totals or checks | 2026-09-14 |
-| Captured records | Bundles include usage-relevant source records by default, verbatim except that content and verbose bodies become `{bytes, digest}` stubs under a versioned strip policy, so extraction can be rerun without the original logs; tables are zstd-compressed JSONL | 2026-09-14 |
-| Capture store and cache | Captured records live in a durable owner-only capture store in the platform data directory, on by default, and outlive deleted logs: Phase 1 writes it on every run and reads it for sources whose logs are gone; Phase 2 adds the speed-cache read path (`--no-cache`, `--rebuild-cache`, `--verify-cache`); all writes are atomic per tbd filesystem rules | 2026-09-14 |
+| Captured records | Bundles include usage-relevant source records by default, in zstd-compressed JSONL tables; the local capture store stubs known content fields (prompt and response text, reasoning, tool arguments and results, attachments, images, file snapshots, injected context), keeps values under unrecognized keys verbatim for re-extraction, and reports unknown keys per dialect version; exports (summaries and bundles, including the records table) keep values only under a per-dialect allow-list (types, IDs, timestamps, models, usage objects, stop reasons, tool names, limit and version fields, with path-like fields following the redaction profile) and turn every other string, array or object into a `{type, bytes}` stub; both policies are versioned | 2026-09-15 |
+| Capture store and cache | Captured records live in a durable owner-only capture store in the platform data directory, on by default, and outlive deleted logs; Phase 1 captures only sources idle for at least `--capture-idle` (5 minutes by default), so `report --current` and hook-driven reports never pay capture cost for the active transcript, and reads the store for sources whose logs are gone; an unwritable store yields a diagnostic and a run without capture, not exit 1; benchmark and latency gates exclude capture writes, whose zstd level 3 throughput is recorded separately; Phase 2 adds the speed-cache read path (`--no-cache`, `--rebuild-cache`, `--verify-cache`); all writes are atomic per tbd filesystem rules | 2026-09-15 |
 | Code reuse and licensing | Code, fixtures and docs from jlevy repositories (metaproc, squares, metabrowser, fdu, flowmark-rs, softschema) may be ported into MIT urollup regardless of their published license, with source repository and commit recorded; third-party code (ccusage and agentfdr MIT, pi MIT, Codex and Anthropic plugins Apache-2.0) is ported only with its license notice and attribution | 2026-09-14 |
 | Harness logs | urollup reads harness-captured agent streams (`claude-stream`, `codex-exec`, `pi-events`) directly through its own adapters, with no metaproc dependency; metaproc’s log-processing code is ported into those Rust adapters with provenance, so metaproc may later depend on them; harness bugs that delete native agent logs are tracked and fixed in the harness | 2026-09-14 |
 | qm | Out of scope; kept only as an indication of possible future workflows and a source of MIT code to borrow with attribution | 2026-09-14 |
@@ -884,6 +968,8 @@ Confirmed decisions:
 | Contract gate | A tested `scripts/check_contracts.py`, not Makefile shell loops | 2026-09-14 |
 | Exit codes | 0, 1, 2, 3, 4 and 130; compatibility errors use 2 | 2026-09-14 |
 | Release scope | No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing | 2026-09-14 |
+| Identity keys and redaction | Bundles carry every row’s identity key and summaries each thread’s, and redacted components block re-derivation; the default `paths` profile removes absolute paths, working directories and path-shaped locators and needs no key; `project` is always exported as a plain name, resolved at export time from a configured mapping, else the git top-level directory basename when the dialect records it, else the recorded `cwd` basename; keyed HMAC-SHA-256 labels apply only to the opt-in `names` and `native-ids` profiles, with the key from `UROLLUP_REDACTION_KEY` or `--redaction-key-file`, and those profiles exit 2 with a clear message without one; agent, dialect, model, effort, project, account alias, time bucket and tool category groupings survive default redaction across machines, and working directory does not; redaction never affects deduplication | 2026-09-15 |
+| Capture scope | Default-on capture applies only to sources found by default discovery; raw logs passed with `--source` are read but captured only with `--capture`; summaries and bundles are never captured | 2026-09-15 |
 
 These proposed decisions are reflected in the design; each needs maintainer
 confirmation.
@@ -895,7 +981,6 @@ confirmation.
 | Ownership in totals | Owned, ambiguous and unknown requests each count once in grand totals; partial candidate selections are reported as `possible` | [Ownership and Totals](../../architecture/arch-2026-09-13-urollup-data-contracts.md#ownership-and-totals) |
 | Purpose | Native fields in Phase 1, configured rules in Phase 2; annotations never set purpose | [Purpose and Annotations](../../architecture/arch-2026-09-13-urollup-data-contracts.md#purpose-and-annotations) |
 | Resources and charges | Defer resource collection; keep provider charges a separate entity with no import phase item until a tested receipt or billing export exists | [Entities](../../architecture/arch-2026-09-13-urollup-data-contracts.md#entities) |
-| Identity keys and redaction | Bundles carry every row’s identity key and summaries each thread’s, redacted with keyed HMAC labels; redacted components block re-derivation | [Identities and Redaction](../../architecture/arch-2026-09-13-urollup-data-contracts.md#identities-and-redaction) |
 | Pricing | Reviewed price table built into the binary from provider pages; LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network, `--prices` overrides, staleness warning after 90 days | [Price Table](../../architecture/arch-2026-09-13-urollup-data-contracts.md#price-table) |
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
@@ -918,8 +1003,6 @@ Open questions:
   Would an opt-in price-table download ever justify its network and supply-chain cost?
 - Which account receipts or billing exports are stable enough to reconcile estimates
   with recorded provider charges?
-- Where does the redaction HMAC key live, and how do machines that must group labeled
-  properties together share it?
 
 ## References
 

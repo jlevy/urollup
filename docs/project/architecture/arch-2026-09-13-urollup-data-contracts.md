@@ -117,7 +117,7 @@ the only lasting record.
 | Layer | Holds | Rerun from this layer when |
 | --- | --- | --- |
 | 0. Original logs | Every record, including prompts and tool output | A feature needs content itself, while the logs still exist |
-| 1. Captured records | Usage-relevant source records, verbatim except for stripped content | Parsing, normalization or reconciliation logic changes |
+| 1. Captured records | Usage-relevant source records, verbatim except for fields their strip policy stubs | Parsing, normalization or reconciliation logic changes |
 | 2. Normalized tables | Threads, relationships, requests, tool actions, provider limit observations and diagnostics, with native fields | Pricing, grouping, ownership or report logic changes |
 | 3. Usage summaries | Extents and derived totals | A report needs only totals within the summary’s policy |
 
@@ -129,21 +129,34 @@ the only lasting record.
   Claude `progress` records that nest a subagent’s assistant message carry usage and are
   kept. Records with none of these, such as streaming display events, are counted in the
   manifest but not kept.
-- **Stripping** follows a versioned, per-dialect strip policy.
-  Keys, types, IDs, timestamps, models, usage objects, stop reasons, tool names, working
-  directories and version fields stay verbatim.
-  Prompt and response text, reasoning text, tool arguments, tool results, hook output,
-  attachments, images, file snapshots and injected context are replaced by a stub
-  recording the field’s byte length and a keyed HMAC-SHA-256 digest, so content size and
-  repetition stay measurable without the content.
-  Payloads that embed other messages, such as Pi `toolResult.details` and compaction
-  `retainedTail`, are stubbed while the `usage` objects inside them stay verbatim as
-  evidence.
-- **Re-extraction:** adapters read a bundle’s captured records exactly as they read
-  original logs, and each captured record keeps its original source ID, offset,
-  fingerprint and dialect version.
-  A later adapter or strip-policy version applies to old bundles without the logs;
-  anything the strip policy removed needs layer 0.
+- **Stripping** follows two versioned, per-dialect policies, because the local store
+  must support re-extraction while portable artifacts leave the machine:
+  - The **capture policy** applies to the local, owner-only
+    [capture store](#capture-store-and-cache).
+    Known content fields (prompt and response text, reasoning text, tool arguments and
+    results, hook output, attachments, images, file snapshots and injected context)
+    become stubs recording the field’s byte length and a keyed HMAC-SHA-256 digest under
+    a random key kept owner-only in the store, so content size and repetition stay
+    measurable without the content.
+    Payloads that embed other messages, such as Pi `toolResult.details` and compaction
+    `retainedTail`, are stubbed while the `usage` objects inside them stay verbatim as
+    evidence. Values under keys the policy does not recognize stay verbatim, so
+    extraction can be rerun for newly discovered fields, and each capture reports those
+    keys per dialect version as a diagnostic.
+  - The **export policy** applies to summaries and bundles, including a bundle’s
+    `records` table, and is a strict allow-list.
+    Only enumerated keys and paths keep values: types, IDs, timestamps, models, usage
+    objects, stop reasons, tool names, limit fields and version fields, with path-like
+    fields following the [redaction](#redaction) profile.
+    Every other string, array or object value becomes a `{type, bytes}` stub, whatever
+    its length, so text under a key that a new agent release adds never reaches an
+    export.
+- **Re-extraction:** adapters read captured records from the store or a bundle exactly
+  as they read original logs, and each captured record keeps its original source ID,
+  offset, fingerprint and dialect version.
+  A later adapter version applies to old captured records without the logs.
+  A field the capture policy stubbed needs layer 0, and a field the export policy
+  stubbed needs the capture store or layer 0.
 - **Records the plan does not yet report** are still captured and normalized when their
   dialect fields are known, so features like account budgets need no new capture.
 
@@ -160,24 +173,37 @@ uncached extraction fast enough that the cache read path can wait for Phase 2; s
   `$XDG_DATA_HOME/urollup/captured` or `~/.local/share/urollup/captured` on Linux,
   `~/Library/Application Support/urollup/captured` on macOS, and
   `%LOCALAPPDATA%\urollup\captured` on Windows, overridden by `UROLLUP_CAPTURE_DIR`.
-  Directories and files are owner-only, because captured records still hold paths and
-  IDs.
+  Directories and files are owner-only, because captured records still hold paths, IDs
+  and values under unrecognized keys.
 - **Entries:** one entry per logical source, keyed by its `src-` ID, holding a manifest
   and zstd-compressed JSONL segments of captured records.
-  The manifest records the dialect, adapter and strip-policy versions, the captured byte
-  extent, the source fingerprint, the digest of the first complete record, and the
+  The manifest records the dialect, adapter and capture policy versions, the captured
+  byte extent, the source fingerprint, the digest of the first complete record, and the
   digest of the captured extent’s final 64 KiB.
-- **Phase 1 writes:** every run that reads a source captures it when the store has no
-  current entry for it, or when its size, fingerprint or versions changed, by writing a
-  complete replacement entry.
+- **Scope:** capture applies only to sources found by default discovery, the user’s own
+  agent logs. Raw logs passed with `--source` are read but captured only with
+  `--capture`, and summaries and bundles are never captured.
+- **Phase 1 writes:** a run captures an in-scope source when the store has no current
+  entry for it, or when its size, fingerprint or versions changed, by writing a complete
+  replacement entry. It captures only sources idle, meaning unmodified, for at least
+  `--capture-idle` (5 minutes by default), so `report --current` and hook-driven reports
+  never pay capture cost for the active transcript; a later run captures it once idle.
   An unfinished last line stays pending and is never captured.
+- **Unwritable store:** when the store cannot be created or written, such as under a
+  read-only home in a sandbox, the run continues without capture and emits a diagnostic
+  rather than exiting 1.
 - **Retention:** entries outlive their sources.
   When a source log is gone, runs read its captured records instead and report the
   source as `retained` with its capture time.
-  When a prefix check shows a source was replaced, truncated or rewritten in place (such
-  as a Codex rollout migration), the previous entry is kept as a retained version beside
-  the new one, and reconciliation deduplicates their shared observations by analytical
-  ID, so a rewrite that drops records never silently drops usage.
+  When a prefix check shows a source was replaced, truncated or rewritten in place, the
+  previous entry is kept as a retained version.
+  A rewrite that changes the source’s first complete record, such as a Codex rollout
+  migration or a Pi v1 or v2 file rewritten on load, yields a new `src-` ID, and the old
+  entry becomes `retained` under its own ID. Runs read both, reconciliation deduplicates
+  their shared observations by analytical ID, and `capture status` links old and new
+  entries by thread, so a rewrite that drops records never silently drops usage.
+  Usage of Codex rolled-back turns that a migration drops keeps counting through the
+  retained entry, because failed and retried requests consume the usage they report.
 - **Phase 2 cache reads:** when versions match and the source still starts with the
   captured prefix, a run reads captured records for the captured extent and parses only
   complete records past it, appending them as a new segment.
@@ -187,19 +213,21 @@ uncached extraction fast enough that the cache read path can wait for Phase 2; s
 - **Idempotence:** capturing the same bytes yields identical records, entries are keyed
   by source and extent, and reconciliation deduplicates by analytical ID, so repeating a
   run never adds usage.
-- **Controls:** `--no-capture` neither writes nor reads the store for a run.
-  In Phase 2, `--no-cache` reads original logs instead of cached records while still
-  updating the store, and `--rebuild-cache` regenerates the selected sources’ entries
-  from their logs. `urollup capture status` reports entries, sizes, versions and retained
-  sources, and `urollup capture prune` removes entries by age, version or retained
-  status.
+- **Controls:** `--no-capture` neither writes nor reads the store for a run, `--capture`
+  also captures raw logs passed with `--source`, and `--capture-idle` sets the idle
+  threshold. In Phase 2, `--no-cache` reads original logs instead of cached records while
+  still updating the store, and `--rebuild-cache` regenerates the selected sources’
+  entries from their logs.
+  `urollup capture status` reports entries, sizes, versions and retained sources, and
+  `urollup capture prune` removes entries by age, version or retained status.
 - **Atomic writes** follow tbd `filesystem-rules` and `rust-filesystem-rules`:
   - segments and manifests are staged as owner-only `NamedTempFile`s with unique names
     in the entry directory;
   - each segment is fsynced and its digest verified before it is published with
     `persist_noclobber`;
-  - the entry directory is fsynced, and the manifest is replaced last with `persist`,
-    only if the manifest version the writer started from is still current;
+  - the entry directory is fsynced (a no-op on Windows), and the manifest is replaced
+    last with `persist`, only if the manifest version the writer started from is still
+    current;
   - an OS advisory lock per entry serializes writers, so a crash or a concurrent run
     leaves the previous consistent entry and readers never see a partial segment.
 - **Equivalence:** runs with the store disabled, with retained sources, with cached
@@ -449,21 +477,23 @@ Analytical IDs are truncated digests and contain no literal names or paths.
 Every key that includes a name or path also includes a high-entropy component, a native
 ID or a record digest, so an ID cannot confirm a guessed path or project name.
 A root-relative `src-` locator can include Claude Code and Pi project directory names,
-which encode the working directory, so every locator is treated as a path.
+which encode the working directory, so root-relative locators are path-shaped.
+Declared stable locators, such as a Codex rollout’s thread and rollout IDs, are not.
 
 Bundle tables carry the identity key of every row.
 Summaries carry the key of each extent’s thread, but their request indexes hold IDs
 only, which keeps them compact.
 Both store keys in redacted form.
-IDs are derived before redaction, and redaction replaces each removed key component with
-the same keyed label it uses elsewhere, so redacted keys stay deterministic and
-groupable. A redacted component cannot be recovered, so an ID whose key contains one
+IDs are derived before redaction, so redaction never changes an ID. The default profile
+replaces a removed key component with a fixed `redacted` marker, and the opt-in profiles
+replace it with the same keyed label they use elsewhere, so redacted keys stay
+deterministic. A redacted component cannot be recovered, so an ID whose key contains one
 keeps its stored value and cannot be re-derived under another identity version:
 
 | Redaction profile | Removes | IDs that cannot be re-derived |
 | --- | --- | --- |
-| `paths` (default) | Absolute paths, working directories and `src-` locators | `src-`, and artifact-local IDs built from it |
-| `names` | Also project names, account names and account identifiers | Also any ID whose key includes an account identifier |
+| `paths` (default) | Absolute paths, working directories and path-shaped locators | `src-` IDs with path-shaped locators, and artifact-local IDs built from them |
+| `names` | Also project names, account aliases and account identifiers | Also any ID whose key includes an account identifier |
 | `native-ids` | Also native IDs | All IDs |
 
 Merging inputs at different identity versions requires re-derivation, so it is a
@@ -628,9 +658,13 @@ Updates and overrides:
 - Pricing never makes network requests.
 - Bundled rates change only through a reviewed table update with golden repricing tests,
   shipped in a release.
-- Users add or correct rates with local price files in the same schema, passed with the
-  repeatable `--prices` option or set in configuration.
-  Override rows take precedence over bundled rows for the dates they cover, and amounts
+- Users add or correct rates with YAML price files under the same
+  `urollup:PriceTable/v1` contract, passed with the repeatable `--prices` option or,
+  when none is passed, read from `prices.yaml` in the platform config directory named in
+  the plan’s
+  [sources section](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#sources-and-snapshot-boundary).
+  Override rows take precedence over bundled rows for the dates they cover, overlapping
+  override rows across files are rejected like overlaps within one table, and amounts
   they price are labeled configured rates, not list prices.
 - Reports record the pricing basis: bundled table version and review date, plus each
   override file’s fingerprint.
@@ -671,10 +705,10 @@ inputs.
 | `softschema` | `contract` and `status: enforced`; standalone summaries omit `schema`, and a summary inside a bundle points `schema` at the bundle’s `schemas/` copy |
 | `revision` | Contract revision within the major version (see [Versioning](#versioning-and-compatibility)) |
 | `policy` | Identity and reconciliation versions, bucket width, histogram scheme and top-N size; inputs to a merge must agree on all of them |
-| `redaction` | Profile and key fingerprint, never the key |
+| `redaction` | Profile, and the key fingerprint for opt-in profiles (`null` under `paths`); never the key |
 | `exports` | `rpt-` IDs of the exports the summary covers |
 | `sessions[]` | Extents: `thread`, its redacted `key`, `parent`, `ownership`, `candidates`, `status` (`counted` or `unresolved`), `extent`, `properties`, `usage`, `sizes`, `tools`, `busy` and `top` |
-| `extent` | Request count, digest of sorted request IDs with usage revisions, optional request `index`, `nonfinal` usage revisions that may still change, and first and last timestamps |
+| `extent` | Request count; digest of the sorted request IDs and the `nonfinal` map; optional request `index`; `nonfinal`, a map from request ID to usage revision for each request whose usage may still change; and first and last timestamps |
 | `usage[]` | Additive counters per 15-minute UTC bucket and per price-matching dimension: model, effort, service tier and cache-write duration |
 | `totals` | Derived: scope, requests and tokens by ownership, `unresolved` requests and extents, `possible` sums, list-price estimate with pricing basis and coverage, snapshot cutoff |
 | `extensions` | Open map for measures not yet in the contract, carried per extent and never totaled |
@@ -682,7 +716,10 @@ inputs.
 Design rules:
 
 - Usage rows use 15-minute UTC buckets, so reports can regroup them into days for every
-  current UTC offset.
+  current UTC offset. On summary input, `--since` and `--until` clip to bucket
+  boundaries: a row counts when its bucket starts inside the interval, so consecutive
+  windows still partition the rows, and a bound that is not on a boundary gets a
+  precision diagnostic naming the effective interval.
 - Rows carry every dimension the price table matches on, so merge recomputes money under
   one pricing basis rather than adding amounts.
   A rate boundary inside a bucket is a pricing-coverage diagnostic.
@@ -709,7 +746,7 @@ softschema:
   status: enforced
 revision: 1
 policy: {identity: 1, reconciliation: 1, bucket_minutes: 15, histogram: log2-8, top: 10}
-redaction: {profile: paths, key_fingerprint: hmac-sha256-0000...}
+redaction: {profile: paths, key_fingerprint: null}
 exports: [rpt-v1-aaaa...]
 sessions:
   - thread: thr-v1-p000...                 # the current session
@@ -719,9 +756,9 @@ sessions:
     status: counted
     extent:
       requests: 148
-      digest: sha256-1111...               # sorted request IDs with usage revisions
+      digest: sha256-1111...               # sorted request IDs and nonfinal map
       index: [req-v1-k91x..., req-v1-0bfa..., ...]
-      nonfinal: {}
+      nonfinal: {}                         # every request's usage is final
       first_at: "2026-09-12T14:03:11Z"
       last_at: "2026-09-12T16:40:02Z"
     properties: {agent: claude, dialect: claude-project, project: example, account: null}
@@ -773,7 +810,7 @@ softschema:
   status: enforced
 revision: 1
 policy: {identity: 1, reconciliation: 1, bucket_minutes: 15, histogram: log2-8, top: 10}
-redaction: {profile: paths, key_fingerprint: hmac-sha256-0000...}
+redaction: {profile: paths, key_fingerprint: null}
 exports: [rpt-v1-b001..., rpt-v1-b002..., ...]   # 15 exports
 sessions:
   - thread: thr-v1-c001...
@@ -807,12 +844,17 @@ extensions: {}
 
 Summary merge decides, for each pair of extents, whether one covers the other, whether
 they are disjoint, or neither.
+Two extents have the **same thread** when their owner threads are equal, or when both
+have a null thread (ambiguous or unknown ownership) and equal candidate sets.
+A request absent from an extent’s `nonfinal` map has its final usage revision; two final
+revisions are equal by definition, and a final revision is newer than any nonfinal one.
 
 - **Cover:** extent A covers extent B when both have the same thread and either their
-  digests are equal, or A’s index contains B’s and no shared request has a newer usage
-  revision in B.
+  digests are equal, or A’s index contains B’s and no shared request listed in either
+  extent’s `nonfinal` map has a newer usage revision in B than in A.
 - **Disjoint:** two extents are disjoint when their indexes share no request, or, when
-  an index is missing, when their threads differ and every request in both is owned.
+  an index is missing, when they do not have the same thread and every request in both
+  is owned, so a null-thread extent without an index is never disjoint from another.
 - **Merge:** collapse identical extents, remove every extent covered by another, and
   count each remaining extent that is disjoint from all the others.
   The rest are unresolved: they stay in the output with `status: unresolved`, their
@@ -877,10 +919,10 @@ read directly.
 
 | Entry | Content |
 | --- | --- |
-| `manifest.yaml` | `urollup:BundleManifest/v1` artifact: contract revision, producer version, identity, reconciliation and pricing versions, redaction profile and key fingerprint, snapshot cutoffs, covered exports, and each table’s record contract, `schema_sha256`, row count, byte size and SHA-256 |
+| `manifest.yaml` | `urollup:BundleManifest/v1` artifact: contract revision, producer version, identity, reconciliation, pricing and export policy versions, redaction profile and key fingerprint, snapshot cutoffs, covered exports, and each table’s record contract, `schema_sha256`, row count, byte size and SHA-256 |
 | `summary.yaml` | `urollup:UsageSummary/v1` artifact computed from the tables |
 | `schemas/*.schema.yaml` | Compiled schema for every contract used, so the unpacked YAML artifacts validate with `softschema validate` and no flags |
-| `tables/*.jsonl.zst` | zstd-compressed JSONL: `records` (layer 1 captured records, omitted with `--no-records`), `sources`, `threads`, `relationships`, `requests`, `limits` and `diagnostics`; `tools`, `provider_charges` and `resources` only when requested and available |
+| `tables/*.jsonl.zst` | zstd-compressed JSONL: `records` (layer 1 captured records under the export policy, omitted with `--no-records`), `sources`, `threads`, `relationships`, `requests`, `limits` and `diagnostics`; `tools`, `provider_charges` and `resources` only when requested and available |
 
 Table contents:
 
@@ -924,20 +966,34 @@ writes a summary.
 
 ### Redaction
 
-Summaries and bundles never contain prompts, tool arguments or result bodies.
-Redaction never affects deduplication, which uses analytical IDs.
+Summaries and bundles never contain prompts, tool arguments or result bodies, and the
+[export policy](#capture-layers-and-re-extraction) stubs every value outside its
+allow-list. Redaction never affects deduplication, which uses analytical IDs.
 
-- **`paths` (default):** absolute paths, working directories and `src-` locators become
+- **`paths` (default):** removes absolute paths, working directories and path-shaped
+  locators, and needs no key.
+- **`names`:** also replaces project names, account aliases and account identifiers with
   keyed HMAC-SHA-256 labels.
-- **`names`:** also labels project and account names and account identifiers.
 - **`native-ids`:** also drops native ID fields and labels native IDs inside keys.
 
-The same key always yields the same label, so labeled properties still group across
-inputs that share a key.
-The manifest and summary record the profile and the key fingerprint, never the key.
-Grouping by a labeled property across inputs with different key fingerprints is a
-compatibility error (exit 2). [Identities and Redaction](#identities-and-redaction)
-lists which IDs each profile prevents re-deriving.
+`project` is always exported as a plain name, never a path.
+Export resolves it from the source manifest’s project mapping when one matches, else the
+git top-level directory basename when the dialect records it, else the basename of the
+recorded `cwd`; `names` then labels that name.
+Under the default profile, agent, dialect, model, effort, project, account alias, time
+buckets and tool categories therefore group identically across machines, while working
+directory does not survive.
+
+The opt-in profiles take the key from `UROLLUP_REDACTION_KEY` or from a file named by
+`--redaction-key-file`, and exit 2 with a message naming both when neither provides one.
+The same key always yields the same label, so machines that must group labeled
+properties together share one key; the cloud skill exports with the default profile,
+which needs none. The manifest and summary record the profile and, for the opt-in
+profiles, the key fingerprint, never the key.
+Grouping by a property that any input labels requires every input to have the same key
+fingerprint; otherwise it is a compatibility error (exit 2).
+[Identities and Redaction](#identities-and-redaction) lists which IDs each profile
+prevents re-deriving.
 
 ### Versioning and Compatibility
 
@@ -952,7 +1008,8 @@ lists which IDs each profile prevents re-deriving.
   A reader may display a newer revision with a diagnostic but refuses to merge or
   re-export it, because it would drop fields it does not know.
 - **Compatibility errors:** unknown major versions, identity versions whose IDs cannot
-  be re-derived, disagreeing merge policies and mismatched redaction keys exit 2, the
+  be re-derived, disagreeing merge policies, grouping by a property labeled under
+  mismatched redaction keys, and opt-in redaction without a key exit 2, the
   invalid-request code in the plan’s
   [exit code table](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#cli-and-report-contracts).
 
@@ -961,6 +1018,8 @@ lists which IDs each profile prevents re-deriving.
 | `urollup:UsageSummary/v1` | Pure-YAML summary, standalone or in a bundle | `contracts/summary.py` |
 | `urollup:BundleManifest/v1` | `manifest.yaml` in a bundle | `contracts/bundle.py` |
 | Table record contracts, one per table | JSONL rows in `tables/` | `contracts/tables.py` |
+| `urollup:SourceManifest/v1` | `sources.yaml` or a `--sources-file` source manifest | `contracts/sources.py` |
+| `urollup:PriceTable/v1` | The bundled price table and `prices.yaml` or `--prices` overrides | `contracts/prices.py` |
 
 ### Contract Authoring and Rust Validation
 
@@ -973,8 +1032,11 @@ uv project, which pins softschema 0.8.1; no Python ships in or runs from the bin
    `schema_sha256`
    ([spec](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-spec.md#compiled-schemas)).
 2. The committed schemas live inside the core crate so crates.io builds can embed them.
-3. The core validates every artifact and table row it reads or writes against them, and
-   `urollup schema` prints them.
+3. On every read and write, the core validates artifacts and table rows with typed serde
+   structs that set `deny_unknown_fields`, matching the compiled contracts’ closed
+   objects, so the read path needs no Draft 2020-12 validator crate.
+   `urollup validate` and the test suite also run the compiled JSON Schema, and
+   `urollup schema` prints it.
 4. Artifacts declare `status: enforced`, because merge must not drop fields it does not
    know. New measures start in `extensions` and move into the contract in a new revision.
 
@@ -997,9 +1059,10 @@ Three softschema properties shape the models and the Rust reader:
   ([spec](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-spec.md#status-values)),
   so a generic JSON Schema validator would accept them.
   Every contract object sets `extra="forbid"`, which compiles to
-  `additionalProperties: false`, and `extensions` is the only open mapping.
-  Models avoid composition and conditional keywords, so both validators apply one
-  ordinary schema.
+  `additionalProperties: false`, its Rust struct sets `deny_unknown_fields`, and
+  `extensions` is the only open mapping.
+  Models avoid composition and conditional keywords, so serde, the JSON Schema validator
+  and softschema apply one ordinary schema.
 - **Cross-field rules live in Rust.** Pydantic validators are outside the compiled
   schema and its digest, so the Rust core checks that digests match indexes, totals
   match extents, no request is counted in two extents, and rows are sorted.
@@ -1010,17 +1073,19 @@ Makefile shell loops, and CI runs the same target.
 An inline `! softschema validate "$f"` passes when uv cannot find softschema or a glob
 matches nothing, so the script:
 
-- runs `uv run --frozen softschema compile <model> --contract <id> --out <schema>
+- runs
+  `uv --config-file uv.toml run --frozen softschema compile <model> --contract <id> --out <schema>
   --check` for every contract, including each table record contract
 - requires non-empty valid and invalid fixture lists
 - requires `softschema validate` to accept every valid fixture and to reject every
   invalid fixture with a validation verdict, treating a tool failure as a gate failure
-- runs `uv run --frozen pytest contracts`, which checks table-row fixtures through
-  `softschema.validate_values`
+- runs `uv --config-file uv.toml run --frozen pytest contracts`, which checks table-row
+  fixtures through `softschema.validate_values`
 
 A committed stale-schema probe proves the gate fails.
-Rust tests require urollup’s verdict to match softschema’s on every fixture, and require
-golden summaries and manifests written by urollup to pass `softschema validate` and
+Rust tests require the serde structs’ verdict and the compiled JSON Schema verdict to
+match softschema’s on every valid and invalid fixture, and require golden summaries and
+manifests written by urollup to pass `softschema validate` and
 `softschema repair --check` unchanged.
 
 ## Trade-offs and Alternatives
@@ -1078,32 +1143,39 @@ new measures a place to stabilize before they join the contract in a new revisio
 ## Security Considerations
 
 - **No content:** portable artifacts never contain prompts, tool arguments or result
-  bodies, and default redaction labels paths.
+  bodies; the export allow-list stubs values under unrecognized keys, and default
+  redaction removes paths.
 - **No reversible IDs:** analytical IDs are digests over keys that include high-entropy
   components, so they cannot confirm a guessed path or name.
 - **Hostile input:** YAML readers enforce portable value rules on parser events, and
   bundle readers reject unsafe entry paths, links, duplicates, digest mismatches and
   oversized decompression.
-- **Redaction keys:** artifacts record only a key fingerprint.
+- **Redaction keys:** only the opt-in profiles use a key, from `UROLLUP_REDACTION_KEY`
+  or `--redaction-key-file`, and artifacts record only its fingerprint.
+- **Diagnostics:** validation and capture diagnostics name fields and keys, never values
+  from redacted or stubbed fields.
 
 The web server’s token, host and origin checks and evidence reads are in the plan’s
 [Web UI](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#web-ui) section.
 
 ## Operational Concerns
 
-- **Validation cost:** every artifact and table row is validated at read and write, so
-  the plan’s benchmarks include bundle export and merge.
+- **Validation cost:** typed deserialization validates every artifact and table row at
+  read and write without a separate schema pass; the JSON Schema validator runs only in
+  `urollup validate` and tests, and the plan’s benchmarks include bundle export and
+  merge.
+- **Capture cost:** capture skips sources modified within `--capture-idle`, the plan’s
+  gated benchmarks exclude capture writes, and capture-write throughput is recorded
+  separately.
 - **Scaling:** the request index adds roughly 40 bytes per request to a summary.
   Bundles grow with request count and are compressed; exact percentiles over merged
   requests need bundles and a memory budget.
 
 ## Open Questions
 
-Proposed decisions for these contracts are collected with the plan’s other decisions in
+Proposed decisions and open questions for these contracts are collected with the plan’s
+other decisions in
 [Decisions to Confirm and Open Questions](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#decisions-to-confirm-and-open-questions).
-
-- Where does the redaction HMAC key live, and how do machines that must group labeled
-  properties together share it?
 
 ## References
 
