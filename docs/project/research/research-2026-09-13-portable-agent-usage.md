@@ -162,6 +162,8 @@ It is a behavioral baseline and a source of portable code and tests (see
 A parity matrix should name the exact release, command path, dialect and accounting
 scope, pin `--offline` and `--mode calculate`, and count prices missing offline as
 incomplete coverage.
+The [ccusage feature inventory](#ccusage-feature-inventory) lists those command paths
+and the release’s full user-facing surface.
 
 [agentfdr](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90)
 provides CLI reports, JSON summaries, search, comparisons, configurable anomaly
@@ -235,6 +237,193 @@ Codex’s Rust protocol, rollout and hook types can be ported directly, but Code
 in no sample rollout files; its tests build records inline.
 Pi computes per-file session totals that serve as a reconciliation check for a
 `pi-session` adapter, although a fork’s total includes its copied history.
+
+### ccusage Feature Inventory
+
+*(Added 2026-09-15.)* The maintainer asked that urollup roll up usage at least as
+effectively as ccusage, so this inventory records ccusage’s user-facing surface at a
+pinned release. v20.0.20 (tag `v20.0.20`, commit `bd7f89b`, published to npm on
+2026-08-15) was still the latest release on 2026-09-15. The inventory was read from its
+CLI parser, command, configuration, output, cost and adapter crates, its npm package and
+its guide. Where the guide disagrees with the code, the code is recorded.
+The design’s
+[ccusage use-case coverage](../../urollup-design.md#106-ccusage-use-case-coverage)
+records how urollup handles each use case, and the plan’s
+[ccusage reconciliation harness](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#ccusage-reconciliation-harness)
+compares results against this release.
+
+**Commands.** The command tree is defined in
+[cli-commands.json](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/cli-commands.json)
+and
+[parser.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/parser.rs):
+
+| Command path | Report | Notes |
+| --- | --- | --- |
+| `ccusage`, `ccusage daily`, `weekly`, `monthly`, `session` | Unified report over every detected agent | No command means `daily`; `--sections` prints several reports from one load, and `--by-agent` adds per-agent rows |
+| `ccusage claude daily`, `weekly`, `monthly`, `session` | Claude Code only | `daily` adds `--instances`, `--project` and `--project-aliases`; `weekly` adds `--start-of-week`, Sunday by default; `session --id` lists one session’s entries |
+| `ccusage codex daily`, `monthly`, `session` | Codex only | No `weekly`; `--speed auto\|standard\|fast`; `--order`, `--mode` and `--breakdown` are ignored |
+| `ccusage <agent> daily`, `monthly`, `session` | One of 14 other agents | OpenCode also has `weekly`; Pi takes `--pi-path` and OpenClaw `--open-claw-path` |
+| `ccusage blocks`, `ccusage claude blocks` | Claude Code 5-hour blocks inferred from activity | `--active`, `--recent`, `--token-limit` and `--session-length`; `--live` was removed in v18.0.0 |
+| `ccusage statusline` | One line for a Claude Code status line command | Own flags, described below |
+
+**Agents.** The 16 built-in agents are
+[`BUILT_IN_AGENT_NAMES`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/lib.rs#L57-L60),
+each with a directory variable in the
+[environment variable guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/environment-variables.md):
+
+- **Agents urollup also reads:** Claude Code (`CLAUDE_CONFIG_DIR`, a comma-separated
+  list; defaults `$XDG_CONFIG_HOME/claude`, `~/.config/claude` and `~/.claude`), Codex
+  (`CODEX_HOME`; `sessions/`, `archived_sessions/`, or a directory of
+  `codex exec --json` output) and Pi (`PI_AGENT_DIR` or `--pi-path`, plus extra
+  Pi-format stores declared in the configuration file for unified reports).
+- **Agents urollup does not read:** OpenCode, Amp, Droid, Codebuff, Hermes Agent, Goose,
+  OpenClaw, Kilo, Kimi, Qwen, GitHub Copilot CLI, Gemini CLI and Grok Build CLI. The
+  OpenCode, Hermes, Goose and Kilo adapters read SQLite databases.
+  Amp and Codebuff rows add credits, and Hermes rows add message counts.
+
+**Shared report flags.**
+[`parse_shared_arg`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/parser.rs#L713-L745)
+accepts these on every report command:
+
+- **Dates:** `--since` and `--until` take `YYYYMMDD` or `YYYY-MM-DD` and include both
+  local dates in `--timezone`, the system zone by default.
+  `--last <N>` selects the N most recent periods of the report’s unit.
+- **Output:** `--json`; `--jq <filter>`, which pipes the JSON through an external `jq`
+  binary
+  ([output.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/output.rs#L114-L140));
+  `--order asc|desc`, ascending by default; `--breakdown` for per-model rows;
+  `--compact`; `--no-cost`, which also strips cost fields from JSON; and `--color` and
+  `--no-color`, with `NO_COLOR` and `FORCE_COLOR`.
+- **Cost:** `--mode auto|calculate|display`
+  ([cost.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/cost.rs#L19-L33)):
+  `display` uses a record’s `costUSD` or 0, `auto` uses `costUSD` when present and
+  otherwise prices tokens, and `calculate` always prices tokens.
+  `--offline` uses the embedded price snapshots instead of fetching LiteLLM prices.
+- **Other:** `--config <path>`, `--debug` (scan counts on stderr), `--debug-samples`
+  (parsed but unused) and `--single-thread`.
+- **Removed:** `--locale` is rejected
+  ([tests.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/tests.rs#L940)).
+
+**Report fields.**
+
+- **Tables:** period, Models, Input, Output, Cache Create, Cache Read, Total Tokens and
+  Cost (USD) columns, plus Last Activity for sessions and a totals row.
+  `--breakdown` adds model rows and `--instances` adds project header rows.
+  Below 100 terminal columns, or with `--compact`, the layout keeps only period, models,
+  input, output and cost, and a pipe never triggers it
+  ([should_use_compact_layout](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/output.rs#L18-L25)).
+- **Claude JSON:** `{daily|weekly|monthly: [...], totals}`, with rows of `inputTokens`,
+  `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `totalTokens`, `totalCost`,
+  `modelsUsed` and `modelBreakdowns[]`. Session rows add `sessionId`, `firstActivity`,
+  `lastActivity` and `projectPath`, and `--instances` nests rows under `projects`.
+- **Unified JSON:** rows carry `period` and `agent`, session rows sit under the singular
+  key `session`, and `metadata` carries per-source `lastActivity`, `credits` and Codex
+  `reasoningOutputTokens`.
+- **Codex JSON:** `inputTokens` is uncached input and `cacheCreationTokens` is always 0.
+  Rows add `reasoningOutputTokens`, `costUSD` and `models` entries with an `isFallback`
+  flag, and session rows add `sessionFile` and `directory`
+  ([report.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/codex/src/report.rs#L55-L80)).
+- **Not reported:** there is no cache hit rate, no output schema, and no Markdown or CSV
+  output. A missing price prints a stderr warning while the cost shows 0.
+
+**Status line.**
+[`run_statusline`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/commands/mod.rs#L318)
+and the
+[statusline guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/statusline.md)
+define the command:
+
+- **Input:** it reads only `session_id`, `transcript_path`, `model`, and, when present,
+  `cost.total_cost_usd`, `context_window` and `effort.level` from the hook input
+  ([`StatuslineHook`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/commands/mod.rs#L811-L819)).
+- **Output:** model and effort, then session cost, chosen by
+  `--cost-source auto|ccusage|cc|both`, where `cc` is Claude Code’s own estimate.
+  It adds today’s Claude Code cost in `--timezone`, the active 5-hour block’s cost and
+  time left, a burn rate styled by `--visual-burn-rate`, and context tokens with a
+  percentage colored by `--context-low-threshold` and `--context-medium-threshold`.
+- **Context fallback:** without `context_window`, context is the transcript’s last
+  assistant usage against the pricing dataset’s context limit for the model, else
+  200,000 tokens
+  ([mod.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/commands/mod.rs#L630-L660)).
+- **Caching and pricing:** output is cached per session in the temporary directory’s
+  `ccusage-semaphore/` and refreshed after `--refresh-interval` (1 second) or when the
+  transcript changes. Pricing is offline by default, and configured `pricingOverrides`
+  are ignored until `main` commit `aa912ef`.
+- **Hook data it ignores:** Claude Code’s status line input also carries `rate_limits`,
+  the recorded `used_percentage` and `resets_at` of the five-hour, seven-day and
+  spend-limit windows for Pro and Max subscribers, and `prompt_cache` statistics such as
+  `hit_ratio`. Claude Code debounces runs at 300 ms and cancels a run still in progress
+  when a newer update arrives
+  ([status line docs](https://code.claude.com/docs/en/statusline), retrieved
+  2026-09-15). ccusage reads neither object.
+
+**Configuration.**
+
+- **Files:** `--config`, else the first of `./.ccusage/ccusage.json` and `ccusage.json`
+  in each Claude Code configuration directory
+  ([config.rs](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-config/src/config.rs#L219-L230)).
+  Files are not merged.
+- **Option layers:** options apply from `defaults`, through per-command and per-agent
+  sections, to CLI flags, which win.
+  `pricingOverrides` set rates per raw model name, and the
+  [config schema](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/apps/ccusage/config-schema.json)
+  is the only JSON schema ccusage publishes.
+- **Environment:** `LOG_LEVEL` hides titles and progress, and the undocumented
+  `CCUSAGE_MODEL_ALIASES` renames models in reports.
+  The guide lists a `CCUSAGE_OFFLINE` variable that no code reads.
+
+**Integrations and distribution.**
+
+- **MCP:** 20.0.20 has no MCP server.
+  The `@ccusage/mcp` package shipped through v18.0.11 and was removed in v19.0.0 by
+  commit
+  [`d7e6993`](https://github.com/ccusage/ccusage/commit/d7e6993cc57852e693b0df86ab3904e3c118fa97).
+- **Library API:** there is none.
+  The
+  [npm package](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/apps/ccusage/package.json)
+  ships only a Node launcher and the config schema, with the six native binaries as
+  optional dependencies of the same exact version and no install scripts, so
+  `npm ci --ignore-scripts` installs a runnable binary.
+- **Other channels:** `npx`, `bunx` and `pnpm dlx` runners, which resolve the latest
+  version unless pinned, and a Nix flake.
+
+**Comparison notes.** A side-by-side comparison must account for these behaviors, in
+addition to the bugs under [Existing Implementations](#existing-implementations):
+
+- `--until` names an inclusive local date, while urollup intervals are half-open.
+- Unified reports include every detected agent, so a comparison isolates `HOME` and the
+  agent directory variables, or uses the per-agent command paths.
+- Without `--offline`, every run fetches LiteLLM prices from the `main` branch and falls
+  back silently to embedded data on failure.
+- Session reports filter by last-activity date and drop sessions with zero tokens.
+  `claude session` always sorts by descending cost, and `claude weekly` starts weeks on
+  Sunday, while unified weeks start on Monday.
+- Codex reports ignore `--mode` and `--breakdown`, always show 0 cache creation tokens
+  at 20.0.20, and mark a model assumed for records without one as a fallback.
+- `<synthetic>` is excluded from model lists, and advisor iterations become separate
+  model entries.
+
+*(Checked 2026-09-15: `main` at commit
+[`a26f517`](https://github.com/ccusage/ccusage/commit/a26f5173fb425beb527b62f118e4275237368efa)
+is 234 commits ahead of v20.0.20 and unreleased.
+Besides the fixes cited above (`a4b8420`, `15b3bef` and `809eeb6`), it adds a ZCode
+adapter
+([`562d0ec`](https://github.com/ccusage/ccusage/commit/562d0ecd28fa0788f4510d1640df51869ac24136)),
+Antigravity SQLite usage
+([`c951e20`](https://github.com/ccusage/ccusage/commit/c951e20dbe60155f1e5df63399f2b1217f797346)),
+Copilot session-state events
+([`8841f92`](https://github.com/ccusage/ccusage/commit/8841f9211d7225a32afc447de71b76843802b314)),
+status line pricing overrides
+([`aa912ef`](https://github.com/ccusage/ccusage/commit/aa912efb2f35ab5bcfcc87315c36740b6c2478be)),
+Claude Code session totals and Codex history scoped to the date window
+([`b2809fa`](https://github.com/ccusage/ccusage/commit/b2809fa580962f39483a3a0e3fca937c74de7dcb),
+[`527ec3a`](https://github.com/ccusage/ccusage/commit/527ec3a9cefa28391664b5c0c0ce1aa006264769)),
+rejection of invalid date bounds
+([`d40d20e`](https://github.com/ccusage/ccusage/commit/d40d20eb88b85157b1cace795d3d660b28ab7d9b))
+and unified sessions sorted by cost
+([`ff0f032`](https://github.com/ccusage/ccusage/commit/ff0f032ca2dd261139e5d13246bf6290aa4ad7d9)).
+The rest are price snapshot refreshes, dependency updates, CI changes, and Codex
+originator breakdowns that were added and then reverted.
+No 20.0.20 fact in this brief changed.)*
 
 ### Log Dialects and Session Linkage
 
@@ -1085,6 +1274,14 @@ that review.
   crates, the benchmark generator and the Pi and Codex guides.
   The `v19.0.0` TypeScript source was read for comparison, and later `main` commits up
   to `95bbc41`, including `a4b8420`, `15b3bef` and `809eeb6`, as evidence of fixed bugs.
+  *(Updated 2026-09-15: for the [ccusage feature inventory](#ccusage-feature-inventory),
+  the same checkout’s CLI parser and its tests, command, configuration, output, cost and
+  Codex report modules, npm package manifest and guide pages were read, the GitHub
+  release list confirmed v20.0.20 as the latest release, the release notes and app
+  directories of v18.0.11 and v19.0.0 dated the MCP package removal, and the commit log
+  from v20.0.20 to `main` commit `a26f517` was reviewed for unreleased changes, and
+  Claude Code’s status line documentation was read for the hook input fields.
+  Nothing was executed.)*
 - **Pi v0.85.1, commit `d981de1` (MIT):** The coding agent’s session manager, runtime,
   JSON mode, bash tool, usage totals, cache statistics, docs, changelog, tests and
   fixtures; the `pi-ai` message types, cost and provider usage mapping; and the agent
@@ -1146,6 +1343,26 @@ Tools and implementations, at the inspected revisions:
   (Codex cache writes) and
   [`809eeb6`](https://github.com/ccusage/ccusage/commit/809eeb6d52a2c7d13b9c65e10d4106109247390c)
   (Pi fork replay)
+- ccusage 20.0.20 surface, for the [feature inventory](#ccusage-feature-inventory):
+  [command tree](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/cli-commands.json),
+  [CLI parser](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-cli-parser/src/parser.rs),
+  [commands and status line](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage/src/commands/mod.rs),
+  [configuration](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-config/src/config.rs),
+  [output](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/output.rs),
+  [cost modes](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/crates/ccusage-core/src/cost.rs),
+  [npm manifest](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/apps/ccusage/package.json)
+  and
+  [guide](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide)
+- ccusage release notes:
+  [v18.0.0](https://github.com/ccusage/ccusage/releases/tag/v18.0.0) (`blocks --live`
+  removed), [v19.0.0](https://github.com/ccusage/ccusage/releases/tag/v19.0.0) (MCP
+  package removed, commit
+  [`d7e6993`](https://github.com/ccusage/ccusage/commit/d7e6993cc57852e693b0df86ab3904e3c118fa97))
+  and [v20.0.20](https://github.com/ccusage/ccusage/releases/tag/v20.0.20)
+- [ccusage `main` commit `a26f517`](https://github.com/ccusage/ccusage/tree/a26f5173fb425beb527b62f118e4275237368efa),
+  the unreleased head reviewed on 2026-09-15
+- [Claude Code status line documentation](https://code.claude.com/docs/en/statusline)
+  (official docs, unversioned, retrieved 2026-09-15), for the status line comparison
 - [ccusage 20.0.20 npm package](https://www.npmjs.com/package/ccusage/v/20.0.20)
 - [ccusage 19.0.0 TypeScript source](https://github.com/ccusage/ccusage/tree/c5049cef6d830a6eef216534331ea3fa3da99314/apps/ccusage/src)
 - [Anthropic session-report plugin](https://github.com/anthropics/claude-plugins-official/tree/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report)
