@@ -21,8 +21,9 @@ counting copied work twice.
 This brief collects the public-source background for that design: existing tools and the
 code and tests urollup can port from them, what each agent’s logs record, how to count
 each request once, and what an exported result must keep so it can be merged later.
-It feeds the [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md),
-which turns these findings into contracts and implementation phases.
+It feeds the [urollup design](../../urollup-design.md) and
+[plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md), which turn these
+findings into contracts and implementation phases.
 Private session examples are excluded.
 
 ## Questions to Answer
@@ -910,7 +911,7 @@ A **format fact** records dialect behavior, and **learn only** takes a lesson wi
 code.
 
 Ported code keeps its license notice and attribution, as the
-[urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md) requires,
+[urollup design](../../urollup-design.md#decision-3-code-reuse-and-licensing) requires,
 recorded with the source path and commit in a third-party notices file.
 MIT sources need their copyright notice and license text: ccusage (Copyright (c) 2025
 ryoppippi), agentfdr (Copyright (c) 2026 kamihork) and Pi (Copyright (c) 2025 Mario
@@ -1202,6 +1203,7 @@ Papers:
 
 Related project documents:
 
+- [urollup design](../../urollup-design.md)
 - [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md)
 - [Rust CLI engineering baseline](research-2026-09-13-rust-cli-engineering-baseline.md)
 

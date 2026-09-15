@@ -1,6 +1,7 @@
 # Project Instructions for AI Agents
 
-This file provides instructions and context for AI coding agents working on this project.
+This file provides instructions and context for AI coding agents working on this
+project.
 
 <!-- BEGIN TBD INTEGRATION format=f08 surface=agents-md -->
 ## tbd
@@ -23,38 +24,40 @@ Python tooling is development-only and pinned in `pyproject.toml`, `uv.toml` and
 `uv.lock`; it is never a runtime or build dependency of the Rust crates.
 
 - **softschema** authors and checks the urollup summary contract.
-  Run it as `uv --config-file uv.toml run --frozen softschema …` so the pinned version is
-  used. In this repository, never use the softschema skill’s `softschema@latest` fallback
-  (`uvx` or `npx`); the skill in `.agents/skills/softschema/` is otherwise current.
+  Run it as `uv --config-file uv.toml run --frozen softschema …` so the pinned version
+  is used. In this repository, never use the softschema skill’s `softschema@latest`
+  fallback (`uvx` or `npx`); the skill in `.agents/skills/softschema/` is otherwise
+  current.
 - **flowmark** (flowmark-rs) formats Markdown:
   `uv --config-file uv.toml run --frozen flowmark --auto <file>`.
-- Always pass `--config-file uv.toml` to uv, so user-level uv configuration never changes
-  resolution and `uv.lock` stays identical on every machine and in CI.
+- Always pass `--config-file uv.toml` to uv, so user-level uv configuration never
+  changes resolution and `uv.lock` stays identical on every machine and in CI.
 - Dependencies follow a 14-day release cool-off (`exclude-newer` in `uv.toml`);
   first-party packages such as softschema are exempt.
 
 ## Project Status
 
 urollup is in planning; there is no product code yet, only one exploration (a Rust log
-throughput spike) under `explorations/log-throughput/`.
-It will be a Rust CLI and local read-only web UI that produces usage rollups (tokens,
-cost, request sizes, tools) from coding-agent session logs, per session or aggregated
-across sessions.
+throughput spike) under `explorations/log-throughput/`. It will be a Rust CLI and local
+read-only web UI that produces usage rollups (tokens, cost, request sizes, tools) from
+coding-agent session logs, per session or aggregated across sessions.
 
+The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
+decisions and open questions.
 Planning docs live under `docs/project/`:
 
-- `specs/active/`: the plan spec, the entry point for design and phases.
-- `architecture/`: detailed data contracts referenced by the plan.
+- `specs/active/`: the plan spec, with phases, milestones, testing and rollout.
 - `research/`: background research briefs.
 
-The planning epic is `uro-lpow`.
-Run `tbd list --specs` to see beads grouped by linked spec.
+The planning epic is `uro-lpow`. Run `tbd list --specs` to see beads grouped by linked
+spec.
 
 ## Build & Test
 
 No build exists yet.
-The Rust workspace, `make check` gate and CI are defined in the plan spec’s “Project
-setup and engineering conventions” section and are the first Phase 1 bead.
+The Rust workspace, `make check` gate and CI are defined in the design doc’s “Workspace
+and Crate Structure” and “Engineering Conventions” sections, and scaffolding them is the
+first Phase 1 bead.
 
 ```bash
 uv --config-file uv.toml sync --locked                   # install pinned dev tooling

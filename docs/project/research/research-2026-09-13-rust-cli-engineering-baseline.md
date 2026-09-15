@@ -19,7 +19,7 @@ maintainer, [fdu](https://github.com/jlevy/fdu) and
 [flowmark-rs](https://github.com/jlevy/flowmark-rs), and consistent with the tbd Rust
 guidelines.
 This brief compares the three sources practice by practice and recommends the
-baseline that the [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md)
+baseline that the [urollup design](../../urollup-design.md#82-engineering-conventions)
 adopts.
 
 ## Questions to Answer

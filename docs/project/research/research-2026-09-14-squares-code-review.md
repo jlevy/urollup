@@ -349,13 +349,12 @@ Sources:
 [`1338-1357`](https://github.com/jlevy/squares/blob/f2e24e07be8c94fa3ac603c3534dce7c454da99b/packing/devtools/codex_log_rollup.py#L1338-L1357)
 and the embedded semantics at
 [`1483-1545`](https://github.com/jlevy/squares/blob/f2e24e07be8c94fa3ac603c3534dce7c454da99b/packing/devtools/codex_log_rollup.py#L1483-L1545).
-urollup’s
-[measure contracts](../architecture/arch-2026-09-13-urollup-data-contracts.md#measure-contracts)
-cover span, summed durations, busy union, waiting and critical path, but not
-agent-seconds versus union, overlap-safe tool categories, or upper and lower model-time
-bounds. The metaproc review compares these definitions with metaproc’s nested sums and
-qm’s per-phase gap decomposition; the reconciled position keeps squares’ definitions and
-adds qm’s explicit residual for unattributed time.
+urollup’s [measure contracts](../../urollup-design.md#41-measure-contracts) cover span,
+summed durations, busy union, waiting and critical path, but not agent-seconds versus
+union, overlap-safe tool categories, or upper and lower model-time bounds.
+The metaproc review compares these definitions with metaproc’s nested sums and qm’s
+per-phase gap decomposition; the reconciled position keeps squares’ definitions and adds
+qm’s explicit residual for unattributed time.
 
 ### Intervals, Cutoffs and Delta Receipts
 
@@ -450,9 +449,9 @@ squares planned a unified `EfficiencyRollup` for that purpose and never built it
   ([`squares/packing/campaign/agent-sessions/README.md:295-299`](https://github.com/jlevy/squares/blob/f2e24e07be8c94fa3ac603c3534dce7c454da99b/packing/campaign/agent-sessions/README.md#L295-L299)).
 
 The overlap with urollup’s
-[usage summary](../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format)
-is substantial: both are enforced pure-YAML softschema artifacts that exclude content,
-identify their sources, and keep unknown values distinct from zero.
+[usage summary](../../urollup-design.md#52-usage-summary-format) is substantial: both
+are enforced pure-YAML softschema artifacts that exclude content, identify their
+sources, and keep unknown values distinct from zero.
 urollup’s summary is strictly more capable for squares’ needs, because its extents merge
 without double counting a log that several sessions declare.
 
@@ -518,19 +517,19 @@ not to copy). The findings above link each line range at the pinned commit.
 
 | Item | Where in squares | Reuse mode | urollup bead or plan section | Notes and risks |
 | --- | --- | --- | --- | --- |
-| Legacy Codex subagent replay detection | `squares/packing/devtools/codex_log_rollup.py:221-229`, `454-495`, `751-759`; `squares/packing/tests/test_codex_log_rollup.py:569-626`, `757-1013` | Port logic and port tests | uro-y2qj; uro-spce; arch [Reconciliation](../architecture/arch-2026-09-13-urollup-data-contracts.md#reconciliation) | Fallback only, after the start ordinal, the child’s own `thread_settings_applied` and parent turn IDs; the heuristics changed twice, so label exclusions `inferred` with diagnostics |
-| Codex turn windows, interrupted and live states | `squares/packing/devtools/codex_log_rollup.py:628-657`, `736-748`; `squares/packing/tests/test_codex_log_rollup.py:412-499` | Port logic and port tests | uro-y2qj; arch Measure Contracts (Time) | A live turn at snapshot is a completeness fact the summary does not yet carry |
+| Legacy Codex subagent replay detection | `squares/packing/devtools/codex_log_rollup.py:221-229`, `454-495`, `751-759`; `squares/packing/tests/test_codex_log_rollup.py:569-626`, `757-1013` | Port logic and port tests | uro-y2qj; uro-spce; design [Reconciliation](../../urollup-design.md#33-reconciliation) | Fallback only, after the start ordinal, the child’s own `thread_settings_applied` and parent turn IDs; the heuristics changed twice, so label exclusions `inferred` with diagnostics |
+| Codex turn windows, interrupted and live states | `squares/packing/devtools/codex_log_rollup.py:628-657`, `736-748`; `squares/packing/tests/test_codex_log_rollup.py:412-499` | Port logic and port tests | uro-y2qj; design Measure Contracts (Time) | A live turn at snapshot is a completeness fact the summary does not yet carry |
 | Native Codex timing with coverage | `squares/packing/devtools/codex_log_rollup.py:184-190`, `1004-1048`; `squares/packing/tests/test_codex_log_rollup.py:628-708` | Port logic | uro-y2qj (capture native fields) | Keep `duration_ms` and `time_to_first_token_ms` verbatim as observed fields |
-| Overlap-safe time measures | `squares/packing/devtools/codex_log_rollup.py:193-261`, `1162-1217`, `1338-1357` | Port logic (definitions) | uro-spce; uro-d135; arch Measure Contracts; summary `busy` | Category priority is a policy choice; version it |
+| Overlap-safe time measures | `squares/packing/devtools/codex_log_rollup.py:193-261`, `1162-1217`, `1338-1357` | Port logic (definitions) | uro-spce; uro-d135; design Measure Contracts; summary `busy` | Category priority is a policy choice; version it |
 | Cutoff clipping and append stability | `squares/packing/devtools/codex_log_rollup.py:577-607`; `squares/packing/devtools/codex_task_tree_delta.py:638-723`; `squares/packing/tests/test_codex_log_rollup.py:916-1013` | Port tests; learn | uro-d135 (`--since`, `--until`); uro-unib (extent stability) | Tokens by completion time, intervals clipped only when proven to straddle |
 | Content detection, ambiguous claim refused | `squares/packing/devtools/logrollup/reader.py:35-84` | Port logic | uro-y2qj (dialect detection) | Matches urollup’s design; state the refusal explicitly |
-| Claude tool pairing and session events | `squares/packing/devtools/logrollup/claude.py:183-271`, `462-476` | Port logic | uro-y2qj; arch [Capture Layers](../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-layers-and-re-extraction) | `queue-operation` and `system` subtypes may fall outside the capture rule |
+| Claude tool pairing and session events | `squares/packing/devtools/logrollup/claude.py:183-271`, `462-476` | Port logic | uro-y2qj; design [Capture Layers](../../urollup-design.md#23-capture-layers-and-re-extraction) | `queue-operation` and `system` subtypes may fall outside the capture rule |
 | Claude token summation per record | `squares/packing/devtools/logrollup/claude.py:192-213`, `411-415` | Avoid | uro-spce; uro-obx5 | Confirmed overcount on a synthetic probe |
 | Codex usage per `token_count` event | `squares/packing/devtools/codex_log_rollup.py:278-290`, `942-956` | Avoid | uro-spce; uro-y2qj | Overcounts repeated snapshots and counts `info: null` as a response |
 | Codex discovery | `squares/packing/devtools/codex_log_rollup.py:427-514`, `1436-1443` | Learn | uro-20ck | Misses `.zst`, `archived_sessions/` and multi-file threads; a cycle aborts the run |
-| Shell command resolver and shapes | `squares/packing/devtools/logrollup/shell.py:203-369`; `squares/packing/devtools/logrollup/claude.py:49-105`; `squares/packing/tests/test_log_rollup.py:16-95` | Port logic and port tests | uro-d135 (`tools`); arch Capture Layers (strip policy) | Must run before arguments are stripped; project CLI families need configuration |
+| Shell command resolver and shapes | `squares/packing/devtools/logrollup/shell.py:203-369`; `squares/packing/devtools/logrollup/claude.py:49-105`; `squares/packing/tests/test_log_rollup.py:16-95` | Port logic and port tests | uro-d135 (`tools`); design Capture Layers (strip policy) | Must run before arguments are stripped; project CLI families need configuration |
 | Required `semantics` block; unavailable is not zero | `squares/packing/devtools/logrollup/model.py:176-210`; `squares/packing/devtools/logrollup/claude.py:289-378` | Share format | uro-unib; uro-d135 | urollup could carry definition IDs rather than prose per file |
-| Distinct-receipt totals and shared rows | `squares/packing/devtools/close_session.py:374-470`, `596-620`; `squares/packing/campaign/schemas/session-close-report.schema.yaml:24-37` | Learn; integration target | arch [Ownership and Totals](../architecture/arch-2026-09-13-urollup-data-contracts.md#ownership-and-totals); uro-52qi | Real-world evidence for non-additive tag groups |
+| Distinct-receipt totals and shared rows | `squares/packing/devtools/close_session.py:374-470`, `596-620`; `squares/packing/campaign/schemas/session-close-report.schema.yaml:24-37` | Learn; integration target | design [Ownership and Totals](../../urollup-design.md#42-ownership-and-totals); uro-52qi | Real-world evidence for non-additive tag groups |
 | Branch cost bounds | `squares/packing/devtools/render_pr_rollup.py:191-254`; `squares/operating-rules.md:249-285` | Learn; integration need | uro-d135 (`--group-by branch`) | urollup can make Claude branch cost exact from per-record `gitBranch`, and observe Codex branch per thread from `session_meta.git.branch` |
 | Delta validator that never echoes values | `squares/packing/devtools/codex_task_tree_delta.py:366-454`; `squares/packing/tests/test_codex_task_tree_delta.py:542-556` | Port tests | uro-unib (`validate`) | Applies to diagnostics about redacted fields |
 | Synthetic Codex record builders | `squares/packing/tests/test_codex_log_rollup.py:15-122` | Port tests | uro-obx5 | No private data; record the source commit; extend for the gaps listed above |
@@ -538,7 +537,7 @@ not to copy). The findings above link each line range at the pinned commit.
 | Codex SQLite thread index | `squares/docs/project/reviews/review-2026-09-13-pr156-usage-delta.md:117-139` | Learn | uro-20ck | Undocumented and versioned by file name; a discovery hint, never a usage source |
 | Commit-anchored verdicts | `squares/packing/src/sqpack/campaign/commit_clock.py:1-30`; `squares/packing/defects.yaml:15241-15305` | Learn | uro-jpmf (`check`); plan QuerySpec | Resolve relative times to absolute instants in saved queries |
 | Generated tables and flowmark | `squares/packing/devtools/close_session.py:536-551` | Learn | uro-d135 (Markdown goldens) | Markdown output should be a fixed point of pinned flowmark |
-| Hash policy | `squares/development.md:905-917` | Learn | arch Analytical Identities; Capture Cache | Name each digest’s function: identity, cache check or trust boundary |
+| Hash policy | `squares/development.md:905-917` | Learn | design Analytical Identities; Capture Cache | Name each digest’s function: identity, cache check or trust boundary |
 
 ## Key Insights
 
@@ -790,7 +789,7 @@ Codex at commit `6b9826e` (`rust-v0.154.0`), for the format facts:
 Related project documents:
 
 - [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md)
-- [urollup data contracts](../architecture/arch-2026-09-13-urollup-data-contracts.md)
+- [urollup design](../../urollup-design.md)
 - [Portable research brief](research-2026-09-13-portable-agent-usage.md)
 - [metaproc and qm review](research-2026-09-14-metaproc-code-review.md)
 

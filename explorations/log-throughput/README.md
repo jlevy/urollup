@@ -56,8 +56,8 @@ every file. Legacy pre-JSONL Codex `rollout-*.json` files are counted but not pa
 
 This spike is a measurement tool, not a reference implementation.
 Its rules were chosen to size volume and parse cost, and they differ from the
-[data contracts](../../docs/project/architecture/arch-2026-09-13-urollup-data-contracts.md),
-so do not copy its extraction or stripping logic:
+[design specification](../../docs/urollup-design.md), so do not copy its extraction or
+stripping logic:
 
 - **Claude dedupe key:** requests are keyed by `message.id` plus `requestId`, whereas
   the contract’s `req-` key precedence uses the response ID first, so the `dup_*`

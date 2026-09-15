@@ -30,8 +30,7 @@ It reconciles its findings with the
 [squares review](research-2026-09-14-squares-code-review.md) and corrects the
 [portable research brief](research-2026-09-13-portable-agent-usage.md)’s log dialect
 survey. The [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md) and
-[data contracts](../architecture/arch-2026-09-13-urollup-data-contracts.md) are the
-baseline.
+[design](../../urollup-design.md) are the baseline.
 
 Three facts frame the recommendations:
 
@@ -1262,7 +1261,7 @@ parsing, replay, `token_count` and time-measure changes cited here by number.
 - [Portable research brief](research-2026-09-13-portable-agent-usage.md)
 - [Rust CLI engineering baseline](research-2026-09-13-rust-cli-engineering-baseline.md)
 - [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md)
-- [urollup data contracts](../architecture/arch-2026-09-13-urollup-data-contracts.md)
+- [urollup design](../../urollup-design.md)
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

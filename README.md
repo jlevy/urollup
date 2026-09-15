@@ -16,8 +16,8 @@ under review.
 
 | Doc | Purpose |
 | --- | --- |
-| [Plan spec](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Entry point: goals, workflows, design summary, phases, testing, rollout, decisions to confirm |
-| [Data contracts](docs/project/architecture/arch-2026-09-13-urollup-data-contracts.md) | Ledger, analytical identities, accounting measures, summary and bundle formats |
+| [Design specification](docs/urollup-design.md) | Entry point: goals, sources and capture, ledger and identities, accounting, summary and bundle formats, CLI, web UI, decisions and open questions |
+| [Plan spec](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Phases and milestones, testing strategy and performance targets, rollout |
 | [Portable agent usage research](docs/project/research/research-2026-09-13-portable-agent-usage.md) | Existing tools, log dialects, common workflows, accounting pitfalls, merge rationale |
 | [Rust CLI engineering baseline](docs/project/research/research-2026-09-13-rust-cli-engineering-baseline.md) | Project setup practices drawn from tbd guidelines, fdu and flowmark-rs |
 | [squares code review](docs/project/research/research-2026-09-14-squares-code-review.md) | Reusable Codex and Claude parsing, time measures and tests from squares, and its integration needs |
