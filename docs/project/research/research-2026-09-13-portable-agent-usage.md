@@ -24,6 +24,9 @@ each request once, and what an exported result must keep so it can be merged lat
 It feeds the [urollup design](../../urollup-design.md) and
 [plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md), which turn these
 findings into contracts and implementation phases.
+The [agent tool source reviews](research-2026-09-14-agent-tool-source-reviews.md) keep
+the detailed Codex, ccusage, Pi, agentfdr and Anthropic plugin evidence condensed here,
+with the status of each review recommendation.
 Private session examples are excluded.
 
 ## Questions to Answer
@@ -1213,6 +1216,7 @@ Related project documents:
 - [urollup design](../../urollup-design.md)
 - [urollup plan](../specs/active/plan-2026-09-13-urollup-cli-and-web.md)
 - [Rust CLI engineering baseline](research-2026-09-13-rust-cli-engineering-baseline.md)
+- [Agent tool source reviews](research-2026-09-14-agent-tool-source-reviews.md)
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

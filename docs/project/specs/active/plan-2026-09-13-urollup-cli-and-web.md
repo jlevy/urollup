@@ -375,6 +375,7 @@ The design doc records every decision and open question:
 - [Rust CLI engineering baseline](../../research/research-2026-09-13-rust-cli-engineering-baseline.md)
 - [squares code review](../../research/research-2026-09-14-squares-code-review.md) and
   [metaproc and qm review](../../research/research-2026-09-14-metaproc-code-review.md)
+- [Agent tool source reviews](../../research/research-2026-09-14-agent-tool-source-reviews.md)
 - [Log throughput spike](../../../../explorations/log-throughput/README.md)
 - [fdu](https://github.com/jlevy/fdu) and
   [flowmark-rs](https://github.com/jlevy/flowmark-rs), the reference Rust repositories

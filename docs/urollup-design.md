@@ -3073,6 +3073,9 @@ Project documents, none of which contains private session data:
   [metaproc and qm review](project/research/research-2026-09-14-metaproc-code-review.md):
   reusable parsing, time measures, captured streams, harness pitfalls, accounts and
   quotas
+- [Agent tool source reviews](project/research/research-2026-09-14-agent-tool-source-reviews.md):
+  the detailed Codex, ccusage, Pi, agentfdr and Anthropic plugin source evidence behind
+  the research brief, and where each review recommendation was applied
 - [Log throughput spike](../explorations/log-throughput/README.md): the prototype behind
   the capture store measurements
 
