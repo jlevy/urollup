@@ -1,0 +1,25 @@
+[package]
+name = "urollup-core"
+description = "The urollup accounting core: session log ingestion, reconciliation and usage rollups"
+readme = "README.md"
+documentation = "https://docs.rs/urollup-core"
+keywords = ["usage", "tokens", "claude", "codex", "rollup"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+include = ["src/**", "Cargo.toml", "README.md"]
+
+[lib]
+name = "urollup_core"
+path = "src/lib.rs"
+
+# No CLI, HTTP or async-runtime dependencies, ever (design §8.1). The CI dependency guard
+# (`make dependency-guard`) fails if one appears in this crate's tree.
+[dependencies]
+
+[lints]
+workspace = true

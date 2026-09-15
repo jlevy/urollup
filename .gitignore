@@ -4,3 +4,9 @@ __pycache__/
 
 # Third-party checkouts and spikes (tbd checkout-third-party-repo convention)
 attic/
+
+# Cargo build output
+target/
+
+# Node-based development tools (tryscript, taplo)
+node_modules/

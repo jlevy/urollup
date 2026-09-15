@@ -1,0 +1,43 @@
+[package]
+name = "urollup"
+# clap takes `--help`'s summary from this, so it describes the tool a user runs.
+description = "Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session logs"
+readme = "../../README.md"
+keywords = ["usage", "tokens", "claude", "codex", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+include = ["src/**", "tests/**", "Cargo.toml"]
+
+[[bin]]
+name = "urollup"
+path = "src/main.rs"
+
+[features]
+# The shipped binary serves the local web UI by default (design §7.1, Decision 21).
+default = ["serve"]
+# Empty until Phase 2. Its HTTP, async-runtime and web-asset dependencies will be
+# `optional` and enabled only here (`dep:` entries), so `--no-default-features` builds a
+# complete CLI with none of them; the CI dependency guard enforces that.
+serve = []
+
+[dependencies]
+# An ordinary dependency: nothing in the executable can reach core internals.
+urollup-core = { workspace = true }
+
+# No `color`: the scaffold never styles output. Terminal-only color with `--color` and
+# `NO_COLOR` arrives with the first real report (design §8.2).
+clap = { version = "4.6.6", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+  "usage",
+  "error-context",
+] }
+
+[lints]
+workspace = true
