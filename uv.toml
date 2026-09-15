@@ -9,5 +9,5 @@ exclude-newer = "14 days"
 # First-party packages are exempt from the cool-off by identity; lockfile hashes still
 # apply.
 [exclude-newer-package]
-softschema = "2099-12-31"
-flowmark-rs = "2099-12-31"
+softschema = "2100-01-01T00:00:00Z"
+flowmark-rs = "2100-01-01T00:00:00Z"
