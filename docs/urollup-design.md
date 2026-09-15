@@ -16,8 +16,10 @@ decision applies, the line cites it from [§9.1](#91-design-decisions).
 **Candidate** marks behavior that is proposed and reflected in the design but pending
 maintainer confirmation in
 [§10](#10-cross-cutting-candidate-decisions-and-open-questions), **Later** marks
-behavior designed now for a future phase, and the questions in
-[§10.3](#103-open-questions) are **Open**. Phases and milestones are defined in the
+behavior designed now for a future phase, the queued items in
+[§10.2](#102-queued-review-decisions) are **Candidate, queued** (proposed but not yet
+reflected in the design), and the questions in [§10.3](#103-open-questions) are
+**Open**. Phases and milestones are defined in the
 [implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md).
 
 * * *
@@ -345,7 +347,9 @@ gives each dialect’s fields, counters and linkage.
   Harness run directories are described in [§2.6](#26-harness-captures).
 - **Precedence:** the urollup override wins, then the native variable, then the
   defaults. Overrides list paths joined by the platform path separator.
-  `--source` adds roots or artifacts; `--no-default-sources` removes defaults and
+  `--source` adds roots or artifacts; a directory it names is walked, and each file or
+  `*.urollup/` folder is identified by content, a dialect from its first records or an
+  artifact from its contract header; `--no-default-sources` removes defaults and
   variables. A missing default root is skipped, and a missing root named by a flag or
   variable exits 1. Locations no variable describes, such as Pi’s `--session-dir` or a
   Pi `settings.json` `sessionDir` (flat directories that mix working directories), need
@@ -546,8 +550,8 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
   `--verify-cache` replaces the default prefix check with a hash of the whole captured
   extent, which also catches a same-size mutation that leaves both digests unchanged.
 - **Idempotence:** capturing the same bytes yields identical records, entries are keyed
-  by source and extent, and reconciliation deduplicates by analytical ID, so repeating a
-  run never adds usage.
+  by source and record their captured extent, and reconciliation deduplicates by
+  analytical ID, so repeating a run never adds usage.
 - **Controls:** `--no-capture` neither writes nor reads the store for a run, `--capture`
   also captures raw logs passed with `--source`, and `--capture-idle` sets the idle
   threshold. In Phase 2, `--no-cache` reads original logs instead of cached records while
@@ -1228,7 +1232,7 @@ inputs.
 | `exports` | `rpt-` IDs of the exports the summary covers |
 | `sessions[]` | Extents: `thread`, its redacted `key`, `parent`, `ownership`, `candidates`, `status` (`counted` or `unresolved`), `extent`, `properties`, `usage`, `sizes`, `tools`, `busy` and `top` |
 | `extent` | Request count; digest of the sorted request IDs and the `nonfinal` map; optional request `index`; `nonfinal`, a map from request ID to usage revision for each request whose usage may still change; and first and last timestamps |
-| `usage[]` | Additive counters per 15-minute UTC bucket and per pricing dimension: model, effort, service tier, cache-write duration, the context band that applied under the export’s pricing basis (or none), and which of tier and cache-write duration were default-assumed rather than observed |
+| `usage[]` | Additive counters per 15-minute UTC bucket and per pricing dimension: model, effort, service tier, cache-write duration, the context band as the long-context threshold in force for the model at export and whether the row’s requests exceeded it (`null` when the table had no band for the model), and which of tier and cache-write duration were default-assumed rather than observed |
 | `totals` | Derived: scope, requests and tokens by ownership, `unresolved` (candidate-set members counted as unresolved in [§4.2](#42-ownership-and-totals), and the number of unresolved extents, whose usage stays inside those extents), `possible` sums, list-price estimate with pricing basis and coverage, snapshot cutoff |
 | `extensions` | Open map for measures not yet in the contract, carried per extent and never totaled |
 
@@ -1242,9 +1246,10 @@ Design rules:
 - Rows carry every dimension the price table matches on, so merge recomputes money under
   one pricing basis rather than adding amounts.
   The context band is decided per request ([§4.5](#45-price-table)), so a row records
-  the band its requests fell in under the export’s pricing basis, and repricing under a
-  table with different band thresholds is a pricing-coverage diagnostic, as is a rate
-  boundary inside a bucket.
+  the threshold in force at export and whether its requests exceeded it.
+  Repricing is exact when the new table’s threshold equals the recorded one, or when the
+  row is below a recorded threshold no higher than the new one; otherwise it is a
+  pricing-coverage diagnostic, as is a rate boundary inside a bucket.
   Rows also record which dimensions were default-assumed, so the pricing coverage in
   `totals` recomputes from extents.
 - The request index costs roughly 40 bytes per request and is on by default, so
@@ -1290,11 +1295,12 @@ sessions:
     properties: {agent: claude, dialect: claude-project, project: example, account: null}
     usage:
       - {bucket: "2026-09-12T14:00:00Z", model: example-model, effort: high,
-         tier: standard, cache_write: 5m, band: null, assumed: [],
-         requests: 12, uncached_input: 1200, cache_read: 88100,
+         tier: standard, cache_write: 5m, band: {threshold: 200000, above: false},
+         assumed: [], requests: 12, uncached_input: 1200, cache_read: 88100,
          cache_write_tokens: 2400, output: 4100, reasoning: 1300}
-      # ...one row per bucket and pricing dimension; band names the long-context
-      # threshold that applied, and assumed lists default-assumed dimensions
+      # ...one row per bucket and pricing dimension; band records the long-context
+      # threshold in force at export and whether the row exceeded it, and assumed
+      # lists default-assumed dimensions
     sizes: {input_tokens: {count: 148, sum: 6402000, min: 1830, max: 176900,
             hist: [[86, 1], ..., [139, 2]]}}  # [bucket index, count]
     tools: {Bash: 58, Read: 44, Edit: 31}
