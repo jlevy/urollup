@@ -110,7 +110,7 @@ review and attribution.
 | **Possible** | Usage of ambiguous requests with only some candidate threads inside a selection; reported beside the selection’s totals, never added |
 | **Extent** | The part of a summary that describes one owner thread’s requests in one export, with a digest and an optional request index that let merges detect cover and overlap |
 | **Summary** | A usage summary: a pure-YAML softschema artifact of extents and derived totals, with one shape for a session or any aggregate |
-| **Bundle** | An observation bundle: a zip archive of request-level tables plus the summary computed from them, used when summaries alone cannot merge exactly |
+| **Bundle** | An observation bundle: a folder of zstd-compressed request-level tables plus the summary computed from them, used when summaries alone cannot merge exactly |
 
 ## Design
 
@@ -524,7 +524,7 @@ arguments and result bodies: a
 [usage summary](../../architecture/arch-2026-09-13-urollup-data-contracts.md#usage-summary-format)
 and an
 [observation bundle](../../architecture/arch-2026-09-13-urollup-data-contracts.md#observation-bundles),
-a deterministic `*.urollup.zip` archive of zstd-compressed JSONL tables plus the summary
+a deterministic `*.urollup/` folder of zstd-compressed JSONL tables plus the summary
 computed from them. Every command that accepts a summary also accepts a bundle.
 Bundles include
 [captured records](../../architecture/arch-2026-09-13-urollup-data-contracts.md#capture-layers-and-re-extraction)
@@ -539,10 +539,10 @@ profile, `paths` by default.
 ```bash
 urollup export --all --per-session --format summary --output-dir summaries
 urollup merge --source summaries --output team.usage.yaml
-urollup export --source ./logs --format bundle --output cloud.urollup.zip
-urollup merge --source local.urollup.zip --source cloud.urollup.zip --format bundle --output all.urollup.zip
-urollup daily --source all.urollup.zip --no-default-sources --group-by account,project,model
-urollup validate team.usage.yaml all.urollup.zip
+urollup export --source ./logs --format bundle --output cloud.urollup
+urollup merge --source local.urollup --source cloud.urollup --format bundle --output all.urollup
+urollup daily --source all.urollup --no-default-sources --group-by account,project,model
+urollup validate team.usage.yaml all.urollup
 ```
 
 `export --format summary` writes one summary with one extent per thread, and
@@ -767,8 +767,8 @@ metadata.
   identity versions) never add usage, make `--strict` exit 3, and resolve when bundles
   merge. Partial candidate selections appear only as `possible`.
 - **Contracts:** golden summaries and manifests pass `softschema validate` and
-  `softschema repair --check`, and readers reject portable-value violations and unsafe
-  zip entries.
+  `softschema repair --check`, and readers reject portable-value violations, unsafe
+  paths, links and files whose digests disagree with the manifest.
 - **Surfaces:** CLI and HTTP return identical report data for one query and snapshot,
   and Markdown, CSV and the UI derive from it.
   CLI goldens cover exit codes, JSONL completion records, and `--current` with nested
@@ -872,6 +872,7 @@ Confirmed decisions:
 | Time handling | `--timezone` defaults to the system timezone and is named in every report; weeks start on Monday (`--week-start` overrides); summaries store 15-minute UTC buckets | 2026-09-14 |
 | Selection defaults | Session commands (`report`, `requests`, `tools`, `tree`, `export`) default to `--current`; calendar and inventory commands to `--all`; session selections default to `--scope descendants`, reporting own, descendant and total usage | 2026-09-14 |
 | Serving separability | Two crates, `urollup-core` and `urollup`; rollups never need a server; `urollup serve` is a self-contained module behind a default-on `serve` Cargo feature with optional dependencies, guarded by a `--no-default-features` CI build and dependency check, so it can move to its own crate later | 2026-09-14 |
+| Summary and bundle | Two artifacts in one contract family: a compact `*.usage.yaml` softschema summary, and a `*.urollup/` bundle folder of zstd-compressed JSONL tables with manifest digests, published by staging-folder rename; no zip | 2026-09-14 |
 | Web server | `127.0.0.1` on an OS-assigned port; per-launch token in the URL fragment, sent as a Bearer header; Host, Origin and Sec-Fetch-Site checks; no CORS; redirect file for `--open` | 2026-09-14 |
 | Benchmarks | Seeded synthetic corpora of about 64 MiB and 1 GiB; reference Apple silicon laptop with at least 10 cores and 16 GiB; CI against the merge base on `ubuntu-24.04`; 10% regression policy, with scheduled regressions resolved before release | 2026-09-14 |
 | Request index | On by default, with `--no-index`; measure summary size on the representative corpus before the first release | 2026-09-14 |
@@ -896,7 +897,6 @@ confirmation.
 | Resources and charges | Defer resource collection; keep provider charges a separate entity with no import phase item until a tested receipt or billing export exists | [Entities](../../architecture/arch-2026-09-13-urollup-data-contracts.md#entities) |
 | Identity keys and redaction | Bundles carry every row’s identity key and summaries each thread’s, redacted with keyed HMAC labels; redacted components block re-derivation | [Identities and Redaction](../../architecture/arch-2026-09-13-urollup-data-contracts.md#identities-and-redaction) |
 | Pricing | Reviewed price table built into the binary from provider pages; LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no network, `--prices` overrides, staleness warning after 90 days | [Price Table](../../architecture/arch-2026-09-13-urollup-data-contracts.md#price-table) |
-| Summary and bundle | Two artifacts in one contract family; bundles are deterministic zip containers of zstd-compressed JSONL tables | [Trade-offs and Alternatives](../../architecture/arch-2026-09-13-urollup-data-contracts.md#trade-offs-and-alternatives) |
 | Dialects and discovery | Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`, `codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables | [Sources and snapshot boundary](#sources-and-snapshot-boundary) |
 | CLI surface | Add `tree`, `weekly`, `windows`, `--per-session`, `--whole-sessions`, `--sessions-from` and `--annotation-set`; one `--source` flag for every input, with no `--input` | [CLI and report contracts](#cli-and-report-contracts) |
 | Strict mode | `--strict` exits 3 on any coverage gap, including nonzero unresolved usage | [CLI and report contracts](#cli-and-report-contracts) |

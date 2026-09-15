@@ -870,8 +870,10 @@ versions; otherwise merge is a compatibility error (exit 2).
 
 An **observation bundle** holds the request-level tables a summary was computed from,
 and always contains that summary, so every command that accepts a summary also accepts a
-bundle. A bundle is a zip archive named `*.urollup.zip`; urollup also reads the same
-layout unpacked as a directory.
+bundle. A bundle is a plain folder named `*.urollup/` whose tables are individual
+zstd-compressed JSONL files, so it can be browsed, diffed and read with `zstdcat` and
+`jq`; transporting it as one file means archiving the folder, which urollup does not
+read directly.
 
 | Entry | Content |
 | --- | --- |
@@ -892,22 +894,24 @@ Writers are deterministic, and content identity is defined over uncompressed tab
 
 - Each table holds one UTF-8 JSON object per line, sorted by analytical ID, compressed
   with zstd at a fixed level.
-- Zip entries follow the table order, are stored without further compression, and carry
-  a fixed timestamp.
 - The manifest records each table’s uncompressed SHA-256, row count and sizes, so two
   bundles with the same content compare equal even when different zstd library versions
   produced different compressed bytes.
-- Bundles are published atomically: written to a `NamedTempFile` beside the destination
-  and persisted, never assembled in place.
+- Bundles are published atomically: every file is written into an owner-only staging
+  folder beside the destination, fsynced, verified against the manifest, and the folder
+  is renamed into place once, never assembled in place and never replacing an existing
+  bundle.
 - A bundle records no creation time.
 - Table values follow the same portable value rules as the YAML artifacts: integers stay
   within ±2^53 and money is an exact decimal string.
 - Tables need no completion record, unlike streamed JSONL exports, because the manifest
   records each table’s row count and digest.
 
-Readers reject absolute or `..` entry paths, links, duplicate names, and sizes or
-digests that disagree with the manifest, and they bound decompressed size before
-reading.
+Readers open only the files the manifest lists, relative to the bundle folder, and
+reject absolute or `..` paths, symbolic links, unlisted table files, missing files, and
+sizes or digests that disagree with the manifest, and they bound decompressed size
+before reading. A partly copied bundle therefore fails validation rather than reading as
+a smaller one.
 
 Observation merge is a set union of logical observations followed by the ledger’s
 deterministic revision and ownership reconciliation, never addition of precomputed
@@ -1037,18 +1041,27 @@ observation bundle that contains it.
 so tables are validated row by row against their record contracts, while the summary
 stays a self-validating softschema artifact.
 
-### Decision: Zip Bundle Container
+### Decision: Bundle Folder of zstd Tables
 
-**Chosen approach:** a deterministic zip archive, readable unpacked as a directory.
+**Chosen approach:** a plain `*.urollup/` folder holding YAML artifacts and individually
+zstd-compressed JSONL tables, confirmed 2026-09-14.
 
 **Alternatives considered:**
 
+- Zip archive of the same files: its entries would be stored uncompressed because the
+  tables are already zstd-compressed, so it adds a wrapper, zip-writing code and archive
+  path checks without saving space.
+- zstd tarball: one file, but no random access to the manifest.
 - SQLite: requires a database engine and is not byte-deterministic.
 - Parquet: adds a columnar stack that JSON Schema cannot check.
-- zstd tarball: has no random access.
 
-**Rationale:** zip travels as one downloadable cloud artifact, lets a reader open the
-manifest without decompressing the tables, and opens with standard tools on every OS.
+**Rationale:** a folder is simpler to write, inspect and diff, needs no archive code,
+matches the capture store layout, and keeps atomic publication (staging folder and one
+rename) and integrity (manifest digests over uncompressed tables).
+When one downloadable file is needed, such as a cloud artifact, the folder is archived
+for transport and unpacked before reading; an optional single-file archive layer can be
+added on top of the folder later without changing the format.
+Browsing tools such as MetaBrowser already open zstd-compressed JSON files directly.
 
 ### Decision: Enforced Status with an Extensions Map
 

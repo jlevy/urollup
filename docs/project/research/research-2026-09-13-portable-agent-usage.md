@@ -666,8 +666,8 @@ A **usage revision** distinguishes successive usage values recorded for one requ
 such as a streamed update and its final count.
 Tool and resource facts are added when an analysis needs them.
 Merging needs no prompt text, tool arguments or result bodies, so exports omit them.
-An **observation bundle**, a versioned `*.urollup.zip` archive, carries observation
-tables and always contains the usage summary computed from them.
+An **observation bundle**, a versioned `*.urollup/` folder of zstd-compressed tables,
+carries observation tables and always contains the usage summary computed from them.
 Bundles merge by the same reconciliation rules as raw logs, and a merged bundle can be
 merged again. Merge should be associative, commutative and idempotent for compatible
 inputs, so grouping, order and repetition never change the result.

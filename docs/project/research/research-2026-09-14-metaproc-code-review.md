@@ -1161,9 +1161,10 @@ parsing, replay, `token_count` and time-measure changes cited here by number.
   the version the writer started from is still current.
   Treat a path that vanishes mid-scan as a mid-scan change and a new `.gz` sibling as
   replacement of the logical source.
-- **C8 (Observation Bundles):** adopt metaproc’s archive rejection list and add limits
-  on decompressed bytes, backslashes, drive letters, NUL bytes, case-fold duplicates and
-  file-directory conflicts.
+- **C8 (Observation Bundles):** *(Updated 2026-09-14: bundles are plain folders, so this
+  applies to folder path, link and digest checks rather than archive entries.)* adopt
+  metaproc’s archive rejection list and add limits on decompressed bytes, backslashes,
+  drive letters, NUL bytes, case-fold duplicates and file-directory conflicts.
 - **C9 (Contract Authoring and Rust Validation):** writers emit explicit nulls for
   unknown values and quote every timestamp.
 
