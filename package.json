@@ -1,0 +1,12 @@
+{
+  "name": "urollup-development",
+  "private": true,
+  "description": "Development-only Node tooling for the urollup workspace: tryscript CLI goldens and taplo TOML formatting",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@taplo/cli": "0.7.0",
+    "tryscript": "0.2.1"
+  }
+}

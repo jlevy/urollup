@@ -38,6 +38,12 @@ fn stub_commands_exit_two_on_stderr() {
 
 #[test]
 fn usage_errors_exit_two() {
-    assert_eq!(urollup(&[]).status.code(), Some(2));
     assert_eq!(urollup(&["--no-such-flag"]).status.code(), Some(2));
+    let bare = urollup(&[]);
+    assert_eq!(bare.status.code(), Some(2));
+    assert!(bare.stdout.is_empty());
+    // Run through a full path, as here, the usage line still names `urollup` rather than
+    // `urollup.exe` or the path, so CLI goldens hold on every platform.
+    let stderr = String::from_utf8_lossy(&bare.stderr);
+    assert!(stderr.contains("Usage: urollup <COMMAND>"), "{stderr}");
 }

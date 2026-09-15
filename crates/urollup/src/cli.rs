@@ -36,7 +36,9 @@ impl Exit {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "urollup", version, about, arg_required_else_help = true)]
+// An explicit `bin_name` keeps help and usage text identical on every platform: clap would
+// otherwise take it from argv[0], which is `urollup.exe` when Windows runs a full path.
+#[command(name = "urollup", bin_name = "urollup", version, about, arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
