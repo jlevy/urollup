@@ -3,8 +3,9 @@
 An exploratory Rust prototype, kept as reference, that measures how much Claude Code and
 Codex log data a machine holds and how fast usage can be extracted from it, uncached and
 from content-stripped captured records.
-It informed when urollup’s default-on capture cache ships.
-Results and conclusions are in the portable research brief’s
+It informed the decision to ship urollup’s default-on capture store in Phase 1 and defer
+its cache read path to Phase 2. Results and conclusions are in the portable research
+brief’s
 [Local Log Volume and Throughput](../../docs/project/research/research-2026-09-13-portable-agent-usage.md#local-log-volume-and-throughput)
 section. It is not part of the urollup workspace.
 
@@ -56,8 +57,8 @@ every file. Legacy pre-JSONL Codex `rollout-*.json` files are counted but not pa
 
 This spike is a measurement tool, not a reference implementation.
 Its rules were chosen to size volume and parse cost, and they differ from the
-[data contracts](../../docs/project/architecture/arch-2026-09-13-urollup-data-contracts.md),
-so do not copy its extraction or stripping logic:
+[design specification](../../docs/urollup-design.md), so do not copy its extraction or
+stripping logic:
 
 - **Claude dedupe key:** requests are keyed by `message.id` plus `requestId`, whereas
   the contract’s `req-` key precedence uses the response ID first, so the `dup_*`
