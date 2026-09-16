@@ -380,6 +380,105 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-1rj51e38bxy9exhyr97n8vhnqf | claude | project | 1 | 5 | 15 | 20
+thr-v1-4zveh62q6vepjzgy5hnth0xy26 | claude | project | 1 | 30 | 90 | 120
+thr-v1-556ady3m2k0hvd6wen5ccm43vf | claude | project | 1 | 12 | 40 | 52
+
+DIAGNOSTICS
+identity-key-conflict x2: Claude message ID msg_gw_000001 is reused by conflicting responses
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-1rj51e38bxy9exhyr97n8vhnqf",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "output": 15,
+        "total": 20
+      }
+    },
+    {
+      "thread": "thr-v1-4zveh62q6vepjzgy5hnth0xy26",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "output": 90,
+        "total": 120
+      }
+    },
+    {
+      "thread": "thr-v1-556ady3m2k0hvd6wen5ccm43vf",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 12,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "output": 40,
+        "total": 52
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "identity-key-conflict",
+      "count": 2,
+      "detail": "Claude message ID msg_gw_000001 is reused by conflicting responses"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

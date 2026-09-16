@@ -167,6 +167,31 @@ fn locators_use_forward_slashes_and_escape_percent_signs() {
     assert_eq!(locator_for(Path::new("100%/c.jsonl")), "100%25/c.jsonl");
 }
 
+#[test]
+fn a_declared_source_may_be_one_file() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("session.jsonl");
+    write(&source);
+
+    let discovery = discover(std::slice::from_ref(&source));
+
+    assert_eq!(discovery.sources.len(), 1);
+    assert_eq!(discovery.sources[0].locator, "session.jsonl");
+    assert_eq!(discovery.sources[0].files.plain.as_deref(), Some(source.as_path()));
+    assert!(discovery.unreadable.is_empty());
+}
+
+#[test]
+fn a_declared_non_source_file_is_not_silently_ignored() {
+    let root = tempfile::NamedTempFile::new().unwrap();
+
+    let discovery = discover(&[root.path().to_owned()]);
+
+    assert!(discovery.sources.is_empty());
+    assert_eq!(discovery.unreadable.len(), 1);
+    assert_eq!(discovery.unreadable[0].kind, std::io::ErrorKind::InvalidInput);
+}
+
 // APFS and NTFS reject a name that is not valid UTF-8, so this checks the locator rule
 // itself rather than a file on disk.
 #[cfg(unix)]

@@ -356,6 +356,77 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-3gb8qga70xwagrm0mdc8t6dya2 | codex | project | 3 | 190,000 | 4,400 | 194,400
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
+codex-estimate-compaction x1: Codex emitted an estimate with zero input and output tokens
+codex-estimate-context-window-fill x1: Codex emitted an estimate with zero input and output tokens
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-3gb8qga70xwagrm0mdc8t6dya2",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 3,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 49000,
+        "cache_read": 141000,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 4400,
+        "reasoning": 1700,
+        "total": 194400
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    },
+    {
+      "code": "codex-estimate-compaction",
+      "count": 1,
+      "detail": "Codex emitted an estimate with zero input and output tokens"
+    },
+    {
+      "code": "codex-estimate-context-window-fill",
+      "count": 1,
+      "detail": "Codex emitted an estimate with zero input and output tokens"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

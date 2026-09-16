@@ -88,17 +88,25 @@ pub fn discover(roots: &[PathBuf]) -> Discovery {
     let mut seen_dirs: BTreeSet<PathBuf> = BTreeSet::new();
     for (root, canonical_root) in declared.iter().zip(&canonical_roots) {
         let mut found: BTreeMap<String, LogicalSource> = BTreeMap::new();
-        walk(
-            root,
-            canonical_root,
-            &canonical_roots,
-            &mut Walk {
-                discovery: &mut discovery,
-                found: &mut found,
-                seen_files: &mut seen_files,
-                seen_dirs: &mut seen_dirs,
-            },
-        );
+        let mut state = Walk {
+            discovery: &mut discovery,
+            found: &mut found,
+            seen_files: &mut seen_files,
+            seen_dirs: &mut seen_dirs,
+        };
+        if canonical_root.is_file() {
+            if representation_of(root).is_some() {
+                let parent = root.parent().unwrap_or_else(|| Path::new(""));
+                record_file(root, canonical_root, parent, &mut state);
+            } else {
+                state.discovery.unreadable.push(UnreadableEntry {
+                    path: root.clone(),
+                    kind: io::ErrorKind::InvalidInput,
+                });
+            }
+        } else {
+            walk(root, canonical_root, &canonical_roots, &mut state);
+        }
         for (locator, files) in found {
             discovery.sources.push(DiscoveredSource { root: root.clone(), locator, files });
         }

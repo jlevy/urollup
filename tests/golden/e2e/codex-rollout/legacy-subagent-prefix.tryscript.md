@@ -452,6 +452,149 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-0demasgtqpc81av8pqp9qk44g2 | codex | project | 2 | 6,500 | 250 | 6,750
+thr-v1-0k2vgw8f5a6ad575m7j27e8vnf | codex | project | 2 | 14,500 | 550 | 15,050
+thr-v1-52wfqca3118hs6n8v43yabkqmp | codex | project | 2 | 4,500 | 200 | 4,700
+thr-v1-7q3rw8a20ffnp0hn5738jdpmnm | codex | project | 2 | 15,000 | 1,500 | 16,500
+
+DIAGNOSTICS
+codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
+codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
+codex-copied-history-inferred x5: Codex copied-history boundary was inferred from legacy rollout records
+thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-0demasgtqpc81av8pqp9qk44g2",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 5500,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 250,
+        "reasoning": 50,
+        "total": 6750
+      }
+    },
+    {
+      "thread": "thr-v1-0k2vgw8f5a6ad575m7j27e8vnf",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1500,
+        "cache_read": 13000,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 550,
+        "reasoning": 200,
+        "total": 15050
+      }
+    },
+    {
+      "thread": "thr-v1-52wfqca3118hs6n8v43yabkqmp",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 3500,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 200,
+        "reasoning": 70,
+        "total": 4700
+      }
+    },
+    {
+      "thread": "thr-v1-7q3rw8a20ffnp0hn5738jdpmnm",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 8500,
+        "cache_read": 6500,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 1500,
+        "reasoning": 500,
+        "total": 16500
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "codex-copied-history-inferred",
+      "count": 6,
+      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
+    },
+    {
+      "code": "codex-copied-history-inferred",
+      "count": 6,
+      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
+    },
+    {
+      "code": "codex-copied-history-inferred",
+      "count": 5,
+      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
+    },
+    {
+      "code": "thread-orphan",
+      "count": 1,
+      "detail": "Codex thread names a parent whose rollout was not discovered"
+    },
+    {
+      "code": "thread-orphan",
+      "count": 1,
+      "detail": "Codex thread names a parent whose rollout was not discovered"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

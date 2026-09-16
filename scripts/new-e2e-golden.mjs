@@ -27,6 +27,8 @@ export const VIEWS = [
   ["Daily JSON", "daily --all --format json --timezone UTC"],
   ["Sessions", "sessions --all --timezone UTC"],
   ["Sessions JSON", "sessions --all --format json --timezone UTC"],
+  ["Sessions (explicit source)", "sessions --source . --no-default-sources --timezone UTC"],
+  ["Sessions JSON (explicit source)", "sessions --source . --no-default-sources --format json --timezone UTC"],
 ];
 
 /** The golden path for a case id, relative to the repository root. */

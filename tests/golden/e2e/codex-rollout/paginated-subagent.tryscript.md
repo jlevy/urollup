@@ -313,6 +313,76 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-28yzdyhyesskjb8263x08vdn2d | codex | project | 1 | 5,000 | 300 | 5,300
+thr-v1-3ng9hcwm4psrtr9esgat010hyv | codex | project | 1 | 9,000 | 500 | 9,500
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-28yzdyhyesskjb8263x08vdn2d",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 300,
+        "reasoning": 100,
+        "total": 5300
+      }
+    },
+    {
+      "thread": "thr-v1-3ng9hcwm4psrtr9esgat010hyv",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 5000,
+        "cache_read": 4000,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 500,
+        "reasoning": 150,
+        "total": 9500
+      }
+    }
+  ],
+  "diagnostics": []
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

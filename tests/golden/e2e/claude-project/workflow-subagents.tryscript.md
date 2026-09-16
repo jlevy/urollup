@@ -353,6 +353,96 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-1rc9p7g58kc9gj4qwggfc6cntk | claude | project | 2 | 3,047 | 47 | 3,094
+thr-v1-67y32e2f5r91t17t5p4yy13897 | claude | project | 1 | 2,209 | 64 | 2,273
+thr-v1-7vstdg2csvw6av4gh4hw1922aa | claude | project | 2 | 1,285 | 70 | 1,355
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-1rc9p7g58kc9gj4qwggfc6cntk",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 7,
+        "cache_read": 1500,
+        "cache_write": 1540,
+        "cache_write_5m": 1540,
+        "cache_write_1h": 0,
+        "output": 47,
+        "total": 3094
+      }
+    },
+    {
+      "thread": "thr-v1-67y32e2f5r91t17t5p4yy13897",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 9,
+        "cache_read": 0,
+        "cache_write": 2200,
+        "cache_write_5m": 2200,
+        "cache_write_1h": 0,
+        "output": 64,
+        "total": 2273
+      }
+    },
+    {
+      "thread": "thr-v1-7vstdg2csvw6av4gh4hw1922aa",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 650,
+        "cache_write": 630,
+        "cache_write_5m": 630,
+        "cache_write_1h": 0,
+        "output": 70,
+        "total": 1355
+      }
+    }
+  ],
+  "diagnostics": []
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

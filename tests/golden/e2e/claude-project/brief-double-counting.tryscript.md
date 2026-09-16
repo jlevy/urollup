@@ -306,6 +306,68 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-3thcne9z8tsbvaysf67z308sxy | claude | project | 0 | - | - | -
+thr-v1-651kv0qwp91s22cgbfhfyj1818 | claude | project | 1 | 40,003 | 600 | 40,603
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-3thcne9z8tsbvaysf67z308sxy",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 0,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {}
+    },
+    {
+      "thread": "thr-v1-651kv0qwp91s22cgbfhfyj1818",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 40000,
+        "cache_write": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "output": 600,
+        "total": 40603
+      }
+    }
+  ],
+  "diagnostics": []
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

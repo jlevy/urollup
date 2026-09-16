@@ -328,6 +328,66 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-5a0r839nnebytqctcqj8tp2f72 | claude | project | 3 | 23,706 | 115 | 23,821
+
+DIAGNOSTICS
+claude-cache-creation-breakdown-mismatch x1: Claude cache creation total 5000 differs from its lifetime breakdown 5500
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-5a0r839nnebytqctcqj8tp2f72",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 3,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 14000,
+        "cache_write": 9700,
+        "cache_write_5m": 0,
+        "cache_write_1h": 4000,
+        "cache_write_unspecified": 5700,
+        "output": 115,
+        "total": 23821
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "claude-cache-creation-breakdown-mismatch",
+      "count": 1,
+      "detail": "Claude cache creation total 5000 differs from its lifetime breakdown 5500"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

@@ -318,6 +318,57 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-7cgdxjpjx6dsmaqqxsvzhqwnab | claude | project | 2 | 406,205 | 7,770 | 413,975
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-7cgdxjpjx6dsmaqqxsvzhqwnab",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 150005,
+        "cache_read": 248100,
+        "cache_write": 8100,
+        "cache_write_5m": 8100,
+        "cache_write_1h": 0,
+        "cache_write_unspecified": 0,
+        "output": 7770,
+        "total": 413975
+      }
+    }
+  ],
+  "diagnostics": []
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

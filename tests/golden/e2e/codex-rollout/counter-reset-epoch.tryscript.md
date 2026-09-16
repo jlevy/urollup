@@ -320,6 +320,65 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-4txa2tqmept8jhkgy1sg155cwj | codex | project | 4 | 11,500 | 1,200 | 12,700
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-4txa2tqmept8jhkgy1sg155cwj",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 4,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 6000,
+        "cache_read": 5500,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 1200,
+        "reasoning": 250,
+        "total": 12700
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

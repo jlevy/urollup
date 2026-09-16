@@ -360,6 +360,85 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-73p5bgk3r2n007f4h1ex51wek7 | claude | project | 3 | 4,846 | 170 | 5,016
+thr-v1-7emcgxspd74ebbze9ahx536sjx | claude | project | 2 | 1,815 | 65 | 1,880
+
+DIAGNOSTICS
+claude-nested-copy-without-original x1: request observed only as copies; its usage is not counted
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-73p5bgk3r2n007f4h1ex51wek7",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 3,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 16,
+        "cache_read": 4120,
+        "cache_write": 710,
+        "cache_write_5m": 710,
+        "cache_write_1h": 0,
+        "output": 170,
+        "total": 5016
+      }
+    },
+    {
+      "thread": "thr-v1-7emcgxspd74ebbze9ahx536sjx",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 15,
+        "cache_read": 800,
+        "cache_write": 1000,
+        "cache_write_5m": 1000,
+        "cache_write_1h": 0,
+        "output": 65,
+        "total": 1880
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "claude-nested-copy-without-original",
+      "count": 1,
+      "detail": "request observed only as copies; its usage is not counted"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

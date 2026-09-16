@@ -339,6 +339,71 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-0576b28q452kd5px45f9pmm8f0 | claude | project | 3 | 94,517 | 470 | 94,987
+
+DIAGNOSTICS
+claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-0576b28q452kd5px45f9pmm8f0",
+      "agent": "claude",
+      "project": "project",
+      "requests": {
+        "owned": 3,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 7,
+        "cache_read": 93300,
+        "cache_write": 1210,
+        "cache_write_5m": 1210,
+        "cache_write_1h": 0,
+        "output": 470,
+        "total": 94987
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "claude-block-usage-conflict",
+      "count": 2,
+      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
+    },
+    {
+      "code": "claude-block-usage-conflict",
+      "count": 2,
+      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

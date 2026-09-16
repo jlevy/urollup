@@ -6,7 +6,9 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
@@ -17,6 +19,7 @@ use urollup_core::query::{
 use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
 };
+use urollup_core::sources::roots;
 
 /// The process exit classes milestone 0.1 can produce.
 ///
@@ -113,6 +116,14 @@ struct SelectionArgs {
     /// Report breakdown; repeatable and comma-delimited
     #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION")]
     group_by: Vec<GroupByArg>,
+
+    /// Add a source root or JSONL artifact; repeatable
+    #[arg(long = "source", value_name = "PATH")]
+    sources: Vec<PathBuf>,
+
+    /// Read only paths named by --source
+    #[arg(long)]
+    no_default_sources: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -190,14 +201,33 @@ struct Corpus {
 }
 
 impl Corpus {
-    fn discover() -> Result<Self, Failure> {
+    fn discover(args: &SelectionArgs) -> Result<Self, Failure> {
         let environment = DiscoveryEnvironment::from_process();
-        let claude_roots = environment.claude_project_roots();
-        let codex_roots = environment.codex_homes();
-        let claude =
-            claude_project::ingest_roots(&claude_roots.roots, claude_roots.missing_is_error())
-                .map_err(|error| Failure::adapter(&error))?;
-        let codex = codex_rollout::ingest_roots(&codex_roots.roots, codex_roots.missing_is_error())
+        let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
+            (Vec::new(), false)
+        } else {
+            let selected = environment.claude_project_roots();
+            let missing_is_error = selected.missing_is_error();
+            (selected.roots, missing_is_error)
+        };
+        let (mut codex_roots, codex_missing_is_error) = if args.no_default_sources {
+            (Vec::new(), false)
+        } else {
+            let selected = environment.codex_homes();
+            let missing_is_error = selected.missing_is_error();
+            (selected.roots, missing_is_error)
+        };
+        for source in &args.sources {
+            for explicit in classify_explicit_source(source)? {
+                match explicit {
+                    ExplicitDialect::Claude(root) => claude_roots.push(root),
+                    ExplicitDialect::Codex(root) => codex_roots.push(root),
+                }
+            }
+        }
+        let claude = claude_project::ingest_roots(&claude_roots, claude_missing_is_error)
+            .map_err(|error| Failure::adapter(&error))?;
+        let codex = codex_rollout::ingest_roots(&codex_roots, codex_missing_is_error)
             .map_err(|error| Failure::adapter(&error))?;
         let mut index = SessionIndex::default();
         index.add(Agent::Claude, &claude).map_err(|error| Failure::selection(&error))?;
@@ -213,6 +243,111 @@ impl Corpus {
     }
 }
 
+enum ExplicitDialect {
+    Claude(PathBuf),
+    Codex(PathBuf),
+}
+
+fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failure> {
+    let mut standard_roots = Vec::new();
+    if source.join("projects").is_dir() {
+        standard_roots.push(ExplicitDialect::Claude(source.join("projects")));
+    }
+    if source.join("sessions").is_dir() || source.join("archived_sessions").is_dir() {
+        standard_roots.push(ExplicitDialect::Codex(source.to_owned()));
+    }
+    if !standard_roots.is_empty() {
+        return Ok(standard_roots);
+    }
+
+    let discovery = roots::discover(&[source.to_owned()]);
+    if let Some(missing) = discovery.missing_roots.first() {
+        return Err(Failure::runtime(format!("source root does not exist: {}", missing.display())));
+    }
+    if let Some(unreadable) = discovery.unreadable.first() {
+        return Err(Failure::runtime(format!(
+            "cannot inspect source path {}: {:?}",
+            unreadable.path.display(),
+            unreadable.kind
+        )));
+    }
+    let mut dialect = None;
+    for discovered in &discovery.sources {
+        let Some((path, _)) = discovered.files.primary() else { continue };
+        let candidate = classify_jsonl(path)?;
+        if dialect.replace(candidate).is_some_and(|previous| previous != candidate) {
+            return Err(Failure::runtime(format!(
+                "source {} contains multiple agent dialects; pass each agent root separately",
+                source.display()
+            )));
+        }
+    }
+    match dialect {
+        Some(Agent::Claude) => Ok(vec![ExplicitDialect::Claude(source.to_owned())]),
+        Some(Agent::Codex) => Ok(vec![ExplicitDialect::Codex(source.to_owned())]),
+        Some(Agent::Pi) => Err(Failure::usage("Pi source input is not supported yet")),
+        None => Err(Failure::runtime(format!(
+            "source {} contains no supported Claude Code or Codex JSONL records",
+            source.display()
+        ))),
+    }
+}
+
+fn classify_jsonl(path: &Path) -> Result<Agent, Failure> {
+    let file = File::open(path).map_err(|error| {
+        Failure::runtime(format!("cannot open source {}: {error}", path.display()))
+    })?;
+    let mut reader: Box<dyn BufRead> = if path.to_string_lossy().ends_with(".zst") {
+        let decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
+            Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
+        })?;
+        Box::new(BufReader::new(decoder))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let mut line = String::new();
+    for _ in 0..100 {
+        line.clear();
+        let read = reader.read_line(&mut line).map_err(|error| {
+            Failure::runtime(format!("cannot read source {}: {error}", path.display()))
+        })?;
+        if read == 0 {
+            break;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let kind = value.get("type").and_then(serde_json::Value::as_str);
+        if matches!(
+            kind,
+            Some(
+                "session_meta"
+                    | "turn_context"
+                    | "token_usage_record"
+                    | "compacted"
+                    | "event_msg"
+                    | "response_item"
+            )
+        ) {
+            return Ok(Agent::Codex);
+        }
+        if matches!(
+            kind,
+            Some(
+                "assistant"
+                    | "user"
+                    | "progress"
+                    | "system"
+                    | "summary"
+                    | "queue-operation"
+                    | "file-history-snapshot"
+            )
+        ) {
+            return Ok(Agent::Claude);
+        }
+    }
+    Err(Failure::runtime(format!("cannot identify the agent dialect of source {}", path.display())))
+}
+
+#[derive(Debug)]
 struct Failure {
     exit: Exit,
     message: String,
@@ -253,9 +388,11 @@ fn execute(command: &Command) -> Result<String, Failure> {
     let args = command.args();
     let timezone = ResolvedTimeZone::resolve(args.timezone.as_deref())
         .map_err(|error| Failure::usage(error.to_string()))?;
-    let explicit = args.current || !args.sessions.is_empty() || args.all;
-    let wants_current = args.current || (!explicit && !command.defaults_to_all());
-    let wants_all = args.all || (!explicit && command.defaults_to_all());
+    let explicit_selection = args.current || !args.sessions.is_empty() || args.all;
+    let wants_current = args.current
+        || (!explicit_selection && args.sources.is_empty() && !command.defaults_to_all());
+    let wants_all = args.all
+        || (!explicit_selection && (command.defaults_to_all() || !args.sources.is_empty()));
     let current = wants_current
         .then(|| CurrentEnvironment::from_process().detect(&BTreeSet::new()))
         .transpose()
@@ -278,7 +415,7 @@ fn execute(command: &Command) -> Result<String, Failure> {
         ..SelectionQuery::default()
     };
     let selection_name = selection_name(&query);
-    let corpus = Corpus::discover()?;
+    let corpus = Corpus::discover(args)?;
     let selected = corpus.index.select(&query).map_err(|error| Failure::selection(&error))?;
     let all = query.all && query.current.is_none() && query.sessions.is_empty();
     let sources = corpus.sources();
@@ -365,8 +502,11 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write) -> Exit {
 #[cfg(test)]
 mod tests {
     use std::io::{self, Write};
+    use std::path::PathBuf;
 
-    use super::{Cli, Command, Exit, OutputFormat, ScopeArg, run};
+    use super::{
+        Cli, Command, Exit, ExplicitDialect, OutputFormat, ScopeArg, classify_explicit_source, run,
+    };
     use clap::Parser;
 
     struct Outcome {
@@ -454,6 +594,9 @@ mod tests {
             "--all",
             "--scope",
             "descendants",
+            "--source",
+            "logs",
+            "--no-default-sources",
         ])
         .expect("selection flags parse");
         let Command::Report(selection) = cli.command else {
@@ -463,6 +606,8 @@ mod tests {
         assert_eq!(selection.sessions, ["native-one", "thr-two"]);
         assert!(selection.all);
         assert_eq!(selection.scope, Some(ScopeArg::Descendants));
+        assert_eq!(selection.sources, [PathBuf::from("logs")]);
+        assert!(selection.no_default_sources);
         assert_eq!(selection.format, OutputFormat::Table);
     }
 
@@ -471,10 +616,36 @@ mod tests {
         for command in ["report", "daily", "sessions"] {
             let outcome = invoke(&[command, "--help"]);
             assert_eq!(outcome.exit, Exit::Success, "{command}");
-            for flag in ["--current", "--session", "--all", "--scope", "--format", "--timezone"] {
+            for flag in [
+                "--current",
+                "--session",
+                "--all",
+                "--scope",
+                "--source",
+                "--no-default-sources",
+                "--format",
+                "--timezone",
+            ] {
                 assert!(outcome.stdout.contains(flag), "{command} help lacks {flag}");
             }
         }
+    }
+
+    #[test]
+    fn explicit_sources_detect_fixture_roots_and_compressed_artifacts() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let claude =
+            classify_explicit_source(&fixtures.join("claude-project/nested-null-tool-input"))
+                .expect("Claude fixture is detected");
+        assert!(matches!(claude.as_slice(), [ExplicitDialect::Claude(_)]));
+
+        let compressed = fixtures.join(
+            "codex-rollout/zst-twin/sessions/2026/09/08/\
+             rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
+        );
+        let codex = classify_explicit_source(&compressed).expect("Codex artifact is detected");
+        assert!(matches!(codex.as_slice(), [ExplicitDialect::Codex(path)] if path == &compressed));
     }
 
     #[test]

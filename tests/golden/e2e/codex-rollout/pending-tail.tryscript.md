@@ -338,6 +338,71 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-5c3jz5d8fvjsm2zv4tb8rq28aw | codex | project | 2 | 7,000 | 270 | 7,270
+
+DIAGNOSTICS
+malformed-line x1: a complete Codex rollout line is malformed
+pending-tail x1: the incomplete final Codex rollout line is pending
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-5c3jz5d8fvjsm2zv4tb8rq28aw",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 2,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1900,
+        "cache_read": 5100,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 270,
+        "reasoning": 100,
+        "total": 7270
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "malformed-line",
+      "count": 1,
+      "detail": "a complete Codex rollout line is malformed"
+    },
+    {
+      "code": "pending-tail",
+      "count": 1,
+      "detail": "the incomplete final Codex rollout line is pending"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

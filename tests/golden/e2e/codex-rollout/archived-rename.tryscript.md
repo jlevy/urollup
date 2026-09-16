@@ -416,6 +416,105 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Sessions (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-45s60qczzwygzpwds58pf5v07d | codex | project | 1 | 2,500 | 140 | 2,640
+thr-v1-4fca36wgr9htq457v896dj2vs7 | codex | project | 1 | 1,500 | 90 | 1,590
+thr-v1-6r95ar31vc6jwkadfjqfztzsxx | codex | project | 3 | 14,000 | 640 | 14,640
+
+DIAGNOSTICS
+codex-rollout-duplicate-location x2: the same Codex thread and rollout were found at multiple locations
+? 0
+```
+
+## Sessions JSON (explicit source)
+
+```console
+$ urollup sessions --source . --no-default-sources --format json --timezone UTC
+{
+  "schema_version": 1,
+  "query": {
+    "command": "sessions",
+    "selection": "all",
+    "scope": "self",
+    "timezone": "UTC"
+  },
+  "rows": [
+    {
+      "thread": "thr-v1-45s60qczzwygzpwds58pf5v07d",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1300,
+        "cache_read": 1200,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 140,
+        "reasoning": 60,
+        "total": 2640
+      }
+    },
+    {
+      "thread": "thr-v1-4fca36wgr9htq457v896dj2vs7",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 1,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 1500,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 90,
+        "reasoning": 0,
+        "total": 1590
+      }
+    },
+    {
+      "thread": "thr-v1-6r95ar31vc6jwkadfjqfztzsxx",
+      "agent": "codex",
+      "project": "project",
+      "requests": {
+        "owned": 3,
+        "ambiguous": 0,
+        "unknown": 0
+      },
+      "tokens": {
+        "uncached_input": 5200,
+        "cache_read": 8800,
+        "cache_write": 0,
+        "cache_write_unspecified": 0,
+        "output": 640,
+        "reasoning": 180,
+        "total": 14640
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "codex-rollout-duplicate-location",
+      "count": 2,
+      "detail": "the same Codex thread and rollout were found at multiple locations"
+    }
+  ]
+}
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->
