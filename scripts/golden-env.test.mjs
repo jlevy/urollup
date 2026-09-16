@@ -70,8 +70,9 @@ test("Windows keeps its shell variables case-insensitively and redirects profile
   assert.equal(env.ComSpec, "cmd.exe");
   assert.equal(env.SystemRoot, "C:\\Windows");
   assert.equal(env.USERPROFILE, "/g/home");
-  assert.equal(env.APPDATA.startsWith("/g/home"), true);
-  assert.equal(env.LOCALAPPDATA.startsWith("/g/home"), true);
+  // The separator is the running host's, so compare with the same join the builder uses.
+  assert.equal(env.APPDATA, path.join(DIRS.home, "AppData", "Roaming"));
+  assert.equal(env.LOCALAPPDATA, path.join(DIRS.home, "AppData", "Local"));
 });
 
 test("harness variables are added last and may not be dropped by the allowlist", () => {

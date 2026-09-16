@@ -34,7 +34,8 @@ import { findSessions } from "./check-golden-invocations.mjs";
 import { HOME_CANARY_TOKEN, canaryLines, openGoldenEnvironment, snapshotTree } from "./golden-env.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-export const CONFIG_PATH = path.join("tests", "golden", "e2e.config.json");
+// Named in diagnostics and joined onto ROOT, so it stays POSIX-style on every platform.
+export const CONFIG_PATH = "tests/golden/e2e.config.json";
 /** Milestone 0.1 commands whose results must be checked (plan, milestone 0.1). */
 export const REQUIRED_COMMANDS = ["report", "daily", "sessions"];
 
