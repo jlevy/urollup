@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Draft
+status: Active; milestone 0.1 implementation is in progress, with plan approval pending the remaining maintainer decisions
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -131,12 +131,16 @@ The capture store lands only after the uncached engine is the correctness refere
   [§6.5](../../../urollup-design.md#65-exit-codes),
   [§4.1](../../../urollup-design.md#41-measure-contracts),
   [§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles)).
-- [ ] Add the [ccusage reconciliation harness](#ccusage-reconciliation-harness) for
-  token totals: pinned ccusage, per-day and per-session token comparison on the
-  `claude-project` and `codex-rollout` fixtures in CI, the explained-differences ledger,
-  and the privacy-tested local aggregate diff script
+- [x] Add the fixture-backed
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness) for token totals:
+  pinned ccusage, per-day and per-session token comparison on the `claude-project` and
+  `codex-rollout` fixtures in CI, and the explained-differences ledger
   ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
+- [ ] Add the privacy-tested local aggregate diff script and run the consented real-log
+  acceptance checks without committing log content, paths or identifiers
+  ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
 #### Milestone 0.2: Contracts, summaries, bundles and merge
 

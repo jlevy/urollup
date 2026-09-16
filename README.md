@@ -11,7 +11,8 @@ counting.
 **Status:** milestone 0.1 in progress.
 The uncached engine discovers Claude Code and Codex logs and produces deterministic
 `report`, `daily` and `sessions` output as terminal tables or JSON. Milestone 0.1’s
-ccusage reconciliation harness remains in progress.
+fixture-backed ccusage reconciliation runs in CI; the local aggregate diff and consented
+real-log acceptance remain open.
 
 ## Planning Docs
 

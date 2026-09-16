@@ -45,7 +45,9 @@ demand.
 urollup is in Phase 1, milestone 0.1. The Cargo workspace implements the accounting
 core, Claude Code and Codex adapters, exact session selection, and uncached `report`,
 `daily` and `sessions` commands in terminal-table and JSON formats.
-The ccusage reconciliation harness is the remaining milestone 0.1 deliverable.
+The fixture-backed ccusage reconciliation harness runs in CI. The remaining milestone
+0.1 work is the privacy-tested local aggregate diff, consented real-log acceptance, and
+the recorded maintainer decisions.
 There is one exploration (a Rust log throughput spike) under
 `explorations/log-throughput/`. urollup will be a Rust CLI and local read-only web UI
 that produces usage rollups (tokens, cost, request sizes, tools) from coding-agent
