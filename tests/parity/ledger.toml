@@ -107,6 +107,50 @@ expected_delta = -2
 expected_matches = 4
 
 [[entry]]
+id = "claude-inline-sidechain-session-grouping"
+case = "claude-project/inline-sidechains"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage"
+design = "docs/urollup-design.md#32-relationships-and-the-discovery-index"
+retirement = "Remove if ccusage exposes each inline sidechain run as a child thread row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_read"
+expected_delta = -400
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_write"
+expected_delta = -700
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "output"
+expected_delta = -85
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "row"
+expected_delta = 1
+expected_matches = 8
+
+[[entry.difference]]
+report = "claude-session"
+metric = "total"
+expected_delta = -1193
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "uncached_input"
+expected_delta = -8
+expected_matches = 4
+
+[[entry]]
 id = "claude-fork-session-grouping"
 case = "claude-project/fork-subagent-uuid-replay"
 cause = "semantics"

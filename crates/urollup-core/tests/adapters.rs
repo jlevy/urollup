@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
-use urollup_core::accounting::totals::{LedgerTotals, ledger_totals};
+use urollup_core::accounting::totals::{LedgerTotals, ledger_totals, selection_totals};
 use urollup_core::adapters::AdapterError;
 use urollup_core::adapters::claude_project::ingest_root;
 use urollup_core::adapters::codex_rollout::ingest_root as ingest_codex;
-use urollup_core::ledger::entities::ProviderLimitObservation;
+use urollup_core::ledger::entities::{Confidence, ProviderLimitObservation, RelationshipKind};
+use urollup_core::ledger::scope::IdentityBasis;
+use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex};
 
 fn fixture(case: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-project").join(case)
@@ -131,6 +133,47 @@ fn claude_block_records_are_selected_once() {
     assert_eq!(totals.total.tokens.output, Some(600));
     assert_eq!(ingested.ledger.coverage.copies, 1);
     assert_eq!(ingested.manifest.entries.len(), 2);
+}
+
+#[test]
+fn claude_inline_sidechains_are_fallback_children_in_descendant_scope() {
+    let ingested = ingest_root(&fixture("inline-sidechains")).unwrap();
+    let main_session = "00000000-0000-4000-8000-001500000001";
+    let fallback_threads: Vec<_> = ingested
+        .threads
+        .values()
+        .filter(|thread| thread.basis == IdentityBasis::Fallback)
+        .collect();
+
+    assert_eq!(fallback_threads.len(), 2);
+    assert!(fallback_threads.iter().all(|thread| thread.native_key.is_empty()));
+    assert!(
+        ingested.relationships.iter().all(|edge| edge.kind == RelationshipKind::InlineSidechain
+            && edge.confidence == Confidence::Inferred
+            && edge.evidence.len() == 2)
+    );
+
+    let mut index = SessionIndex::default();
+    index.add(Agent::Claude, &ingested).unwrap();
+    let main = index.resolve(main_session.as_ref()).unwrap();
+    let descendants = index
+        .select(&SelectionQuery {
+            sessions: vec![main_session.into()],
+            ..SelectionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(descendants.len(), 3);
+    assert_eq!(selection_totals(&ingested.ledger, &descendants).unwrap().counted.requests, 6);
+
+    let own = index
+        .select(&SelectionQuery {
+            sessions: vec![main.to_string().into()],
+            scope: Some(Scope::SelfOnly),
+            ..SelectionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(own.len(), 1);
+    assert_eq!(selection_totals(&ingested.ledger, &own).unwrap().counted.requests, 3);
 }
 
 #[test]

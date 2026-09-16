@@ -92,6 +92,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `claude-project/cache-creation-breakdown` | A 5-minute and 1-hour breakdown disagreeing with the flat count | §4.1 | ccusage cache accessor; receipts weights | Claude Code 2.1.x |
 | `claude-project/gateway-message-id-reuse` | One `message.id` reused across sessions, beside a true copy | §3.6, §9.1, §4.2, §3.2 | ccusage commit `a4b8420` | Claude Code 2.1.x |
 | `claude-project/derived-block-records-subagent` | A sanitized real session: agreeing block records, a spawn, and subagent block records disagreeing on `output_tokens` | §3.4, §3.2, §4.1 | Sanitized from this project’s own logs | Claude Code 2.1.270 |
+| `claude-project/inline-sidechains` | Two runs of legacy `isSidechain` turns inline in one main transcript | §3.2, §3.6, §4.2 | agentfdr legacy-sidechain reader and tests | Claude Code 1.0.x shape; exact release range unverified |
 | `codex-rollout/brief-repeated-snapshot` | Cumulative `token_count` with a repeated identical snapshot: the brief’s example | §3.4, §3.1 | Codex protocol and rollout tests | Codex CLI 0.150.0 |
 | `codex-rollout/info-null` | `info: null` before the first usage, and a rate-limit-only update | §3.4, §3.1 | Codex `turn.rs` and session tests | Codex CLI 0.150.0 |
 | `codex-rollout/counter-reset-epoch` | A cumulative total that restarts lower, opening a new epoch | §3.4, §3.3 | ccusage total-only path | Codex CLI 0.150.0 |
@@ -120,8 +121,6 @@ the double-counting example is in the
   in place as paginated, dropping rolled-back usage records.
   Modeling it needs a before and after pair plus capture-store expectations, which
   belong with the capture work.
-- **Claude Code inline sidechains:** older transcripts that keep subagent turns inline
-  with `isSidechain` and no spawn ID.
 - **More cases derived from real sessions:** one case,
   `claude-project/derived-block-records-subagent`, is sanitized from this project’s own
   Claude Code logs; every other case is synthetic.

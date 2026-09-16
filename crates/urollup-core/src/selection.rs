@@ -69,7 +69,10 @@ impl SessionIndex {
                     .snapshot
                     .source
                     .as_ref()
-                    .is_some_and(|identity| evidence_sources.contains(&identity.id));
+                    .is_some_and(|identity| evidence_sources.contains(&identity.id))
+                    // Inline children share the main transcript, so its path selects
+                    // the native main session; their analytical IDs select the children.
+                    && thread.source.value().map(String::as_str) != Some("inline-sidechain");
                 if establishes_thread
                     || source_locator_belongs_to_thread(agent, thread, &source.snapshot.locator)
                 {

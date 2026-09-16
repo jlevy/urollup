@@ -21,7 +21,7 @@ use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis,
 use crate::ledger::tokens::{TokenMeasures, TokenUsage};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
-use crate::sources::manifest::SnapshotManifest;
+use crate::sources::manifest::{Fingerprint, SnapshotManifest};
 use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
 use crate::sources::roots::discover;
 
@@ -61,6 +61,20 @@ const AMBIGUOUS_RESPONSE_KEY: KeySpec = KeySpec {
     slots: REQUEST_SLOTS,
 };
 
+const INLINE_THREAD_SLOTS: &[ComponentSlot] = &[
+    ComponentSlot::required("agent", ComponentRole::Namespace),
+    ComponentSlot::required("first_record_digest", ComponentRole::Digest),
+];
+
+const INLINE_THREAD_KEY: KeySpec = KeySpec {
+    prefix: IdPrefix::Thread,
+    kind: "inline-sidechain-digest",
+    precedence: 1,
+    basis: IdentityBasis::Fallback,
+    scope: IdScope::Agent,
+    slots: INLINE_THREAD_SLOTS,
+};
+
 #[derive(Clone)]
 struct ParsedRecord {
     evidence: EvidenceRef,
@@ -76,6 +90,9 @@ struct SourceFacts {
     evidence: Option<EvidenceRef>,
     version: Option<String>,
     project: Option<String>,
+    last_main_evidence: Option<EvidenceRef>,
+    active_inline: Option<NativeThread>,
+    inline_threads: Vec<(NativeThread, EvidenceRef, Option<EvidenceRef>)>,
 }
 
 #[derive(Clone)]
@@ -90,9 +107,26 @@ struct SubagentMeta {
 struct NativeThread {
     session: String,
     agent: Option<String>,
+    inline_digest: Option<String>,
 }
 
 impl NativeThread {
+    fn main(session: impl Into<String>) -> Self {
+        Self { session: session.into(), agent: None, inline_digest: None }
+    }
+
+    fn inline(session: impl Into<String>, first_record: &[u8]) -> Self {
+        Self {
+            session: session.into(),
+            agent: None,
+            inline_digest: Some(Fingerprint::of(first_record).to_base32()),
+        }
+    }
+
+    fn is_child(&self) -> bool {
+        self.agent.is_some() || self.inline_digest.is_some()
+    }
+
     fn native_id(&self) -> String {
         match &self.agent {
             Some(agent) => format!("{}/{agent}", self.session),
@@ -101,11 +135,23 @@ impl NativeThread {
     }
 
     fn identity(&self) -> Result<StoredIdentity, AdapterError> {
-        Ok(StoredIdentity::derive(IdentityKey::new(
-            IdPrefix::Thread,
-            "agent-thread",
-            vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(self.native_id())],
-        ))?)
+        let key = match &self.inline_digest {
+            Some(digest) => {
+                INLINE_THREAD_KEY
+                    .key(vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(digest)])?
+                    .key
+            }
+            None => IdentityKey::new(
+                IdPrefix::Thread,
+                "agent-thread",
+                vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(self.native_id())],
+            ),
+        };
+        Ok(StoredIdentity::derive(key)?)
+    }
+
+    fn basis(&self) -> IdentityBasis {
+        if self.inline_digest.is_some() { IdentityBasis::Fallback } else { IdentityBasis::Native }
     }
 }
 
@@ -142,6 +188,9 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
             evidence: None,
             version: None,
             project: None,
+            last_main_evidence: None,
+            active_inline: None,
+            inline_threads: Vec::new(),
         };
         let spec = SourceSpec {
             environment: "local",
@@ -213,6 +262,24 @@ fn decode_record(
             .and_then(|cwd| Path::new(cwd).file_name())
             .map(|name| name.to_string_lossy().into_owned());
     }
+    let record_thread = if !source_thread.is_child()
+        && value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+    {
+        if facts.active_inline.is_none() {
+            let child = NativeThread::inline(&source_thread.session, raw.bytes);
+            facts.inline_threads.push((
+                child.clone(),
+                raw.evidence.clone(),
+                facts.last_main_evidence.clone(),
+            ));
+            facts.active_inline = Some(child);
+        }
+        facts.active_inline.as_ref().expect("inline thread was initialized").clone()
+    } else {
+        facts.active_inline = None;
+        facts.last_main_evidence = Some(raw.evidence.clone());
+        source_thread.clone()
+    };
     let (value, forced_copy, request_record) = match text(&value, &["type"]) {
         Some("assistant") if unsigned(&value, &["message", "usage", "output_tokens"]).is_some() => {
             let synthetic_error = text(&value, &["message", "model"]) == Some("<synthetic>")
@@ -238,7 +305,7 @@ fn decode_record(
     records.push(ParsedRecord {
         evidence: raw.evidence.clone(),
         value,
-        source_thread: source_thread.clone(),
+        source_thread: record_thread,
         forced_copy,
         request_record,
     });
@@ -291,14 +358,32 @@ fn normalize(
         native_threads.insert(record.source_thread.clone());
         let recorded_session =
             text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session).to_owned();
-        native_threads.insert(NativeThread { session: recorded_session.clone(), agent: None });
-        if record.source_thread.agent.is_none() && recorded_session != record.source_thread.session
-        {
+        native_threads.insert(NativeThread::main(recorded_session.clone()));
+        if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
             relationships.push((
                 RelationshipKind::Fork,
-                NativeThread { session: recorded_session, agent: None },
+                NativeThread::main(recorded_session),
                 record.source_thread.clone(),
                 record.evidence.clone(),
+            ));
+        }
+    }
+    for facts in source_facts {
+        for (child, evidence, parent_evidence) in &facts.inline_threads {
+            native_threads.insert(child.clone());
+            if let Some(parent_evidence) = parent_evidence {
+                relationships.push((
+                    RelationshipKind::InlineSidechain,
+                    facts.thread.clone(),
+                    child.clone(),
+                    parent_evidence.clone(),
+                ));
+            }
+            relationships.push((
+                RelationshipKind::InlineSidechain,
+                facts.thread.clone(),
+                child.clone(),
+                evidence.clone(),
             ));
         }
     }
@@ -328,7 +413,7 @@ fn normalize(
             .as_ref()
             .and_then(|tool_use_id| tool_owners.get(tool_use_id))
             .cloned()
-            .unwrap_or_else(|| NativeThread { session: meta.child.session.clone(), agent: None });
+            .unwrap_or_else(|| NativeThread::main(&meta.child.session));
         spawned.insert(meta.child.clone());
         relationships.push((
             RelationshipKind::Spawn,
@@ -347,7 +432,7 @@ fn normalize(
         ) {
             relationships.push((
                 RelationshipKind::Spawn,
-                NativeThread { session: child.session.clone(), agent: None },
+                NativeThread::main(&child.session),
                 child.clone(),
                 evidence,
             ));
@@ -362,6 +447,12 @@ fn normalize(
         }
         if let Some(project) = &facts.project {
             project_by_thread.entry(facts.thread.clone()).or_insert_with(|| project.clone());
+            for (inline, _, _) in &facts.inline_threads {
+                project_by_thread.entry(inline.clone()).or_insert_with(|| project.clone());
+            }
+        }
+        for (inline, evidence, _) in &facts.inline_threads {
+            thread_evidence.entry(inline.clone()).or_default().push(evidence.clone());
         }
     }
     for record in records {
@@ -387,22 +478,29 @@ fn normalize(
         let identity = native.identity()?;
         ids.insert(native.clone(), identity.id.clone());
         let mut native_key = BTreeMap::new();
-        native_key.insert("session_id".to_owned(), native.session.clone());
-        if let Some(agent) = &native.agent {
-            native_key.insert("agent_id".to_owned(), agent.clone());
+        if native.inline_digest.is_none() {
+            native_key.insert("session_id".to_owned(), native.session.clone());
+            if let Some(agent) = &native.agent {
+                native_key.insert("agent_id".to_owned(), agent.clone());
+            }
         }
         threads.insert(
             identity.id.clone(),
             Thread {
                 identity,
-                basis: IdentityBasis::Native,
+                basis: native.basis(),
                 aliases: Vec::new(),
                 native_key,
-                source: Basis::Observed(if native.agent.is_some() {
-                    "subagent".to_owned()
-                } else {
-                    "cli".to_owned()
-                }),
+                source: Basis::Observed(
+                    if native.inline_digest.is_some() {
+                        "inline-sidechain"
+                    } else if native.agent.is_some() {
+                        "subagent"
+                    } else {
+                        "cli"
+                    }
+                    .to_owned(),
+                ),
                 initiator: Basis::Unknown,
                 purpose: purpose_by_thread
                     .get(&native)
@@ -423,10 +521,14 @@ fn normalize(
         .into_iter()
         .filter_map(|(kind, from, to, evidence)| {
             Some(Relationship {
+                confidence: if kind == RelationshipKind::InlineSidechain {
+                    Confidence::Inferred
+                } else {
+                    Confidence::Proven
+                },
                 kind,
                 from: ids.get(&from)?.clone(),
                 to: ids.get(&to)?.clone(),
-                confidence: Confidence::Proven,
                 evidence: vec![evidence],
             })
         })
@@ -491,15 +593,20 @@ fn normalize(
             ])?);
             observation.native_request_id = Some(request_id.to_owned());
         }
-        let native_owner = NativeThread {
-            session: recorded_session.clone(),
-            agent: record.source_thread.agent.clone(),
+        let native_owner = if record.source_thread.inline_digest.is_some() {
+            record.source_thread.clone()
+        } else {
+            NativeThread {
+                session: recorded_session.clone(),
+                agent: record.source_thread.agent.clone(),
+                inline_digest: None,
+            }
         };
         let replay_owner = message_id
             .and_then(|message_id| message_owners.get(message_id))
             .filter(|owner| {
                 record.forced_copy
-                    || (record.source_thread.agent.is_some() && *owner != &record.source_thread)
+                    || (record.source_thread.is_child() && *owner != &record.source_thread)
             })
             .or_else(|| {
                 text(&record.value, &["uuid"])
@@ -509,11 +616,11 @@ fn normalize(
         let owner = replay_owner
             .and_then(|owner| ids.get(owner))
             .or_else(|| ids.get(&native_owner))
-            .or_else(|| ids.get(&NativeThread { session: recorded_session.clone(), agent: None }));
+            .or_else(|| ids.get(&NativeThread::main(recorded_session.clone())));
         observation.owner = owner.cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
         observation.role = if record.forced_copy
             || replay_owner.is_some()
-            || (record.source_thread.agent.is_none()
+            || (!record.source_thread.is_child()
                 && recorded_session != record.source_thread.session)
         {
             ObservationRole::Copy
@@ -605,9 +712,16 @@ fn append_limits(
 ) -> Result<(), AdapterError> {
     let session =
         text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session).to_owned();
-    let owner_thread = ids
-        .get(&NativeThread { session: session.clone(), agent: record.source_thread.agent.clone() })
-        .cloned();
+    let native_owner = if record.source_thread.inline_digest.is_some() {
+        record.source_thread.clone()
+    } else {
+        NativeThread {
+            session: session.clone(),
+            agent: record.source_thread.agent.clone(),
+            inline_digest: None,
+        }
+    };
+    let owner_thread = ids.get(&native_owner).cloned();
     let observed_at = text(&record.value, &["timestamp"])
         .and_then(|timestamp| parse_timestamp(timestamp).ok())
         .map_or(Basis::Unknown, Basis::Observed);
@@ -683,14 +797,12 @@ fn is_replayed_record(
     }
     let recorded_session =
         text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session);
-    if record.source_thread.agent.is_none() && recorded_session != record.source_thread.session {
+    if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
         return true;
     }
     let message_replayed = text(&record.value, &["message", "id"])
         .and_then(|message_id| message_owners.get(message_id))
-        .is_some_and(|owner| {
-            record.source_thread.agent.is_some() && owner != &record.source_thread
-        });
+        .is_some_and(|owner| record.source_thread.is_child() && owner != &record.source_thread);
     let uuid_replayed = text(&record.value, &["uuid"])
         .and_then(|uuid| uuid_owners.get(uuid))
         .is_some_and(|owner| owner != &record.source_thread);
@@ -858,14 +970,12 @@ fn thread_from_path(locator: &str) -> NativeThread {
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .map(|stem| stem.strip_prefix("agent-").unwrap_or(&stem).to_owned());
-            NativeThread { session, agent }
+            NativeThread { session, agent, inline_digest: None }
         }
-        _ => NativeThread {
-            session: path
-                .file_stem()
+        _ => NativeThread::main(
+            path.file_stem()
                 .map_or_else(|| locator.to_owned(), |stem| stem.to_string_lossy().into_owned()),
-            agent: None,
-        },
+        ),
     }
 }
 
