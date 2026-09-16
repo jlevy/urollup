@@ -1,9 +1,13 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+// Only the symlink tests, which are Unix-only, need these.
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
 use super::{Discovery, discover, locator_for};
+#[cfg(unix)]
 use crate::sources::manifest::SkippedLinkReason;
 
 fn write(path: &Path) {
