@@ -1904,7 +1904,9 @@ Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
   Redirected or piped output is plain and byte-stable, and machine-readable formats
   never contain ANSI escapes.
   `--color never` and `NO_COLOR` each disable color unconditionally, including on a
-  terminal.
+  terminal or when another force mechanism is present.
+  `--color always` forces human-facing color, and `FORCE_COLOR` forces `auto`; machine
+  formats remain plain under both.
 - **Progress (Confirmed, [Decision 30](#decision-30-interactive-progress)):** noticeably
   long operations show progress by default only during interactive human use.
   Progress is rendered on stderr and cleaned up on success and error.
@@ -3234,14 +3236,17 @@ interactive terminal.
 Redirected and piped output is plain and byte-stable, and every machine-readable format
 is free of ANSI escapes.
 `--color never` and `NO_COLOR` each disable color unconditionally, including when
-terminal detection would otherwise enable it.
+terminal detection, `--color always` or `FORCE_COLOR` would otherwise enable it.
+`--color always` forces human-facing output, while `FORCE_COLOR` forces automatic mode;
+neither can add ANSI escapes to a machine-readable format.
 
 **Rationale:** Interactive color improves scanning, while stable plain streams remain
 safe for agents, snapshots, pipes and parsers without requiring callers to remember a
 flag.
 
-**Tradeoffs:** urollup does not promise forced color in a pipe, and every new output
-format must be classified as human-facing or machine-readable and tested accordingly.
+**Tradeoffs:** Forced human color is available for snapshots and terminal emulators, but
+every new output format must still be classified as human-facing or machine-readable and
+tested accordingly.
 
 **Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
 [§8.2](#82-engineering-conventions).
@@ -3257,9 +3262,10 @@ automatically, and `--no-progress` disables it unconditionally.
 **Rationale:** A person should be able to distinguish a long scan from a hung process
 without making agent, pipe, snapshot or parser output unstable.
 
-**Tradeoffs:** Short operations show no progress, elapsed-time eligibility remains an
-implementation detail, and tests need a pseudo-terminal plus explicit success and error
-paths.
+**Tradeoffs:** The milestone 0.1 commands show one transient scan status rather than
+attempting a percentage without a trustworthy denominator.
+Tests inject terminal capabilities and cover explicit success, error and real
+process-stream paths.
 
 **Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
 [§8.2](#82-engineering-conventions).
@@ -3363,7 +3369,7 @@ Queries and output:
 | `--strict` | Exit 3 on any coverage gap, including unresolved usage | [§6.4](#64-queries-output-formats-and-streams), [§5.3](#53-exact-aggregation) | 1 (0.5), Candidate |
 | `--require-priced` | Exit 3 when any tokens are unpriced | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.4) |
 | `--compact` | Force the narrow terminal table layout | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
-| `--color` | Choose `auto` or `never` for human-facing terminal color; `NO_COLOR` also turns it off unconditionally | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
+| `--color` | Choose `auto`, `always` or `never` for human-facing terminal color; `NO_COLOR` turns it off unconditionally and `FORCE_COLOR` forces automatic mode | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
 | `--no-progress` | Disable interactive progress unconditionally | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
 | `--no-cost` | Omit amounts from tables and JSON while pricing coverage still appears | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
 | `--annotation-set` | Group by a named, imported annotation set | [§3.5](#35-purpose-and-annotations) | 2, Candidate |
@@ -3526,7 +3532,7 @@ CLI on the same day.
 | Sort order | `--order asc\|desc` | `--sort` and `--limit` | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Terminal tables | Boxed tables with a Models column and a totals row | Terminal tables rendered from the shared report data | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Compact and responsive tables | Narrow layout below 100 columns or with `--compact` | The same rule, with `--compact` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
-| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | Automatic color only for interactive human-facing output; `--color never` and `NO_COLOR` disable it unconditionally; machine formats contain no ANSI | Partial by design: no forced color in pipes | [Decision 29](#decision-29-terminal-aware-color), [§6.4](#64-queries-output-formats-and-streams) |
+| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | `--color auto\|always\|never`, automatic color only for interactive human-facing output, `--color never` and `NO_COLOR` as unconditional disables, `FORCE_COLOR` for automatic mode, and no ANSI in machine formats | Covered | [Decision 29](#decision-29-terminal-aware-color), [§6.4](#64-queries-output-formats-and-streams) |
 | Locale | `--locale` removed; fixed formats | Locale-independent formatting with no `--locale` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
 | JSON output | `--json` with per-command shapes and no output schema | JSON with schema version, normalized query, coverage and diagnostics; also JSONL, CSV and Markdown | Covered better | [§6.4](#64-queries-output-formats-and-streams), [Decision 15](#decision-15-json-as-an-output-rendering) |
 | JSON filtering | `--jq`, through an external `jq` binary | stdout carries only the requested format, so output pipes to `jq` | Covered | [§6.4](#64-queries-output-formats-and-streams) |

@@ -23,7 +23,7 @@ UV_RUN = $(UV) --config-file uv.toml run --frozen
 FLOWMARK = $(UV_RUN) flowmark
 TAPLO := node_modules/.bin/taplo
 
-.PHONY: help build test rust-test golden golden-update golden-lint e2e-results parity check toolchain uv-version \
+.PHONY: help build test rust-test golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
 	clippy docs dependency-guard msrv audit npm-audit gate-proofs fix clean
 
@@ -34,7 +34,9 @@ help:
 	@echo "make golden-update      Regenerate intentional golden changes, then compare"
 	@echo "                        (GOLDEN=<session> limits the update to named sessions)"
 	@echo "make e2e-results        Check reconciled results on every fixture case"
+	@echo "make e2e-local          Aggregate consented local logs without private fields"
 	@echo "make parity             Reconcile fixture token rows against pinned ccusage"
+	@echo "make parity-local       Compare consented local aggregates with pinned ccusage"
 	@echo "make check              Handoff gate: everything CI enforces, fastest first"
 	@echo "make fix                Format Rust, TOML and Markdown"
 	@echo "make supply-chain       Verify release age, provenance, pins and CI trust controls"
@@ -88,6 +90,19 @@ e2e-results: build
 	$(NODE) --test scripts/check-e2e-results.test.mjs
 	$(NODE) scripts/check-e2e-results.mjs
 
+# Maintainer-only acceptance targets are deliberately absent from `test`, `check` and CI.
+# The explicit variable prevents an exploratory make invocation from reading local logs.
+e2e-local: build
+	@test "$(CONSENT_LOCAL_LOGS)" = "1" || { \
+		echo "error: e2e-local reads your default agent logs; rerun with CONSENT_LOCAL_LOGS=1"; \
+		exit 2; \
+	}
+	$(UV_RUN) python -m unittest discover -s tests/parity -p 'test_local_tools.py'
+	$(UV_RUN) python tests/parity/local_aggregate.py \
+		--urollup target/debug/urollup \
+		--output target/acceptance/local-aggregate.json \
+		--consent-local-logs
+
 parity: build $(CCUSAGE_INSTALL_STAMP)
 	$(UV_RUN) python -m unittest discover -s tests/parity -p 'test_*.py'
 	$(UV_RUN) python tests/parity/compare.py \
@@ -96,6 +111,18 @@ parity: build $(CCUSAGE_INSTALL_STAMP)
 		--cases tests/parity/cases.toml \
 		--ledger tests/parity/ledger.toml \
 		--output-dir target/parity
+
+parity-local: build $(CCUSAGE_INSTALL_STAMP)
+	@test "$(CONSENT_LOCAL_LOGS)" = "1" || { \
+		echo "error: parity-local reads your default agent logs; rerun with CONSENT_LOCAL_LOGS=1"; \
+		exit 2; \
+	}
+	$(UV_RUN) python -m unittest discover -s tests/parity -p 'test_*.py'
+	$(UV_RUN) python tests/parity/local_diff.py \
+		--urollup target/debug/urollup \
+		--ccusage-package $(CCUSAGE_DIR) \
+		--output target/parity/local.json \
+		--consent-local-logs
 
 # Everything CI enforces, in the order that fails fastest.
 check: toolchain uv-version supply-chain lint-policy fixtures-check fmt-check toml-fmt-check \
@@ -155,7 +182,7 @@ uv-version:
 # Standalone entry points must fail before any recipe asks uv to parse repository
 # configuration. Keep this list aligned with the recipe-coverage test in
 # scripts/check-uv-version.test.mjs.
-UV_BACKED_TARGETS := docs-format-check uv-lock-check parity fix
+UV_BACKED_TARGETS := docs-format-check uv-lock-check e2e-local parity parity-local fix
 
 $(UV_BACKED_TARGETS): uv-version
 
