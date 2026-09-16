@@ -1097,7 +1097,8 @@ ccusage 20.0.20 ships 14 further adapters: Amp (thread JSON), Codebuff, Copilot
 (OpenTelemetry file exporter JSONL), Droid, Gemini CLI, Goose (SQLite), Grok, Hermes
 (SQLite), Kilo (SQLite), Kimi, OpenClaw, OpenCode (SQLite plus legacy JSON), Pi and
 Qwen; `main` has since added ZCode and Antigravity.
-Only Pi is in urollup’s scope.
+Only Pi and, from 2026-09-15, Gemini CLI are in urollup’s scope; the Gemini adapter has
+its own section, [ccusage Gemini CLI parsing](#ccusage-gemini-cli-parsing).
 
 **Pi at 20.0.20**
 ([`ccusage/rust/adapters/pi/src/parser.rs:162-287`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/pi/src/parser.rs#L162-L287),
@@ -1128,6 +1129,55 @@ mapping (`inputTokens` includes cache reads, `costUsdTicks` are 1e-10 USD) that 
 how varied “input” semantics are
 ([`ccusage/rust/adapters/grok/README.md`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/grok/README.md)).
 urollup’s scope still excludes them.
+
+### ccusage Gemini CLI Parsing
+
+*(Added 2026-09-15, when Gemini CLI entered urollup’s scope as a planned agent;
+[design Decision 28](../../urollup-design.md#decision-28-gemini-cli-planned-support).)*
+The adapter is small and, unlike the Claude and Codex ones, has no cross-file dedupe
+([`ccusage/rust/adapters/gemini/src/parser.rs:115-219`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/parser.rs#L115-L219),
+[`315-416`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/parser.rs#L315-L416),
+[`paths.rs:5-42`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/paths.rs#L5-L42),
+[`loader.rs:18-43`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/loader.rs#L18-L43)):
+
+- **Discovery:** every `.json` and `.jsonl` file under `GEMINI_DATA_DIR`, a
+  comma-separated list, else `~/.gemini/tmp`, walked recursively.
+  It reads the `tmp` root rather than the Gemini home, ignores `GEMINI_CLI_HOME`, and
+  sees every file in the bucket, not only `chats/`, so a prompt log, checkpoint or
+  activity log is read and then ignored for lack of a usage shape.
+- **Records:** a JSONL line is usage when `type == "gemini"` and it has `tokens`; a
+  whole-file JSON document is read as a legacy record with a `messages` array, a single
+  `gemini` record, or a `stats` object.
+  `$set` and `$rewindTo` records are ignored, which is right for `$rewindTo`, since
+  rewound requests were still served, and wrong for a `$set.messages` rewrite only
+  because that record’s copies are nested under `$set`.
+- **Dedupe:** by message `id`, keeping the last occurrence, **within one file**
+  ([`parser.rs:174-201`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/parser.rs#L174-L201)).
+  Nothing dedupes across files, so the copies Gemini CLI itself creates — the
+  slug-bucket migration copy of the legacy `<sha256>` directory, a legacy `.json` file
+  beside the `.jsonl` it was migrated into, and a `--session-file` import — count twice.
+- **Tokens:** `input` is treated as excluding `cached` unless the record’s `total`
+  equals `input + output + thoughts + tool`, in which case `cached` is subtracted from
+  `input`; `tool` is then added to input, `thoughts` are priced as output through the
+  hidden “extra” total, and `cache_creation` is always 0
+  ([`parser.rs:400-416`](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/parser.rs#L400-L416)).
+  Gemini’s `promptTokenCount` always includes cached tokens, so any record whose `total`
+  fails that equality — which the API reference suggests happens when
+  `toolUsePromptTokenCount` is nonzero — counts its cached tokens twice, once as input
+  and once as cache read.
+- **Identity:** the session is the last `sessionId` seen in the file, else the file
+  stem, so subagent files become their own sessions with no parent link; the project is
+  the constant string `gemini`, so there is no project grouping; a record without
+  `model` inherits the last model seen in the file, and an all-zero record is dropped.
+- **Timestamps:** the record `timestamp`, else `created_at`, else the file’s mtime, so a
+  record with an unparsable timestamp lands on the file’s modification date.
+- **Later commits:** `main` through `d341949` changes no Gemini parsing; `c951e20` only
+  separates the Antigravity source and `d39a09d` makes Gemini pricing timestamp-aware.
+
+The writer-side facts these assumptions meet are in the portable brief’s
+[Gemini CLI dialect facts](research-2026-09-13-portable-agent-usage.md#gemini-cli-dialect-facts),
+and the differences above become parity ledger entries in the plan’s
+[ccusage reconciliation harness](../specs/active/plan-2026-09-13-urollup-cli-and-web.md#ccusage-reconciliation-harness).
 
 ### ccusage Pricing
 
@@ -2387,6 +2437,11 @@ No local agent logs were read, and no clone’s working tree was changed.
   `b2809fa`, `527ec3a`, `d39a09d` and `e06c08e` were read with `GIT_NO_LAZY_FETCH=1`, so
   the partial clone fetched nothing, and `git grep` at `95bbc41` checked whether later
   code reads the fields in [dialect fact 15](#ccusage-dialect-facts).
+- **ccusage Gemini adapter, 2026-09-15:** every file of `rust/adapters/gemini` and its
+  README and guide page at the same 20.0.20 checkout, with the long-context tiering in
+  `ccusage-core`’s cost module; the GitHub API listed the adapter’s commits after
+  20.0.20 and returned the two patches that touch it, so the partial clone fetched no
+  history. Nothing was executed.
 - **Synthetic probe:** one probe compiled ccusage’s `has_unsupported_null_field`
   unchanged, with a local `memmem` shim, in a scratchpad and ran it on two synthetic
   records. No other source code was run in any review, and the ccusage review used no
@@ -2418,7 +2473,13 @@ Sources reviewed, at the pinned revisions:
   [`527ec3a`](https://github.com/ccusage/ccusage/commit/527ec3a9cefa28391664b5c0c0ce1aa006264769)
   (Codex date-window skipping) and
   [`d39a09d`](https://github.com/ccusage/ccusage/commit/d39a09def5b4fd36369dfc9e710a916126497cba)
-  (time-aware DeepSeek rates)
+  (time-aware DeepSeek rates); its
+  [Gemini adapter](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini)
+  and
+  [Gemini guide](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/docs/guide/gemini/index.md)
+  were reviewed on 2026-09-15, with `main` at
+  [`d341949`](https://github.com/ccusage/ccusage/commit/d34194988f460fdb9572d138226b9d9380c04a48)
+  carrying no Gemini parsing change
 - [Pi coding-agent 0.85.1](https://github.com/earendil-works/pi/tree/d981de1229ef899957bbe968bc8dcda02a21f477)
   (MIT)
 - [agentfdr 0.8.0](https://github.com/kamihork/agentfdr/tree/e0904bf8791f90916fa8db2ce702df93a7caee90)

@@ -103,6 +103,7 @@ commits.
 | Claude Code | `claude -p` with `--output-format stream-json --verbose --no-session-persistence`, `--model` and `--effort` ([`metaproc/src/metaproc/adapters/claude_code.py:487-572`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/claude_code.py#L487-L572)) | None by default | `CLAUDE_CONFIG_DIR` set to a per-attempt slot ([`metaproc/src/metaproc/adapters/claude_code.py:788-836`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/claude_code.py#L788-L836)) | `system` `init` `session_id` ([`metaproc/src/metaproc/trace/extractors/claude_agent.py:157-192`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/trace/extractors/claude_agent.py#L157-L192)) |
 | Codex | `codex <top-level flags> exec --json`, with `-m` and `-c model_reasoning_effort=` before `exec` ([`metaproc/src/metaproc/adapters/codex.py:223-388`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/codex.py#L223-L388)) | Rollout still written, since `--ephemeral` is not passed | `CODEX_HOME` set to `<slot>/.codex` in pool mode, else `$HOME/.codex` ([`metaproc/src/metaproc/adapters/codex.py:446-475`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/codex.py#L446-L475)) | `thread.started` `thread_id` ([`metaproc/src/metaproc/trace/extractors/codex_agent.py:104-117`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/trace/extractors/codex_agent.py#L104-L117)) |
 | Pi | `pi --mode json -p @<prompt> --no-session` ([`metaproc/src/metaproc/adapters/pi_cli.py:276`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/src/metaproc/adapters/pi_cli.py#L276)) | None | Not scoped | `session` header `id` |
+| Gemini CLI *(added 2026-09-15)* | `gemini -m <model> --output-format stream-json --skip-trust`, with the prompt piped in, `--approval-mode yolo` for bypass permissions and `--include-directories <run dir>` ([`metaproc/src/metaproc/adapters/gemini_cli.py:177-255`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/adapters/gemini_cli.py#L177-L255)) | Session JSONL still written: Gemini CLI has no flag that disables recording, so metaproc rejects `no_session_persistence` rather than pretend ([`gemini_cli.py:257-289`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/adapters/gemini_cli.py#L257-L289)) | Not scoped: no `GEMINI_CLI_HOME`, only a generated system settings file through `GEMINI_CLI_SYSTEM_SETTINGS_PATH` ([`gemini_cli.py:291-333`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/adapters/gemini_cli.py#L291-L333)) | `init` event `session_id` ([`metaproc/src/metaproc/trace/extractors/gemini_agent.py:104-117`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/trace/extractors/gemini_agent.py#L104-L117)) |
 
 - **Captures:** each attempt’s output lands in
   `.logs/tasks/<step>/<item>/<step>_<item>_<time>.jsonl` beside a
@@ -138,6 +139,32 @@ commits.
   sets `DISABLE_UPDATES=1` because versions changed mid-cohort, and keeps a behavior
   matrix across 2.1.x releases
   ([`metaproc/docs/arch/arch-claude-code-harness.md:264-332`](https://github.com/jlevy/metaproc/blob/9b2e5ad51ab16f666f9478ba81b79e0988923d11/docs/arch/arch-claude-code-harness.md#L264-L332)).
+- **Gemini CLI usage comes only from the stream’s terminal event** *(added 2026-09-15)*:
+  the extractor takes `result.stats.models`, or the flat aggregate when no per-model
+  breakdown exists, and derives disjoint buckets as uncached input, cached input and a
+  billed output of `max(output_tokens, total_tokens − input_tokens, 0)`, which recovers
+  unreported thoughts and tool-use tokens as output
+  ([`metaproc/src/metaproc/logutil/usage.py:330-390`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/logutil/usage.py#L330-L390)).
+  Those stats are Gemini CLI’s whole-process totals, so they include the compaction,
+  routing and summarizing calls that the session file never records, and they carry no
+  per-request detail, no timestamps and no cost; metaproc also refuses a successful
+  result whose `stats.models` does not name the requested model
+  ([`gemini_cli.py:342-363`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/adapters/gemini_cli.py#L342-L363)).
+  The stream and the session file share only the `init` event’s `session_id`, so, as
+  with `codex-exec` and its rollout, the session file must own the usage and the capture
+  serve as a coverage check whose surplus is the unrecorded utility usage.
+- **Gemini CLI native logs are not preserved** *(added 2026-09-15)*: the Gemini adapter
+  declares no `native_session_log_sets` and no credential scope, so its sessions land in
+  the host’s own `~/.gemini/tmp/<project>/chats/` and stay there, unlike the pooled
+  Codex rollouts and Claude transcripts that `32cde09` copies into `.logs/native/`.
+  metaproc also sets `general.sessionRetention.enabled: false` for every Gemini run,
+  because the startup retention scan parses every saved session of the project and
+  turned a 0.4 GB process tree into 5 GB on an accumulated bucket, so those chats are
+  never pruned either
+  ([`metaproc/src/metaproc/settings.py:164-207`](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/src/metaproc/settings.py#L164-L207),
+  [metaproc Gemini CLI project-state memory research](https://github.com/jlevy/metaproc/blob/32cde09a2a59f40e52d86872aaca82f973caf958/docs/project/research/research-2026-09-01-gemini-cli-project-state-memory.md)).
+  For urollup that is an advantage and a hazard: harness-driven Gemini usage is in
+  default discovery, and those buckets grow without bound.
 - **Requested versus observed model:** Claude Code and Gemini CLI silently fall back to
   a default for an unknown model name, and `codex exec` streams carry no model ID, so
   metaproc verifies the model from `system.init` and takes Codex’s from `argv`
@@ -1266,6 +1293,11 @@ not yet reflected.)*
   snapshot is a shallow clone.
   Captured-stream observations come from a few rewritten captures of specific agent
   versions and can change between releases.
+- **Gemini pass:** on 2026-09-15, when Gemini CLI became a planned urollup agent, the
+  metaproc Gemini adapter, its trace extractor, `extract_gemini_usage`, the Gemini
+  settings block and the Gemini CLI project-state memory research were read at
+  `32cde09`, the current `main`, where those files match the local checkout; the claims
+  were checked against Gemini CLI v0.60.0 source.
 - **Source reconciliation:** on 2026-09-14, Codex and Pi format claims were rechecked
   against read-only source reviews of Codex at `6b9826e` and Pi at `d981de1`, and Claude
   claims against ccusage at `bd7f89b` and Anthropic’s session-report and receipts
@@ -1274,7 +1306,10 @@ not yet reflected.)*
 ## References
 
 - [metaproc at `9b2e5ad`](https://github.com/jlevy/metaproc/tree/9b2e5ad51ab16f666f9478ba81b79e0988923d11)
+  and, for the 2026-09-15 Gemini pass,
+  [metaproc at `32cde09`](https://github.com/jlevy/metaproc/tree/32cde09a2a59f40e52d86872aaca82f973caf958)
 - [qm at `78dd4cc`](https://github.com/yc-software/qm/tree/78dd4cc3a7e1e6b1d538f3dfdd7ef127e567db76)
+- [Gemini CLI at `733edcb` (v0.60.0)](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27)
 - [Codex at `6b9826e`](https://github.com/openai/codex/tree/6b9826e3aa83b1a5947db50f4332cb9c65f1b340)
 - [Pi at `d981de1`](https://github.com/earendil-works/pi/tree/d981de1229ef899957bbe968bc8dcda02a21f477)
 - [squares review](research-2026-09-14-squares-code-review.md)
