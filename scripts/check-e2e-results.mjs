@@ -29,6 +29,7 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { EXPECTED_FORMAT } from "./check-fixtures.mjs";
 import { findSessions } from "./check-golden-invocations.mjs";
 import { HOME_CANARY_TOKEN, canaryLines, openGoldenEnvironment, snapshotTree } from "./golden-env.mjs";
 
@@ -70,7 +71,7 @@ export function validateConfig(config) {
     if (!(command.name in EXTRACTORS)) {
       throw new Error(`no result extractor for urollup ${command.name}`);
     }
-    if (command.compare !== "all" && !(Array.isArray(command.compare) && command.compare.every((field) => field in RESULT_ALIASES))) {
+    if (command.compare !== "all" && !(Array.isArray(command.compare) && command.compare.every((field) => field in RESULT_READERS))) {
       throw new Error(`urollup ${command.name}: compare must be "all" or a list of result fields`);
     }
     if (!command.args.includes("--timezone")) {
@@ -135,25 +136,44 @@ export function caseEnvironment(roots, caseDir, emptyRoot) {
 
 // ---------------------------------------------------------------------------------------
 // The expected.json results contract (tests/golden/README.md, Results Contract)
+//
+// There is one contract: a case's expected.json is the frozen fixture record in format
+// urollup-fixture-expected/v1, which scripts/check-fixtures.mjs validates in full (its
+// request rows, thread totals and references must agree with its totals). This checker
+// reads out of that record the results a command's output can be compared with. A result
+// the record does not state is not compared, and a record stating none of them is refused,
+// so a case can never pass by asserting nothing.
 
-/** Canonical result names and the spellings accepted for each. */
-export const RESULT_ALIASES = {
-  requests: ["requests", "unique_requests"],
-  ownership: ["ownership", "ownership_counts"],
-  tokens: ["tokens", "token_totals"],
-  copies_excluded: ["copies_excluded", "excluded_copies"],
-  unresolved: ["unresolved"],
-  possible: ["possible"],
-  limit_observations: ["limit_observations"],
-  diagnostics: ["diagnostics", "expected_diagnostics"],
+/** Canonical result names, and how each is read out of an expected.json. */
+export const RESULT_READERS = {
+  requests: (raw) => raw.totals?.requests?.unique,
+  ownership: (raw) => selectCounts(raw.totals?.requests, OWNERSHIP_STATUSES),
+  tokens: (raw) => raw.totals?.tokens,
+  unresolved: (raw) => raw.totals?.unresolved,
+  possible: (raw) => raw.totals?.possible,
+  copies_excluded: (raw) => (Array.isArray(raw.copies) ? raw.copies.length : undefined),
+  limit_observations: (raw) => (Array.isArray(raw.limit_observations) ? raw.limit_observations.length : undefined),
+  diagnostics: (raw) => (Array.isArray(raw.diagnostics) ? normalizeDiagnostics(raw.diagnostics) : undefined),
 };
-const NAIVE_ALIASES = ["naive_sum", "naive_sums", "naive"];
-const CANONICAL = new Map(Object.entries(RESULT_ALIASES).flatMap(([name, spellings]) => spellings.map((spelling) => [spelling, name])));
+/** Ownership statuses the ledger reports (design §3.6); every request row is one of them. */
+export const OWNERSHIP_STATUSES = ["owned", "ambiguous", "unknown"];
 
-/** Diagnostics as sorted `{code, count}` pairs; a string is a code with any count. */
+function selectCounts(value, keys) {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const picked = Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+  return Object.keys(picked).length > 0 ? picked : undefined;
+}
+
+/**
+ * Diagnostics as sorted `{code, count}` pairs. A fixture states a diagnostic as
+ * `{code, refs}`, so its count is how many places it fired; a bare string is a code with
+ * any count, and an explicit `count` wins.
+ */
 export function normalizeDiagnostics(list) {
   if (!Array.isArray(list)) {
-    throw new Error("diagnostics must be a list of codes or {code, count} objects");
+    throw new Error("diagnostics must be a list of codes or {code, refs} objects");
   }
   return list
     .map((item) => {
@@ -161,21 +181,30 @@ export function normalizeDiagnostics(list) {
         return { code: item, count: undefined };
       }
       const code = item?.code ?? item?.id;
-      if (typeof code !== "string" || (item.count !== undefined && !Number.isInteger(item.count))) {
-        throw new Error(`a diagnostic needs a string code and an optional integer count: ${JSON.stringify(item)}`);
+      const count = item?.count ?? (Array.isArray(item?.refs) ? item.refs.length : undefined);
+      if (typeof code !== "string" || (count !== undefined && !Number.isInteger(count))) {
+        throw new Error(`a diagnostic needs a string code and an optional integer count or refs: ${JSON.stringify(item)}`);
       }
-      return { code, count: item.count };
+      return { code, count };
     })
     .sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
 }
 
-function checkCounts(name, value) {
+/**
+ * Counts must be non-negative integers, or objects of them. A token category is null when
+ * the dialect does not report it at all (Claude Code has no separate reasoning count); that
+ * still asserts something, so it is kept and compared as absent-or-zero.
+ */
+function checkCounts(name, value, { allowNull = false } = {}) {
   if (Number.isInteger(value) && value >= 0) {
+    return;
+  }
+  if (value === null && allowNull) {
     return;
   }
   if (isObject(value) && Object.keys(value).length > 0) {
     for (const [key, inner] of Object.entries(value)) {
-      checkCounts(`${name}.${key}`, inner);
+      checkCounts(`${name}.${key}`, inner, { allowNull });
     }
     return;
   }
@@ -183,45 +212,34 @@ function checkCounts(name, value) {
 }
 
 /**
- * Read an expected.json into `{reconciled, naive, dialect}`. Results live under
- * `reconciled`, or at the top level in the flat style; inside `reconciled` an unknown
- * key is an error, so nothing a case asserts goes unchecked.
+ * Read an expected.json into `{reconciled, naive, dialect}`, with `reconciled` holding the
+ * canonical results the case states and `naive` its naive-sum rules.
  */
 export function normalizeExpected(raw) {
   if (!isObject(raw)) {
     throw new Error("expected.json must hold a JSON object");
   }
-  if (raw.reconciled !== undefined && !isObject(raw.reconciled)) {
-    throw new Error("reconciled must be an object");
+  if (raw.format !== EXPECTED_FORMAT) {
+    throw new Error(`format must be ${EXPECTED_FORMAT}; scripts/check-fixtures.mjs defines the record and tests/golden/README.md the results read from it`);
   }
-  const nested = isObject(raw.reconciled);
-  const source = nested ? raw.reconciled : raw;
   const reconciled = {};
-  for (const [key, value] of Object.entries(source)) {
-    const name = CANONICAL.get(key);
-    if (name === undefined) {
-      if (nested) {
-        throw new Error(`reconciled.${key} is not a result the checker compares (${Object.keys(RESULT_ALIASES).join(", ")}); extend the extractors in scripts/check-e2e-results.mjs or move it out of reconciled`);
-      }
+  for (const [name, read] of Object.entries(RESULT_READERS)) {
+    const value = read(raw);
+    if (value === undefined) {
       continue;
     }
-    if (name in reconciled) {
-      throw new Error(`two keys name the result ${name}`);
+    if (name !== "diagnostics") {
+      checkCounts(name, value, { allowNull: name === "tokens" });
     }
-    if (name === "diagnostics") {
-      reconciled.diagnostics = normalizeDiagnostics(value);
-    } else if (name === "limit_observations" && Array.isArray(value)) {
-      reconciled.limit_observations = value.length;
-    } else {
-      checkCounts(name, value);
-      reconciled[name] = value;
-    }
+    reconciled[name] = value;
   }
   if (Object.keys(reconciled).length === 0) {
-    throw new Error("expected.json names no reconciled results, so the case would check nothing");
+    throw new Error(`expected.json states no results the checker compares (${Object.keys(RESULT_READERS).join(", ")}), so the case would check nothing`);
   }
-  const naiveKey = NAIVE_ALIASES.find((key) => raw[key] !== undefined);
-  return { reconciled, naive: naiveKey ? raw[naiveKey] : undefined, dialect: raw.dialect };
+  if (raw.naive !== undefined && !Array.isArray(raw.naive)) {
+    throw new Error("naive must be a list of naive-sum rules and their results");
+  }
+  return { reconciled, naive: raw.naive, dialect: raw.dialect };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -294,6 +312,13 @@ function compareValue(field, expected, actual, differences) {
     }
     return;
   }
+  if (expected === null) {
+    // The dialect reports no such category, so the output may omit it or print zero.
+    if (actual !== undefined && actual !== null && actual !== 0) {
+      differences.push({ field, expected: "absent or 0", actual });
+    }
+    return;
+  }
   if (expected !== actual) {
     differences.push({ field, expected, actual: actual === undefined ? "absent" : actual });
   }
@@ -348,21 +373,36 @@ function ratio(naive, reconciled) {
   return reconciled > 0 ? `${(naive / reconciled).toFixed(1)}x` : "n/a";
 }
 
-/** One line describing how far a naive sum overcounts the reconciled truth. */
+/**
+ * One line putting the case's naive-sum rules beside the reconciled truth: the rule whose
+ * token total goes furthest wrong, which is the double counting (or, for a strict reader
+ * that drops a whole file, the undercounting) the case exists to prove urollup avoids.
+ */
 export function overcountSummary(reconciled, naive) {
-  if (!isObject(naive)) {
+  const rules = (Array.isArray(naive) ? naive : []).filter(isObject);
+  if (rules.length === 0) {
     return "no naive sum recorded";
   }
-  const parts = [];
-  if (Number.isInteger(naive.requests) && Number.isInteger(reconciled.requests)) {
-    parts.push(`${formatCount(naive.requests)} requests (${ratio(naive.requests, reconciled.requests)} the reconciled ${formatCount(reconciled.requests)})`);
-  }
-  const naiveTokens = tokenTotal(naive.tokens);
   const reconciledTokens = tokenTotal(reconciled.tokens);
-  if (naiveTokens !== undefined && reconciledTokens !== undefined) {
-    parts.push(`${formatCount(naiveTokens)} tokens (${ratio(naiveTokens, reconciledTokens)} the reconciled ${formatCount(reconciledTokens)})`);
+  const distance = (rule) => {
+    const tokens = tokenTotal(rule.tokens);
+    if (tokens !== undefined && reconciledTokens !== undefined) {
+      return Math.abs(tokens - reconciledTokens);
+    }
+    return Number.isInteger(rule.requests) && Number.isInteger(reconciled.requests) ? Math.abs(rule.requests - reconciled.requests) : 0;
+  };
+  const worst = rules.reduce((furthest, rule) => (distance(rule) > distance(furthest) ? rule : furthest));
+  const parts = [];
+  if (Number.isInteger(worst.requests) && Number.isInteger(reconciled.requests)) {
+    parts.push(`${formatCount(worst.requests)} requests (${ratio(worst.requests, reconciled.requests)} the reconciled ${formatCount(reconciled.requests)})`);
   }
-  return parts.length > 0 ? `naive sum ${parts.join(", ")}` : "naive sum has no comparable counts";
+  const worstTokens = tokenTotal(worst.tokens);
+  if (worstTokens !== undefined && reconciledTokens !== undefined) {
+    parts.push(`${formatCount(worstTokens)} tokens (${ratio(worstTokens, reconciledTokens)} the reconciled ${formatCount(reconciledTokens)})`);
+  }
+  const scope = rules.length > 1 ? `, worst of ${rules.length} rules` : "";
+  const rule = typeof worst.rule === "string" ? ` "${worst.rule}"` : "";
+  return parts.length > 0 ? `naive rule${rule}: ${parts.join(", ")}${scope}` : "naive sum has no comparable counts";
 }
 
 export function formatDifferences(differences) {

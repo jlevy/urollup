@@ -57,6 +57,13 @@ Codex cases keep `cache_write_input_tokens` at 0, because whether it sits inside
 Codex rows also carry `total_tokens`, which is where counter overcounts show up.
 Every `path:line` reference is relative to the case directory and 1-based.
 
+This record is the only expectation format in the repository.
+`make fixtures-check` validates all of it, including that `requests[]` and the threads’
+`own` counts add up to `totals`; `make e2e-results` then compares urollup’s output with
+the results read out of it — `totals`, and the lengths of `copies`, `limit_observations`
+and `diagnostics`. [tests/golden/README.md](../../../../tests/golden/README.md) lists
+that mapping, and a field a case leaves out is simply not compared.
+
 Diagnostic codes are provisional names for the ledger to adopt or rename:
 `claude-block-usage-conflict`, `claude-cache-creation-breakdown-mismatch`,
 `claude-nested-copy-without-original`, `identity-key-conflict`,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import {
   parseArgs,
   validateConfig,
 } from "./check-e2e-results.mjs";
+import { validateExpected } from "./check-fixtures.mjs";
 import { HOME_CANARY_TOKEN } from "./golden-env.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -28,6 +29,14 @@ const EMPTY = "/golden/empty-root";
 const COMMITTED = JSON.parse(readFileSync(path.join(ROOT, CONFIG_PATH), "utf8"));
 
 const readJson = (...parts) => JSON.parse(readFileSync(path.join(...parts), "utf8"));
+
+/** The smallest expected.json the checker accepts: the fixture record's format and totals. */
+const record = (overrides = {}) =>
+  JSON.stringify({
+    format: "urollup-fixture-expected/v1",
+    totals: { requests: { unique: 1, owned: 1, ambiguous: 0, unknown: 0 }, tokens: { uncached_input: 1, cache_read: 0, cache_write: 0, output: 1, reasoning: null } },
+    ...overrides,
+  });
 const expectedFor = (id) => normalizeExpected(readJson(FIXTURES, ...id.split("/"), "expected.json"));
 const outputFor = (id, name) => readJson(OUTPUTS, ...id.split("/"), `${name}.json`);
 
@@ -114,33 +123,58 @@ test("cases are discovered generically, including derived cases with subagent me
   );
 });
 
+test("every sample is the same record the frozen corpus uses, by the fixtures checker's own rules", () => {
+  const dataFiles = (dir, prefix = "") =>
+    readdirSync(path.join(dir, prefix), { withFileTypes: true }).flatMap((entry) => {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        return dataFiles(dir, relative);
+      }
+      return entry.name === "expected.json" || entry.name === "README.md" ? [] : [relative];
+    });
+  const lines = (file) => readFileSync(file, "utf8").split("\n").filter((line, index, all) => line !== "" || index < all.length - 1).length;
+  for (const { id, dir } of discoverCases(FIXTURES)) {
+    const [dialect, caseName] = id.split("/");
+    const lineCounts = new Map(dataFiles(dir).map((file) => [file, lines(path.join(dir, file))]));
+    assert.deepEqual(validateExpected(readJson(dir, "expected.json"), { caseName, dialect, lineCounts }), [], id);
+  }
+});
+
 test("a case nested inside another case is refused", (t) => {
   const root = temporaryCorpus(t, { "a/expected.json": "{}", "a/projects/b/expected.json": "{}" });
   assert.throws(() => discoverCases(root), /a\/projects\/b is nested inside case a/);
 });
 
-test("expected results normalize from the nested and the flat alias styles to one shape", () => {
-  const nested = expectedFor("claude-project/block-records");
-  assert.deepEqual(Object.keys(nested.reconciled).sort(), ["copies_excluded", "diagnostics", "limit_observations", "ownership", "requests", "tokens", "unresolved"]);
-  assert.deepEqual(nested.reconciled.diagnostics, [{ code: "sample.block_usage_differs", count: 1 }]);
-  assert.equal(nested.naive.requests, 4);
+test("results are read out of the fixture record: totals, and the lists whose length is a count", () => {
+  const claude = expectedFor("claude-project/block-records");
+  assert.deepEqual(Object.keys(claude.reconciled).sort(), ["copies_excluded", "diagnostics", "limit_observations", "ownership", "requests", "tokens", "unresolved"]);
+  assert.equal(claude.reconciled.requests, 1, "the count is totals.requests.unique, not the request rows themselves");
+  assert.deepEqual(claude.reconciled.ownership, { owned: 1, ambiguous: 0, unknown: 0 });
+  assert.equal(claude.reconciled.copies_excluded, 3, "three copies are listed");
+  assert.equal(claude.reconciled.limit_observations, 0);
+  assert.deepEqual(claude.reconciled.diagnostics, [{ code: "sample.block_usage_differs", count: 1 }], "a diagnostic's count is how many refs it fired at");
+  assert.equal(claude.naive[0].requests, 4);
 
-  const flat = expectedFor("claude-project/subagent-derived");
-  assert.deepEqual(Object.keys(flat.reconciled).sort(), ["copies_excluded", "diagnostics", "ownership", "requests", "tokens"]);
-  assert.equal(flat.reconciled.requests, 2);
-  assert.equal(flat.naive.requests, 2);
+  const codex = expectedFor("codex-rollout/cumulative-repeat");
+  assert.equal(codex.reconciled.requests, 2);
+  assert.equal(codex.reconciled.limit_observations, 1);
 
-  assert.deepEqual(expectedFor("codex-rollout/cumulative-repeat").reconciled.diagnostics, [{ code: "sample.repeated_token_count", count: undefined }]);
-  assert.equal(normalizeExpected({ reconciled: { limit_observations: [{}, {}] } }).reconciled.limit_observations, 2);
+  // A token category the dialect does not report is null, and compares as absent or zero.
+  const unreported = normalizeExpected(JSON.parse(record({ totals: { requests: { unique: 1, owned: 1, ambiguous: 0, unknown: 0 }, tokens: { output: 5, reasoning: null } } })));
+  assert.deepEqual(unreported.reconciled.tokens, { output: 5, reasoning: null });
+  assert.deepEqual(compareResults(unreported.reconciled, { tokens: { output: 5 } }, ["tokens"]).differences, []);
+  assert.deepEqual(compareResults(unreported.reconciled, { tokens: { output: 5, reasoning: 0 } }, ["tokens"]).differences, []);
+  assert.deepEqual(compareResults(unreported.reconciled, { tokens: { output: 5, reasoning: 7 } }, ["tokens"]).differences, [{ field: "tokens.reasoning", expected: "absent or 0", actual: 7 }]);
 });
 
-test("an expected.json that would check nothing, or asserts what the checker cannot compare, is refused", () => {
-  assert.throws(() => normalizeExpected({ description: "no results" }), /names no reconciled results/);
-  assert.throws(() => normalizeExpected({ reconciled: { requests: 1, cost_usd: 2 } }), /reconciled\.cost_usd is not a result/);
-  assert.throws(() => normalizeExpected({ reconciled: { requests: -1 } }), /non-negative integer/);
-  assert.throws(() => normalizeExpected({ reconciled: { tokens: { output: "600" } } }), /tokens\.output must be/);
-  assert.throws(() => normalizeExpected({ requests: 1, unique_requests: 1 }), /two keys name the result requests/);
-  assert.throws(() => normalizeExpected({ reconciled: { diagnostics: [{ count: 1 }] } }), /string code/);
+test("an expected.json in another shape, or one that would check nothing, is refused", () => {
+  const parsed = (overrides) => JSON.parse(record(overrides));
+  assert.throws(() => normalizeExpected({ reconciled: { requests: 1 } }), /format must be urollup-fixture-expected\/v1/);
+  assert.throws(() => normalizeExpected(parsed({ totals: { notes: "nothing countable" } })), /states no results the checker compares/);
+  assert.throws(() => normalizeExpected(parsed({ totals: { requests: { unique: -1 } } })), /non-negative integer/);
+  assert.throws(() => normalizeExpected(parsed({ totals: { requests: { unique: 1 }, tokens: { output: "600" } } })), /tokens\.output must be/);
+  assert.throws(() => normalizeExpected(parsed({ diagnostics: [{ detail: "no code" }] })), /string code/);
+  assert.throws(() => normalizeExpected(parsed({ naive: { requests: 4 } })), /naive must be a list/);
   assert.throws(() => normalizeExpected([]), /JSON object/);
 });
 
@@ -190,10 +224,20 @@ test("daily and sessions rows sum to the same reconciled truth as the report", (
 
 test("the naive-sum overcount is summarized for context", () => {
   const { reconciled, naive } = expectedFor("claude-project/block-records");
-  assert.equal(overcountSummary(reconciled, naive), "naive sum 4 requests (4.0x the reconciled 1), 161,236 tokens (4.0x the reconciled 40,603)");
+  assert.equal(
+    overcountSummary(reconciled, naive),
+    'naive rule "Sum message.usage over every assistant record": 4 requests (4.0x the reconciled 1), 161,236 tokens (4.0x the reconciled 40,603)',
+  );
   const codex = expectedFor("codex-rollout/cumulative-repeat");
-  assert.equal(overcountSummary(codex.reconciled, codex.naive), "naive sum 3 requests (1.5x the reconciled 2), 60,000 tokens (2.4x the reconciled 25,000)");
+  assert.match(overcountSummary(codex.reconciled, codex.naive), /^naive rule "Add every total_token_usage snapshot.*: 3 requests \(1\.5x the reconciled 2\), 60,000 tokens \(2\.4x the reconciled 25,000\)$/);
   assert.equal(overcountSummary(reconciled, undefined), "no naive sum recorded");
+
+  // With several rules, the one furthest from the truth is the one worth printing.
+  const rules = [
+    { rule: "close", requests: 1, tokens: { output: 40700 } },
+    { rule: "a strict reader that drops the whole file", requests: 0, tokens: { uncached_input: 0, cache_read: 0, output: 0 } },
+  ];
+  assert.match(overcountSummary(reconciled, rules), /^naive rule "a strict reader that drops the whole file": 0 requests \(0\.0x the reconciled 1\), 0 tokens \(0\.0x the reconciled 40,603\), worst of 2 rules$/);
 });
 
 test("only the scaffold's exit 2 with its diagnostic and no stdout is a stub", () => {
@@ -216,18 +260,18 @@ test("while commands are stubs and fixtures are absent, the run is visibly PENDI
 
 test("while commands are stubs, every expected.json is still validated", (t) => {
   const root = temporaryCorpus(t, {
-    "claude-project/good/expected.json": JSON.stringify({ reconciled: { requests: 1 } }),
+    "claude-project/good/expected.json": record(),
     "claude-project/good/projects/p/s.jsonl": "{}\n",
-    "claude-project/bad/expected.json": JSON.stringify({ reconciled: { requests: 1, dollars: 3 } }),
+    "claude-project/bad/expected.json": JSON.stringify({ reconciled: { requests: 1 } }),
     "claude-project/bad/projects/p/s.jsonl": "{}\n",
-    "codex-rollout/flat/expected.json": JSON.stringify({ reconciled: { requests: 1 } }),
-    "codex-rollout/flat/rollout.jsonl": "{}\n",
+    "codex-rollout/no-root/expected.json": record(),
+    "codex-rollout/no-root/rollout.jsonl": "{}\n",
   });
   const outcome = checkE2E({ config: pendingConfig(), fixturesRoot: root, runUrollup: fakeUrollup({ implemented: [] }), emptyRoot: EMPTY, local: true });
   assert.equal(outcome.status, "fail");
   const text = outcome.lines.join("\n");
-  assert.match(text, /FAIL    claude-project\/bad\/expected\.json: reconciled\.dollars is not a result/);
-  assert.match(text, /FAIL    codex-rollout\/flat has neither projects\/ \(Claude Code\) nor sessions\//);
+  assert.match(text, /FAIL    claude-project\/bad\/expected\.json: format must be urollup-fixture-expected\/v1/);
+  assert.match(text, /FAIL    codex-rollout\/no-root has neither projects\/ \(Claude Code\) nor sessions\//);
   assert.doesNotMatch(text, /good/);
 });
 
@@ -259,7 +303,7 @@ test("once commands exist, matching cases pass with their overcount, from the ca
   const outcome = check({ runUrollup: run, caseFilter: "block-records" });
   assert.equal(outcome.status, "ok", outcome.lines.join("\n"));
   assert.equal(outcome.checked, 1);
-  assert.match(outcome.lines.join("\n"), /^ok      claude-project\/block-records: report, daily, sessions match; naive sum 4 requests \(4\.0x/m);
+  assert.match(outcome.lines.join("\n"), /^ok      claude-project\/block-records: report, daily, sessions match; naive rule "Sum message\.usage over every assistant record": 4 requests \(4\.0x/m);
   const reportCall = run.calls.find(({ args }) => args[0] === "report" && args.length > 1);
   assert.deepEqual(reportCall.args, ["report", "--all", "--format", "json", "--timezone", "UTC"]);
   assert.equal(reportCall.env.CLAUDE_CONFIG_DIR, path.join(FIXTURES, "claude-project", "block-records"));
@@ -275,7 +319,7 @@ test("a disagreeing report fails with its diff and the naive sum for context", (
   assert.match(text, /FAIL    claude-project\/block-records/);
   assert.match(text, /urollup report --all --format json --timezone UTC disagrees with claude-project\/block-records\/expected\.json:/);
   assert.match(text, /tokens\.cache_read\s+40,000\s+160,000/);
-  assert.match(text, /for context, naive sum 4 requests \(4\.0x the reconciled 1\)/);
+  assert.match(text, /for context, naive rule "Sum message\.usage over every assistant record": 4 requests \(4\.0x the reconciled 1\)/);
 });
 
 test("nondeterministic output, canary output, a failing exit and non-JSON output each fail", () => {

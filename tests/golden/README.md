@@ -141,37 +141,39 @@ exists, on a case that has no golden.
 
 ## The Results Contract
 
-`scripts/check-e2e-results.mjs` reads each case’s `expected.json`. Results live under
-`reconciled`, or at the top level in a flat style; an unrecognized key inside
-`reconciled` is an error, so nothing a case asserts goes unchecked.
+A case’s `expected.json` is one record in one format, `urollup-fixture-expected/v1`: the
+frozen expectation that `scripts/check-fixtures.mjs` validates in full and that
+`scripts/check-e2e-results.mjs` compares urollup’s output against.
+[The fixtures README](../../crates/urollup-core/tests/fixtures/README.md) documents
+every field; this section names the ones the results check reads.
 
-```json
-{
-  "case": "claude-project/block-records",
-  "dialect": "claude-project",
-  "description": "What this case demonstrates.",
-  "reconciled": {
-    "requests": 1,
-    "ownership": { "owned": 1, "ambiguous": 0, "unknown": 0 },
-    "tokens": { "uncached_input": 3, "cache_read": 40000, "cache_write": 0, "output": 600, "reasoning": 0 },
-    "copies_excluded": 3,
-    "unresolved": { "requests": 0, "extents": 0 },
-    "possible": { "requests": 0 },
-    "limit_observations": 0,
-    "diagnostics": [{ "code": "claude.block_usage_differs", "count": 1 }]
-  },
-  "naive_sum": { "requests": 4, "tokens": { "uncached_input": 12, "cache_read": 160000, "output": 1224 } }
-}
-```
+| Result | Read from | Compared against |
+| --- | --- | --- |
+| `requests` | `totals.requests.unique` | the report’s total request count |
+| `ownership` | `totals.requests.owned`, `.ambiguous`, `.unknown` | the same counts in the report |
+| `tokens` | `totals.tokens` | the report’s token totals, category by category |
+| `unresolved` | `totals.unresolved` | the report’s unresolved counts |
+| `possible` | `totals.possible` | the report’s possible-usage counts |
+| `copies_excluded` | how many entries `copies` lists | the coverage section’s excluded copies |
+| `limit_observations` | how many entries `limit_observations` lists | the coverage section’s limit count |
+| `diagnostics` | each `diagnostics` entry’s `code`, counted by its `refs` | the report’s diagnostics |
 
-- Counts compare exactly; a result the report does not carry is a failure, never a skip.
+- Counts compare exactly, and a result the report does not carry is a failure, never a
+  skip. A result the case does not state is not compared, and a case stating none of them
+  is refused, so nothing passes by asserting nothing.
+- A token category is `null` when the dialect does not report it at all, as Claude Code
+  reports no separate reasoning count.
+  That still asserts something: the output must leave the category out or print zero.
 - Diagnostics compare as a set of codes: a missing one and an unexpected one both fail,
-  and a count compares when the case gives one.
-  A diagnostic may also be written as a plain string.
-- `naive_sum` is context, never an assertion: every case prints how far naive summing
-  would have overcounted, which is the reason urollup exists.
-- Accepted spellings: `unique_requests`, `ownership_counts`, `token_totals`,
-  `excluded_copies`, `expected_diagnostics` and `naive`.
+  and the count compares as how many places the case says the diagnostic fired.
+- `naive` is context, never an assertion.
+  Every case prints the naive-sum rule that goes furthest wrong beside the reconciled
+  truth, which is the double counting urollup exists to avoid.
+- Everything else in the record — the request rows, thread totals, decode references,
+  copies and notes — is checked by `make fixtures-check`, which proves the rows and the
+  thread totals add up to the `totals` this check compares.
+  The two checks therefore cannot drift: a unit test runs the fixtures checker’s own
+  validator over the harness samples as well.
 
 Each command runs twice and must print identical bytes, so nondeterministic ordering
 fails on the first case rather than on a later machine.
@@ -185,8 +187,8 @@ bead that unblocks each item, and every pending entry is a ratchet
 - A command that still exits 2 as the scaffold stub is pending only while its `pending`
   entry names a bead; once it is implemented, that entry fails the run until it is
   deleted, so results are checked from the first build that can produce them.
-- The same holds for `pendingFixtures`: an existing corpus with the entry still present
-  fails, and an existing corpus with no cases fails.
+- The same held for `pendingFixtures` until the corpus landed; the entry is gone, and a
+  missing corpus, or one with no cases, now fails outright.
 - A pending run never reports success: its summary says how many cases were checked and
   that the rest stay unverified.
 
@@ -195,6 +197,9 @@ bead that unblocks each item, and every pending entry is a ratchet
 `samples/` holds the harness’s own inputs, not accounting fixtures: miniature cases with
 the layouts discovery must recognize, and synthetic report outputs, including a
 naive-sum output that must fail.
+Their `expected.json` files are `urollup-fixture-expected/v1` records like the corpus’s,
+and a test validates them with the fixtures checker, so the harness is exercised against
+the contract the real cases use.
 `node --test scripts/check-e2e-results.test.mjs` runs the checker against them, so the
 comparison, the diff and the ratchets are tested without any real fixture or binary.
 

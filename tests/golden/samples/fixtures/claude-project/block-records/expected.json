@@ -1,19 +1,165 @@
 {
-  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, not an accounting fixture; values follow the research brief's synthetic double-counting example.",
-  "case": "claude-project/block-records",
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, in the same urollup-fixture-expected/v1 format as the frozen corpus under crates/urollup-core/tests/fixtures; its values are the ones tests/golden/samples/outputs prints back.",
+  "format": "urollup-fixture-expected/v1",
+  "case": "block-records",
   "dialect": "claude-project",
-  "description": "One response split into thinking, text and tool-use block records, with the last record replayed into a resumed session file.",
-  "reconciled": {
-    "requests": 1,
-    "ownership": { "owned": 1, "ambiguous": 0, "unknown": 0 },
-    "tokens": { "uncached_input": 3, "cache_read": 40000, "cache_write": 0, "output": 600, "reasoning": 0 },
-    "copies_excluded": 3,
-    "unresolved": { "requests": 0, "extents": 0 },
-    "limit_observations": 0,
-    "diagnostics": [{ "code": "sample.block_usage_differs", "count": 1 }]
+  "summary": "One response split into thinking, text and tool-use block records, with the last record replayed into a resumed session file.",
+  "rules": [
+    "design §3.3 Reconciliation",
+    "design §3.4 Claude Code block records",
+    "design §3.2 Fork (copied sessionId)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "Synthetic stand-in for 2.1.x transcripts."
   },
-  "naive_sum": {
-    "requests": 4,
-    "tokens": { "uncached_input": 12, "cache_read": 160000, "cache_write": 0, "output": 1224, "reasoning": 0 }
-  }
+  "files": [
+    {
+      "path": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "path": "projects/-synthetic-project/00000000-0000-4000-8000-000000000002.jsonl",
+      "lines": 1,
+      "thread": "00000000-0000-4000-8000-000000000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3,
+          "cache_read": 40000,
+          "cache_write": 0,
+          "output": 600,
+          "reasoning": 0
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "kind": "session",
+      "parent": "00000000-0000-4000-8000-000000000001",
+      "relationship": "fork",
+      "relationship_evidence": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 0,
+        "tokens": {
+          "uncached_input": 0,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 0,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_A",
+        "request_id": "req_A"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000001",
+      "owner_candidates": [],
+      "model": "example-model",
+      "model_basis": "served",
+      "timestamp": "2026-09-12T10:00:03.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 40000,
+        "cache_write": 0,
+        "output": 600,
+        "reasoning": 0
+      },
+      "selected": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:1",
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:2",
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:3",
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000002.jsonl:1"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:1",
+      "kind": "block-record",
+      "copy_of": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:3",
+      "owner_thread": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "ref": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:2",
+      "kind": "block-record",
+      "copy_of": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:3",
+      "owner_thread": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "ref": "projects/-synthetic-project/00000000-0000-4000-8000-000000000002.jsonl:1",
+      "kind": "resume-replay",
+      "copy_of": "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:3",
+      "owner_thread": "00000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 1,
+      "owned": 1,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0,
+      "extents": 0
+    },
+    "tokens": {
+      "uncached_input": 3,
+      "cache_read": 40000,
+      "cache_write": 0,
+      "output": 600,
+      "reasoning": 0
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "sample.block_usage_differs",
+      "refs": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000001.jsonl:1"
+      ],
+      "detail": "the earlier block records carry a smaller output count than the final one"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 12,
+        "cache_read": 160000,
+        "cache_write": 0,
+        "output": 1224,
+        "reasoning": 0
+      }
+    }
+  ],
+  "notes": [
+    "A sample, not an accounting fixture: it exercises the harness, and the corpus case claude-project/brief-double-counting is the real one."
+  ]
 }

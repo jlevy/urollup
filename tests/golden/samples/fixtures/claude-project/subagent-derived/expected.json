@@ -1,11 +1,165 @@
 {
-  "$comment": "Harness sample in the flat alias style a structure-derived case may use: result keys at the top level and alternative key names, which the checker normalizes.",
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, in the same urollup-fixture-expected/v1 format as the frozen corpus under crates/urollup-core/tests/fixtures; its values are the ones tests/golden/samples/outputs prints back.",
+  "format": "urollup-fixture-expected/v1",
+  "case": "subagent-derived",
   "dialect": "claude-project",
-  "derived_from": "structure-only sanitizer output (synthetic stand-in)",
-  "unique_requests": 2,
-  "ownership_counts": { "owned": 2, "ambiguous": 0, "unknown": 0 },
-  "token_totals": { "uncached_input": 15, "cache_read": 28000, "cache_write": 500, "output": 290, "reasoning": 0 },
-  "excluded_copies": 0,
-  "expected_diagnostics": [],
-  "naive": { "requests": 2, "tokens": { "uncached_input": 15, "cache_read": 28000, "cache_write": 500, "output": 290 } }
+  "summary": "A session and the subagent it spawned, each with one request, as a structure-only sanitizer would leave them.",
+  "rules": [
+    "design §3.2 Spawn (subagent)",
+    "design §4.2 Own and descendant usage"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "Synthetic stand-in for 2.1.x transcripts with a subagents directory."
+  },
+  "files": [
+    {
+      "path": "projects/-synthetic-project/00000000-0000-4000-8000-000000000003.jsonl",
+      "lines": 2,
+      "thread": "00000000-0000-4000-8000-000000000003"
+    },
+    {
+      "path": "projects/-synthetic-project/00000000-0000-4000-8000-000000000003/subagents/agent-a000001.jsonl",
+      "lines": 1,
+      "thread": "a000001"
+    },
+    {
+      "path": "projects/-synthetic-project/00000000-0000-4000-8000-000000000003/subagents/agent-a000001.meta.json",
+      "lines": 1,
+      "thread": "a000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 10,
+          "cache_read": 20000,
+          "cache_write": 500,
+          "output": 200,
+          "reasoning": 0
+        }
+      }
+    },
+    {
+      "id": "a000001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-000000000003",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000003/subagents/agent-a000001.jsonl:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 8000,
+          "cache_write": 0,
+          "output": 90,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_P1",
+        "request_id": "req_P1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000003",
+      "owner_candidates": [],
+      "model": "example-model",
+      "model_basis": "served",
+      "timestamp": "2026-09-12T11:00:05.000Z",
+      "tokens": {
+        "uncached_input": 10,
+        "cache_read": 20000,
+        "cache_write": 500,
+        "output": 200,
+        "reasoning": 0
+      },
+      "selected": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000003.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000003.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_S1",
+        "request_id": "req_S1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "a000001",
+      "owner_candidates": [],
+      "model": "example-model",
+      "model_basis": "served",
+      "timestamp": "2026-09-12T11:00:10.000Z",
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": 0
+      },
+      "selected": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000003/subagents/agent-a000001.jsonl:1"
+      ],
+      "evidence": [
+        "projects/-synthetic-project/00000000-0000-4000-8000-000000000003/subagents/agent-a000001.jsonl:1"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0,
+      "extents": 0
+    },
+    "tokens": {
+      "uncached_input": 15,
+      "cache_read": 28000,
+      "cache_write": 500,
+      "output": 290,
+      "reasoning": 0
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record, parent and subagent alike",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 15,
+        "cache_read": 28000,
+        "cache_write": 500,
+        "output": 290,
+        "reasoning": 0
+      }
+    }
+  ],
+  "notes": [
+    "Nothing here is copied, so the naive sum agrees; the case exists to prove a subagent's own usage is attributed to the subagent thread."
+  ]
 }

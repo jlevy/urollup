@@ -404,8 +404,8 @@
         {
           "path": "Cargo.lock",
           "substitute": {
-            "from": "name = \"urollup-core\"\nversion = \"0.1.0\"\n",
-            "to": "name = \"urollup-core\"\nversion = \"0.1.0\"\ndependencies = [\n \"clap\",\n]\n"
+            "from": "name = \"urollup-core\"\nversion = \"0.1.0\"\ndependencies = [\n",
+            "to": "name = \"urollup-core\"\nversion = \"0.1.0\"\ndependencies = [\n \"clap\",\n"
           }
         }
       ],

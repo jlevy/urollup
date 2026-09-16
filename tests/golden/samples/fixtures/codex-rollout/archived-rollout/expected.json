@@ -1,16 +1,114 @@
 {
-  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs: an archived rollout read through CODEX_HOME's archived_sessions directory.",
-  "case": "codex-rollout/archived-rollout",
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, in the same urollup-fixture-expected/v1 format as the frozen corpus under crates/urollup-core/tests/fixtures; its values are the ones tests/golden/samples/outputs prints back.",
+  "format": "urollup-fixture-expected/v1",
+  "case": "archived-rollout",
   "dialect": "codex-rollout",
-  "reconciled": {
-    "requests": 1,
-    "ownership": { "owned": 1, "ambiguous": 0, "unknown": 0 },
-    "tokens": { "uncached_input": 1200, "cache_read": 0, "cache_write": 0, "output": 300, "reasoning": 100 },
-    "copies_excluded": 0,
-    "diagnostics": []
+  "summary": "An archived rollout read through CODEX_HOME's archived_sessions directory, with one token_count snapshot.",
+  "rules": [
+    "design §2.1 Discovery roots",
+    "design §3.4 Codex cumulative counters"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Synthetic stand-in for a rollout with total_token_usage snapshots."
   },
-  "naive_sum": {
-    "requests": 1,
-    "tokens": { "uncached_input": 1200, "cache_read": 0, "cache_write": 0, "output": 300, "reasoning": 100 }
-  }
+  "files": [
+    {
+      "path": "archived_sessions/rollout-2026-09-11T09-00-00-00000000-0000-4000-8000-000000000005.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-000000000005"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000000000005",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1200,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 300,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "00000000-0000-4000-8000-000000000005",
+        "counter_epoch": 1,
+        "event": "archived_sessions/rollout-2026-09-11T09-00-00-00000000-0000-4000-8000-000000000005.jsonl:3"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000005",
+      "owner_candidates": [],
+      "model": "example-model-b",
+      "model_basis": "requested",
+      "effort": "low",
+      "timestamp": "2026-09-11T09:00:05.000Z",
+      "tokens": {
+        "uncached_input": 1200,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 100
+      },
+      "selected": [
+        "archived_sessions/rollout-2026-09-11T09-00-00-00000000-0000-4000-8000-000000000005.jsonl:3"
+      ],
+      "evidence": [
+        "archived_sessions/rollout-2026-09-11T09-00-00-00000000-0000-4000-8000-000000000005.jsonl:2",
+        "archived_sessions/rollout-2026-09-11T09-00-00-00000000-0000-4000-8000-000000000005.jsonl:3"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 1,
+      "owned": 1,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0,
+      "extents": 0
+    },
+    "tokens": {
+      "uncached_input": 1200,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 300,
+      "reasoning": 100
+    },
+    "total_tokens": 1500
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Read the last total_token_usage snapshot as one request",
+      "requests": 1,
+      "tokens": {
+        "uncached_input": 1200,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 100
+      }
+    }
+  ],
+  "notes": [
+    "The archived root is the point of the case: a rollout under archived_sessions is discovered like any other."
+  ]
 }

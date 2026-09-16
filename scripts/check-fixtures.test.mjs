@@ -143,6 +143,7 @@ test("expected.json must match its case, list its files and add up", () => {
     /unique is 2, but 1 request rows/,
   );
   assert.match(problems({ threads: [{ id: "s", own: { requests: 1, tokens: tokens({ output: 4 }) } }] }), /threads' own tokens/);
+  assert.match(problems({ threads: [{ id: "s", own: { requests: 2, tokens: tokens({ output: 5 }) } }] }), /threads own 2 requests, but 1 request rows are owned/);
   assert.match(problems({ naive: [] }), /naive must list/);
   assert.match(problems({ requests: [{ ...expectedFor("c", "claude-project").requests[0], tokens: tokens({ reasoning: -1 }) }] }), /reasoning must be/);
   const withModels = expectedFor("c", "claude-project").requests[0];
