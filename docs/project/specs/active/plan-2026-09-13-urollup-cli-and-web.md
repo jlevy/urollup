@@ -115,7 +115,7 @@ The capture store lands only after the uncached engine is the correctness refere
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
   [§2.2](../../../urollup-design.md#22-snapshot-boundary),
   [§4.4](../../../urollup-design.md#44-usage-windows)).
-- [ ] Implement `--current` environment detection, `--session`, `--all`, and the
+- [x] Implement `--current` environment detection, `--session`, `--all`, and the
   discovery index and hierarchy crawler behind `--scope`; a detected Pi session exits 2
   with an unsupported-dialect diagnostic
   ([§6.1](../../../urollup-design.md#61-workflows-and-session-selection),

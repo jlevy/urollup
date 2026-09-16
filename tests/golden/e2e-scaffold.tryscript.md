@@ -15,17 +15,17 @@ agent’s root empty, and HOME hermetic ([README](README.md)). This session runs
 shape against a harness sample case, so the sandbox copy and front matter expansion are
 proven on every CI platform before any report exists.
 
-Until `report`, `daily` and `sessions` parse their selection and format flags (bead
-uro-d135), the end-to-end invocations are usage errors that exit 2 and print no data.
+Until `report`, `daily` and `sessions` parse their format flags (bead uro-d135), the
+end-to-end invocations are usage errors that exit 2 and print no data.
 When they land, this session is replaced by the per-case goldens.
 
 ## Report JSON Is Not Available Yet
 
 ```console
 $ urollup report --all --format json --timezone UTC
-! error: unexpected argument '--all' found
+! error: unexpected argument '--format' found
 !
-! Usage: urollup report
+! Usage: urollup report --all
 !
 ! For more information, try '--help'.
 ? 2
@@ -35,9 +35,9 @@ $ urollup report --all --format json --timezone UTC
 
 ```console
 $ urollup daily --all --format json --timezone UTC
-! error: unexpected argument '--all' found
+! error: unexpected argument '--format' found
 !
-! Usage: urollup daily
+! Usage: urollup daily --all
 !
 ! For more information, try '--help'.
 ? 2
@@ -47,9 +47,9 @@ $ urollup daily --all --format json --timezone UTC
 
 ```console
 $ urollup sessions --all --format json --timezone UTC
-! error: unexpected argument '--all' found
+! error: unexpected argument '--format' found
 !
-! Usage: urollup sessions
+! Usage: urollup sessions --all
 !
 ! For more information, try '--help'.
 ? 2

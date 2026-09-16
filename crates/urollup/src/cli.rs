@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::io::{self, Write};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// The process exit classes this scaffold can produce.
 ///
@@ -44,24 +44,51 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Clone, Copy, Debug, Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 enum Command {
     /// Session report: totals, breakdowns, sizes, tools and limitations
-    Report,
+    Report(SelectionArgs),
     /// Calendar rollup by day
-    Daily,
+    Daily(SelectionArgs),
     /// One row per session
-    Sessions,
+    Sessions(SelectionArgs),
 }
 
 impl Command {
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
-            Self::Report => "report",
-            Self::Daily => "daily",
-            Self::Sessions => "sessions",
+            Self::Report(_) => "report",
+            Self::Daily(_) => "daily",
+            Self::Sessions(_) => "sessions",
         }
     }
+}
+
+/// Session selection shared by every milestone 0.1 report command.
+#[derive(Clone, Debug, Default, Args)]
+struct SelectionArgs {
+    /// Select the session running this command from an exact agent environment signal
+    #[arg(long)]
+    current: bool,
+
+    /// Select a native ID, analytical thr- ID, or transcript path; repeatable
+    #[arg(long = "session", value_name = "SELECTOR")]
+    sessions: Vec<OsString>,
+
+    /// Select every discovered session
+    #[arg(long)]
+    all: bool,
+
+    /// Include only selected threads or also their spawned subagent descendants
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    scope: Option<ScopeArg>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ScopeArg {
+    #[value(name = "self")]
+    SelfOnly,
+    Descendants,
 }
 
 /// Parse `args` (including the program name), perform the command and return its exit
@@ -79,7 +106,7 @@ where
         Ok(cli) => cli,
         Err(error) => return report_parse_outcome(&error, stdout, stderr),
     };
-    not_implemented(cli.command, stderr)
+    not_implemented(&cli.command, stderr)
 }
 
 /// Render clap's help, version or usage-error outcome to the stream it belongs on.
@@ -111,7 +138,7 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write) -> Exit {
 }
 
 /// The milestone 0.1 commands exist as names only until their reports are implemented.
-fn not_implemented(command: Command, stderr: &mut dyn Write) -> Exit {
+fn not_implemented(command: &Command, stderr: &mut dyn Write) -> Exit {
     let _ = writeln!(
         stderr,
         "error: `urollup {}` is not implemented yet; this build is the repository scaffold",
@@ -124,7 +151,8 @@ fn not_implemented(command: Command, stderr: &mut dyn Write) -> Exit {
 mod tests {
     use std::io::{self, Write};
 
-    use super::{Exit, run};
+    use super::{Cli, Command, Exit, ScopeArg, run};
+    use clap::Parser;
 
     struct Outcome {
         exit: Exit,
@@ -211,6 +239,41 @@ mod tests {
                      this build is the repository scaffold\n"
                 ),
             );
+        }
+    }
+
+    #[test]
+    fn report_accepts_milestone_selection_flags() {
+        let cli = Cli::try_parse_from([
+            "urollup",
+            "report",
+            "--current",
+            "--session",
+            "native-one",
+            "--session",
+            "thr-two",
+            "--all",
+            "--scope",
+            "descendants",
+        ])
+        .expect("selection flags parse");
+        let Command::Report(selection) = cli.command else {
+            panic!("expected report command");
+        };
+        assert!(selection.current);
+        assert_eq!(selection.sessions, ["native-one", "thr-two"]);
+        assert!(selection.all);
+        assert_eq!(selection.scope, Some(ScopeArg::Descendants));
+    }
+
+    #[test]
+    fn every_report_command_exposes_selection_help() {
+        for command in ["report", "daily", "sessions"] {
+            let outcome = invoke(&[command, "--help"]);
+            assert_eq!(outcome.exit, Exit::Success, "{command}");
+            for flag in ["--current", "--session", "--all", "--scope"] {
+                assert!(outcome.stdout.contains(flag), "{command} help lacks {flag}");
+            }
         }
     }
 
