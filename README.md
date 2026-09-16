@@ -1,9 +1,9 @@
 # urollup
 
 urollup (usage rollup) is a planned Rust CLI and local read-only web UI for coding-agent
-usage. It reads Claude Code, Codex and Pi session logs and reports tokens, cost, request
-sizes and tool activity for the current session, a selection of sessions, or every
-session on disk, without double counting copied or overlapping history.
+usage. It reads Claude Code, Codex, Pi and Gemini CLI session logs and reports tokens,
+cost, request sizes and tool activity for the current session, a selection of sessions,
+or every session on disk, without double counting copied or overlapping history.
 Its portable output is a softschema usage summary: one session and an aggregate of many
 sessions use the same format, and summaries merge into larger summaries without double
 counting.

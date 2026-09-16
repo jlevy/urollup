@@ -9,9 +9,10 @@ status: Draft
 
 ## Overview
 
-urollup is a standalone Rust executable that reads Claude Code, Codex and Pi session
-logs and produces trustworthy token, cost and usage rollups through a CLI and a local
-read-only web UI, with portable usage summaries that merge without double counting.
+urollup is a standalone Rust executable that reads Claude Code, Codex, Pi and Gemini CLI
+session logs and produces trustworthy token, cost and usage rollups through a CLI and a
+local read-only web UI, with portable usage summaries that merge without double
+counting.
 
 The [urollup design specification](../../../urollup-design.md) is the source of truth
 for the design: its [goals](../../../urollup-design.md#13-design-goals),
@@ -36,8 +37,8 @@ None of these documents contains private session data.
 
 | Phase | Delivers | Design sections implemented |
 | --- | --- | --- |
-| Phase 1: accounting core and useful uncached CLI (milestones 0.1–0.5) | Claude Code and Codex adapters for persistent and captured-stream dialects, the reconciled ledger, accounting, prices, summaries, bundles, the capture store and the Phase 1 CLI | [§2](../../../urollup-design.md#2-sources-and-capture-layer) without Pi dialects or cache reads; [§3](../../../urollup-design.md#3-ledger-and-identity-layer) with observed purpose only; [§4.1](../../../urollup-design.md#41-measure-contracts)–[§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles) and [§4.5](../../../urollup-design.md#45-price-table), plus provider limit observations; [§5](../../../urollup-design.md#5-artifact-layer) without database input; [§6.1](../../../urollup-design.md#61-workflows-and-session-selection)–[§6.6](../../../urollup-design.md#66-report-content-and-examples) without Phase 2 commands, and the [§6.8](../../../urollup-design.md#68-status-line) session segment if confirmed; [§8.1](../../../urollup-design.md#81-workspace-and-crate-structure)–[§8.2](../../../urollup-design.md#82-engineering-conventions) and the [uncached engine](../../../urollup-design.md#uncached-engine) |
-| Phase 2: web UI, workflow reports and broader evidence | Capture cache reads, `serve`, the reporting skill, `compare`, `check`, the `windows` report, Pi adapters, and configured purpose with annotation sets | [§2.5](../../../urollup-design.md#25-capture-store-and-cache) cache reads; [§7](../../../urollup-design.md#7-serving-layer-optional); [§6.7](../../../urollup-design.md#67-reporting-skill-and-cloud-workflow); [§6.3](../../../urollup-design.md#63-commands) Phase 2 commands; [§4.4](../../../urollup-design.md#44-usage-windows); [§2.1](../../../urollup-design.md#21-dialects-and-discovery) and [§6.2](../../../urollup-design.md#62-current-session-detection) for Pi; [§3.5](../../../urollup-design.md#35-purpose-and-annotations); the [§6.8](../../../urollup-design.md#68-status-line) today segment if confirmed |
+| Phase 1: accounting core and useful uncached CLI (milestones 0.1–0.5) | Claude Code and Codex adapters for persistent and captured-stream dialects, the reconciled ledger, accounting, prices, summaries, bundles, the capture store and the Phase 1 CLI | [§2](../../../urollup-design.md#2-sources-and-capture-layer) without Pi or Gemini CLI dialects or cache reads; [§3](../../../urollup-design.md#3-ledger-and-identity-layer) with observed purpose only; [§4.1](../../../urollup-design.md#41-measure-contracts)–[§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles) and [§4.5](../../../urollup-design.md#45-price-table), plus provider limit observations; [§5](../../../urollup-design.md#5-artifact-layer) without database input; [§6.1](../../../urollup-design.md#61-workflows-and-session-selection)–[§6.6](../../../urollup-design.md#66-report-content-and-examples) without Phase 2 commands, and the [§6.8](../../../urollup-design.md#68-status-line) session segment if confirmed; [§8.1](../../../urollup-design.md#81-workspace-and-crate-structure)–[§8.2](../../../urollup-design.md#82-engineering-conventions) and the [uncached engine](../../../urollup-design.md#uncached-engine) |
+| Phase 2: web UI, workflow reports and broader evidence | Capture cache reads, `serve`, the reporting skill, `compare`, `check`, the `windows` report, Pi and Gemini CLI adapters, and configured purpose with annotation sets | [§2.5](../../../urollup-design.md#25-capture-store-and-cache) cache reads; [§7](../../../urollup-design.md#7-serving-layer-optional); [§6.7](../../../urollup-design.md#67-reporting-skill-and-cloud-workflow); [§6.3](../../../urollup-design.md#63-commands) Phase 2 commands; [§4.4](../../../urollup-design.md#44-usage-windows); [§2.1](../../../urollup-design.md#21-dialects-and-discovery) and [§6.2](../../../urollup-design.md#62-current-session-detection) for Pi and Gemini CLI; [§3.5](../../../urollup-design.md#35-purpose-and-annotations); the [§6.8](../../../urollup-design.md#68-status-line) today segment if confirmed |
 | Phase 3: idempotent persistent cache | The ledger and query cache, and urollup’s own store as input | [Ledger and query cache](../../../urollup-design.md#ledger-and-query-cache-later); [§5.1](../../../urollup-design.md#51-portable-inputs-and-artifacts) database input |
 
 Items the design marks Later without a phase, such as the
@@ -241,6 +242,20 @@ The capture store lands only after the uncached engine is the correctness refere
   cases to the [ccusage reconciliation harness](#ccusage-reconciliation-harness)
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
   [§6.2](../../../urollup-design.md#62-current-session-detection)).
+- [ ] Add the `gemini-session` and `gemini-stream` adapters: discovery of
+  `~/.gemini/tmp` with `GEMINI_CLI_HOME` and `UROLLUP_GEMINI_DIRS`, project identity
+  from each bucket’s `.project_root` checked against `projectHash`, the revision, copy
+  and rewind rules, subagent spawn edges from `toolCalls[].agentId`, capture and export
+  strip policies for its content fields, hook-input `--current` detection, and the
+  unrecorded utility-call coverage gap on every Gemini rollup, each against synthetic
+  fixtures derived from Gemini CLI v0.60.0 source
+  ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
+  [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules),
+  [Decision 28](../../../urollup-design.md#decision-28-gemini-cli-planned-support)).
+- [ ] Add `ccusage gemini` cases to the
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness), with the cross-file
+  copy and cached-token ledger entries below
+  ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage)).
 - [ ] If the [statusline command](../../../urollup-design.md#statusline-command) is
   confirmed, add its today segment once capture cache reads meet its latency gate
   ([§6.8](../../../urollup-design.md#68-status-line)).
@@ -285,14 +300,19 @@ Each area tests the rules in these design sections:
   history, modern Codex ownership, ordinal gaps, nested tool calls, counter resets,
   timezone and DST boundaries, model and effort switches, unknown prices, malformed and
   oversized lines, and partial tails.
-  Dialect cases cover `codex exec` totals across a resume and beside their rollout;
-  repeated, `info: null`, compaction-estimate and context-window-full Codex
-  `token_count` events; copied `token_usage_record` lines and legacy and paginated
-  subagent prefixes; Claude block records disagreeing on `output_tokens`, advisor
-  iterations, and `progress`, `/btw` and `uuid` replays; Pi fork, clone, export and
-  nested usage copies; `claude-stream` limit records without timestamps and cumulative
-  `total_cost_usd`; nested null fields, non-millisecond timestamps, and a path briefly
-  absent during a rewrite.
+  Gemini CLI cases, added with the Phase 2 adapters, cover repeated records of one
+  message ID, a `$set.messages` rewrite, a `$rewindTo` marker whose requests still
+  count, a session present in both a legacy `<sha256>` bucket and its slug copy, a
+  legacy `.json` file beside its migrated `.jsonl`, a `--session-file` import replaying
+  message IDs, a subagent file under its parent directory, and a `gemini-stream` capture
+  whose process totals exceed the session file’s. Dialect cases cover `codex exec`
+  totals across a resume and beside their rollout; repeated, `info: null`,
+  compaction-estimate and context-window-full Codex `token_count` events; copied
+  `token_usage_record` lines and legacy and paginated subagent prefixes; Claude block
+  records disagreeing on `output_tokens`, advisor iterations, and `progress`, `/btw` and
+  `uuid` replays; Pi fork, clone, export and nested usage copies; `claude-stream` limit
+  records without timestamps and cumulative `total_cost_usd`; nested null fields,
+  non-millisecond timestamps, and a path briefly absent during a rewrite.
   Conflicting sources yield deterministic diagnostics, never whichever record a worker
   finished first.
 - **Ground truth:** before 1.0, one consented corpus is checked against a provider usage
@@ -516,6 +536,10 @@ lists the use cases the harness measures.
 | `semantics` | Session reports filter by last-activity date and drop zero-token sessions; `<synthetic>` and advisor models are listed differently | [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory) | 0.1 |
 | `pricing` | Fuzzy model matching, marginal per-category long-context rates, unpriced tokens as cost 0, and Codex tiers from `config.toml` | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | 0.4 |
 | `ccusage-bug` | Pi fork replays count twice; fixed on `main` in `809eeb6` | [Existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations) | Phase 2 |
+| `dedupe` | Gemini CLI records are deduplicated by message ID within one file only, so a bucket migration copy, a legacy `.json` beside its `.jsonl` and a `--session-file` import each count twice | [ccusage Gemini CLI parsing](../../research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-gemini-cli-parsing) | Phase 2 |
+| `semantics` | Gemini `input` is treated as excluding `cached` unless the record’s `total` equals its parts, so a record with tool-use prompt tokens counts cached tokens as input and cache read | [ccusage Gemini CLI parsing](../../research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-gemini-cli-parsing) | Phase 2 |
+| `semantics` | Gemini sessions have no project grouping, subagent files become their own sessions, and a record with an unparsable timestamp falls back to the file’s mtime | [ccusage Gemini CLI parsing](../../research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-gemini-cli-parsing) | Phase 2 |
+| `unsupported` | Gemini CLI usage that reaches only OpenTelemetry, from compaction, routing and other utility calls, is in neither tool’s report | [Gemini CLI dialect facts](../../research/research-2026-09-13-portable-agent-usage.md#gemini-cli-dialect-facts) | Phase 2 |
 
 - **Excluded from comparison:** `blocks` is never compared
   ([Decision 10](../../../urollup-design.md#decision-10-recorded-usage-windows)), and
@@ -559,7 +583,7 @@ The harness grows with the milestones:
 | 0.1 | `ccusage claude` and `ccusage codex` `daily` and `session`, with and without `--since`, plus unified `daily`, on the `claude-project` and `codex-rollout` fixtures; the local diff | Token categories per day and per session |
 | 0.4 | The same paths with `--mode calculate` under shared rates, plus `--breakdown` | Costs per day, session and model, and the informational bundled-table run |
 | 0.5 | `weekly` and `monthly`, `--instances` and `--project` against project grouping and filters, DST and interval-boundary fixtures, unified reports, and every other [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage) row with a ccusage counterpart; request-attributed explained amounts in the local diff | The full feature matrix, recorded in §10.6 |
-| Phase 2 | `ccusage pi` paths with the Pi adapters, and `statusline` if confirmed | Pi tokens and costs, and status line session cost |
+| Phase 2 | `ccusage pi` paths with the Pi adapters, `ccusage gemini daily`, `monthly` and `session` with the Gemini adapters (with `GEMINI_DATA_DIR` at the fixture copy), and `statusline` if confirmed | Pi and Gemini CLI tokens and costs, and status line session cost |
 
 ### Performance targets
 
@@ -641,8 +665,10 @@ within the confirmed
 
 The design doc records every decision and open question:
 
-- **Confirmed:** 27 decisions, each with its choice, rationale, tradeoffs and date, in
-  [§10.1](../../../urollup-design.md#101-design-decisions).
+- **Confirmed:** 28 decisions, each with its choice, rationale, tradeoffs and date, in
+  [§10.1](../../../urollup-design.md#101-design-decisions), the newest being
+  [Gemini CLI planned support](../../../urollup-design.md#decision-28-gemini-cli-planned-support)
+  on 2026-09-15.
 - **Candidate:** 14 proposed decisions already reflected in the design, pending
   maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions),
   including five from the 2026-09-15
@@ -670,6 +696,8 @@ The design doc records every decision and open question:
   for the baseline
 - [Agentfdr](https://github.com/kamihork/agentfdr)
 - [ccusage](https://github.com/ccusage/ccusage)
+- [Gemini CLI v0.60.0](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27),
+  the release the Phase 2 Gemini adapters and fixtures are derived from
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

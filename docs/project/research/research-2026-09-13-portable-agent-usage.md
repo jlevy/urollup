@@ -1,6 +1,6 @@
 ---
 title: Portable Agent Usage Analytics
-description: Public-source background for urollup, a Rust CLI and local read-only web UI that produces mergeable token, cost and usage rollups from Claude Code, Codex and Pi session logs.
+description: Public-source background for urollup, a Rust CLI and local read-only web UI that produces mergeable token, cost and usage rollups from Claude Code, Codex, Pi and Gemini CLI session logs.
 date: 2026-09-13
 author: Joshua Levy (github.com/jlevy) with LLM assistance
 status: Complete for initial design and feeds the urollup design and plan; dialect facts and reusable code were checked against Codex, Pi, ccusage, agentfdr and Anthropic plugin source at pinned commits, while runtime behavior of source-derived facts and cloud export compatibility still need verification
@@ -10,9 +10,9 @@ status: Complete for initial design and feeds the urollup design and plan; diale
 ## Overview
 
 urollup is a planned Rust CLI and local read-only web UI that produces token, cost and
-usage rollups from Claude Code, Codex and Pi session logs.
-Agent logs already record token usage, so these rollups need no agent instrumentation
-and no transcript upload to an observability service.
+usage rollups from Claude Code, Codex and Pi session logs, and, from 2026-09-15, Gemini
+CLI’s. Agent logs already record token usage, so these rollups need no agent
+instrumentation and no transcript upload to an observability service.
 The product combines usage reports, request-size analysis and investigation that links
 each number to its source records.
 It must also combine local histories with results exported from cloud sandboxes without
@@ -51,11 +51,13 @@ agent ID inside its parent’s session, and Pi has no built-in subagents.
 Included:
 
 - **Agents:** Claude Code, OpenAI Codex and Pi, the open-source `pi` terminal coding
-  agent.
+  agent, and, from 2026-09-15, Gemini CLI, which the maintainer also uses
+  ([design Decision 28](../../urollup-design.md#decision-28-gemini-cli-planned-support)).
 - **Dialects:** A **dialect** is one record format written by one agent.
   Each agent has a persistent log dialect, which it writes to disk during a session, and
   a captured stream dialect, which a caller saves from the agent’s JSON output.
-  [Log Dialects and Session Linkage](#log-dialects-and-session-linkage) defines all six.
+  [Log Dialects and Session Linkage](#log-dialects-and-session-linkage) defines all
+  eight.
 - **Analytics:** Usage by request, session, subagent tree, project, calendar period,
   usage window, model, effort and account.
   A **usage window** is a provider rate-limit period that the logs record.
@@ -64,8 +66,8 @@ Included:
 
 Excluded:
 
-- Other agents that ccusage reads, such as OpenCode, Gemini CLI and Amp, until tested
-  fixtures exist
+- Other agents that ccusage reads, such as OpenCode, Amp and GitHub Copilot CLI, until
+  tested fixtures exist
 - Billing blocks inferred from activity rather than recorded by a provider
 - Live session dashboards such as agentfdr’s Board, agent steering and agent launchers
 
@@ -276,9 +278,13 @@ each with a directory variable in the
   (`CODEX_HOME`; `sessions/`, `archived_sessions/`, or a directory of
   `codex exec --json` output) and Pi (`PI_AGENT_DIR` or `--pi-path`, plus extra
   Pi-format stores declared in the configuration file for unified reports).
+- **Agents urollup also reads, from Phase 2:** Gemini CLI (`GEMINI_DATA_DIR`, a
+  comma-separated list of `tmp` roots; default `~/.gemini/tmp`), added to urollup’s
+  scope on 2026-09-15 and compared in the parity harness; its adapter is reviewed under
+  [ccusage Gemini CLI parsing](research-2026-09-14-agent-tool-source-reviews.md#ccusage-gemini-cli-parsing).
 - **Agents urollup does not read:** OpenCode, Amp, Droid, Codebuff, Hermes Agent, Goose,
-  OpenClaw, Kilo, Kimi, Qwen, GitHub Copilot CLI, Gemini CLI and Grok Build CLI. The
-  OpenCode, Hermes, Goose and Kilo adapters read SQLite databases.
+  OpenClaw, Kilo, Kimi, Qwen, GitHub Copilot CLI and Grok Build CLI. The OpenCode,
+  Hermes, Goose and Kilo adapters read SQLite databases.
   Amp and Codebuff rows add credits, and Hermes rows add message counts.
 
 **Shared report flags.**
@@ -448,6 +454,17 @@ its session files as the “pi-agent” source
 Pi calls many providers, so provider and model come from each assistant message, never
 from the agent name.
 
+**Gemini CLI** *(added 2026-09-15)* is Google’s Apache-2.0 terminal agent, reviewed at
+release
+[v0.60.0](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27)
+(tag `v0.60.0`, commit `733edcb`, published 2026-09-15). Its source is public, so its
+records are read from the writer rather than from parsers.
+It records the main chat and each subagent as an append-only JSONL mutation log under a
+per-project temporary directory, and every other model call it makes, including
+compaction, routing and summarizing, reaches only telemetry.
+[Gemini CLI Dialect Facts](#gemini-cli-dialect-facts) holds the detail behind the rows
+below.
+
 | Dialect | Writer | Location | Records |
 | --- | --- | --- | --- |
 | `claude-project` | Claude Code sessions with persistence | `<config>/projects/<project>/<session-id>.jsonl`, `<config>` being `CLAUDE_CONFIG_DIR` or `~/.claude` (ccusage also searches `$XDG_CONFIG_HOME/claude`), and `<project>` the cwd with non-alphanumerics replaced by `-`; subagents in `<session-id>/subagents/agent-<agent-id>.jsonl` beside `agent-<agent-id>.meta.json`, and under `subagents/workflows/<workflow-id>/` | One entry per message, content block, attachment or lifecycle record, with `type`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch`, `version` and `isSidechain`; `progress` records can nest a subagent’s assistant record; user entries carry `promptId` |
@@ -456,6 +473,8 @@ from the agent name.
 | `codex-exec` | `codex exec --json`, saved by the caller | Explicit input only | `thread.started` (`thread_id`), `turn.started`, `item.started`, `item.updated`, `item.completed`, `turn.completed` (`usage`), `turn.failed` and `error`; one turn per stream; no timestamps, model, turn or response IDs |
 | `pi-session` | Pi sessions with persistence | `$PI_CODING_AGENT_DIR/sessions/--<cwd>--/<timestamp>_<session-id>.jsonl`, default `~/.pi/agent/sessions`; `--session-dir`, `PI_CODING_AGENT_SESSION_DIR` or a `settings.json` `sessionDir` selects one flat directory for every cwd | A `session` header (optional format `version`, `id`, `timestamp`, `cwd`, optional `parentSession`), then tree entries with `id` and `parentId`: `message`, `model_change`, `thinking_level_change`, `compaction`, `branch_summary`, `custom`, `custom_message`, `label`, `session_info` and others |
 | `pi-events` | `pi --mode json`, saved by the caller | Explicit input only | The session header, even for `--no-session` runs, then `agent_start`, `turn_start`, `message_start`, `message_update`, `message_end`, `tool_execution_*`, `turn_end`, `agent_end`, `compaction_*` and `auto_retry_*` events |
+| `gemini-session` | Gemini CLI main chats and subagents, interactive and headless | `<home>/.gemini/tmp/<project>/chats/session-<UTC minute>-<first 8 of session ID>.jsonl`, `<home>` being `GEMINI_CLI_HOME` or the user’s home and `<project>` a slug registered in `~/.gemini/projects.json`; subagents in `chats/<parent-session-id>/<agent-id>.jsonl`; legacy `.json` whole-file records and legacy `<sha256 of project root>` directories remain | An append-only mutation log: a metadata line (`sessionId`, `projectHash`, `startTime`, `lastUpdated`, optional `kind`, `directories`), then `user`, `gemini`, `info`, `error` and `warning` message records re-appended in full on every change, `{"$set": {...}}` metadata updates and `{"$rewindTo": "<message id>"}` markers |
+| `gemini-stream` | `gemini --output-format stream-json`, saved by the caller | Explicit input only | `init` (`session_id`, `model`), `message`, `tool_use`, `tool_result`, `error` and a final `result` with `status` and `stats`: process-wide `total_tokens`, `input_tokens`, `cached`, `input`, `output_tokens`, `duration_ms`, `tool_calls` and a `models` map; `--output-format json` writes the same stats as one `{session_id, response, stats}` document |
 
 Pi also emits the same events, interleaved with command responses, in `--mode rpc`, a
 third captured shape that is not yet a supported dialect.
@@ -479,7 +498,13 @@ Pi v0.85.1
 [session format](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/session-format.md),
 [settings](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/settings.md#L250-L256)
 and
-[JSON mode](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/json.md).
+[JSON mode](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/docs/json.md);
+Gemini CLI v0.60.0
+[chat recording](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L479-L519),
+[record types](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingTypes.ts#L12-L140),
+[storage paths](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storage.ts#L181-L273)
+and
+[stream output types](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/output/types.ts#L81-L117).
 
 The source shows reader hazards that no format table captures:
 
@@ -519,8 +544,21 @@ The source shows reader hazards that no format table captures:
 - **Unwritten sessions:** Codex creates a rollout only when it first persists a thread,
   and Pi creates a session file only at the first assistant message; Codex `--ephemeral`
   threads and Pi `--no-session` runs write no file.
+  Gemini CLI always records, with no flag to turn recording off, but deletes a session
+  that ends with no resumable content and, when a disk fills, stops recording for the
+  rest of the run
+  ([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L910-L925)).
+- **Deletion and duplication by the writer:** Gemini CLI deletes chats older than
+  `general.sessionRetention.maxAge`, 30 days by default, at startup, and its move to
+  slug directories copies rather than moves the legacy `<sha256>` bucket, so one session
+  can exist in both
+  ([settingsSchema.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/config/settingsSchema.ts#L389-L436),
+  [storageMigration.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storageMigration.ts#L20-L52)).
 
 #### Usage Fields
+
+Gemini CLI’s equivalents are in [Gemini CLI Dialect Facts](#gemini-cli-dialect-facts),
+which keeps that dialect’s usage, linkage and current-session evidence together.
 
 | Usage | `claude-project` | `codex-rollout` | `pi-session` |
 | --- | --- | --- | --- |
@@ -740,6 +778,159 @@ What was verified in a running process, and what was not:
   `process.env`, so a Codex or Pi session started from Claude Code’s Bash tool exposes
   both agents’ variables.
   Detection must treat several agents’ variables as ambiguous rather than picking one.
+
+#### Gemini CLI Dialect Facts
+
+*(Added 2026-09-15.)* Everything below was read from the Gemini CLI source at release
+v0.60.0 (tag `v0.60.0`, commit
+[`733edcb`](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27),
+published 2026-09-15; Apache-2.0 with a per-file SPDX header and no `NOTICE` file), and
+from the Gemini API reference for the usage fields the CLI copies.
+No local `~/.gemini` directory was read and nothing was run, so every fact here
+describes code at that commit, not observed files: treat the shapes as the writer’s
+intent until fixtures confirm them.
+
+**Storage and discovery.**
+
+- The Gemini home is `$GEMINI_CLI_HOME/.gemini`, else `~/.gemini`, and the global
+  temporary tree is `<home>/tmp`
+  ([paths.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/utils/paths.ts#L13-L28),
+  [storage.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storage.ts#L154-L185)).
+  Gemini CLI itself has no variable that names a data root; ccusage’s `GEMINI_DATA_DIR`
+  is ccusage’s own.
+- Each project gets a bucket `tmp/<slug>`, the slug being the project directory’s
+  basename lowercased with non-alphanumerics replaced by `-`, plus a `-<n>` suffix on
+  collision, registered in `<home>/projects.json` and marked by a `.project_root` file
+  holding the absolute project path
+  ([projectRegistry.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/projectRegistry.ts#L304-L422)).
+  Older releases named the bucket `<sha256 of the project root>`, and startup migrates
+  by **copying** that directory to the slug, so one session can exist twice
+  ([storage.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storage.ts#L228-L273),
+  [storageMigration.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storageMigration.ts#L20-L52)).
+  A session record still carries `projectHash`, the SHA-256 of the project root, so a
+  bucket’s `.project_root` can be checked against it.
+- Sessions live in `tmp/<project>/chats/`. A main session is
+  `session-<UTC timestamp to the minute, colons replaced by dashes>-<first
+  8 characters of the session ID>.jsonl`; a subagent is
+  `chats/<parent session ID>/<agent ID>.jsonl` with `kind: "subagent"`
+  ([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L479-L544)).
+  `--session-file` imports write `session-<epoch milliseconds>-<first 8>.jsonl` instead
+  ([gemini.tsx](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/gemini.tsx#L249-L283)).
+- The same bucket holds files that are not sessions and carry no usage: `logs.json`
+  (prompt history) and `checkpoint-<tag>.json` from `/chat save`
+  ([logger.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/core/logger.ts#L20-L31)),
+  `checkpoints/` for `/restore`, `tool-outputs/session-<id>/`, `memory/`,
+  `<session-id>/plans`, `tasks` and `tracker`, `logs/session-<id>.jsonl` activity logs
+  written only when `GEMINI_CLI_ACTIVITY_LOG_TARGET` is set, and leftover
+  `<file>.unreadable-<epoch ms>` and `<file>.tmp-<pid>` files from a rewrite.
+  A dialect check must therefore identify sessions by content, not by extension.
+- Retention deletes chats older than `general.sessionRetention.maxAge`, `30d` by
+  default, with cleanup enabled by default and `maxCount` unset
+  ([settingsSchema.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/config/settingsSchema.ts#L389-L436)).
+  The startup scan that enforces it reads every session file of the project, which
+  metaproc disables for host-memory reasons, so metaproc-driven projects keep everything
+  ([metaproc and qm review](research-2026-09-14-metaproc-code-review.md#agent-launch-capture-and-log-locations)).
+
+**Usage fields**, in the same order as [Usage Fields](#usage-fields) above:
+
+| Usage | `gemini-session` |
+| --- | --- |
+| Request identity | None recorded: a message has a random UUID `id` and no response ID, and the Gemini API `responseId` reaches only telemetry ([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L671-L684), [loggingContentGenerator.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/core/loggingContentGenerator.ts#L229-L275)) |
+| Fields | `tokens`: `input` (`promptTokenCount`), `output` (`candidatesTokenCount`), `cached` (`cachedContentTokenCount`), `thoughts` (`thoughtsTokenCount`), `tool` (`toolUsePromptTokenCount`) and `total` (`totalTokenCount`), each defaulting to 0 ([chatRecordingTypes.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingTypes.ts#L19-L26), [chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L744-L773)) |
+| Carriers | Only `type: "gemini"` message records, in the main session file or a subagent file; `tokens` is `null` on a `gemini` record written before usage arrived, and a `$set.messages` rewrite repeats every message with its `tokens` |
+| Inclusion | `input` includes `cached`, which Gemini CLI itself subtracts when it reports uncached input; `output` excludes `thoughts`; `total` is documented as prompt plus thoughts plus candidates, so whether it also includes `tool` is unverified ([Gemini API `UsageMetadata`](https://ai.google.dev/api/generate-content#UsageMetadata), retrieved 2026-09-15; [uiTelemetry.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/uiTelemetry.ts#L305-L321)) |
+| Counter kind | Per response, not cumulative: the last streamed chunk’s `usageMetadata` is attached to the assistant message of the successful attempt, and failed or retried attempts contribute none ([geminiChat.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/core/geminiChat.ts#L1636-L1660)) |
+| Model and effort | `model` on the `gemini` record, the requested model, which the CLI can silently rewrite for an unknown name; no effort or thinking level is recorded in the session file |
+| Provider windows | None recorded |
+
+**Session linkage**, in the same order as [Session Linkage](#session-linkage) above:
+
+| Linkage | `gemini-session` |
+| --- | --- |
+| Session identity | The metadata line’s `sessionId`, which equals the process session ID and the ID hooks receive ([config.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/config.ts#L1740-L1742)); `--session-id` accepts a caller-chosen ID and is rejected when a session of that ID already exists in the project ([config.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/config/config.ts#L426-L440)) |
+| Subagents | A subagent writes its own file named by its `agentId`, nested under the **main** session’s ID even when another subagent spawned it, and the spawning tool call in the parent records that `agentId`, so the edge comes from the parent’s `toolCalls[].agentId` ([local-executor.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/agents/local-executor.ts#L123-L140), [local-invocation.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/agents/local-invocation.ts#L315-L325)); remote A2A agents write no local session |
+| Forks and resumes | `--resume` appends to the original file and keeps its `sessionId`; a legacy `.json` session is migrated by appending every record to a new `.jsonl` file beside it; `--session-file` import copies `user` and `gemini` records, with their IDs, timestamps and `tokens`, into a new session with a new ID ([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L424-L475), [gemini.tsx](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/gemini.tsx#L225-L315)) |
+| Directory and branch | Neither: the session records only `projectHash`, plus `directories` for a subagent; the working directory comes from the bucket’s `.project_root`, and no git branch is recorded |
+
+**Records that are not new usage.** The file is a mutation log, so one message’s record
+is appended again whenever its tokens, tool calls or content change, and the last
+occurrence of an `id` wins
+([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L648-L663)).
+A `{"$set": {"messages": [...]}}` record replaces the whole message list with copies
+that carry their `tokens`
+([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L1021-L1030)).
+A `{"$rewindTo": "<id>"}` record removes that message and everything after it from the
+conversation, but those requests were still served, so a usage reader must keep them and
+a transcript reader must not
+([chatRecordingService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L931-L951)).
+Message IDs are random UUIDs, so the same `id` in two files is copy evidence: a
+migration copy, a legacy-to-JSONL migration, or a `--session-file` import.
+
+**Usage that never reaches a session file.** Only main-chat and subagent turns are
+recorded. Every other model call the CLI makes — compaction, routing, loop detection,
+next-speaker checks, edit correction, session summaries and autocomplete — runs through
+the same content generator with an `LlmRole` and reaches only telemetry
+([llmRole.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/llmRole.ts#L7-L20)).
+Failed attempts before a successful retry are also unrecorded.
+Their tokens are billed, so a `gemini-session` rollup is a lower bound and must report
+the gap rather than imply completeness.
+
+**Telemetry as the only per-call source.** `logApiResponse` emits an OpenTelemetry log
+record per call with `input_token_count`, `output_token_count`,
+`cached_content_token_count`, `thoughts_token_count`, `tool_token_count`,
+`total_token_count`, `model`, `prompt_id`, `role`, `gen_ai.response.id` and a
+`session.id` common attribute
+([types.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/types.ts#L653-L734),
+[loggers.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/loggers.ts#L307-L340),
+[telemetryAttributes.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/telemetryAttributes.ts#L15-L30)).
+Telemetry is off by default and has no default file; with `telemetry.outfile` or
+`GEMINI_TELEMETRY_OUTFILE` the file exporter appends pretty-printed JSON objects, not
+one record per line
+([file-exporters.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/file-exporters.ts#L21-L31)).
+Those records also carry the signed-in account’s email, so a telemetry dialect would
+need its own strip policy; it is not proposed as a supported dialect.
+
+**Current-session signals.**
+
+- Tool subprocesses and MCP servers get only the marker `GEMINI_CLI=1`, with no session
+  ID
+  ([shellExecutionService.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/shellExecutionService.ts#L50-L61)),
+  so a command inside a Gemini session cannot identify that session from its
+  environment.
+- Hook commands get the hook input JSON with `session_id`, `transcript_path`, `cwd`,
+  `hook_event_name` and `timestamp`, and the environment variables `GEMINI_SESSION_ID`,
+  `GEMINI_PROJECT_DIR`, `GEMINI_CWD`, `GEMINI_PLANS_DIR` and a compatibility
+  `CLAUDE_PROJECT_DIR`
+  ([types.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/hooks/types.ts#L141-L147),
+  [hookEventHandler.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/hooks/hookEventHandler.ts#L368-L385),
+  [hookRunner.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/hooks/hookRunner.ts#L346-L356)).
+  Both name the main session and the main chat’s file, so, as with Codex, a hook cannot
+  select a subagent; `transcript_path` is an empty string when recording is off.
+- The `gemini-stream` `init` event carries `session_id` and `model`, which is how a
+  harness links a capture to the session file it also wrote.
+
+**Captured-stream stats are process totals.** `result.stats` is built from the in-memory
+telemetry aggregate, so it sums every role, including the utility calls the session file
+omits, over the whole process, with `input` already net of `cached` and no thoughts or
+tool counts outside `total_tokens`
+([stream-json-formatter.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/output/stream-json-formatter.ts#L43-L87),
+[uiTelemetry.ts](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/uiTelemetry.ts#L54-L71)).
+A capture and the session file of the same run therefore disagree by design: the session
+file owns the per-request usage, the capture is a coverage check whose surplus is the
+unrecorded utility usage.
+
+**How other tools read it.** ccusage 20.0.20 reads the same files with its own
+assumptions and dedupe, and metaproc launches Gemini CLI and reads only the stream
+stats; both are recorded in the
+[agent tool source reviews](research-2026-09-14-agent-tool-source-reviews.md#ccusage-gemini-cli-parsing)
+and the
+[metaproc and qm review](research-2026-09-14-metaproc-code-review.md#agent-launch-capture-and-log-locations).
+
+**Still unverified for Gemini CLI:** every shape above, against real session files;
+whether `totalTokenCount` includes `toolUsePromptTokenCount`; whether a legacy `.json`
+file is deleted after its `.jsonl` migration or left beside it; how often
+`$set.messages` rewrites occur in practice; whether a resumed session’s later records
+can carry an earlier session’s `sessionId`; and what an interrupted write leaves behind.
 
 ### Meaning of Resource Usage
 
@@ -1135,8 +1326,10 @@ ryoppippi), agentfdr (Copyright (c) 2026 kamihork) and Pi (Copyright (c) 2025 Ma
 Zechner).
 Apache-2.0 sources need the license text and a statement of changes; Codex code
 also carries the attribution in its `NOTICE` file (OpenAI Codex, Copyright 2025 OpenAI),
-and the Anthropic plugins ship no `NOTICE` file, so their ported code keeps the license
-text and attribution.
+and the Anthropic plugins and Gemini CLI ship no `NOTICE` file, so their ported code
+keeps the license text and attribution, Gemini CLI’s being the per-file
+`Copyright 2025 Google LLC` and `SPDX-License-Identifier: Apache-2.0` header.
+Its rows below are format facts, which need a citation rather than a notice.
 Pi’s checked-in session fixtures and ccusage’s statusline test inputs hold real prompts
 or paths, so fixtures derived from them must keep only structure and usage.
 
@@ -1165,6 +1358,9 @@ or paths, so fixtures derived from them must keep only structure and usage.
 | Pi | Per-file session totals as a reconciliation check | [usage-totals.ts:22-70](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/usage-totals.ts#L22-L70), [agent-session.ts:3326-3381](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/agent-session.ts#L3326-L3381) | Port logic | uro-qnok |
 | Pi | Cache-miss estimator, labeled an estimate | [cache-stats.ts:1-164](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/src/core/cache-stats.ts#L1-L164), [cache-stats.test.ts:60-143](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/cache-stats.test.ts#L60-L143) | Port code with MIT attribution | uro-jpmf, uro-d135 |
 | Pi | Torn-tail repair and v1-to-v3 migration cases, generated as synthetic files | [file-operations.test.ts:71-103](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/session-manager/file-operations.test.ts#L71-L103), [migration.test.ts:5-78](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/test/session-manager/migration.test.ts#L5-L78) | Adapt tests or fixtures | uro-obx5, uro-qnok |
+| Gemini CLI | Chat record and token types, and the recorder’s mapping from the API’s `usageMetadata` | [chatRecordingTypes.ts:12-140](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingTypes.ts#L12-L140), [chatRecordingService.ts:744-773](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L744-L773) | Format fact | uro-zogi |
+| Gemini CLI | Session file naming, subagent nesting, the mutation-log append and the bucket migration copy | [chatRecordingService.ts:479-544](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts#L479-L544), [storageMigration.ts:20-52](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storageMigration.ts#L20-L52) | Format fact; adapt tests or fixtures | uro-027r, uro-6mbl |
+| ccusage | Gemini discovery, record selection and token normalization, as the parity baseline and a set of negative cases | [gemini paths.rs:5-42](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/paths.rs#L5-L42), [gemini parser.rs:315-416](https://github.com/ccusage/ccusage/blob/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1/rust/adapters/gemini/src/parser.rs#L315-L416) | Format fact; adapt tests or fixtures | uro-s6pl, uro-6mbl |
 | agentfdr | Anomaly detectors (tool loops with a retry allowance, error streaks, token spikes, stalled calls, refusals) and strict detector configuration | [detect.js:11-581](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/detect.js#L11-L581), [config.js:1-109](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/config.js#L1-L109), [detect.test.js:71-252](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/test/detect.test.js#L71-L252) | Port logic; adapt tests or fixtures | uro-jpmf |
 | agentfdr | Subagent discovery, spawn placement and inline sidechain nodes | [subagents.js:3-229](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/src/subagents.js#L3-L229), [subagents.test.js:21-127](https://github.com/kamihork/agentfdr/blob/e0904bf8791f90916fa8db2ce702df93a7caee90/test/subagents.test.js#L21-L127) | Port logic; adapt tests or fixtures | uro-20ck |
 | session-report | Subagent type resolution: `.meta.json` `agentType`, file-name label, the spawning call’s `subagent_type`, else `fork` | [analyze-sessions.mjs:111-156](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L111-L156), [247-265](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/session-report/skills/session-report/analyze-sessions.mjs#L247-L265) | Port logic | uro-20ck, uro-52qi |
@@ -1268,6 +1464,12 @@ These items still need verification:
   claims effort appears only in command output), and the other undocumented fields.
 - [ ] Check Pi’s `totalTokens` on captures from providers that report their own totals,
   and watch the experimental v4 session store and the `--mode rpc` shape.
+- [ ] Confirm the source-derived [Gemini CLI facts](#gemini-cli-dialect-facts) against
+  real session files: the record shapes and file names, whether `totalTokenCount`
+  includes `toolUsePromptTokenCount`, whether a migrated legacy `.json` file stays
+  beside its `.jsonl`, how often `$set.messages` rewrites and `$rewindTo` markers
+  appear, and how much usage the utility roles account for, measured by running one
+  session with telemetry on.
 - [ ] Run a small cloud export, download and local-merge smoke test in each cloud
   environment, covering log visibility, installation and network access, artifact
   retrieval and overlapping re-export, before advertising its compatibility.
@@ -1307,6 +1509,18 @@ that review.
   JSON mode, bash tool, usage totals, cache statistics, docs, changelog, tests and
   fixtures; the `pi-ai` message types, cost and provider usage mapping; and the agent
   loop and experimental v4 session store.
+- **Gemini CLI v0.60.0, commit `733edcb` (Apache-2.0):** *(Added 2026-09-15.)* A
+  read-only partial clone checked out at the latest release tag, read with grep and
+  targeted reads: the chat recording service and its record types, storage paths, the
+  project registry and its migration, the chat loop’s streaming and usage flush, the
+  subagent executor and invocation, the hook types, event handler and runner, the shell
+  execution service, the telemetry events, loggers, roles, attributes and file
+  exporters, the headless output types and stream formatter, the CLI’s session
+  resolution and settings schema, and the logger’s prompt log and checkpoints.
+  ccusage’s Gemini adapter and metaproc’s Gemini adapter, extractor and settings were
+  read for the same release range, and the Gemini API `UsageMetadata` reference was
+  retrieved for the token-field definitions.
+  Nothing was executed, and no local `~/.gemini` data was read.
 - **agentfdr 0.8.0, commit `e0904bf` (MIT):** All of `src/` except the i18n and HTML UI
   bodies, and all tests.
 - **Anthropic plugins, commit `f0dce59` (Apache-2.0):** The session-report plugin in
@@ -1423,6 +1637,22 @@ Agent log formats:
   [message types](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/ai/src/types.ts)
   and
   [changelog](https://github.com/earendil-works/pi/blob/d981de1229ef899957bbe968bc8dcda02a21f477/packages/coding-agent/CHANGELOG.md)
+- [Gemini CLI v0.60.0 source](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27)
+  (Apache-2.0):
+  [chat recording service](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingService.ts),
+  [record types](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/services/chatRecordingTypes.ts),
+  [storage paths](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/storage.ts),
+  [project registry](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/config/projectRegistry.ts),
+  [chat loop](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/core/geminiChat.ts),
+  [subagent executor](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/agents/local-executor.ts),
+  [telemetry events](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/telemetry/types.ts),
+  [headless output types](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/output/types.ts),
+  [hook types](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/core/src/hooks/types.ts)
+  and
+  [settings schema](https://github.com/google-gemini/gemini-cli/blob/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27/packages/cli/src/config/settingsSchema.ts)
+- [Gemini API `generateContent` reference](https://ai.google.dev/api/generate-content#UsageMetadata)
+  (official docs, unversioned, retrieved 2026-09-15), for the `UsageMetadata` token
+  fields
 - Claude Code documentation (official docs, unversioned, retrieved 2026-09-13):
   [sessions](https://code.claude.com/docs/en/sessions),
   [`.claude` directory](https://code.claude.com/docs/en/claude-directory),
