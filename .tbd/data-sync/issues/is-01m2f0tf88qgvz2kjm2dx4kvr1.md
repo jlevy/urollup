@@ -3,9 +3,9 @@ type: is
 id: is-01m2f0tf88qgvz2kjm2dx4kvr1
 title: Implement current-session detection, --session, --all and hierarchy crawler
 kind: task
-status: open
+status: closed
 priority: 2
-version: 9
+version: 11
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -19,7 +19,11 @@ dependencies:
     target: is-01m2ksd5yzhp73gb475pzbvvg6
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.855Z
-updated_at: 2026-09-16T00:20:59.482Z
+updated_at: 2026-09-16T05:39:05.174Z
+closed_at: 2026-09-16T05:39:05.171Z
+close_reason: Implemented exact Claude/Codex/Pi current-session detection, native/analytical/path session resolution across discovered sources, --current/--session/--all/--scope CLI parsing, and transitive spawn/inline-sidechain descendant selection with fork exclusion. Added fixture-backed tests including multi-rollout path resolution; make check passes. End-to-end report output remains on downstream uro-d135 and uro-xsfj.
+resolution: null
+duplicate_of: null
 ---
 Milestone 0.1: --current environment detection (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID; a detected Pi session exits 2 with an unsupported-dialect diagnostic), --session, --all, the discovery index and hierarchy crawler behind --scope self|descendants, per design §6.1, §6.2 and §3.2. Remaining selection flags are milestone 0.5.
 
