@@ -3,10 +3,11 @@ type: is
 id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 title: Release, distribution and pre-1.0 validation
 kind: epic
-status: open
+status: in_progress
 priority: 1
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+delegate: claude-code@spud10.local
 labels:
   - release
 dependencies: []
@@ -19,8 +20,11 @@ child_order_hints:
   - is-01m2ksz7d707rz38cfe8gh2xbj
   - is-01m2ksz8r23b3kmymq8g06c90a
   - is-01m2nhepspk2hs3g02ymfdv9sa
+hold: null
+hold_until: null
 created_at: 2026-09-16T00:30:40.663Z
-updated_at: 2026-09-16T16:40:29.748Z
+updated_at: 2026-09-16T16:47:20.854Z
+started_at: 2026-09-16T16:47:20.853Z
 ---
 The plan's Rollout Plan: build and publish urollup as a standalone product, and validate it before 1.0. Covers the platform matrix, release channels, verification and versioning, release documentation, the pre-1.0 release checklist with shadow-mode validation, and the consented-corpus ground-truth check.
 
