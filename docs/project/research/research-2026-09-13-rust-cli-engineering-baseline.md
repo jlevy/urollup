@@ -606,13 +606,17 @@ versions and publication dates are in
 
 **Deferred to the milestone that needs them:** `insta` and `proptest` (no ledger or
 report data yet; `proptest` and `thiserror` arrived with the core below), `tracing` and
-`anyhow`, the strict cross-target clippy job (no platform-gated code yet), the
-version-stamping `build.rs`, pytest and contract gates (milestone 0.2), `bench/`
-(milestone 0.5), coverage, `cargo-semver-checks`, release workflows and a
-`THIRD-PARTY-NOTICES` file (once third-party code is ported).
+`anyhow`, the version-stamping `build.rs`, pytest and contract gates (milestone 0.2),
+`bench/` (milestone 0.5), coverage, `cargo-semver-checks` and release workflows.
+The `THIRD-PARTY-NOTICES` file arrived with the first ported third-party code.
 Every tool the gate needs was installable locally, including tryscript.
-The CI workflow has not yet run, so the Windows and Linux arm64 golden runs are
-unverified.
+
+The strict cross-target clippy job was deferred for want of platform-gated code, and the
+source reader brought some: symlink handling in `sources/roots.rs` and its tests is
+behind `cfg(unix)`. The first Windows-only break followed immediately — two imports used
+only by the gated tests, which `-D unused-imports` rejects on Windows — and only the
+`windows-2025` CI job caught it, one push later.
+A cross-target lint is the local guard for that class of break, tracked in `uro-g1td`.
 
 ## Implementation Notes (Milestone 0.1 Core)
 
