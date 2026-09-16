@@ -207,6 +207,8 @@ keeps unknown values explicit, and exports results that merge exactly.
 | Uncertainty stays visible: unsupported events, missing prices, ambiguous ownership, unresolved overlap, incomplete logs and absent resource measurements | Explicit coverage fields and `unknown`, `ambiguous`, `unresolved` and `possible` values, never zero or a guess ([§4.2](#42-ownership-and-totals), [§6.4](#64-queries-output-formats-and-streams)) |
 | Compact Markdown reports and mergeable YAML usage summaries that a workflow can attach to a PR | One summary shape for a session or any aggregate, exact merge whenever the rules allow, and observation bundles as the exact fallback ([§5.2](#52-usage-summary-format), [§5.3](#53-exact-aggregation), [§5.4](#54-observation-bundles)) |
 | Contracts are versioned, validated at every read and write, and checkable by softschema without the Rust binary | Pydantic contract models compiled by softschema and mirrored by typed serde structs ([§5.6](#56-versioning-and-compatibility), [§5.7](#57-contract-authoring-and-validation)) |
+| Everyday use from the CLI is fast and friendly | A zero-argument current-session summary, discoverable help with examples, readable default tables, and diagnostics that name the flag or fix to use ([§6.1](#61-workflows-and-session-selection), [§6.3](#63-commands), [§6.4](#64-queries-output-formats-and-streams), [§6.5](#65-exit-codes)) |
+| Reports can be browsed as web pages, with or without a server | A generated self-contained HTML report file (Candidate, [§6.4](#64-queries-output-formats-and-streams)) and the optional live loopback UI ([§7](#7-serving-layer-optional)) |
 
 ### 1.4 Design Principles
 
@@ -1807,7 +1809,14 @@ are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults
   `--annotation-set <file>` (Phase 2) adds a named annotation set
   ([§3.5](#35-purpose-and-annotations)).
 - **Formats:** `--format` selects terminal tables, JSON, JSONL, CSV or Markdown, plus
-  `summary` and `bundle` for `export` and `merge`. JSON results carry schema version,
+  `summary` and `bundle` for `export` and `merge`, and `html` (Candidate,
+  [§9.1](#static-html-reports)).
+- **Browsable HTML reports (Candidate, [§9.1](#static-html-reports)):** `--format html`
+  with `--output <file>` writes one self-contained page: inline styles and scripts, no
+  network requests, no server, openable from a file manager and shareable like any
+  report. It renders the same `QuerySpec` results as every other format, applies the same
+  redaction profile and evidence rules, and is deterministic for one snapshot and query,
+  so it can be committed or attached to a PR. JSON results carry schema version,
   normalized query, source coverage, diagnostics, pricing version, aggregate rows and
   stable evidence references.
   JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
@@ -2378,6 +2387,26 @@ adapters are format-fact sources under
 [Decision 3](#decision-3-code-reuse-and-licensing).
 
 **Designed in:** [§2.1](#21-dialects-and-discovery), [§10.2](#102-future-enhancements).
+
+#### Static HTML Reports
+
+**Status:** Candidate.
+
+**Recommendation:** add `--format html` with `--output <file>`, writing one
+self-contained page (inline CSS and JavaScript, no network requests, no server) that
+renders the same query results as the other formats, honors the redaction profile, and
+is byte-deterministic for one snapshot and query.
+It reuses the serving layer’s rendering components where practical, so the live UI
+([§7.2](#72-web-ui)) and the static report stay consistent, but it must not pull HTTP or
+async dependencies into a default CLI build
+([Decision 21](#decision-21-serving-separability)): the renderer belongs behind the same
+optional feature boundary.
+
+**Phase:** with the web UI in Phase 2, since it shares that rendering.
+A Markdown report already covers the shareable-report need in milestone 0.5.
+
+**Links:** [§6.4](#64-queries-output-formats-and-streams), [§7.2](#72-web-ui);
+maintainer request, 2026-09-16.
 
 #### Report Presentation
 
