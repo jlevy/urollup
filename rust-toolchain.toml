@@ -1,0 +1,7 @@
+# Adapted from fdu `rust-toolchain.toml` at afbb2ee; see PROVENANCE.md.
+# The development and CI toolchain, pinned exactly and at least 14 days old. The MSRV is
+# `rust-version` in Cargo.toml, proved by the MSRV CI job; the two are separate things.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

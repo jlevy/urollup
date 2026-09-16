@@ -1,0 +1,218 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "inline-sidechains",
+  "dialect": "claude-project",
+  "summary": "Two legacy inline sidechain runs become separate fallback-identity child threads of the main Claude session.",
+  "rules": [
+    "design §3.2 Relationships and the Discovery Index (inline sidechains)",
+    "design §3.6 Analytical Identity (fallback thread digest)",
+    "design §4.2 Ownership and Totals (descendants scope)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "Legacy transcripts modeled as Claude Code 1.0.98. The exact first and last releases that wrote inline sidechains are unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl",
+      "lines": 12,
+      "thread": "00000000-0000-4000-8000-001500000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001500000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 950,
+          "cache_write": 150,
+          "output": 55,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 6,
+        "tokens": {
+          "uncached_input": 13,
+          "cache_read": 1350,
+          "cache_write": 850,
+          "output": 140,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "thr-v1-4xxb1qx9sn4bjzm8vmgtzak2tx",
+      "kind": "inline-sidechain",
+      "identity_basis": "fallback",
+      "parent": "00000000-0000-4000-8000-001500000001",
+      "relationship": "inline-sidechain",
+      "relationship_confidence": "inferred",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:3"
+      ],
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": 400,
+          "cache_write": 200,
+          "output": 45,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": 400,
+          "cache_write": 200,
+          "output": 45,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "thr-v1-3zw06f2nedcgvm2cdmfzvmd8ap",
+      "kind": "inline-sidechain",
+      "identity_basis": "fallback",
+      "parent": "00000000-0000-4000-8000-001500000001",
+      "relationship": "inline-sidechain",
+      "relationship_confidence": "inferred",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:8",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:9"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": 0,
+          "cache_write": 500,
+          "output": 40,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": 0,
+          "cache_write": 500,
+          "output": 40,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": { "message_id": "msg_01Synthetic15M1", "request_id": "req_011Synthetic15M1" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001500000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.000Z",
+      "tokens": { "uncached_input": 2, "cache_read": 0, "cache_write": 100, "output": 20, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:2"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:2"]
+    },
+    {
+      "key": { "message_id": "msg_01Synthetic15S1", "request_id": "req_011Synthetic15S1" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "thr-v1-4xxb1qx9sn4bjzm8vmgtzak2tx",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:05.000Z",
+      "tokens": { "uncached_input": 3, "cache_read": 100, "cache_write": 200, "output": 30, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:4"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:4"]
+    },
+    {
+      "key": { "message_id": "msg_01Synthetic15S2", "request_id": "req_011Synthetic15S2" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "thr-v1-4xxb1qx9sn4bjzm8vmgtzak2tx",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:08.000Z",
+      "tokens": { "uncached_input": 1, "cache_read": 300, "cache_write": 0, "output": 15, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:6"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:6"]
+    },
+    {
+      "key": { "message_id": "msg_01Synthetic15M2", "request_id": "req_011Synthetic15M2" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001500000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:02.000Z",
+      "tokens": { "uncached_input": 2, "cache_read": 400, "cache_write": 50, "output": 25, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:8"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:8"]
+    },
+    {
+      "key": { "message_id": "msg_01Synthetic15S3", "request_id": "req_011Synthetic15S3" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "thr-v1-3zw06f2nedcgvm2cdmfzvmd8ap",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:05.000Z",
+      "tokens": { "uncached_input": 4, "cache_read": 0, "cache_write": 500, "output": 40, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:10"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:10"]
+    },
+    {
+      "key": { "message_id": "msg_01Synthetic15M3", "request_id": "req_011Synthetic15M3" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001500000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:02:02.000Z",
+      "tokens": { "uncached_input": 1, "cache_read": 550, "cache_write": 0, "output": 10, "reasoning": null },
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:12"],
+      "evidence": ["projects/-Users-example-project/00000000-0000-4000-8000-001500000001.jsonl:12"]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": { "unique": 6, "owned": 6, "ambiguous": 0, "unknown": 0 },
+    "unresolved": { "requests": 0 },
+    "tokens": { "uncached_input": 13, "cache_read": 1350, "cache_write": 850, "output": 140, "reasoning": null }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Treat every inline sidechain record as part of the main thread",
+      "requests": 6,
+      "sessions": 1,
+      "tokens": { "uncached_input": 13, "cache_read": 1350, "cache_write": 850, "output": 140, "reasoning": null }
+    }
+  ],
+  "notes": [
+    "Fallback child identities digest each run's first complete record rather than using a byte offset or file-relative ordinal.",
+    "The exact Claude Code release range for the inline layout is unverified; the recorded version is representative, not observed locally."
+  ]
+}

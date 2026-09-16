@@ -1,0 +1,3 @@
+
+/// Gate probe: rustdoc denies the unresolved link to [`NoSuchGateProbeItem`].
+pub const GATE_PROBE_DOC_LINK: u8 = 0;

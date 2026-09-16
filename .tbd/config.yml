@@ -66,11 +66,13 @@ docs_cache:
     shortcuts/standard/revise-architecture-doc.md: internal:shortcuts/standard/revise-architecture-doc.md
     shortcuts/standard/setup-github-cli.md: internal:shortcuts/standard/setup-github-cli.md
     shortcuts/standard/setup-linear.md: internal:shortcuts/standard/setup-linear.md
+    shortcuts/standard/stacked-prs.md: internal:shortcuts/standard/stacked-prs.md
     shortcuts/standard/suggest-upstream-improvements.md: internal:shortcuts/standard/suggest-upstream-improvements.md
     shortcuts/standard/sync-failure-recovery.md: internal:shortcuts/standard/sync-failure-recovery.md
     shortcuts/standard/update-specs-status.md: internal:shortcuts/standard/update-specs-status.md
     shortcuts/standard/watch-beads.md: internal:shortcuts/standard/watch-beads.md
     shortcuts/standard/welcome-user.md: internal:shortcuts/standard/welcome-user.md
+    guidelines/agent-run-operations-rules.md: internal:guidelines/agent-run-operations-rules.md
     guidelines/agent-session-bootstrap.md: internal:guidelines/agent-session-bootstrap.md
     guidelines/backward-compatibility-rules.md: internal:guidelines/backward-compatibility-rules.md
     guidelines/bun-monorepo-patterns.md: internal:guidelines/bun-monorepo-patterns.md

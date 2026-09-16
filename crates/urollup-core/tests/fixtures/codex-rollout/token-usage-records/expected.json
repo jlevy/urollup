@@ -1,0 +1,268 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "token-usage-records",
+  "dialect": "codex-rollout",
+  "summary": "token_usage_record lines keyed by response_id across a resume, a compacted item's latest_token_usage_record copy, and a legacy user fork whose copied records carry the parent's thread_id.",
+  "rules": [
+    "design §3.4 Codex requests (token_usage_record)",
+    "design §3.4 Codex copied history",
+    "design §3.2 Fork"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollouts; token_usage_record first shipped in rust-v0.153.0, thread_settings_applied.thread_id in rust-v0.152.0"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-000500000001"
+    },
+    {
+      "path": "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl",
+      "lines": 18,
+      "thread": "019f0000-0000-7000-8000-000500000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000500000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 8000,
+          "cache_read": 36000,
+          "cache_write": 0,
+          "output": 2400,
+          "reasoning": 700
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-000500000002",
+      "kind": "thread",
+      "parent": "019f0000-0000-7000-8000-000500000001",
+      "relationship": "fork",
+      "relationship_evidence": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3000,
+          "cache_read": 23000,
+          "cache_write": 0,
+          "output": 800,
+          "reasoning": 250
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c05_p1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-04T16:00:20.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 700,
+        "reasoning": 300
+      },
+      "selected": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:6",
+        "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:7"
+      ],
+      "service_tier": "priority",
+      "turn_id": "turn-c05-p1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c05_p2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-04T16:00:50.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 10000,
+        "cache_write": 0,
+        "output": 1200,
+        "reasoning": 400
+      },
+      "selected": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:8",
+        "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:9"
+      ],
+      "service_tier": "priority",
+      "turn_id": "turn-c05-p1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c05_p3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-04T18:00:30.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 18000,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:13"
+      ],
+      "evidence": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:13"
+      ],
+      "service_tier": "priority",
+      "turn_id": "turn-c05-p2"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c05_f1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000500000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-04T16:30:40.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 23000,
+        "cache_write": 0,
+        "output": 800,
+        "reasoning": 250
+      },
+      "selected": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:16"
+      ],
+      "evidence": [
+        "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:16"
+      ],
+      "service_tier": "priority",
+      "turn_id": "turn-c05-f1"
+    }
+  ],
+  "copies": [
+    {
+      "ref": "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:7",
+      "kind": "token-usage-record-copy",
+      "copy_of": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:6",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001"
+    },
+    {
+      "ref": "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:9",
+      "kind": "token-usage-record-copy",
+      "copy_of": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:8",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001"
+    },
+    {
+      "ref": "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:8",
+      "kind": "token-count-copy",
+      "copy_of": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:7",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001"
+    },
+    {
+      "ref": "sessions/2026/09/04/rollout-2026-09-04T09-30-00-019f0000-0000-7000-8000-000500000002.jsonl:10",
+      "kind": "token-count-copy",
+      "copy_of": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:9",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001"
+    },
+    {
+      "ref": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:15",
+      "kind": "compacted-latest-token-usage-record",
+      "copy_of": "sessions/2026/09/04/rollout-2026-09-04T09-00-00-019f0000-0000-7000-8000-000500000001.jsonl:13",
+      "owner_thread": "019f0000-0000-7000-8000-000500000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 4,
+      "owned": 4,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 11000,
+      "cache_read": 59000,
+      "cache_write": 0,
+      "output": 3200,
+      "reasoning": 950
+    },
+    "total_tokens": 73200
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum usage of every token_usage_record line plus compacted.latest_token_usage_record",
+      "requests": 7,
+      "tokens": {
+        "uncached_input": 19000,
+        "cache_read": 95000,
+        "cache_write": 0,
+        "output": 5600,
+        "reasoning": 1650,
+        "total_tokens": 119600
+      }
+    },
+    {
+      "rule": "Sum each rollout's last thread_token_usage",
+      "requests": null,
+      "tokens": {
+        "uncached_input": 17000,
+        "cache_read": 77000,
+        "cache_write": 0,
+        "output": 5100,
+        "reasoning": 1650,
+        "total_tokens": 99100
+      }
+    }
+  ],
+  "notes": [
+    "Copied lines 2-11 of the fork have new write-time timestamps (16:30), so they must contribute neither usage nor times to the fork.",
+    "The fork's thread_token_usage continues the parent's running sum, so it is not the fork's own usage.",
+    "token_count events are reconciliation checks when records exist."
+  ]
+}

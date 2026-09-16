@@ -1,0 +1,5 @@
+
+/// Gate probe: `clippy::unwrap_used` is denied by the workspace lint floor.
+pub fn gate_probe_unwrap(value: Option<u8>) -> u8 {
+    value.unwrap()
+}

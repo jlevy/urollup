@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "query": { "command": "report", "selection": "all", "scope": "self", "timezone": "UTC" },
+  "coverage": { "copies_excluded": 0, "limit_observations": 0, "requests_without_usage": 0, "complete": true },
+  "diagnostics": [],
+  "totals": {
+    "requests": { "owned": 2, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 15, "cache_read": 28000, "cache_write": 500, "output": 290, "reasoning": 0, "total": 28805 },
+    "unresolved": { "requests": 0, "tokens": {} },
+    "possible": { "requests": 0, "tokens": {} }
+  },
+  "breakdowns": {},
+  "sizes": { "count": 2, "p50": 8005, "p90": 20510, "p99": 20510, "max": 20510 }
+}

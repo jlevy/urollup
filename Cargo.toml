@@ -1,0 +1,52 @@
+# Adapted from fdu `Cargo.toml` at afbb2ee; see PROVENANCE.md.
+[workspace]
+resolver = "3"
+members = ["crates/urollup-core", "crates/urollup"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/jlevy/urollup"
+authors = ["urollup contributors"]
+
+[workspace.dependencies]
+urollup-core = { version = "0.1.0", path = "crates/urollup-core" }
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# Pedantic lints allowed back because they fire on correct code (rust-lint-format-rules).
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+# Not in pedantic; added deliberately.
+unwrap_used = "deny"
+# Measured as free in new code in rust-lint-format-rules (engineering baseline, Lint Floor).
+let_underscore_future = "deny"
+wildcard_enum_match_arm = "deny"
+# `clippy::panic` is denied in `urollup-core` only, by a crate attribute in its lib.rs:
+# Cargo does not allow a member to add lints beside `[lints] workspace = true`.
+
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+warnings = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+# Deliberately no `panic = "abort"`: the default-on `serve` feature will run request
+# handlers in this process, and unwinding lets a panicking handler fail one request
+# instead of ending the process (design §8.2).
+
+# Release code with symbols, for attributing time to functions with a sampling profiler.
+# Timing decisions are still taken from `release` builds, never from this one.
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = false

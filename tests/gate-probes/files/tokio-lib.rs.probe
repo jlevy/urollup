@@ -1,0 +1,2 @@
+//! Gate probe: a local stand-in named like an async runtime, so the dependency guard can be
+//! proved without network access.

@@ -1,0 +1,176 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "auto-review-model",
+  "dialect": "codex-rollout",
+  "summary": "A guardian review thread whose turn_context model is the codex-auto-review placeholder and whose settings event has no service_tier.",
+  "rules": [
+    "design §3.1 Entities (placeholder model names stay as observed; Codex models are requested)",
+    "design §3.2 Spawn (guardian_review)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollouts; the codex-auto-review placeholder and tier-less settings events come from ccusage's Codex notes"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/11/rollout-2026-09-11T13-00-00-019f0000-0000-7000-8000-001300000001.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001300000001"
+    },
+    {
+      "path": "sessions/2026/09/11/rollout-2026-09-11T13-00-25-019f0000-0000-7000-8000-001300000002.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001300000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001300000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 2000,
+          "cache_read": 6000,
+          "cache_write": 0,
+          "output": 500,
+          "reasoning": 200
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001300000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001300000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T13-00-25-019f0000-0000-7000-8000-001300000002.jsonl:1"
+      ],
+      "thread_source": "guardian_review",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 2200,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 60,
+          "reasoning": 20
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c13_p1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001300000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-11T20:00:20.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/11/rollout-2026-09-11T13-00-00-019f0000-0000-7000-8000-001300000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T13-00-00-019f0000-0000-7000-8000-001300000001.jsonl:6"
+      ],
+      "service_tier": "priority",
+      "service_tier_basis": "observed"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c13_g1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001300000002",
+      "owner_candidates": [],
+      "model": "codex-auto-review",
+      "model_basis": "requested",
+      "effort": "low",
+      "timestamp": "2026-09-11T20:00:31.000Z",
+      "tokens": {
+        "uncached_input": 2200,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 60,
+        "reasoning": 20
+      },
+      "selected": [
+        "sessions/2026/09/11/rollout-2026-09-11T13-00-25-019f0000-0000-7000-8000-001300000002.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T13-00-25-019f0000-0000-7000-8000-001300000002.jsonl:6"
+      ],
+      "service_tier": null,
+      "service_tier_basis": "unknown",
+      "root_turn_id": "turn-c13-p1"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 4200,
+      "cache_read": 6000,
+      "cache_write": 0,
+      "output": 560,
+      "reasoning": 220
+    },
+    "total_tokens": 10760
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Replace codex-auto-review with the newest model released by the event date (ccusage 20.0.20): tokens match, model attribution is invented",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 4200,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 560,
+        "reasoning": 220
+      }
+    },
+    {
+      "rule": "Inherit the parent's priority service tier: tokens match, the review is priced at the wrong tier",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 4200,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 560,
+        "reasoning": 220
+      }
+    }
+  ],
+  "notes": [
+    "The placeholder model has no price-table row, so the review's tokens are unpriced, never zero-cost (pricing arrives in milestone 0.4)."
+  ]
+}

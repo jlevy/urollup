@@ -1,0 +1,276 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "info-null",
+  "dialect": "codex-rollout",
+  "summary": "A token_count with info: null before the thread's first usage, then one response, then a rate-limit-only update with unchanged info.",
+  "rules": [
+    "design §3.4 Codex counters (info: null is only a provider limit observation)",
+    "design §3.1 Entities (identical consecutive snapshots)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 legacy rollout; info is null before a thread's first recorded usage as of rust-v0.154.0"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl",
+      "lines": 7,
+      "thread": "019f0000-0000-7000-8000-000200000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000200000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4000,
+          "cache_read": 1000,
+          "cache_write": 0,
+          "output": 400,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000200000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000200000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-02T18:00:09.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 1000,
+        "cache_write": 0,
+        "output": 400,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:5",
+        "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:6"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 1,
+      "owned": 1,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 4000,
+      "cache_read": 1000,
+      "cache_write": 0,
+      "output": 400,
+      "reasoning": 100
+    },
+    "total_tokens": 5400
+  },
+  "diagnostics": [],
+  "limit_observations": [
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:4",
+      "merged_refs": [
+        "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:5"
+      ],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1788382800,
+      "utilization": {
+        "value": 41,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T18:00:01.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 41,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 12.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:4",
+      "merged_refs": [
+        "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:5"
+      ],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1788825600,
+      "utilization": {
+        "value": 12.5,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T18:00:01.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 41,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 12.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:6",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1788382800,
+      "utilization": {
+        "value": 42,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T18:00:09.500Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 42,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 12.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T11-00-00-019f0000-0000-7000-8000-000200000001.jsonl:6",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1788825600,
+      "utilization": {
+        "value": 12.5,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T18:00:09.500Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 42,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 12.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  ],
+  "naive": [
+    {
+      "rule": "Count every token_count in the task window as a response and add its last_token_usage when present (squares)",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 8000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 800,
+        "reasoning": 200,
+        "total_tokens": 10800
+      }
+    }
+  ],
+  "notes": []
+}
