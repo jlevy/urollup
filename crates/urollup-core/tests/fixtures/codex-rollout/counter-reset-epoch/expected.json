@@ -1,0 +1,215 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "counter-reset-epoch",
+  "dialect": "codex-rollout",
+  "summary": "Cumulative token_count totals restart lower in a later turn, which opens a new counter epoch.",
+  "rules": [
+    "design §3.4 Codex counters (a decrease opens a new counter epoch)",
+    "design §3.3 Reconciliation (resets produce diagnostics)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 legacy rollout; the reset is a shape-level case, since Codex seeds resumed totals from the file"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl",
+      "lines": 12,
+      "thread": "019f0000-0000-7000-8000-000300000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000300000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 4,
+        "tokens": {
+          "uncached_input": 6000,
+          "cache_read": 5500,
+          "cache_write": 0,
+          "output": 1200,
+          "reasoning": 250
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000300000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:4"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T15:00:08.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:4"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000300000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T15:00:30.000Z",
+      "tokens": {
+        "uncached_input": 1500,
+        "cache_read": 2500,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000300000001",
+        "counter_epoch": 2,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:9"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T17:10:07.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 1000,
+        "cache_write": 0,
+        "output": 250,
+        "reasoning": 50
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:9"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:9"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000300000001",
+        "counter_epoch": 2,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:10"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T17:10:20.000Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:10"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:10",
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:11"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 4,
+      "owned": 4,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 6000,
+      "cache_read": 5500,
+      "cache_write": 0,
+      "output": 1200,
+      "reasoning": 250
+    },
+    "total_tokens": 12700
+  },
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "refs": [
+        "sessions/2026/09/03/rollout-2026-09-03T08-00-00-019f0000-0000-7000-8000-000300000001.jsonl:9"
+      ],
+      "detail": "every cumulative component decreased from the previous total (7800 to 2250 tokens), so epoch 2 starts at zero and line 9's last_token_usage, equal to its new total, counts"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum last_token_usage of every token_count event",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 6500,
+        "cache_read": 7500,
+        "cache_write": 0,
+        "output": 1350,
+        "reasoning": 250,
+        "total_tokens": 15350
+      }
+    },
+    {
+      "rule": "Saturating differences of total_token_usage (a total-only reader turns the reset into zeros)",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 5000,
+        "cache_read": 4500,
+        "cache_write": 0,
+        "output": 950,
+        "reasoning": 200,
+        "total_tokens": 10450
+      }
+    }
+  ],
+  "notes": []
+}

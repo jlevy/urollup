@@ -1,0 +1,318 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "brief-repeated-snapshot",
+  "dialect": "codex-rollout",
+  "summary": "The research brief's Codex example: cumulative token_count events where the third repeats the second without the running total advancing.",
+  "rules": [
+    "design §3.4 Codex counters",
+    "design §3.1 Entities (identical consecutive rate-limit snapshots)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 legacy rollout (before token_usage_record in rust-v0.153.0)"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-000100000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000100000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 12000,
+          "cache_read": 8000,
+          "cache_write": 0,
+          "output": 5000,
+          "reasoning": 1500
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000100000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-02T17:00:12.000Z",
+      "tokens": {
+        "uncached_input": 6000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 2000,
+        "reasoning": 500
+      },
+      "selected": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000100000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:6"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-02T17:00:40.000Z",
+      "tokens": {
+        "uncached_input": 6000,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 3000,
+        "reasoning": 1000
+      },
+      "selected": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:6",
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:7"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 12000,
+      "cache_read": 8000,
+      "cache_write": 0,
+      "output": 5000,
+      "reasoning": 1500
+    },
+    "total_tokens": 25000
+  },
+  "diagnostics": [],
+  "limit_observations": [
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:5",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1788382800,
+      "utilization": {
+        "value": 2,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "plus",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T17:00:12.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 2,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 1,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "plus",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:5",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1788825600,
+      "utilization": {
+        "value": 1,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "plus",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T17:00:12.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 2,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 1,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "plus",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:6",
+      "merged_refs": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:7"
+      ],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1788382800,
+      "utilization": {
+        "value": 3,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "plus",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T17:00:40.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 3,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 1.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "plus",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:6",
+      "merged_refs": [
+        "sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl:7"
+      ],
+      "source": "rate_limits",
+      "limit": "codex",
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1788825600,
+      "utilization": {
+        "value": 1.5,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "plus",
+      "may_be_stale": [
+        "plan_type"
+      ],
+      "observed_at": "2026-09-02T17:00:40.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-000100000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 3,
+          "window_minutes": 300,
+          "resets_at": 1788382800
+        },
+        "secondary": {
+          "used_percent": 1.5,
+          "window_minutes": 10080,
+          "resets_at": 1788825600
+        },
+        "credits": null,
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "plus",
+        "rate_limit_reached_type": null
+      }
+    }
+  ],
+  "naive": [
+    {
+      "rule": "Sum total_token_usage of every token_count event",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 30000,
+        "cache_read": 18000,
+        "cache_write": 0,
+        "output": 12000,
+        "reasoning": 3500,
+        "total_tokens": 60000
+      }
+    },
+    {
+      "rule": "Sum last_token_usage of every token_count event",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 18000,
+        "cache_read": 14000,
+        "cache_write": 0,
+        "output": 8000,
+        "reasoning": 2500,
+        "total_tokens": 40000
+      }
+    }
+  ],
+  "notes": [
+    "Counter-derived requests have no response ID, so their keys are fallback keys: the thread, the counter epoch and the event."
+  ]
+}
