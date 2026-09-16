@@ -1,6 +1,7 @@
 # urollup Design Specification
 
-Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session logs.
+Trustworthy token, cost and usage rollups from Claude Code, Codex, Pi and Gemini CLI
+session logs.
 
 **Author:** Joshua Levy (github.com/jlevy) and various LLMs
 
@@ -117,11 +118,11 @@ in the
 **urollup (usage rollup) is a standalone Rust executable that produces trustworthy
 token, cost and usage rollups from coding-agent session logs.**
 
-It reads Claude Code, Codex and Pi session logs and produces rollups, request-size
-analyses and session reports through a CLI and an optional local read-only web UI. It
-covers ccusage’s usage reports and the agentfdr investigation features that matter for
-retrospective analysis, without a live session Board, process steering or agent
-launcher. The product, crate and command are named `urollup`, developed in
+It reads Claude Code, Codex, Pi and Gemini CLI session logs and produces rollups,
+request-size analyses and session reports through a CLI and an optional local read-only
+web UI. It covers ccusage’s usage reports and the agentfdr investigation features that
+matter for retrospective analysis, without a live session Board, process steering or
+agent launcher. The product, crate and command are named `urollup`, developed in
 [jlevy/urollup](https://github.com/jlevy/urollup) under the MIT license.
 
 Both interfaces call one accounting and query engine.
@@ -324,7 +325,8 @@ ledger; bundles re-enter reconciliation.
 **Status:** Confirmed, except the dialect IDs and `UROLLUP_*` override variables, which
 are Candidate ([§9.1](#dialect-ids-and-override-variables)), and the policy for other
 agents, which is Candidate ([§9.1](#additional-agent-adapters)); the Pi adapters are
-Later (Phase 2).
+Later (Phase 2), and so are the Gemini CLI adapters
+([Decision 28](#decision-28-gemini-cli-planned-support)).
 
 A **dialect** is one log format written by one agent, and each adapter reads one
 dialect. The research brief’s
@@ -339,12 +341,15 @@ gives each dialect’s fields, counters and linkage.
 | Codex | `codex-exec` | Saved `codex exec --json` output | No |
 | Pi | `pi-session` | Tree-structured session files written by the `pi` coding agent | Yes, once validated |
 | Pi | `pi-events` | Saved `pi --mode json` output | No |
+| Gemini CLI | `gemini-session` | Append-only chat mutation logs for a main session or one subagent | Yes, once validated |
+| Gemini CLI | `gemini-stream` | Saved `gemini --output-format stream-json` or `json` output | No |
 
 | Agent | Default roots | Native variable honored | urollup override |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/projects`, and `$XDG_CONFIG_HOME/claude/projects` (default `~/.config/claude/projects`) when present | `CLAUDE_CONFIG_DIR`, reading its `projects/` | `UROLLUP_CLAUDE_CONFIG_DIRS` |
 | Codex | `~/.codex/sessions` and `~/.codex/archived_sessions` | `CODEX_HOME` | `UROLLUP_CODEX_HOMES` |
 | Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_SESSION_DIR`, else `PI_CODING_AGENT_DIR` plus `sessions/` | `UROLLUP_PI_SESSION_DIRS` |
+| Gemini CLI | `~/.gemini/tmp`, whose `<project>/chats/` directories hold the sessions | `GEMINI_CLI_HOME`, reading its `.gemini/tmp` | `UROLLUP_GEMINI_DIRS` |
 
 - **Captured streams** have no standard location, so they enter only through `--source`
   or a manifest, with the dialect detected from the first records or given by a hint.
@@ -358,6 +363,19 @@ gives each dialect’s fields, counters and linkage.
   variable exits 1. Locations no variable describes, such as Pi’s `--session-dir` or a
   Pi `settings.json` `sessionDir` (flat directories that mix working directories), need
   `--source`.
+- **Gemini CLI project buckets:** a bucket is `tmp/<slug>`, the project basename
+  slugified with a `-<n>` suffix on collision, and older releases used
+  `tmp/<sha256 of the project root>`; the migration copies rather than moves, so both
+  can hold the same session.
+  The project root comes from the bucket’s `.project_root` marker, checked against each
+  session’s `projectHash`, never from the slug alone.
+  A bucket also holds prompt logs, checkpoints, tool outputs and activity logs, so
+  sessions are identified by content, not by extension, and a legacy `.json` session and
+  the `.jsonl` it was migrated into are one logical source.
+- **Gemini CLI retention:** Gemini CLI deletes chats older than
+  `general.sessionRetention.maxAge`, 30 days by default, so, like Claude Code, `sources`
+  reports each root’s earliest retained record.
+  A harness that turns retention off keeps everything instead.
 - **Codex file names:** Codex names rollout files and date directories in local time,
   adds files to a thread on revert or paginated fork, and renames files into flat
   `archived_sessions/` on archive, so times come from records and Codex sources are
@@ -370,10 +388,15 @@ gives each dialect’s fields, counters and linkage.
 - **Unobserved usage:** usage that never reaches local logs, such as Codex `--ephemeral`
   threads, parallel guardian reviews and legacy remote compaction, is reported as an
   unobserved coverage gap, never zero.
-- **Unsupported formats:** Pi RPC transcripts and Pi’s experimental v4 session store are
+  Gemini CLI records only its main chat and its local subagents, so its compaction,
+  routing, loop-detection, next-speaker, edit-correction, summarizing and autocomplete
+  calls, its failed attempts before a retry, and its remote A2A agents are unobserved in
+  `gemini-session` and are reported as a coverage gap on every Gemini rollup.
+- **Unsupported formats:** Pi RPC transcripts, Pi’s experimental v4 session store and
+  Gemini CLI OpenTelemetry exports, the only place Gemini’s unrecorded calls appear, are
   not supported dialects until tested.
-- **Other agents:** ccusage 20.0.20 also reads 13 agents that urollup does not, such as
-  OpenCode, Gemini CLI and GitHub Copilot CLI, as the research brief’s
+- **Other agents:** ccusage 20.0.20 also reads 12 agents that urollup does not, such as
+  OpenCode, Amp and GitHub Copilot CLI, as the research brief’s
   [ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
   lists. Each would be a new dialect added by the candidate policy in
   [§9.1](#additional-agent-adapters).
@@ -393,12 +416,13 @@ default roots, while individual artifacts it lists are treated like `--source` i
 
 #### Projects and Accounts
 
-- Project identity comes from recorded fields, never from decoding Claude Code or Pi
-  project directory names, which encode paths lossily.
-  A thread’s `project` is a plain name, never a path: the manifest’s project mapping
-  when one matches (so worktrees map to one logical project and keep their original
-  `cwd`), else the git top-level directory basename when the dialect records it, else
-  the basename of the recorded `cwd`.
+- Project identity comes from recorded fields, never from decoding Claude Code, Pi or
+  Gemini CLI project directory names, which encode paths lossily; for Gemini CLI the
+  recorded field is the bucket’s `.project_root` marker, accepted only when it hashes to
+  the session’s `projectHash`. A thread’s `project` is a plain name, never a path: the
+  manifest’s project mapping when one matches (so worktrees map to one logical project
+  and keep their original `cwd`), else the git top-level directory basename when the
+  dialect records it, else the basename of the recorded `cwd`.
 - Accounts are attributed explicitly or unknown, never guessed from model or
   subscription. Imported local or cloud exports are ordinary manifested artifacts, and no
   cloud export format is claimed without a test.
@@ -487,9 +511,12 @@ support re-extraction while portable artifacts leave the machine:
   without the content.
   Payloads that embed other messages, such as Pi `toolResult.details` and compaction
   `retainedTail`, are stubbed while the `usage` objects inside them stay verbatim as
-  evidence. Values under keys the policy does not recognize stay verbatim, so extraction
-  can be rerun for newly discovered fields, and each capture reports those keys per
-  dialect version as a diagnostic.
+  evidence. The same holds for a Gemini CLI record’s `content`, `displayContent`,
+  `thoughts` and `toolCalls[].args`, `result` and `resultDisplay`, and for the messages
+  a `$set.messages` rewrite carries, whose `tokens` objects stay verbatim (Later, Phase
+  2). Values under keys the policy does not recognize stay verbatim, so extraction can
+  be rerun for newly discovered fields, and each capture reports those keys per dialect
+  version as a diagnostic.
 - The **export policy** applies to summaries and bundles, including a bundle’s `records`
   table, and is a strict allow-list.
   Only enumerated keys and paths keep values: types, IDs, timestamps, models, usage
@@ -592,8 +619,9 @@ findings and the [log throughput spike](../explorations/log-throughput/README.md
 **Status:** Confirmed ([Decision 4](#decision-4-harness-logs-through-urollup-adapters)
 and [Decision 5](#decision-5-qm-out-of-scope)).
 
-- urollup reads harness-captured agent streams (`claude-stream`, `codex-exec` and
-  `pi-events`) directly through its own adapters, with no metaproc dependency.
+- urollup reads harness-captured agent streams (`claude-stream`, `codex-exec`,
+  `pi-events` and, from Phase 2, `gemini-stream`) directly through its own adapters,
+  with no metaproc dependency.
   metaproc’s log-processing code is ported into those Rust adapters with provenance
   ([§8.1](#81-workspace-and-crate-structure)), so metaproc may later depend on them.
 - A metaproc run directory holds captured streams under `.logs/tasks/` and, from
@@ -606,6 +634,13 @@ and [Decision 5](#decision-5-qm-out-of-scope)).
   `turn.completed.usage` totals are a reconciliation check.
   A `claude-stream` capture merges with its transcript by response ID.
   [§3.4](#34-dialect-reconciliation-rules) gives both rules in full.
+- A `gemini-stream` capture carries only whole-process totals, which cover model calls
+  its session file never records, so the session file named by the capture’s
+  `init.session_id` owns the usage and the capture is a coverage check, never a request
+  source (Later, Phase 2).
+- metaproc runs Gemini CLI without a scoped home, so its Gemini sessions land in the
+  user’s own `~/.gemini` buckets and reach default discovery, unlike its Claude and Pi
+  runs.
 - Harness bugs that delete native agent logs are tracked and fixed in the harness.
 - Usage kept only in a harness’s own database, such as qm’s, is out of scope.
 
@@ -739,7 +774,9 @@ Observation bundles re-enter this reconciliation when they merge
 
 ### 3.4 Dialect Reconciliation Rules
 
-**Status:** Confirmed.
+**Status:** Confirmed; the Gemini CLI rules are Later (Phase 2) and rest on source
+reading alone, so fixtures may change them
+([Decision 28](#decision-28-gemini-cli-planned-support)).
 
 The source reviews summarized in the
 [portable research brief](project/research/research-2026-09-13-portable-agent-usage.md)
@@ -790,6 +827,27 @@ set these source-specific rules:
   Usage nested in compaction `retainedTail`, extension `details`, and `pi-events`
   `turn_end`, `agent_end` and `compaction_end` records never counts, and in `pi-events`
   only `message_end` is final.
+- **Gemini CLI records (Later):** a `gemini-session` file is a mutation log, so the
+  records of one message `id` are revisions of one request and the last one in file
+  order wins; a `gemini` record whose `tokens` is null or missing is not a request.
+  Only `type: "gemini"` records carry usage, so a rollup counts no user, info, error or
+  warning record.
+- **Gemini CLI copies (Later):** message IDs are random UUIDs, so one `id` seen in two
+  sessions is a copy, owned by the session that recorded it first in time: the
+  duplicates come from the slug-bucket migration copy, a legacy `.json` file migrated
+  into its `.jsonl`, and `--session-file` imports, which replay `user` and `gemini`
+  records with their original IDs, timestamps and tokens under a new session ID.
+  Messages inside a `{"$set": {"messages": [...]}}` rewrite are revisions of the records
+  already read, never new requests.
+- **Gemini CLI rewinds (Later):** a `{"$rewindTo": "<id>"}` record removes that message
+  and the ones after it from the conversation, not from the ledger: those requests were
+  served and stay counted, with a diagnostic that the transcript no longer shows them.
+- **Gemini CLI ownership (Later):** a subagent file, `chats/<parent session>/<agent
+  id>.jsonl`, owns its own requests, and the spawn edge comes from the parent record’s
+  `toolCalls[].agentId`, since the directory name is always the main session even for a
+  nested subagent. `gemini-stream` `result.stats` totals are process-wide and include
+  unrecorded utility calls, so they are a reconciliation check on the session file,
+  never an observation ([§2.6](#26-harness-captures)).
 
 ### 3.5 Purpose and Annotations
 
@@ -859,6 +917,10 @@ only that scope’s namespace components.
   characters checked for collisions within one file, and a Pi session ID can repeat
   across files (a custom `--session-id`, or an export and import), so neither is a key
   on its own.
+- A Gemini CLI message ID is a random UUID, so it is a key across files, and the same ID
+  in two sessions is copy evidence; a Gemini session ID, which a custom `--session-id`
+  can set, is checked for collisions only within one project bucket, so it is scoped to
+  its root (Later, Phase 2).
 
 #### Identity Basis and Linking
 
@@ -947,6 +1009,10 @@ Counting rules that adapters must normalize explicitly:
 - A recorded total, such as Codex `total_tokens` (sometimes 0) or Pi `totalTokens`
   (provider-reported for some APIs), is recomputed from its components, and a mismatch
   is a diagnostic, never usage.
+- Gemini CLI’s `tokens.input` is inclusive input that contains `cached`, so uncached
+  input is the difference; `thoughts` is the reasoning subset reported outside `output`,
+  and `tool`, the tool-use prompt count, is an input category, never output.
+  Its `total` is recomputed like any other recorded total (Later, Phase 2).
 - One usage carrier can stand for zero, one or several requests: a Pi compaction entry
   can combine two summary calls and a Pi tool result’s usage is opaque, so their call
   counts are unknown rather than 1, and they record no model.
@@ -1677,7 +1743,7 @@ Every reading command accepts these flags, which compile into the `QuerySpec`:
 | `--sessions-from <file>` | Session selectors, one per line |
 | `--latest` | The most recently active session for the working directory, by heuristic |
 | `--all` | Every discovered session on all dates |
-| `--agent claude\|codex\|pi` | Sessions written by one agent; repeatable |
+| `--agent claude\|codex\|pi\|gemini` | Sessions written by one agent; repeatable, with `pi` and `gemini` from Phase 2 |
 | `--since`, `--until`, `--timezone` | Usage inside a half-open interval |
 | `--whole-sessions` | All usage of every session with usage inside the interval |
 | `--project <name>`, `--cwd <path>` | Sessions by logical project or recorded working directory |
@@ -1701,8 +1767,8 @@ Every reading command accepts these flags, which compile into the `QuerySpec`:
 
 ### 6.2 Current-Session Detection
 
-**Status:** Confirmed ([Decision 12](#decision-12-current-session-detection)); Pi
-detection is Later (Phase 2).
+**Status:** Confirmed ([Decision 12](#decision-12-current-session-detection)); Pi and
+Gemini CLI detection are Later (Phase 2).
 
 `--current` never guesses.
 It uses the research brief’s
@@ -1711,10 +1777,13 @@ in this order:
 
 1. **Hook input:** `--hook-input` reads `agent_transcript_path` on subagent stop events,
    otherwise `transcript_path`. A Claude Code transcript is checked against
-   `session_id`. A Codex hook’s `session_id` always names the root session, so a Codex
-   rollout is checked by `session_meta.session_id` equal to `session_id` and, when
-   `agent_id` is present, `session_meta.id` equal to `agent_id`. A null
-   `transcript_path` (an ephemeral Codex thread) exits 1 as an unsaved session.
+   `session_id`. A Gemini CLI hook’s `transcript_path` names the main chat file and its
+   `session_id` the main session, which the file’s `sessionId` must match; an empty
+   `transcript_path` means recording was off and exits 1 (Phase 2). A Codex hook’s
+   `session_id` always names the root session, so a Codex rollout is checked by
+   `session_meta.session_id` equal to `session_id` and, when `agent_id` is present,
+   `session_meta.id` equal to `agent_id`. A null `transcript_path` (an ephemeral Codex
+   thread) exits 1 as an unsaved session.
 2. **Agent environment:** `CLAUDE_CODE_SESSION_ID` for Claude Code, `CODEX_THREAD_ID`
    for Codex (the subagent’s own thread inside a subagent’s tools, with
    `CODEX_SESSION_ID` as the root), and `PI_SESSION_FILE` for Pi, where `PI_SESSION_ID`
@@ -1722,6 +1791,10 @@ in this order:
    roots; `--agent` limits which variables count.
    Until the Pi adapters ship in Phase 2, a detected Pi session (`PI_SESSION_FILE` or
    `PI_SESSION_ID`) exits 2 with an unsupported-dialect diagnostic.
+   Gemini CLI has no equivalent: its tool and MCP subprocesses get only the marker
+   `GEMINI_CLI=1`, and `GEMINI_SESSION_ID` exists only inside a hook command, so a
+   command running in a Gemini session exits 2 naming `--hook-input`, `--session` and
+   `--latest` rather than guessing.
 3. **No fallback:** exit 2, suggesting `--session`, `--latest` or `--all`.
 
 Rules that keep detection exact:
@@ -1737,13 +1810,17 @@ Rules that keep detection exact:
   preferring the project whose recorded `cwd` matches (two matches exit 2, none exits 1
   listing the roots); Codex `rollout-*-<thread-id>.jsonl`, with an optional
   `_<rollout-id>` suffix and `.zst` extension, in `sessions/` and `archived_sessions/`,
-  where several files are one thread; and Pi’s `PI_SESSION_FILE`.
+  where several files are one thread; Pi’s `PI_SESSION_FILE`; and Gemini CLI
+  `<root>/<project>/chats/session-*-<first 8 characters of the ID>.jsonl`, confirmed by
+  the file’s recorded `sessionId`, since the name keeps only a prefix, with subagents at
+  `chats/<session ID>/<agent ID>.jsonl`.
 - **Claude Code subagents:** inside a Claude Code subagent the variable names the
   parent, so only hook input or `--session` selects a subagent alone.
 - **In-flight requests:** Claude Code transcripts are flushed asynchronously, so a
   current-session summary reports its snapshot cutoff and usually omits the in-flight
   request; Pi writes the calling request before running a tool, so a Pi summary includes
-  it.
+  it. Gemini CLI appends an assistant record only after its stream finishes, so a summary
+  taken inside a Gemini tool omits the calling request.
 
 `--latest` is the only heuristic and never runs implicitly, including in interactive
 terminals.
@@ -2304,7 +2381,8 @@ LiteLLM and models.dev as cross-checks; exact model match, labeled defaults, no 
 **Status:** Candidate.
 
 **Recommendation:** Dialect IDs `claude-project`, `claude-stream`, `codex-rollout`,
-`codex-exec`, `pi-session` and `pi-events`; `UROLLUP_*` override variables.
+`codex-exec`, `pi-session`, `pi-events`, `gemini-session` and `gemini-stream`;
+`UROLLUP_*` override variables, including `UROLLUP_GEMINI_DIRS`.
 
 **Designed in:** [§2.1](#21-dialects-and-discovery).
 
@@ -2367,15 +2445,19 @@ default.
 
 **Status:** Candidate.
 
-**Recommendation:** Support only Claude Code, Codex and Pi through Phase 2. Add another
-agent, such as one of the 13 that ccusage reads beyond these, one dialect at a time and
-only once fixtures from that agent’s source or a consented corpus exist.
+**Recommendation:** Support only Claude Code, Codex, Pi and Gemini CLI through Phase 2,
+Gemini CLI being a confirmed planned agent since 2026-09-15
+([Decision 28](#decision-28-gemini-cli-planned-support)). Add any further agent, such as
+one of the 12 that ccusage reads beyond these, one dialect at a time and only once
+fixtures from that agent’s source or a consented corpus exist.
 Each new dialect needs its own strip policies, reconciliation rules and a parity case
 against the matching `ccusage <agent>` path.
 Agents whose usage lives in SQLite (OpenCode, Hermes Agent, Goose and Kilo) wait for
 database input ([Decision 20](#decision-20-database-input-in-phase-3)). ccusage’s MIT
 adapters are format-fact sources under
 [Decision 3](#decision-3-code-reuse-and-licensing).
+Maintainer use is the selection rule that admitted Gemini CLI, and it applies to any
+later candidate.
 
 **Designed in:** [§2.1](#21-dialects-and-discovery), [§10.2](#102-future-enhancements).
 
@@ -2595,7 +2677,7 @@ These decisions are confirmed by the maintainer, grouped by area:
 
 | Area | Decisions |
 | --- | --- |
-| Project and scope | [1](#decision-1-product-name), [2](#decision-2-mit-license), [3](#decision-3-code-reuse-and-licensing), [4](#decision-4-harness-logs-through-urollup-adapters), [5](#decision-5-qm-out-of-scope) |
+| Project and scope | [1](#decision-1-product-name), [2](#decision-2-mit-license), [3](#decision-3-code-reuse-and-licensing), [4](#decision-4-harness-logs-through-urollup-adapters), [5](#decision-5-qm-out-of-scope), [28](#decision-28-gemini-cli-planned-support) |
 | Capture | [6](#decision-6-data-capture-principle), [7](#decision-7-captured-records-and-strip-policies), [8](#decision-8-capture-store-and-cache), [9](#decision-9-capture-scope) |
 | Accounting and time | [10](#decision-10-recorded-usage-windows), [11](#decision-11-time-handling) |
 | CLI and output | [12](#decision-12-current-session-detection), [13](#decision-13-selection-defaults), [14](#decision-14-exit-codes), [15](#decision-15-json-as-an-output-rendering) |
@@ -3050,6 +3132,37 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 **Confirmed:** 2026-09-14; see the plan’s
 [rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan).
 
+#### Decision 28: Gemini CLI Planned Support
+
+**Choice:** Gemini CLI is a planned supported agent, with tested adapters like Claude
+Code, Codex and Pi: `gemini-session` for its chat files and `gemini-stream` for saved
+headless output, default discovery of `~/.gemini/tmp`, the `UROLLUP_GEMINI_DIRS`
+override, its own strip policies, reconciliation rules and synthetic fixtures, and a
+`ccusage gemini` parity case.
+**Recommended phase:** Phase 2, beside the Pi adapters, rather than milestone 0.5.
+
+**Rationale:** The maintainer uses Gemini CLI, so its usage belongs in the same rollup
+as Claude Code and Codex, and ccusage already reports it, which the coverage review
+counted as urollup’s one gap ([§10.6](#106-ccusage-use-case-coverage)). Phase 2 is
+recommended because the format is not the simple case that would justify milestone 0.5:
+a session file is an append-only mutation log with `$set` rewrites and `$rewindTo`
+markers, requests have no response ID, Gemini CLI’s own directory migration and
+`--session-file` import create cross-file copies, and only main-chat and subagent turns
+are recorded at all, so the adapter needs the revision, copy and coverage-gap machinery
+that milestone 0.1 through 0.5 build and Phase 2 already applies to Pi.
+The facts behind it came from source alone, so fixtures must confirm them before the
+rules are settled.
+
+**Tradeoffs:** Gemini usage is not reported in Phase 1, and the rollup is a lower bound
+even afterwards, because compaction, routing, summarizing and other utility calls reach
+only OpenTelemetry, which stays an unsupported dialect
+([§2.1](#21-dialects-and-discovery)). Gemini CLI publishes no format stability
+guarantee, so the adapter records the versions its fixtures cover.
+
+**Confirmed:** 2026-09-15; see [§2.1](#21-dialects-and-discovery),
+[§3.4](#34-dialect-reconciliation-rules) and the research brief’s
+[Gemini CLI dialect facts](project/research/research-2026-09-13-portable-agent-usage.md#gemini-cli-dialect-facts).
+
 ### 10.2 Future Enhancements
 
 | Enhancement | Phase | Designed in |
@@ -3060,6 +3173,7 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | `compare` and `check` commands | Phase 2 | [§6.3](#63-commands) |
 | `windows` report over provider limit observations | Phase 2 | [§4.4](#44-usage-windows) |
 | `pi-session` and `pi-events` adapters, with Pi `--current` detection | Phase 2 | [§2.1](#21-dialects-and-discovery), [§6.2](#62-current-session-detection) |
+| `gemini-session` and `gemini-stream` adapters, with hook-input `--current` detection and a `ccusage gemini` parity case | Phase 2 (recommended) | [§2.1](#21-dialects-and-discovery), [§3.4](#34-dialect-reconciliation-rules), [Decision 28](#decision-28-gemini-cli-planned-support) |
 | Imported multi-account and cloud-export fixtures | Phase 2 | [§2.1](#projects-and-accounts), [§9.3](#cloud-export-formats) |
 | Configured purpose rules and `--annotation-set` imports | Phase 2 | [§3.5](#35-purpose-and-annotations) |
 | `statusline` today segment, if the candidate is confirmed | Phase 2 | [§6.8](#68-status-line), [§9.1](#statusline-command) |
@@ -3068,7 +3182,7 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 | Account registry with dated plan terms, subscription allocations and budgets | Later | [§4.6](#46-accounts-and-plans-later), [§9.2](#organization-and-quota-groups-per-account) |
 | Anomaly detectors ported from agentfdr | Later, if confirmed | [§9.2](#anomaly-detectors) |
 | `urollup mcp` stdio server with read-only query tools | Later, if confirmed | [§9.1](#mcp-surface) |
-| Adapters for further agents, such as those ccusage reads, one tested dialect at a time | Later, if confirmed; SQLite-backed agents no earlier than Phase 3 | [§2.1](#21-dialects-and-discovery), [§9.1](#additional-agent-adapters) |
+| Adapters for agents beyond these four, such as the rest that ccusage reads, one tested dialect at a time | Later, if confirmed; SQLite-backed agents no earlier than Phase 3 | [§2.1](#21-dialects-and-discovery), [§9.1](#additional-agent-adapters) |
 | Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§9.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |
@@ -3115,13 +3229,13 @@ Sources and session selection, accepted by every reading command:
 
 | Flag | Purpose | Home section | Phase |
 | --- | --- | --- | --- |
-| `--current` | Select the session running the command, from hook input or agent environment variables | [§6.2](#62-current-session-detection) | 1 (0.1); Pi in 2 |
-| `--hook-input` | Select the session named by Claude Code or Codex hook input JSON | [§6.2](#62-current-session-detection) | 1 (0.5) |
+| `--current` | Select the session running the command, from hook input or agent environment variables | [§6.2](#62-current-session-detection) | 1 (0.1); Pi and Gemini CLI in 2 |
+| `--hook-input` | Select the session named by Claude Code or Codex hook input JSON, and Gemini CLI’s from Phase 2 | [§6.2](#62-current-session-detection) | 1 (0.5); Gemini CLI in 2 |
 | `--session` | Select a session by native ID, `thr-` ID or transcript path; repeatable | [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
 | `--sessions-from` | Read session selectors from a file, one per line | [§6.1](#61-workflows-and-session-selection) | 1 (0.5), Candidate |
 | `--latest` | Select the most recently active session for the working directory, the only guarded heuristic | [§6.2](#62-current-session-detection) | 1 (0.5) |
 | `--all` | Select every discovered session on all dates | [§6.1](#61-workflows-and-session-selection) | 1 (0.1) |
-| `--agent` | Select sessions written by one agent, and choose among nested agents for `--current`; repeatable | [§6.1](#61-workflows-and-session-selection), [§6.2](#62-current-session-detection) | 1 (0.5) |
+| `--agent` | Select sessions written by one agent (`claude`, `codex`, `pi` or `gemini`), and choose among nested agents for `--current`; repeatable | [§6.1](#61-workflows-and-session-selection), [§6.2](#62-current-session-detection) | 1 (0.5); `pi` and `gemini` values in 2 |
 | `--project` | Select sessions by logical project name | [§6.1](#61-workflows-and-session-selection), [§2.1](#projects-and-accounts) | 1 (0.5) |
 | `--cwd` | Select sessions by recorded working directory | [§6.1](#61-workflows-and-session-selection) | 1 (0.5) |
 | `--since` | Start a half-open time interval; relative values resolve to an absolute instant | [§6.1](#61-workflows-and-session-selection), [§6.4](#64-queries-output-formats-and-streams) | 1 |
@@ -3198,7 +3312,7 @@ Flags the design names that urollup does not accept:
 | `--locale` | None: formatting is locale-independent (Candidate) | [§6.4](#64-queries-output-formats-and-streams) | None |
 | `--ephemeral` | Codex flag for threads that write no rollout, whose usage is reported as unobserved | [§2.1](#21-dialects-and-discovery) | None |
 | `--session-dir` | Pi flag for a flat session directory, which urollup reads only through `--source` | [§2.1](#21-dialects-and-discovery) | None |
-| `--session-id` | Pi flag for a custom session ID, which can repeat across files and so is never a key alone | [§3.6](#key-scope) | None |
+| `--session-id` | Pi and Gemini CLI flag for a custom session ID, which can repeat outside its own store and so is never a key alone | [§3.6](#key-scope) | None |
 | `--locked` | Cargo flag that CI workflows and release builds pass | [§8.2](#82-engineering-conventions) | None |
 | `--no-default-features` | Cargo flag for the CI build and dependency check without the `serve` feature | [§7.1](#71-the-serve-feature) | None |
 
@@ -3241,6 +3355,8 @@ External references:
   for the baseline
 - [Agentfdr](https://github.com/kamihork/agentfdr)
 - [ccusage](https://github.com/ccusage/ccusage)
+- [Gemini CLI v0.60.0](https://github.com/google-gemini/gemini-cli/tree/733edcb597ce690ac2e2fe3b3b3690b60a4c8f27),
+  the release behind [Decision 28](#decision-28-gemini-cli-planned-support)
 - [softschema 0.8.1 specification](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-spec.md)
   and [guide](https://github.com/jlevy/softschema/blob/v0.8.1/docs/softschema-guide.md)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
@@ -3269,7 +3385,9 @@ A row whose design link says *Candidate* is covered only once that
 [§9.1](#91-candidate-decisions) decision is confirmed.
 The 2026-09-15 review found gaps in status line output, compact tables, color control,
 recent-period shortcuts, cost hiding, cache-hit reporting, configuration defaults and
-other agents’ logs. Candidates close the first six and set a policy for the other two.
+other agents’ logs. Candidates close the first six and set a policy for the other two,
+and [Decision 28](#decision-28-gemini-cli-planned-support) closed the agent gap for
+Gemini CLI on the same day.
 
 | Use case | ccusage 20.0.20 | urollup | Status | Design |
 | --- | --- | --- | --- | --- |
@@ -3288,7 +3406,8 @@ other agents’ logs. Candidates close the first six and set a policy for the ot
 | Claude Code logs | `CLAUDE_CONFIG_DIR` list and default directories; usage dropped on nested null fields | `claude-project` and `claude-stream` with lenient decoding, the native variable and an override | Covered better | [§2.1](#21-dialects-and-discovery), [§2.2](#22-snapshot-boundary), [§3.4](#34-dialect-reconciliation-rules) |
 | Codex logs | `CODEX_HOME`, active and archived rollouts, `codex exec --json` directories; no `.jsonl.zst` or `token_usage_record` | `codex-rollout` with compressed rollouts and `token_usage_record`, and `codex-exec` | Covered better | [§2.1](#21-dialects-and-discovery), [§3.4](#34-dialect-reconciliation-rules) |
 | Pi logs | `pi` reports, `--pi-path`, extra stores in the config file | `pi-session` and `pi-events` in Phase 2; extra roots through `--source` or the source manifest | Covered | [§2.1](#21-dialects-and-discovery) |
-| Other agents’ logs | 13 more agents, such as OpenCode, Gemini CLI and GitHub Copilot CLI | Not read | Gap | [§9.1](#additional-agent-adapters) (Candidate) |
+| Gemini CLI logs | `GEMINI_DATA_DIR` list of `tmp` roots; every `.json` and `.jsonl` file below them; dedupe by message ID within one file only | `gemini-session` and `gemini-stream` in Phase 2, with `GEMINI_CLI_HOME`, an override, content-based identification, cross-file copy rules and the unrecorded utility calls reported as a coverage gap | Covered better, in Phase 2 | [§2.1](#21-dialects-and-discovery), [§3.4](#34-dialect-reconciliation-rules), [Decision 28](#decision-28-gemini-cli-planned-support) |
+| Other agents’ logs | 12 more agents, such as OpenCode, Amp and GitHub Copilot CLI | Not read | Gap | [§9.1](#additional-agent-adapters) (Candidate) |
 | Custom log locations | Agent directory variables and path flags | `--source`, the source manifest and `UROLLUP_*` overrides | Covered | [§2.1](#21-dialects-and-discovery) |
 | Date range | `--since` and `--until` as inclusive local dates | Half-open intervals; relative values resolve to instants in the `QuerySpec` | Covered | [§4.3](#43-time-grouping-and-percentiles), [§6.4](#64-queries-output-formats-and-streams) |
 | Recent periods | `--last <N>` | `--last <n>`, resolved to absolute bounds | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
@@ -3316,8 +3435,11 @@ other agents’ logs. Candidates close the first six and set a policy for the ot
 | Configuration defaults | `ccusage.json` defaults per command and agent, with a JSON schema | `sources.yaml`, `prices.yaml` and saved `--query` presets; no defaults file | Partial: no default flags | [§6.4](#64-queries-output-formats-and-streams), [§9.1](#configuration-defaults) (Candidate) |
 | Environment variables | Agent directory variables, `LOG_LEVEL` and `NO_COLOR` | Native agent variables and `UROLLUP_*` overrides | Covered | [§2.1](#21-dialects-and-discovery) |
 
-Of these 42 use cases, 17 are covered, 16 covered better, 6 partial, 1 a gap and 2
+Of these 43 use cases, 17 are covered, 17 covered better, 6 partial, 1 a gap and 2
 intentionally unsupported.
+The Gemini CLI row was added on 2026-09-15 with
+[Decision 28](#decision-28-gemini-cli-planned-support), which also narrowed the
+remaining gap to the agents nobody here uses.
 
 * * *
 
