@@ -1,0 +1,14 @@
+schema = 1
+timezones = ["UTC", "America/Los_Angeles"]
+
+[[suite]]
+dialect = "claude-project"
+agent = "claude"
+fixtures = "crates/urollup-core/tests/fixtures/claude-project"
+since = "last-day"
+
+[[suite]]
+dialect = "codex-rollout"
+agent = "codex"
+fixtures = "crates/urollup-core/tests/fixtures/codex-rollout"
+since = "last-day"

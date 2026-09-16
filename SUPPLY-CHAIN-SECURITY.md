@@ -102,6 +102,8 @@ of these on every run; this record explains the choices.
 | tryscript (npm) | 0.2.1 | 2026-08-22 | First-party |
 | @taplo/cli (npm) | 0.7.0 | 2024-02-01 | Bundles taplo 0.9.0; no dependencies |
 | Other npm packages | 59 locked | Newest is fastq 1.20.3, 2026-08-29 | Resolved with `--before=2026-09-01` |
+| ccusage (npm, parity only) | 20.0.20 | 2026-08-15 | Separate lockfile; native executable invoked directly with lifecycle scripts disabled |
+| @ccusage platform packages (npm) | 20.0.20 | 2026-08-15 | Six optional OS/architecture binaries locked for CI and local parity |
 | get-tbd (npm bootstrap) | 0.8.1 | 2026-08-26 | First-party |
 | softschema (PyPI) | 0.8.1 | 2026-09-11 | First-party, pinned before this scaffold |
 | flowmark-rs (PyPI) | 0.4.0 | 2026-09-04 | First-party, pinned before this scaffold |
@@ -111,6 +113,7 @@ of these on every run; this record explains the choices.
 | gh (bootstrap) | 2.92.0 | 2026-04-28 |  |
 | actions/checkout | `d23441a` (v6.1.0) | 2026-07-16 |  |
 | actions/setup-node | `8207627` (v7.0.0) | 2026-07-14 |  |
+| actions/upload-artifact | `ea165f8` (v4.6.2) | 2025-03-19 | Parity reports only; no reusable dependency cache |
 | dtolnay/rust-toolchain | `2c7215f` | 2026-07-16 | Toolchain version given as an input |
 | astral-sh/setup-uv | `37802ad` (v7) | 2026-03-16 |  |
 

@@ -1,0 +1,9 @@
+{
+  "name": "urollup-ccusage-parity",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned ccusage binary used only by the urollup parity harness",
+  "dependencies": {
+    "ccusage": "20.0.20"
+  }
+}

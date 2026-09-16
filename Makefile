@@ -14,6 +14,8 @@ UV ?= uv
 MSRV ?= 1.85.0
 CARGO_DENY_VERSION := 0.20.2
 NODE_INSTALL_STAMP := node_modules/.package-lock.json
+CCUSAGE_DIR := tests/parity/ccusage
+CCUSAGE_INSTALL_STAMP := $(CCUSAGE_DIR)/node_modules/.package-lock.json
 
 # Always pass the repository's uv.toml, so user-level uv configuration never changes
 # resolution (AGENTS.md).
@@ -21,7 +23,7 @@ UV_RUN = $(UV) --config-file uv.toml run --frozen
 FLOWMARK = $(UV_RUN) flowmark
 TAPLO := node_modules/.bin/taplo
 
-.PHONY: help build test rust-test golden golden-update golden-lint e2e-results check toolchain uv-version \
+.PHONY: help build test rust-test golden golden-update golden-lint e2e-results parity check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
 	clippy docs dependency-guard msrv audit npm-audit gate-proofs fix clean
 
@@ -32,6 +34,7 @@ help:
 	@echo "make golden-update      Regenerate intentional golden changes, then compare"
 	@echo "                        (GOLDEN=<session> limits the update to named sessions)"
 	@echo "make e2e-results        Check reconciled results on every fixture case"
+	@echo "make parity             Reconcile fixture token rows against pinned ccusage"
 	@echo "make check              Handoff gate: everything CI enforces, fastest first"
 	@echo "make fix                Format Rust, TOML and Markdown"
 	@echo "make supply-chain       Verify release age, provenance, pins and CI trust controls"
@@ -44,7 +47,7 @@ help:
 build:
 	$(CARGO) build --locked --workspace
 
-test: rust-test golden e2e-results
+test: rust-test golden e2e-results parity
 
 rust-test:
 	$(CARGO) test --locked --workspace
@@ -52,6 +55,9 @@ rust-test:
 
 $(NODE_INSTALL_STAMP): package.json package-lock.json .npmrc
 	$(NPM) ci --ignore-scripts
+
+$(CCUSAGE_INSTALL_STAMP): $(CCUSAGE_DIR)/package.json $(CCUSAGE_DIR)/package-lock.json .npmrc
+	$(NPM) ci --ignore-scripts --prefix $(CCUSAGE_DIR)
 
 # The harness scripts are gates too, so their decision logic is tested before they run.
 GOLDEN_HARNESS_TESTS := scripts/golden-env.test.mjs scripts/check-golden-invocations.test.mjs \
@@ -81,6 +87,15 @@ golden-update: build $(NODE_INSTALL_STAMP)
 e2e-results: build
 	$(NODE) --test scripts/check-e2e-results.test.mjs
 	$(NODE) scripts/check-e2e-results.mjs
+
+parity: build $(CCUSAGE_INSTALL_STAMP)
+	$(UV_RUN) python -m unittest discover -s tests/parity -p 'test_*.py'
+	$(UV_RUN) python tests/parity/compare.py \
+		--urollup target/debug/urollup \
+		--ccusage-package $(CCUSAGE_DIR) \
+		--cases tests/parity/cases.toml \
+		--ledger tests/parity/ledger.toml \
+		--output-dir target/parity
 
 # Everything CI enforces, in the order that fails fastest.
 check: toolchain uv-version supply-chain lint-policy fixtures-check fmt-check toml-fmt-check \
@@ -140,7 +155,7 @@ uv-version:
 # Standalone entry points must fail before any recipe asks uv to parse repository
 # configuration. Keep this list aligned with the recipe-coverage test in
 # scripts/check-uv-version.test.mjs.
-UV_BACKED_TARGETS := docs-format-check uv-lock-check fix
+UV_BACKED_TARGETS := docs-format-check uv-lock-check parity fix
 
 $(UV_BACKED_TARGETS): uv-version
 
@@ -196,9 +211,11 @@ msrv:
 audit:
 	$(CARGO) deny --locked check
 
-npm-audit: $(NODE_INSTALL_STAMP)
+npm-audit: $(NODE_INSTALL_STAMP) $(CCUSAGE_INSTALL_STAMP)
 	$(NPM) audit --audit-level=moderate
 	$(NPM) audit signatures
+	$(NPM) audit --audit-level=moderate --prefix $(CCUSAGE_DIR)
+	$(NPM) audit signatures --prefix $(CCUSAGE_DIR)
 
 # Each gate is run against its committed violation in a scratch copy of the repository
 # and must fail with the expected diagnostic (tests/gate-probes/README.md).

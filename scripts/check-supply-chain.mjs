@@ -3,8 +3,9 @@
 // controls for every dependency surface in this repository.
 //
 // Adapted from fdu `scripts/check-supply-chain.mjs` at afbb2ee; see PROVENANCE.md.
-// urollup changes: one root uv.lock, workflow-level and job-level permission checks for
-// every workflow, and a policy that fails on any expired exception even when unused.
+// urollup changes: all workspace npm lockfiles, one root uv.lock, workflow-level and
+// job-level permission checks for every workflow, and a policy that fails on any expired
+// exception even when unused.
 
 import { readFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -14,6 +15,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+//: Every npm lockfile in the repository, relative to ROOT.
+//
+// The parity project is deliberately isolated from the root development tools, but its
+// native executable packages need the same integrity, provenance and cool-off checks.
+const NPM_LOCKS = [
+  ["package-lock.json"],
+  ["tests", "parity", "ccusage", "package-lock.json"],
+];
 
 //: Every uv lockfile in the repository, relative to ROOT.
 //
@@ -865,14 +875,14 @@ async function main() {
     exceptions: policy.exceptions,
     firstParty: policy.firstParty ?? [],
   };
-  const [cargoText, npmText, uvTexts, workflows] = await Promise.all([
+  const [cargoText, npmTexts, uvTexts, workflows] = await Promise.all([
     readFile(path.join(ROOT, "Cargo.lock"), "utf8"),
-    readFile(path.join(ROOT, "package-lock.json"), "utf8"),
+    Promise.all(NPM_LOCKS.map((lock) => readFile(path.join(ROOT, ...lock), "utf8"))),
     Promise.all(UV_LOCKS.map((lock) => readFile(path.join(ROOT, ...lock), "utf8"))),
     workflowFiles(ROOT),
   ]);
   const cargo = parseCargoLock(cargoText);
-  const npm = parseNpmLock(npmText);
+  const npm = npmTexts.flatMap((text) => parseNpmLock(text));
   const python = uvTexts.flatMap((text) => parseUvLock(text));
   const actions = parseActionUses(workflows);
   validateWorkflowSecurity(workflows);

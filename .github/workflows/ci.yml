@@ -114,6 +114,35 @@ jobs:
       - name: Check reconciled results on every fixture case
         run: node scripts/check-e2e-results.mjs
 
+  parity:
+    name: ccusage fixture parity
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: npm ci --ignore-scripts
+        working-directory: tests/parity/ccusage
+      - run: make parity
+      - name: Upload regenerated per-case reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ccusage-parity
+          path: target/parity/
+          if-no-files-found: error
+
   docs:
     name: Docs, Markdown and uv lock
     needs: supply-chain
