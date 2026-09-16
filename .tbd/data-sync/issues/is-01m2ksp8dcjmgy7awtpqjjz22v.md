@@ -5,16 +5,20 @@ title: Implement gemini-session and gemini-stream adapters
 kind: task
 status: open
 priority: 2
-version: 2
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
 dependencies:
   - type: blocks
     target: is-01m2ksqda8y7hfm5pstky74ms1
+  - type: blocks
+    target: is-01m2ksrpmc0aq8pjeqqw7t7wxs
+  - type: blocks
+    target: is-01m2kss70201dw0kycgc76jdvv
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 created_at: 2026-09-16T00:25:56.907Z
-updated_at: 2026-09-16T00:26:34.689Z
+updated_at: 2026-09-16T00:27:33.761Z
 ---
 Phase 2 (design Decision 28, 2026-09-15): Gemini CLI is a planned supported agent, so add tested gemini-session and gemini-stream adapters beside the Pi ones.
 
