@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 28
+version: 29
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -41,6 +41,10 @@ child_order_hints:
   - is-01m2ksptx4kzgd5wrf4vdvaaa0
   - is-01m2nerjrrsfghn5avwj8mjr6a
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-16T15:53:27.575Z
+updated_at: 2026-09-16T15:57:34.518Z
 ---
 Scaffold, sanitized fixtures, snapshot reading, identities and ledger, claude-project and codex-rollout adapters, --current/--session/--all with the discovery index and hierarchy crawler, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md.
+
+## Notes
+
+Status 2026-09-16: the uncached Claude Code and Codex engine, exact session selection, report/daily/sessions output, 29 fixture cases, 239 golden blocks, normalized-entity reconciliation, ledger snapshots and the pinned ccusage fixture-parity gate are implemented on PR #4. Remaining milestone work is uro-d36a, uro-qp7j, uro-4gxg, uro-89s7 and the maintainer-decision beads; none is represented as complete by fixture CI.

@@ -5,7 +5,7 @@ title: Add the local-only aggregate mode for end-to-end result checks
 kind: task
 status: open
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,7 +15,7 @@ labels:
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:17:41.714Z
-updated_at: 2026-09-16T00:21:38.772Z
+updated_at: 2026-09-16T15:57:52.330Z
 ---
 Milestone 0.1: check urollup against a consented local corpus that cannot be committed, printing aggregates only, as the plan's Golden and end-to-end result checks describes. scripts/check-e2e-results.mjs --fixtures <dir> already runs the committed checks over an uncommitted corpus; this adds the mode for a corpus with no expected.json.
 
@@ -26,4 +26,4 @@ Milestone 0.1: check urollup against a consented local corpus that cannot be com
 
 ## Notes
 
-Also the mechanism for checking and recording the end-to-end acceptance goals G1 and G2 (plan, End-to-End Acceptance Goals), which run on the maintainer's real local logs: the mode prints reconciled aggregates and the naive-sum overcount, and the automated goldens and result checks never read a real log.
+Status 2026-09-16: fixture result checks are implemented, but this local-only task remains open. It requires a stable start-of-current-day cutoff; its specified --no-capture behavior becomes applicable with milestone 0.3. Do not treat fixture CI as completing it, and do not read local logs without maintainer consent.

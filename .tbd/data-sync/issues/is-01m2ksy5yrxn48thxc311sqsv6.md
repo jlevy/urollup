@@ -5,7 +5,7 @@ title: "Phase 2: Web UI, workflow reports and broader evidence"
 kind: epic
 status: open
 priority: 1
-version: 23
+version: 24
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
@@ -36,8 +36,6 @@ child_order_hints:
   - is-01m2ksrm1p0ynn8h5135kn3y3a
   - is-01m2kss70201dw0kycgc76jdvv
 created_at: 2026-09-16T00:30:16.533Z
-updated_at: 2026-09-16T00:31:34.179Z
+updated_at: 2026-09-16T15:57:32.292Z
 ---
-Phase 2 of the urollup plan, after Phase 1's milestones 0.1-0.5: the capture cache read path, `serve` with its HTTP API, embedded web UI and security controls, the CLI-backed reporting skill with the cloud workflow, `compare` and `check`, the `windows` report over recorded provider limits, the Pi adapters with imported multi-account and cloud-export fixtures, configured purpose rules and annotation sets, and the statusline today segment if the candidate is confirmed.
-
-Design: §2.5 cache reads, §7, §6.7, §6.3 Phase 2 commands, §4.4, §2.1 and §6.2 for Pi, §3.5, §6.8.
+Phase 2 of the urollup plan, after Phase 1 milestones 0.1-0.5: the capture cache read path, serve with its HTTP API, embedded web UI and security controls, the CLI-backed reporting skill with the cloud workflow, compare and check, the windows report over recorded provider limits, Pi and Gemini CLI adapters with their fixtures and parity cases, imported multi-account and cloud-export fixtures, configured purpose rules and annotation sets, and the statusline today segment if the candidate is confirmed. Design: §2.5 cache reads, §7, §6.7, §6.3 Phase 2 commands, §4.4, §2.1 and §6.2 for Pi and Gemini CLI, §3.5, §6.8.

@@ -5,7 +5,7 @@ title: Add local-corpus ccusage aggregate diff script
 kind: task
 status: open
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -16,7 +16,7 @@ dependencies:
     target: is-01m2f0th11tcymcgy8zqfqkn2g
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-15T22:08:01.912Z
-updated_at: 2026-09-15T22:08:49.064Z
+updated_at: 2026-09-16T15:57:51.255Z
 ---
 Milestone 0.1: maintainer-run local-corpus aggregate diff between pinned ccusage and urollup, per the plan's "ccusage reconciliation harness" section (Local corpus).
 
@@ -27,3 +27,7 @@ Milestone 0.1: maintainer-run local-corpus aggregate diff between pinned ccusage
 - Until milestone 0.5, local ledger entries give a sign and bound; request-attributed explained amounts come with the requests command (see uro-o65n).
 - Commit one reviewed record per urollup release under bench/results/parity/; an unexplained residual above 0.1% of a metric's daily total (proposed threshold) gets a bead.
 - Do not read or copy private log content into docs, fixtures or tests.
+
+## Notes
+
+Status 2026-09-16: fixture parity is implemented, but this local-only task remains open. It requires a stable start-of-current-day cutoff; its specified --no-capture behavior becomes applicable with milestone 0.3. Do not treat fixture CI as completing it, and do not read local logs without maintainer consent.
