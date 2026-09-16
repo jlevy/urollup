@@ -5,8 +5,8 @@ title: Release, distribution and pre-1.0 validation
 kind: epic
 status: in_progress
 priority: 1
-version: 9
-spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+version: 11
+spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 delegate: claude-code@spud10.local
 labels:
   - release
@@ -23,9 +23,13 @@ child_order_hints:
 hold: null
 hold_until: null
 created_at: 2026-09-16T00:30:40.663Z
-updated_at: 2026-09-16T16:47:20.854Z
+updated_at: 2026-09-16T16:54:51.849Z
 started_at: 2026-09-16T16:47:20.853Z
 ---
 The plan's Rollout Plan: build and publish urollup as a standalone product, and validate it before 1.0. Covers the platform matrix, release channels, verification and versioning, release documentation, the pre-1.0 release checklist with shadow-mode validation, and the consented-corpus ground-truth check.
 
 Plan: Rollout Plan and Testing Strategy (Ground truth). Design: Decision 27 (release scope) and §5.6 (contract versioning). Baseline: the Rust CLI engineering baseline's targets, channels and versioning.
+
+## Notes
+
+Focused implementation plan created at docs/project/specs/active/plan-2026-09-16-first-release-publishing.md. It selects GitHub Releases, crates.io and a PyPI urollup Maturin binary wheel, defines the native archive and wheel matrices, and gives the rehearsal, first-publish, verification and recovery sequence. Importable Python bindings remain separately tracked by uro-8vvf.

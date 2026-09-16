@@ -5,14 +5,14 @@ title: Define and run the pre-1.0 release checklist and shadow-mode validation
 kind: task
 status: open
 priority: 2
-version: 1
-spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+version: 2
+spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels:
   - release
 dependencies: []
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:50.788Z
-updated_at: 2026-09-16T00:30:50.788Z
+updated_at: 2026-09-16T16:54:15.318Z
 ---
 Rollout: the gate before binaries with the embedded UI are published. Plan Rollout Plan.
 

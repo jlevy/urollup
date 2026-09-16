@@ -5,8 +5,8 @@ title: Build and smoke-test release targets on native runners
 kind: task
 status: open
 priority: 1
-version: 2
-spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+version: 5
+spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels:
   - release
 dependencies:
@@ -14,12 +14,6 @@ dependencies:
     target: is-01m2ksz138y5h2rwsesrv1eve7
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:42.450Z
-updated_at: 2026-09-16T00:30:44.327Z
+updated_at: 2026-09-16T16:54:44.603Z
 ---
-Rollout: the platform matrix. Plan Rollout Plan; Decision 27; the baseline's targets, channels and versioning.
-
-Acceptance:
-- Static musl Linux x86_64 and arm64, macOS arm64 and x86_64, and Windows x86_64, each built with --locked and smoke-tested on a native runner.
-- The musl build is benchmarked before choosing a global allocator; Windows arm64 waits for demand.
-- The packaged-binary smoke test runs a real report over a fixture root, checks the version string, and runs the binary with the embedded web bundle.
-- The release profile keeps unwinding so a panicking serve handler does not end the process.
+Artifact matrix for the first public release. Focused plan: Artifact Matrix and Packaged-Artifact Tests.\n\nAcceptance:\n- GitHub Release archives contain static musl Linux x86_64 and arm64 binaries, macOS arm64 and x86_64 binaries, and Windows x86_64 binaries. Each archive is built with --locked and smoke-tested on a matching native host.\n- PyPI wheels contain the Rust executable through Maturin bindings=bin. Linux wheels are genuine manylinux 2_17 x86_64 and arm64 builds, separate from the static musl archives; macOS arm64 and x86_64 and Windows x86_64 wheels complete the matrix.\n- Every packaged artifact runs --version and an explicit-source JSON report over a synthetic fixture from an empty environment. Tests cannot read real agent logs or reach a preinstalled urollup.\n- The macOS deployment floor and Linux dynamic-library contract are recorded and enforced.\n- The musl build is benchmarked before choosing a global allocator. Musllinux wheels and Windows arm64 wait for demand.

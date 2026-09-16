@@ -5,8 +5,8 @@ title: Add build-provenance attestations and tag-checked SemVer
 kind: task
 status: open
 priority: 1
-version: 2
-spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+version: 4
+spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels:
   - release
 dependencies:
@@ -14,7 +14,7 @@ dependencies:
     target: is-01m2ksz7d707rz38cfe8gh2xbj
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:46.051Z
-updated_at: 2026-09-16T00:30:50.788Z
+updated_at: 2026-09-16T16:54:16.217Z
 ---
 Rollout: verification and versioning. Plan Rollout Plan; design §5.6.
 
