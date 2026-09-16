@@ -480,14 +480,19 @@ package = false
 exclude-newer = "14 days"
 
 [tool.uv.exclude-newer-package]
-softschema = "2099-12-31"
-flowmark-rs = "2099-12-31"
+softschema = "2100-01-01T00:00:00Z"
+flowmark-rs = "2100-01-01T00:00:00Z"
 ```
 
 - *(Updated 2026-09-15: the cool-off and first-party exemptions now live in a root
   `uv.toml` that every command passes as `uv --config-file uv.toml`, so user-level uv
   configuration never changes resolution, and `pyproject.toml` keeps only
   `[tool.uv] package = false` beside the dev group above.)*
+- *(Updated 2026-09-15: exemption values must be full RFC 3339 UTC timestamps.
+  uv resolves a date-only value such as `"2099-12-31"` in the machine’s local timezone
+  and records that instant in `uv.lock`, so a lock written in one timezone fails
+  `uv lock --check` on a CI runner in another; milestone 0.1’s first CI run hit exactly
+  this.)*
 - Keep fdu’s `uv` version preflight so an old uv fails with a version message rather
   than a TOML date error.
 
@@ -527,7 +532,9 @@ flowmark-rs = "2099-12-31"
 
 ## Next Steps
 
-- [ ] Scaffold the repository to this baseline (the plan’s first Phase 1 task).
+- [x] Scaffold the repository to this baseline (the plan’s first Phase 1 task).
+  *(Done 2026-09-15 in bead `uro-phi8`; see
+  [Implementation Notes](#implementation-notes-milestone-01-scaffold).)*
 - [x] Confirm the decisions marked above.
   *(Confirmed 2026-09-13 and 2026-09-14 as design Decisions
   [2](../../urollup-design.md#decision-2-mit-license),
@@ -541,6 +548,163 @@ flowmark-rs = "2099-12-31"
 - [ ] Measure the musl release build on a representative corpus before choosing an
   allocator.
 - [ ] Record reachable hosts for each cloud environment in the cloud smoke test.
+
+## Implementation Notes (Milestone 0.1 Scaffold)
+
+*(Added 2026-09-15, bead `uro-phi8`.)* The scaffold adopts Option A and the
+Recommendations above for everything milestone 0.1 exercises.
+Files ported from fdu `afbb2ee` are listed in [PROVENANCE.md](../../../PROVENANCE.md);
+versions and publication dates are in
+[SUPPLY-CHAIN-SECURITY.md](../../../SUPPLY-CHAIN-SECURITY.md).
+
+**Followed as recommended:**
+
+- **Workspace:** two crates, resolver 3, Edition 2024, `rust-version = "1.85"`, MIT, a
+  release profile that keeps unwinding, and a default-on empty `serve` feature
+  ([Cargo.toml](../../../Cargo.toml)). Rust 1.85.0 builds and tests the workspace, so
+  the MSRV needs no raise.
+- **Lint floor:** the block under [Lint Floor](#lint-floor), `clippy.toml` and
+  `rustfmt.toml`. `clippy::panic` is denied by a crate attribute in `urollup-core`,
+  because Cargo rejects member lints beside `[lints] workspace = true`.
+- **CLI process:** `main` returns `ExitCode` from `run` with injected writers; only exit
+  classes 0, 1 and 2 exist until a feature produces the others; clap’s `color` feature
+  is off, so nothing is styled yet.
+- **Gates:** `make check` and `make fix` in the [Makefile](../../../Makefile), each
+  gate’s logic in a tested script, and CI jobs in
+  [ci.yml](../../../.github/workflows/ci.yml) that wait for the supply-chain job, with
+  read-only permissions, SHA-pinned actions, `--locked` and no caches.
+- **Floor proof:** a `cargo metadata` lint-policy check plus 25 committed violation
+  probes run by `make gate-proofs`
+  ([tests/gate-probes](../../../tests/gate-probes/README.md)). On 2026-09-15 every probe
+  failed its gate with the expected diagnostic, covering the toolchain and uv
+  preflights, supply chain, lint policy, rustfmt, taplo, flowmark, `uv lock --check`,
+  six clippy floor rules and `--all-targets`, a failing test, four golden failure modes,
+  rustdoc, both dependency guards, MSRV and cargo-deny.
+  `npm-audit` has no probe, with the reason recorded in `probes.json`.
+
+**Deviations, each for a stated reason:**
+
+- **Toolchain pin:** 1.98.0, not fdu’s 1.97.1; it was the newest release past the 14-day
+  cool-off.
+- **taplo:** installed from npm `@taplo/cli` 0.7.0 (taplo 0.9.0) in the locked
+  `package-lock.json`, so local and CI format TOML with the same verified build and no
+  Rust compile.
+- **cargo-deny:** CI installs the 0.20.2 release binary through the digest-verified
+  `scripts/install-cargo-deny.sh` instead of fdu’s Docker action, so the audit job and
+  the gate proofs share one binary; a toolchain preflight requires the same version
+  locally.
+- **Supply-chain validator:** beyond fdu, it requires read-only top-level permissions in
+  every workflow, forbids write grants in pull-request jobs, fails on expired exceptions
+  and skips nested agent worktrees.
+  The first-party list is npm `get-tbd` and `tryscript` and PyPI `softschema` and
+  `flowmark-rs`; PyPI `flowmark` is not in the lock, and the locked `frontmatter-format`
+  already clears the cool-off.
+- **Dependency guard:** it denies HTTP and async-runtime crates in both trees and CLI
+  crates in the core, over `cargo tree -e normal --target all`.
+- **Markdown:** `.flowmarkignore` leaves generated skills under `.agents/skills/` and
+  `.claude/skills/` to their generators.
+
+**Deferred to the milestone that needs them:** `insta` and `proptest` (no ledger or
+report data yet; `proptest` and `thiserror` arrived with the core below), `tracing` and
+`anyhow`, the version-stamping `build.rs`, pytest and contract gates (milestone 0.2),
+`bench/` (milestone 0.5), coverage, `cargo-semver-checks` and release workflows.
+The `THIRD-PARTY-NOTICES` file arrived with the first ported third-party code.
+Every tool the gate needs was installable locally, including tryscript.
+
+The strict cross-target clippy job was deferred for want of platform-gated code, and the
+source reader brought some: symlink handling in `sources/roots.rs` and its tests is
+behind `cfg(unix)`. The first Windows-only break followed immediately — two imports used
+only by the gated tests, which `-D unused-imports` rejects on Windows — and only the
+`windows-2025` CI job caught it, one push later.
+A cross-target lint is the local guard for that class of break, tracked in `uro-g1td`.
+
+## Implementation Notes (Milestone 0.1 Core)
+
+*(Added 2026-09-15, beads `uro-spce` and `uro-26dh`.)* The ledger, reconciliation,
+ownership totals and the snapshot reader landed in `crates/urollup-core`. Crate versions
+and publication dates are in
+[SUPPLY-CHAIN-SECURITY.md](../../../SUPPLY-CHAIN-SECURITY.md), ported files in
+[PROVENANCE.md](../../../PROVENANCE.md) and
+[THIRD-PARTY-NOTICES.md](../../../THIRD-PARTY-NOTICES.md).
+These are the choices a reader of the code would otherwise have to reconstruct.
+
+**Analytical identities (design §3.6).**
+
+- The digested array is flat: `[prefix token, identity version, key kind, component…]`,
+  for example `["req",1,"provider-response","anthropic","msg_01"]`. JSON array structure
+  already keeps component boundaries unambiguous, so nesting the components would add a
+  level without adding information.
+- RFC 8785 serializes numbers as ECMAScript doubles, so an integer component is rejected
+  outside ±(2^53 − 1) rather than silently rounded; RFC 8785 Appendix D’s advice is to
+  carry such values as strings.
+  Strings follow §3.2.2.2 exactly: `\b`, `\t`, `\n`, `\f` and `\r` for those five
+  controls, lowercase `\u00hh` for the rest below U+0020, and everything else, including
+  U+007F and U+2028, verbatim.
+  The unit tests check the RFC’s own string sample byte for byte and its integer edge
+  cases.
+- The 128-bit digest is written as 26 Crockford base32 digits, most significant first
+  and left-padded like a ULID, so the first digit is at most `7` and string order equals
+  digest order. The design’s “lowest ID” tie-breaks are then plain string comparisons.
+  One derived ID is pinned in a test and was checked independently with Python
+  `hashlib`.
+- An identity collision is detectable only through stored keys, so `IdentityRegistry`
+  keeps every ID with the key it came from.
+  A redacted key cannot be re-derived, which is what makes an injected collision
+  testable at all.
+
+**Reconciliation and totals (§3.3, §4.2).**
+
+- Determinism comes from sorting, not from traversal discipline: observations sort by
+  evidence (source ID, offset, length) before anything else, every map is a `BTreeMap`,
+  and the dialect’s revision selector sees revisions in that canonical order.
+  The property tests shuffle inputs and compare whole ledgers.
+- Copies are evidence and never counted, which leaves the case where a request is
+  observed only as a copy: it is recorded with a diagnostic and no counted usage
+  (`uro-xpd0` asks whether it should also raise a coverage gap).
+- A shared key whose observations disagree is split strictly, one ambiguous request per
+  record, as §3.6 states.
+  That undercounts a group where several records agree and one disagrees, which
+  `uro-wt2q` puts to the maintainer.
+- Cache writes gained a third disjoint category for a write whose lifetime is not
+  recorded, so the categories still sum and an unknown lifetime is never priced as a
+  5-minute write (`uro-je0v`).
+- `clippy::arithmetic_side_effects` is denied in the three counter modules
+  (`ledger::tokens`, `ledger::counters`, `accounting::totals`), as the Lint Floor
+  decision says, and nowhere else.
+- Relationships are keyed by kind and endpoint IDs, which §3.6 gives no prefix for, so
+  they carry no analytical ID yet (`uro-5njm`).
+
+**The snapshot reader (§2.2).**
+
+- Evidence offsets are decoded offsets, so a `.jsonl` file and its `.jsonl.zst` twin
+  produce identical references and one `src-` ID; the plain file hides its twin during a
+  scan, as Codex’s own discovery does, and a twin whose first record differs is reported
+  as a coverage failure rather than quietly ignored.
+- Mid-scan changes are caught by comparing the open file’s identity, length and
+  modification time before and after, and by re-reading the first record’s fingerprint.
+  A mutation that keeps length, modification time and first record is the one case this
+  misses; it is what `--verify-cache` exists for in Phase 2.
+- Filesystem races are tested through a `pub(crate)` hook seam rather than by timing:
+  the test mutates the file at the point the hook names.
+  That follows `rust-filesystem-rules`' advice to inject behavior when a deterministic
+  failure cannot be produced portably.
+- A zstd frame carries a content checksum only when its writer asked for one, so a
+  flipped byte inside a frame usually decodes to damaged text and lands in the malformed
+  counter; only structural damage fails the decoder.
+- `jiff` parses timestamps at up to nanosecond precision, so the decoder trims extra
+  fractional digits before parsing rather than rejecting them.
+  It requires the `T` separator, so RFC 3339’s optional space-separated form is not
+  accepted.
+- Discovery walks a root’s real paths before its symlinks, so a file reachable both ways
+  is recorded under its real path; a locator percent-escapes bytes that are not UTF-8,
+  so two names cannot collide into one locator and one ID.
+- File identity is device and inode on Unix; Windows exposes neither through stable APIs
+  (`uro-jqs5`).
+
+**Deferred, with beads:** `insta` snapshots of reconciled ledgers, which need the frozen
+fixtures (`uro-p2fm`); reconciliation of thread, relationship, tool action and provider
+limit observations, which the adapters will emit (`uro-h7zy`); and the pending-tail
+question for a capture whose last line has no terminator (`uro-c7ro`).
 
 ## Methodology
 

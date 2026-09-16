@@ -1,0 +1,4 @@
+# Adapted from fdu `rustfmt.toml` at afbb2ee; see PROVENANCE.md.
+edition = "2024"
+max_width = 100
+use_small_heuristics = "Max"

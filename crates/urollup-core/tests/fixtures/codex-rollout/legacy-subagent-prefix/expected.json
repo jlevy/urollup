@@ -1,0 +1,492 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "legacy-subagent-prefix",
+  "dialect": "codex-rollout",
+  "summary": "Legacy thread_spawn subagents copy the parent's records, token_count included, with rewritten timestamps before their own records; one parent is present, two are not.",
+  "rules": [
+    "design §3.4 Codex copied history (inferred boundaries)",
+    "design §3.2 Spawn and orphan diagnostics"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 legacy rollouts (before subagent_history_start_ordinal applies and before thread_settings_applied.thread_id in rust-v0.152.0); copy behavior read from rust-v0.154.0 source"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl",
+      "lines": 10,
+      "thread": "019f0000-0000-7000-8000-000600000001"
+    },
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl",
+      "lines": 14,
+      "thread": "019f0000-0000-7000-8000-000600000002"
+    },
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl",
+      "lines": 14,
+      "thread": "019f0000-0000-7000-8000-000600000003"
+    },
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl",
+      "lines": 13,
+      "thread": "019f0000-0000-7000-8000-000600000004"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000600000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 8500,
+          "cache_read": 6500,
+          "cache_write": 0,
+          "output": 1500,
+          "reasoning": 500
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-000600000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-000600000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 1500,
+          "cache_read": 13000,
+          "cache_write": 0,
+          "output": 550,
+          "reasoning": 200
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-000600000003",
+      "kind": "subagent",
+      "parent": null,
+      "declared_parent": "019f0000-0000-7000-8000-000600000009",
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 1000,
+          "cache_read": 5500,
+          "cache_write": 0,
+          "output": 250,
+          "reasoning": 50
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-000600000004",
+      "kind": "subagent",
+      "parent": null,
+      "declared_parent": "019f0000-0000-7000-8000-000600000008",
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 1000,
+          "cache_read": 3500,
+          "cache_write": 0,
+          "output": 200,
+          "reasoning": 70
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T15:00:10.000Z",
+      "tokens": {
+        "uncached_input": 5000,
+        "cache_read": 1000,
+        "cache_write": 0,
+        "output": 600,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:6"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:9"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T15:02:20.000Z",
+      "tokens": {
+        "uncached_input": 3500,
+        "cache_read": 5500,
+        "cache_write": 0,
+        "output": 900,
+        "reasoning": 300
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:9"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:9"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:12"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T15:01:41.100Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 350,
+        "reasoning": 120
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:12"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:12"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:13"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T15:01:41.500Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 7000,
+        "cache_write": 0,
+        "output": 200,
+        "reasoning": 80
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:13"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:13"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000003",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:12"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000003",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T16:00:11.000Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 2500,
+        "cache_write": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:12"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:12"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000003",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:13"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000003",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T16:00:11.300Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 3000,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": 50
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:13"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:13"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000004",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:11"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000004",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T17:00:09.000Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 1500,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": 30
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:11"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:11"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000600000004",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:12"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000600000004",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-05T17:00:09.400Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 110,
+        "reasoning": 40
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:12"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:12"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:6",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:7"
+      ],
+      "kind": "legacy-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-000600000001",
+      "boundary_basis": "turn IDs also present in the parent rollout"
+    },
+    {
+      "ref": "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:6",
+      "kind": "token-count-copy",
+      "copy_of": "sessions/2026/09/05/rollout-2026-09-05T08-00-00-019f0000-0000-7000-8000-000600000001.jsonl:5",
+      "owner_thread": "019f0000-0000-7000-8000-000600000001"
+    },
+    {
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:6",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:7"
+      ],
+      "kind": "legacy-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-000600000009",
+      "boundary_basis": "last foreign session_meta"
+    },
+    {
+      "ref": "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:6",
+      "kind": "token-count-copy",
+      "copy_of": null,
+      "owner_thread": "019f0000-0000-7000-8000-000600000009"
+    },
+    {
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:6"
+      ],
+      "kind": "legacy-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-000600000008",
+      "boundary_basis": "last foreign session_meta"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 8,
+      "owned": 8,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 12000,
+      "cache_read": 28500,
+      "cache_write": 0,
+      "output": 2500,
+      "reasoning": 820
+    },
+    "total_tokens": 43000
+  },
+  "diagnostics": [
+    {
+      "code": "codex-copied-history-inferred",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:6",
+        "sessions/2026/09/05/rollout-2026-09-05T08-01-30-019f0000-0000-7000-8000-000600000002.jsonl:7"
+      ],
+      "detail": "no subagent_history_start_ordinal or thread_settings_applied.thread_id; turn-c06-p1 also appears in the parent rollout, so lines 2-7 are inherited"
+    },
+    {
+      "code": "codex-copied-history-inferred",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:6",
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:7"
+      ],
+      "detail": "parent rollout not discovered; lines 2-7 follow the child's own session_meta and start with a foreign session_meta, and the child's own history starts at its thread_settings_applied"
+    },
+    {
+      "code": "codex-copied-history-inferred",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:2",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:3",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:4",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:5",
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:6"
+      ],
+      "detail": "parent rollout not discovered; lines 2-6 start with a foreign session_meta and hold no token_count"
+    },
+    {
+      "code": "thread-orphan",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T09-00-00-019f0000-0000-7000-8000-000600000003.jsonl:1"
+      ],
+      "detail": "parent_thread_id 019f0000-0000-7000-8000-000600000009 names no discovered rollout, so the subagent is a root"
+    },
+    {
+      "code": "thread-orphan",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T10-00-00-019f0000-0000-7000-8000-000600000004.jsonl:1"
+      ],
+      "detail": "parent_thread_id 019f0000-0000-7000-8000-000600000008 names no discovered rollout, so the subagent is a root"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum last_token_usage of every token_count event in every rollout",
+      "requests": 11,
+      "tokens": {
+        "uncached_input": 22000,
+        "cache_read": 29500,
+        "cache_write": 0,
+        "output": 3600,
+        "reasoning": 1020,
+        "total_tokens": 55100
+      }
+    },
+    {
+      "rule": "ccusage 20.0.20 replay handling: value match skips the first child's copy; the orphan with one copied event keeps it; the orphan whose own first two events are 400 ms apart loses both",
+      "requests": 7,
+      "tokens": {
+        "uncached_input": 16000,
+        "cache_read": 25000,
+        "cache_write": 0,
+        "output": 2800,
+        "reasoning": 750,
+        "total_tokens": 43800
+      }
+    }
+  ],
+  "notes": [
+    "Copied lines keep the parent's turn IDs but carry the copy's write time (a 1 ms burst after the child's session_meta), so they contribute no times to the child.",
+    "Each child's running total continues the inherited total: in the first child, line 12's total is the copied line 6 total plus line 12's last_token_usage.",
+    "The ccusage row is modeled from the recovered ccusage source review, not from running ccusage."
+  ]
+}

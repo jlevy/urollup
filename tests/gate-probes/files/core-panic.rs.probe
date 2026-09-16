@@ -1,0 +1,5 @@
+
+/// Gate probe: `clippy::panic` is denied in urollup-core.
+pub fn gate_probe_panic() {
+    panic!("gate probe");
+}

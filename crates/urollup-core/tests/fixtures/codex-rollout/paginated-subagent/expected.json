@@ -1,0 +1,177 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "paginated-subagent",
+  "dialect": "codex-rollout",
+  "summary": "A paginated thread_spawn subagent whose inherited prefix ends before subagent_history_start_ordinal, with token_usage_record lines in both rollouts.",
+  "rules": [
+    "design §3.4 Codex copied history (subagent_history_start_ordinal)",
+    "design §3.4 Codex requests",
+    "design §3.2 Spawn"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 paginated rollouts (ordinal and subagent_history_start_ordinal since rust-v0.145.0)"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/06/rollout-2026-09-06T11-00-00-019f0000-0000-7000-8000-000700000001.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-000700000001"
+    },
+    {
+      "path": "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl",
+      "lines": 12,
+      "thread": "019f0000-0000-7000-8000-000700000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000700000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5000,
+          "cache_read": 4000,
+          "cache_write": 0,
+          "output": 500,
+          "reasoning": 150
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-000700000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-000700000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3000,
+          "cache_read": 2000,
+          "cache_write": 0,
+          "output": 300,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c07_p1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-06T18:00:20.000Z",
+      "tokens": {
+        "uncached_input": 5000,
+        "cache_read": 4000,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 150
+      },
+      "selected": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-00-00-019f0000-0000-7000-8000-000700000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-00-00-019f0000-0000-7000-8000-000700000001.jsonl:6"
+      ],
+      "turn_id": "turn-c07-p1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c07_c1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000700000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-06T18:02:15.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:10"
+      ],
+      "evidence": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:10"
+      ],
+      "turn_id": "turn-c07-c1",
+      "root_turn_id": "turn-c07-p1"
+    }
+  ],
+  "copies": [
+    {
+      "refs": [
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:2",
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:3",
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:4",
+        "sessions/2026/09/06/rollout-2026-09-06T11-02-00-019f0000-0000-7000-8000-000700000002.jsonl:5"
+      ],
+      "kind": "paginated-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-000700000001",
+      "boundary_basis": "subagent_history_start_ordinal 5"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 8000,
+      "cache_read": 6000,
+      "cache_write": 0,
+      "output": 800,
+      "reasoning": 250
+    },
+    "total_tokens": 14800
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum each rollout's last cumulative total_token_usage",
+      "requests": null,
+      "tokens": {
+        "uncached_input": 13000,
+        "cache_read": 10000,
+        "cache_write": 0,
+        "output": 1300,
+        "reasoning": 400,
+        "total_tokens": 24300
+      }
+    }
+  ],
+  "notes": [
+    "Paginated destinations drop token_count, token_usage_record, item_completed and thread_settings_applied from the copied prefix, so the prefix holds no usage; it still must not create child turns or times.",
+    "The child's token_count continues the parent's running total (design §3.4); records take precedence, so the counter is only a check, and the check compares deltas."
+  ]
+}
