@@ -3,9 +3,9 @@ type: is
 id: is-01m2khsdqz3qndz3aetey1f5c7
 title: Add ccusage reconciliation harness for token totals on fixtures
 kind: task
-status: open
+status: closed
 priority: 2
-version: 5
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -22,7 +22,11 @@ dependencies:
     target: is-01m2ksqda8y7hfm5pstky74ms1
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-15T22:07:52.062Z
-updated_at: 2026-09-16T00:26:34.689Z
+updated_at: 2026-09-16T07:44:14.915Z
+closed_at: 2026-09-16T07:44:14.914Z
+close_reason: Added the pinned ccusage 20.0.20 reconciliation harness, exact difference ledger, comparator unit tests, make/CI gates, uploaded per-case artifacts, and nested-lock supply-chain audits. Local make check and PR run 35069764348 passed; 28 cases, 280 comparisons, 375 explained differences.
+resolution: null
+duplicate_of: null
 ---
 Milestone 0.1: side-by-side ccusage reconciliation harness for token totals, per the plan's "ccusage reconciliation harness" section (Testing Strategy), the design's §10.6 ccusage use-case coverage, and the research brief's "ccusage Feature Inventory".
 
