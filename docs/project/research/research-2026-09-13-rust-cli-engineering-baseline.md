@@ -605,13 +605,102 @@ versions and publication dates are in
   `.claude/skills/` to their generators.
 
 **Deferred to the milestone that needs them:** `insta` and `proptest` (no ledger or
-report data yet), `tracing`, `thiserror` and `anyhow`, the strict cross-target clippy
-job (no platform-gated code yet), the version-stamping `build.rs`, pytest and contract
-gates (milestone 0.2), `bench/` (milestone 0.5), coverage, `cargo-semver-checks`,
-release workflows and a `THIRD-PARTY-NOTICES` file (once third-party code is ported).
+report data yet; `proptest` and `thiserror` arrived with the core below), `tracing` and
+`anyhow`, the strict cross-target clippy job (no platform-gated code yet), the
+version-stamping `build.rs`, pytest and contract gates (milestone 0.2), `bench/`
+(milestone 0.5), coverage, `cargo-semver-checks`, release workflows and a
+`THIRD-PARTY-NOTICES` file (once third-party code is ported).
 Every tool the gate needs was installable locally, including tryscript.
 The CI workflow has not yet run, so the Windows and Linux arm64 golden runs are
 unverified.
+
+## Implementation Notes (Milestone 0.1 Core)
+
+*(Added 2026-09-15, beads `uro-spce` and `uro-26dh`.)* The ledger, reconciliation,
+ownership totals and the snapshot reader landed in `crates/urollup-core`. Crate versions
+and publication dates are in
+[SUPPLY-CHAIN-SECURITY.md](../../../SUPPLY-CHAIN-SECURITY.md), ported files in
+[PROVENANCE.md](../../../PROVENANCE.md) and
+[THIRD-PARTY-NOTICES.md](../../../THIRD-PARTY-NOTICES.md).
+These are the choices a reader of the code would otherwise have to reconstruct.
+
+**Analytical identities (design §3.6).**
+
+- The digested array is flat: `[prefix token, identity version, key kind, component…]`,
+  for example `["req",1,"provider-response","anthropic","msg_01"]`. JSON array structure
+  already keeps component boundaries unambiguous, so nesting the components would add a
+  level without adding information.
+- RFC 8785 serializes numbers as ECMAScript doubles, so an integer component is rejected
+  outside ±(2^53 − 1) rather than silently rounded; RFC 8785 Appendix D’s advice is to
+  carry such values as strings.
+  Strings follow §3.2.2.2 exactly: `\b`, `\t`, `\n`, `\f` and `\r` for those five
+  controls, lowercase `\u00hh` for the rest below U+0020, and everything else, including
+  U+007F and U+2028, verbatim.
+  The unit tests check the RFC’s own string sample byte for byte and its integer edge
+  cases.
+- The 128-bit digest is written as 26 Crockford base32 digits, most significant first
+  and left-padded like a ULID, so the first digit is at most `7` and string order equals
+  digest order. The design’s “lowest ID” tie-breaks are then plain string comparisons.
+  One derived ID is pinned in a test and was checked independently with Python
+  `hashlib`.
+- An identity collision is detectable only through stored keys, so `IdentityRegistry`
+  keeps every ID with the key it came from.
+  A redacted key cannot be re-derived, which is what makes an injected collision
+  testable at all.
+
+**Reconciliation and totals (§3.3, §4.2).**
+
+- Determinism comes from sorting, not from traversal discipline: observations sort by
+  evidence (source ID, offset, length) before anything else, every map is a `BTreeMap`,
+  and the dialect’s revision selector sees revisions in that canonical order.
+  The property tests shuffle inputs and compare whole ledgers.
+- Copies are evidence and never counted, which leaves the case where a request is
+  observed only as a copy: it is recorded with a diagnostic and no counted usage
+  (`uro-xpd0` asks whether it should also raise a coverage gap).
+- A shared key whose observations disagree is split strictly, one ambiguous request per
+  record, as §3.6 states.
+  That undercounts a group where several records agree and one disagrees, which
+  `uro-wt2q` puts to the maintainer.
+- Cache writes gained a third disjoint category for a write whose lifetime is not
+  recorded, so the categories still sum and an unknown lifetime is never priced as a
+  5-minute write (`uro-je0v`).
+- `clippy::arithmetic_side_effects` is denied in the three counter modules
+  (`ledger::tokens`, `ledger::counters`, `accounting::totals`), as the Lint Floor
+  decision says, and nowhere else.
+- Relationships are keyed by kind and endpoint IDs, which §3.6 gives no prefix for, so
+  they carry no analytical ID yet (`uro-5njm`).
+
+**The snapshot reader (§2.2).**
+
+- Evidence offsets are decoded offsets, so a `.jsonl` file and its `.jsonl.zst` twin
+  produce identical references and one `src-` ID; the plain file hides its twin during a
+  scan, as Codex’s own discovery does, and a twin whose first record differs is reported
+  as a coverage failure rather than quietly ignored.
+- Mid-scan changes are caught by comparing the open file’s identity, length and
+  modification time before and after, and by re-reading the first record’s fingerprint.
+  A mutation that keeps length, modification time and first record is the one case this
+  misses; it is what `--verify-cache` exists for in Phase 2.
+- Filesystem races are tested through a `pub(crate)` hook seam rather than by timing:
+  the test mutates the file at the point the hook names.
+  That follows `rust-filesystem-rules`' advice to inject behavior when a deterministic
+  failure cannot be produced portably.
+- A zstd frame carries a content checksum only when its writer asked for one, so a
+  flipped byte inside a frame usually decodes to damaged text and lands in the malformed
+  counter; only structural damage fails the decoder.
+- `jiff` parses timestamps at up to nanosecond precision, so the decoder trims extra
+  fractional digits before parsing rather than rejecting them.
+  It requires the `T` separator, so RFC 3339’s optional space-separated form is not
+  accepted.
+- Discovery walks a root’s real paths before its symlinks, so a file reachable both ways
+  is recorded under its real path; a locator percent-escapes bytes that are not UTF-8,
+  so two names cannot collide into one locator and one ID.
+- File identity is device and inode on Unix; Windows exposes neither through stable APIs
+  (`uro-jqs5`).
+
+**Deferred, with beads:** `insta` snapshots of reconciled ledgers, which need the frozen
+fixtures (`uro-p2fm`); reconciliation of thread, relationship, tool action and provider
+limit observations, which the adapters will emit (`uro-h7zy`); and the pending-tail
+question for a capture whose last line has no terminator (`uro-c7ro`).
 
 ## Methodology
 

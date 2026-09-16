@@ -1,2 +1,21 @@
 //! Ledger and identity: entities, relationships, reconciliation and analytical IDs
 //! (design §3).
+//!
+//! - [`identity`], [`scope`] and [`linking`] derive analytical IDs from recorded keys,
+//!   enforce key scope and resolve linked sets (§3.6), over the RFC 8785 subset in
+//!   [`canonical_json`].
+//! - [`entities`] defines the normalized ledger entities and value bases (§3.1), and
+//!   [`tokens`] the disjoint token measures they carry (§4.1).
+//! - [`reconcile`] merges observations into logical requests (§3.3), using [`counters`]
+//!   for running totals and reporting [`diagnostics`] and [`coverage`].
+
+pub mod canonical_json;
+pub mod counters;
+pub mod coverage;
+pub mod diagnostics;
+pub mod entities;
+pub mod identity;
+pub mod linking;
+pub mod reconcile;
+pub mod scope;
+pub mod tokens;

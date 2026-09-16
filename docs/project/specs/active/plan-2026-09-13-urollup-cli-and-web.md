@@ -102,7 +102,7 @@ The capture store lands only after the uncached engine is the correctness refere
   [double-counting cases](../../research/research-2026-09-13-portable-agent-usage.md#synthetic-double-counting-example)
   ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
   [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules)).
-- [ ] Implement analytical identities, the normalized ledger, reconciliation, ownership
+- [x] Implement analytical identities, the normalized ledger, reconciliation, ownership
   status and coverage, with collision detection and re-derivation from stored keys
   ([§3.1](../../../urollup-design.md#31-entities),
   [§3.3](../../../urollup-design.md#33-reconciliation),

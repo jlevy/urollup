@@ -4,8 +4,10 @@
 //! boundary: source discovery and capture, the reconciled ledger and its analytical
 //! identities, accounting, portable artifacts and the shared query API that the CLI and
 //! the optional `serve` feature both call. Its modules follow the design's layers
-//! (`docs/urollup-design.md` §1.6); each is an empty skeleton until the milestone that
-//! implements it.
+//! (`docs/urollup-design.md` §1.6). Implemented so far: analytical identities, the
+//! normalized ledger and reconciliation ([`ledger`]), ownership-aware totals
+//! ([`accounting`]), and snapshot manifests ([`sources`]); [`artifacts`] and [`query`] are
+//! skeletons until the milestones that implement them.
 //!
 //! The crate has no CLI, HTTP or async-runtime dependencies.
 
@@ -18,6 +20,9 @@ pub mod artifacts;
 pub mod ledger;
 pub mod query;
 pub mod sources;
+
+#[cfg(test)]
+mod test_support;
 
 /// The version of this crate, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
