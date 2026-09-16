@@ -38,5 +38,6 @@ zstd = { version = "0.13.3", default-features = false }
 workspace = true
 
 [dev-dependencies]
+insta = { version = "1.48.0", default-features = false, features = ["yaml"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 tempfile = "3.27.0"

@@ -1,0 +1,382 @@
+---
+source: crates/urollup-core/tests/snapshots.rs
+expression: snapshot(&ingested)
+---
+ledger:
+  candidate_sets: []
+  coverage:
+    candidate_sets: 0
+    conflicting_keys: 0
+    conflicting_rereads: 0
+    copies: 0
+    copy_only_requests: 0
+    observations: 3
+    requests: 3
+    requests_without_usage: 0
+    rereads: 0
+    unresolved_requests: 0
+  diagnostics: []
+  gaps: []
+  requests:
+    - account: unknown
+      aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 769
+          offset: 2697
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-08T13:00:30Z"
+      id: req-v1-03y7r1f7g80x0q3xwq23wz984c
+      identity_key_kind: provider-response
+      last_seen: "2026-09-08T13:00:30Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      native_request_id: ~
+      native_response_id: resp_synthetic_c10_2
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      revisions:
+        - evidence:
+            length: 769
+            offset: 2697
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 6500
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 420
+                  provider_only: ~
+                  reasoning: 160
+                  uncached_input: 1500
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 6500
+                  input_tokens: 8000
+                  output_tokens: 420
+                  reasoning_output_tokens: 160
+                  total_tokens: 8420
+          usage:
+            measures:
+              cache_read: 6500
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 420
+              provider_only: ~
+              reasoning: 160
+              uncached_input: 1500
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 6500
+              input_tokens: 8000
+              output_tokens: 420
+              reasoning_output_tokens: 160
+              total_tokens: 8420
+      selected_usage:
+        revision:
+          evidence:
+            length: 769
+            offset: 2697
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 6500
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 420
+                  provider_only: ~
+                  reasoning: 160
+                  uncached_input: 1500
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 6500
+                  input_tokens: 8000
+                  output_tokens: 420
+                  reasoning_output_tokens: 160
+                  total_tokens: 8420
+          usage:
+            measures:
+              cache_read: 6500
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 420
+              provider_only: ~
+              reasoning: 160
+              uncached_input: 1500
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 6500
+              input_tokens: 8000
+              output_tokens: 420
+              reasoning_output_tokens: 160
+              total_tokens: 8420
+        rule: latest-revision
+        status: Final
+    - account: unknown
+      aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 763
+          offset: 1447
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-08T13:00:12Z"
+      id: req-v1-2kz4e1sb7tz9bn0ymhtq2cn1sf
+      identity_key_kind: provider-response
+      last_seen: "2026-09-08T13:00:12Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      native_request_id: ~
+      native_response_id: resp_synthetic_c10_1
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      revisions:
+        - evidence:
+            length: 763
+            offset: 1447
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 5000
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 350
+                  provider_only: ~
+                  reasoning: 100
+                  uncached_input: 2000
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 5000
+                  input_tokens: 7000
+                  output_tokens: 350
+                  reasoning_output_tokens: 100
+                  total_tokens: 7350
+          usage:
+            measures:
+              cache_read: 5000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 350
+              provider_only: ~
+              reasoning: 100
+              uncached_input: 2000
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 5000
+              input_tokens: 7000
+              output_tokens: 350
+              reasoning_output_tokens: 100
+              total_tokens: 7350
+      selected_usage:
+        revision:
+          evidence:
+            length: 763
+            offset: 1447
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 5000
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 350
+                  provider_only: ~
+                  reasoning: 100
+                  uncached_input: 2000
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 5000
+                  input_tokens: 7000
+                  output_tokens: 350
+                  reasoning_output_tokens: 100
+                  total_tokens: 7350
+          usage:
+            measures:
+              cache_read: 5000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 350
+              provider_only: ~
+              reasoning: 100
+              uncached_input: 2000
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 5000
+              input_tokens: 7000
+              output_tokens: 350
+              reasoning_output_tokens: 100
+              total_tokens: 7350
+        rule: latest-revision
+        status: Final
+    - account: unknown
+      aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 765
+          offset: 4763
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-15T16:00:20Z"
+      id: req-v1-4tcztj9kx7kwn06n24s2egbsd0
+      identity_key_kind: provider-response
+      last_seen: "2026-09-15T16:00:20Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      native_request_id: ~
+      native_response_id: resp_synthetic_c10_3
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      revisions:
+        - evidence:
+            length: 765
+            offset: 4763
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 8000
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 300
+                  provider_only: ~
+                  reasoning: 50
+                  uncached_input: 1000
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 8000
+                  input_tokens: 9000
+                  output_tokens: 300
+                  reasoning_output_tokens: 50
+                  total_tokens: 9300
+          usage:
+            measures:
+              cache_read: 8000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 300
+              provider_only: ~
+              reasoning: 50
+              uncached_input: 1000
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 8000
+              input_tokens: 9000
+              output_tokens: 300
+              reasoning_output_tokens: 50
+              total_tokens: 9300
+      selected_usage:
+        revision:
+          evidence:
+            length: 765
+            offset: 4763
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage:
+            - model:
+                basis: Requested
+                name: gpt-5.2-codex
+              source: token_usage_record.usage
+              usage:
+                measures:
+                  cache_read: 8000
+                  cache_write_1h: ~
+                  cache_write_5m: ~
+                  cache_write_unspecified: 0
+                  output: 300
+                  provider_only: ~
+                  reasoning: 50
+                  uncached_input: 1000
+                native:
+                  cache_write_input_tokens: 0
+                  cached_input_tokens: 8000
+                  input_tokens: 9000
+                  output_tokens: 300
+                  reasoning_output_tokens: 50
+                  total_tokens: 9300
+          usage:
+            measures:
+              cache_read: 8000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 300
+              provider_only: ~
+              reasoning: 50
+              uncached_input: 1000
+            native:
+              cache_write_input_tokens: 0
+              cached_input_tokens: 8000
+              input_tokens: 9000
+              output_tokens: 300
+              reasoning_output_tokens: 50
+              total_tokens: 9300
+        rule: latest-revision
+        status: Final
+manifest:
+  entries:
+    - changes: []
+      complete: true
+      counters:
+        blank_lines: 0
+        decoded: 10
+        malformed: 0
+        oversized: 0
+        records: 16
+        skipped: 6
+        unparsable: 0
+      cutoff:
+        complete_through: 6232
+        pending_tail: ~
+      dialect: codex-rollout
+      environment: local
+      failures: []
+      file_len: 6232
+      fingerprint: 78kw4dc91x7eydt03kz3eze8pw
+      first_malformed: ~
+      locator: 019f0000-0000-7000-8000-001000000001/019f0000-0000-7000-8000-001000000001
+      representation: Plain
+      source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      twin: true
+  skipped_links: []

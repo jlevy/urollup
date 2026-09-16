@@ -132,6 +132,7 @@ checks that.
 | zstd (no default features) | 0.13.3 | 2025-02-20 | `.jsonl.zst` decoding; 0.14.0 (2026-09-04) held back |
 | zstd-safe | 7.2.4 | 2025-03-20 | 7.3.0 (2026-09-04, relicensed BSD-3-Clause) held back |
 | zstd-sys | 2.0.16+zstd.1.5.7 | 2025-09-04 | Bundled libzstd 1.5.7, built with `cc`; 2.1.0 (2026-09-04) held back |
+| insta (dev, YAML only) | 1.48.0 | 2026-06-11 | Reconciled-ledger snapshots; default features disabled |
 | proptest (dev, `std` only) | 1.11.0 | 2026-03-24 | Property tests; no `fork` or `timeout` features |
 | tempfile (dev) | 3.27.0 | 2026-03-11 | Isolated filesystem test roots |
 
