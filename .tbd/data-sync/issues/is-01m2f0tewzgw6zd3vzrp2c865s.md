@@ -5,7 +5,7 @@ title: Implement claude-project and codex-rollout adapters
 kind: task
 status: open
 priority: 2
-version: 11
+version: 13
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -19,9 +19,13 @@ dependencies:
     target: is-01m2gbe7t7shfxqxrgfmdmz7yc
   - type: blocks
     target: is-01m2ksp8dcjmgy7awtpqjjz22v
+  - type: blocks
+    target: is-01m2kswb5katd7wnv9sevd37pw
+  - type: blocks
+    target: is-01m2kt252w8nytk407sj8p30ta
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.494Z
-updated_at: 2026-09-16T00:25:56.907Z
+updated_at: 2026-09-16T00:32:26.715Z
 ---
 Milestone 0.1: claude-project and codex-rollout adapters with default discovery (CLAUDE_CONFIG_DIR, ~/.claude/projects, XDG_CONFIG_HOME/claude, subagents/ and subagents/workflows/; CODEX_HOME sessions/ and archived_sessions/, .jsonl and .jsonl.zst), UROLLUP_* override variables, snapshot manifests, source links and provider limit observations, following design §2.1, §2.2, §3.4 and §4.4; document unsupported fields and the agent versions each fixture covers. Captured-stream dialects (claude-stream, codex-exec) and the metaproc port are milestone 0.5 (uro-i6o2).
 

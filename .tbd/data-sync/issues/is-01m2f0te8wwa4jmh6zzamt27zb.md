@@ -3,9 +3,9 @@ type: is
 id: is-01m2f0te8wwa4jmh6zzamt27zb
 title: Freeze sanitized fixtures and representative corpus manifest
 kind: task
-status: open
+status: closed
 priority: 2
-version: 16
+version: 17
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -37,7 +37,11 @@ dependencies:
     target: is-01m2ksqdqtvwncabnag6zkehd0
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:21.852Z
-updated_at: 2026-09-16T00:26:35.105Z
+updated_at: 2026-09-16T03:03:47.897Z
+closed_at: 2026-09-16T03:03:47.894Z
+close_reason: "The public fixture corpus is frozen on milestone-0.1: 28 cases (14 claude-project, 14 codex-rollout) with expected.json in urollup-fixture-expected/v1, a README per case, the transcript sanitizer and the make fixtures-check gate with two gate probes. The consented representative corpus manifest, the other half of this bead, is split out as its own bead under milestone 0.5; gaps in case coverage stay in uro-jru4 and uro-vsfb."
+resolution: null
+duplicate_of: null
 ---
 Public synthetic or sanitized fixtures, including the research brief's double-counting cases, plus a consented representative corpus manifest.
 

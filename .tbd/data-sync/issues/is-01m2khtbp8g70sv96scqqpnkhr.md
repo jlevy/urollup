@@ -5,15 +5,15 @@ title: Adapters for agents beyond Claude Code, Codex, Pi and Gemini CLI (Candida
 kind: feature
 status: open
 priority: 3
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - later
   - candidate
 dependencies: []
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2kszagjf5mxhe33418nswt5
 created_at: 2026-09-15T22:08:22.727Z
-updated_at: 2026-09-16T00:27:56.620Z
+updated_at: 2026-09-16T00:31:43.602Z
 ---
 Later, Candidate (design 9.1 "Additional Agent Adapters"; not scheduled, and only if confirmed): adapters for agents beyond Claude Code, Codex, Pi and Gemini CLI, now the one remaining gap in design 10.6.
 

@@ -5,15 +5,15 @@ title: Decide whether to read Gemini CLI telemetry for its unrecorded calls (Can
 kind: feature
 status: open
 priority: 3
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - later
   - candidate
 dependencies: []
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2kszagjf5mxhe33418nswt5
 created_at: 2026-09-16T00:27:17.000Z
-updated_at: 2026-09-16T00:27:17.000Z
+updated_at: 2026-09-16T00:31:45.362Z
 ---
 Later, candidate (raised by the 2026-09-15 Gemini CLI review; design 2.1 lists Gemini OpenTelemetry exports as an unsupported format).
 

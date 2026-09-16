@@ -5,16 +5,16 @@ title: Handle append, replacement, deletion and late updates in cache
 kind: task
 status: open
 priority: 2
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-3
 dependencies:
   - type: blocks
     target: is-01m2f0tm43qfyq1hn5s796yc42
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksyqjx3eag5b7j4mbq4104
 created_at: 2026-09-14T03:54:27.186Z
-updated_at: 2026-09-14T19:58:22.931Z
+updated_at: 2026-09-16T00:31:36.857Z
 ---
 Incremental cache maintenance with independently versioned pricing.
 

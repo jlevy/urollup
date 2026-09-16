@@ -5,16 +5,16 @@ title: Add reporting skill, compare and check
 kind: task
 status: open
 priority: 2
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
 dependencies:
   - type: blocks
     target: is-01m2f0tj0cf0v7wbz9vbpywjqs
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksy5yrxn48thxc311sqsv6
 created_at: 2026-09-14T03:54:25.327Z
-updated_at: 2026-09-14T19:58:19.922Z
+updated_at: 2026-09-16T00:31:17.077Z
 ---
 CLI-backed reporting skill plus compare and check commands.
 

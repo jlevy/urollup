@@ -5,7 +5,7 @@ title: Add the capture cache read path
 kind: task
 status: open
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
@@ -13,8 +13,8 @@ labels:
 dependencies:
   - type: blocks
     target: is-01m2khtb1x1tjf2mctdsnr8yp4
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksy5yrxn48thxc311sqsv6
 created_at: 2026-09-14T20:47:58.962Z
-updated_at: 2026-09-15T22:08:22.077Z
+updated_at: 2026-09-16T00:31:12.334Z
 ---
 Phase 2: read captured records for unchanged source prefixes and parse only appended complete records as new segments; default prefix check (identity, size, first-record and tail digests) with --verify-cache full-extent hashing; --no-cache and --rebuild-cache; cached, uncached and rebuilt golden equivalence in CI; benchmark against the spike baseline (explorations/log-throughput).

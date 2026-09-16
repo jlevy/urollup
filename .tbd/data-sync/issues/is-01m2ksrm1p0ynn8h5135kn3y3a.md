@@ -5,15 +5,15 @@ title: Verify Gemini CLI source-derived format facts against real sessions
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
   - research
 dependencies: []
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksy5yrxn48thxc311sqsv6
 created_at: 2026-09-16T00:27:14.356Z
-updated_at: 2026-09-16T00:27:14.356Z
+updated_at: 2026-09-16T00:31:32.714Z
 ---
 Every Gemini CLI fact in the design and the portable brief was read from v0.60.0 source (commit 733edcb) on 2026-09-15; none was checked against real session files, because the maintainer's ~/.gemini data was deliberately not read. Confirm the shapes on the maintainer's own machine, or on a throwaway project, before the Phase 2 rules are settled (portable brief "Next Steps" and "Gemini CLI Dialect Facts").
 

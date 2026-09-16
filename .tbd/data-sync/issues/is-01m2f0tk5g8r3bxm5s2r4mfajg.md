@@ -5,7 +5,7 @@ title: Choose persistent cache storage from benchmark evidence
 kind: task
 status: open
 priority: 2
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-3
@@ -14,8 +14,8 @@ dependencies:
     target: is-01m2f0tkfj316rc6apwjpz9sjb
   - type: blocks
     target: is-01m2f0tksf73bnhw9pvzwbe09t
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksyqjx3eag5b7j4mbq4104
 created_at: 2026-09-14T03:54:26.863Z
-updated_at: 2026-09-14T03:54:27.502Z
+updated_at: 2026-09-16T00:31:35.613Z
 ---
 Choose storage after benchmarks expose access patterns; transactional embedded storage is the design direction.

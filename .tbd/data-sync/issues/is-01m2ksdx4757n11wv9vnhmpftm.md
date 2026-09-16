@@ -5,14 +5,14 @@ title: "Acceptance G4: browsable web reports"
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
   - acceptance
 dependencies: []
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+parent_id: is-01m2ksy5yrxn48thxc311sqsv6
 created_at: 2026-09-16T00:21:23.203Z
-updated_at: 2026-09-16T00:21:23.203Z
+updated_at: 2026-09-16T00:31:26.517Z
 ---
 Verify a generated self-contained HTML report opens in a browser from the filesystem with no server and no network, shows the same totals as the CLI for the same query and snapshot, and that urollup serve browses the same results live. Test on real local logs, recording aggregates only.

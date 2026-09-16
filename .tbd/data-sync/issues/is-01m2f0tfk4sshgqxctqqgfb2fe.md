@@ -5,7 +5,7 @@ title: Author summary and bundle contracts and implement merge, validate and sch
 kind: task
 status: open
 priority: 2
-version: 10
+version: 20
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,9 +15,29 @@ dependencies:
     target: is-01m2f0tj0cf0v7wbz9vbpywjqs
   - type: blocks
     target: is-01m2gbe7t7shfxqxrgfmdmz7yc
+  - type: blocks
+    target: is-01m2ksvkp4cn5y43dqkq8feqj3
+  - type: blocks
+    target: is-01m2ksvngq0nenzg0n8f8g0az4
+  - type: blocks
+    target: is-01m2ksw03jk2kpr3gzfh29r0qg
+  - type: blocks
+    target: is-01m2ksw2b7m94av1rbjhnpx1e8
+  - type: blocks
+    target: is-01m2kswb5katd7wnv9sevd37pw
+  - type: blocks
+    target: is-01m2kt1mv6ncrwhyyr54q8v3qg
+  - type: blocks
+    target: is-01m2kt1ptc6ms6vtwm59ke086h
+  - type: blocks
+    target: is-01m2kt1z0akfjbrvtyvn898y39
+  - type: blocks
+    target: is-01m2kt20pjyjyamr8aq40qe02x
+  - type: blocks
+    target: is-01m2kt252w8nytk407sj8p30ta
 parent_id: is-01m2ke45tasy262pas37jxwss5
 created_at: 2026-09-14T03:54:23.201Z
-updated_at: 2026-09-15T21:09:39.208Z
+updated_at: 2026-09-16T00:32:26.715Z
 ---
 UsageSummary, BundleManifest and table record contracts with fixtures, scripts/check_contracts.py and make contracts-check; summary and bundle readers and writers with redaction; bundles as plain *.urollup/ folders of individually zstd-compressed JSONL tables including the captured records table (usage-relevant source records with content and verbose bodies stubbed under a versioned strip policy), with manifest digests over uncompressed tables and atomic publication by staging-folder rename; re-extraction from captured records; mixed raw, summary and bundle input; overlap-safe merge, validate and schema before any totals-only output.
 

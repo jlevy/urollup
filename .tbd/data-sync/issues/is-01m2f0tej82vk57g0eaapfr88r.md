@@ -3,9 +3,9 @@ type: is
 id: is-01m2f0tej82vk57g0eaapfr88r
 title: Implement analytical identities, ledger, reconciliation and ownership
 kind: task
-status: open
+status: closed
 priority: 2
-version: 15
+version: 18
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -29,9 +29,17 @@ dependencies:
     target: is-01m2ksn95jby3mhe38s81vm2ap
   - type: blocks
     target: is-01m2ksnt5qd09gtrxkgvaxw9vw
+  - type: blocks
+    target: is-01m2ksyv7sj854y8xb6gh0sqyg
+  - type: blocks
+    target: is-01m2kt32v8spyp96g40c8495dc
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.152Z
-updated_at: 2026-09-16T00:25:42.326Z
+updated_at: 2026-09-16T03:03:36.492Z
+closed_at: 2026-09-16T03:03:36.487Z
+close_reason: "Landed in crates/urollup-core on m01-core (merged as 69dec65): canonical JSON and analytical identities with collision detection and re-derivation from stored keys, the normalized ledger and entities, reconciliation with deterministic ordering, ownership status, scope, tokens and counters, coverage and diagnostics, and ownership totals. 103 core tests pass. The decisions it raised are tracked in uro-xpd0, uro-wt2q, uro-je0v and uro-5njm; the implementation notes are in the engineering baseline brief."
+resolution: null
+duplicate_of: null
 ---
 Normalized ledger, deterministic analytical identities with collision detection and re-derivation from stored keys, reconciliation, ownership status and coverage. See design doc (docs/urollup-design.md): Normalized Ledger, Analytical Identities.
 

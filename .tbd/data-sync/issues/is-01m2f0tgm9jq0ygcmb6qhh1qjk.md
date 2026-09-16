@@ -5,7 +5,7 @@ title: Build benchmark generator, harness and CI jobs
 kind: task
 status: open
 priority: 2
-version: 6
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,9 +15,13 @@ dependencies:
     target: is-01m2f0tk5g8r3bxm5s2r4mfajg
   - type: blocks
     target: is-01m2gttdzk1s48d87gzvmhfmt5
+  - type: blocks
+    target: is-01m2ksxtta6tgmz0msmkbk6r3f
+  - type: blocks
+    target: is-01m2kt2p8fkpbpxhe0ght3kd3z
 parent_id: is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-14T03:54:24.265Z
-updated_at: 2026-09-15T21:09:06.724Z
+updated_at: 2026-09-16T00:32:44.302Z
 ---
 Seeded corpus generator (bench-small, bench-1g), harness, bench-pr and scheduled bench-1g jobs, first reference-laptop results, and summary size measurement with the request index on the representative corpus.
 

@@ -5,16 +5,20 @@ title: Validate Pi adapters and imported multi-account fixtures
 kind: task
 status: open
 priority: 2
-version: 4
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-2
 dependencies:
   - type: blocks
     target: is-01m2khtbp8g70sv96scqqpnkhr
-parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+  - type: blocks
+    target: is-01m2ksyjfgmm1by6b9pv6r2vnv
+  - type: blocks
+    target: is-01m2kt2zjgkrgf8w9bzqw9p1yd
+parent_id: is-01m2ksy5yrxn48thxc311sqsv6
 created_at: 2026-09-14T03:54:26.084Z
-updated_at: 2026-09-15T22:09:00.322Z
+updated_at: 2026-09-16T00:32:53.837Z
 ---
 pi-session and pi-events adapters, plus imported multi-account and cloud-export fixtures, each validated individually.
 
