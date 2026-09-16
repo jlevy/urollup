@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 27
+version: 28
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -39,7 +39,8 @@ child_order_hints:
   - is-01m2ksp7t02wzxrgvs75js0a7d
   - is-01m2kspssne0kaf0ykdmt0pbe3
   - is-01m2ksptx4kzgd5wrf4vdvaaa0
+  - is-01m2nerjrrsfghn5avwj8mjr6a
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-16T00:31:46.295Z
+updated_at: 2026-09-16T15:53:27.575Z
 ---
 Scaffold, sanitized fixtures, snapshot reading, identities and ledger, claude-project and codex-rollout adapters, --current/--session/--all with the discovery index and hierarchy crawler, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md.
