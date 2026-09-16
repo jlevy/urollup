@@ -259,7 +259,7 @@
           "delete": true
         },
         {
-          "path": "tests/golden/e2e-scaffold.tryscript.md",
+          "path": "tests/golden/e2e",
           "delete": true
         }
       ],
@@ -296,19 +296,19 @@
       "expect": "env CLAUDE_CONFIG_DIR expands \\$HOME"
     },
     {
-      "id": "e2e-results-stub-declared-implemented",
+      "id": "e2e-results-unknown-comparison",
       "gate": "test",
-      "violation": "the end-to-end results config drops a stubbed command's pending entry, so its results would go unchecked",
+      "violation": "the end-to-end results config names an unsupported comparison field",
       "edits": [
         {
           "path": "tests/golden/e2e.config.json",
           "substitute": {
-            "from": "      \"compare\": \"all\",\n      \"pending\": {\n        \"bead\": \"uro-d135\",\n        \"unblock\": \"urollup report prints JSON; then delete this pending entry and fix the report extractor\"\n      }\n",
-            "to": "      \"compare\": \"all\"\n"
+            "from": "      \"compare\": \"all\"\n",
+            "to": "      \"compare\": [\"unknown\"]\n"
           }
         }
       ],
-      "expect": "urollup report is still the scaffold stub, but tests/golden/e2e\\.config\\.json lists it as implemented"
+      "expect": "urollup report: compare must be \\\"all\\\" or a list of result fields"
     },
     {
       "id": "golden-machine-path",
@@ -382,8 +382,8 @@
         {
           "path": "Cargo.lock",
           "substitute": {
-            "from": " \"clap\",\n \"urollup-core\",\n]",
-            "to": " \"clap\",\n \"tokio\",\n \"urollup-core\",\n]"
+            "from": " \"clap\",\n \"serde_json\",\n \"urollup-core\",\n]",
+            "to": " \"clap\",\n \"serde_json\",\n \"tokio\",\n \"urollup-core\",\n]"
           }
         }
       ],

@@ -102,6 +102,11 @@ pub struct Diagnostic {
     pub subject: Option<AnalyticalId>,
     /// The records involved, in canonical order.
     pub evidence: Vec<EvidenceRef>,
+    /// How many source records or locations triggered this diagnostic.
+    ///
+    /// This can exceed the number of distinct evidence references when the same logical
+    /// source was discovered at several physical locations.
+    pub occurrences: u64,
     /// A deterministic human-readable detail, built only from sorted data.
     pub detail: String,
 }
@@ -117,6 +122,14 @@ impl Diagnostic {
         let mut evidence: Vec<EvidenceRef> = evidence.into_iter().collect();
         evidence.sort();
         evidence.dedup();
-        Self { code, subject, evidence, detail: detail.into() }
+        let occurrences = u64::try_from(evidence.len()).unwrap_or(u64::MAX).max(1);
+        Self { code, subject, evidence, occurrences, detail: detail.into() }
+    }
+
+    /// Records a larger physical occurrence count than the distinct evidence permits.
+    #[must_use]
+    pub fn with_occurrences(mut self, occurrences: u64) -> Self {
+        self.occurrences = self.occurrences.max(occurrences);
+        self
     }
 }

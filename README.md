@@ -9,8 +9,9 @@ sessions use the same format, and summaries merge into larger summaries without 
 counting.
 
 **Status:** milestone 0.1 in progress.
-The Rust workspace and its gates are scaffolded, but no report is implemented yet: the
-`report`, `daily` and `sessions` commands exit 2 as not implemented.
+The uncached engine discovers Claude Code and Codex logs and produces deterministic
+`report`, `daily` and `sessions` output as terminal tables or JSON. Milestone 0.1’s
+ccusage reconciliation harness remains in progress.
 
 ## Planning Docs
 

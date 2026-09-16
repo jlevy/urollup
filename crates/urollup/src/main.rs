@@ -5,6 +5,7 @@
 //! `std::process::exit`.
 
 mod cli;
+mod render;
 
 use std::io;
 use std::process::ExitCode;

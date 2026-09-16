@@ -150,8 +150,8 @@ export const RESULT_READERS = {
   requests: (raw) => raw.totals?.requests?.unique,
   ownership: (raw) => selectCounts(raw.totals?.requests, OWNERSHIP_STATUSES),
   tokens: (raw) => raw.totals?.tokens,
-  unresolved: (raw) => raw.totals?.unresolved,
-  possible: (raw) => raw.totals?.possible,
+  unresolved: (raw) => selectCounts(raw.totals?.unresolved, ["requests", "tokens"]),
+  possible: (raw) => selectCounts(raw.totals?.possible, ["requests", "tokens"]),
   copies_excluded: (raw) => (Array.isArray(raw.copies) ? raw.copies.length : undefined),
   limit_observations: (raw) => (Array.isArray(raw.limit_observations) ? raw.limit_observations.length : undefined),
   diagnostics: (raw) => (Array.isArray(raw.diagnostics) ? normalizeDiagnostics(raw.diagnostics) : undefined),
@@ -246,9 +246,8 @@ export function normalizeExpected(raw) {
 // ---------------------------------------------------------------------------------------
 // Extraction from urollup JSON output
 //
-// Provisional: the paths follow the design's JSON rendering of summary totals (§4.2, §5.2)
-// until `urollup report --format json` exists. The bead that lands it fixes these paths and
-// the sample outputs in tests/golden/samples/outputs/ in the same commit.
+// These paths are the milestone 0.1 JSON rendering contract. Transcript goldens retain the
+// full documents; this checker deliberately extracts only the reconciled domain results.
 
 function requestCount(value) {
   if (Number.isInteger(value)) {
@@ -331,15 +330,16 @@ function compareDiagnostics(expected, actual, differences) {
     return;
   }
   const counts = (list) => list.reduce((map, { code, count }) => map.set(code, (map.get(code) ?? 0) + (count ?? 1)), new Map());
+  const wanted = counts(expected);
+  const unspecified = new Set(expected.filter(({ count }) => count === undefined).map(({ code }) => code));
   const found = counts(actual);
-  for (const { code, count } of expected) {
+  for (const [code, count] of wanted) {
     if (!found.has(code)) {
-      differences.push({ field: "diagnostics", expected: count === undefined ? code : `${code} x${count}`, actual: "missing" });
-    } else if (count !== undefined && found.get(code) !== count) {
+      differences.push({ field: "diagnostics", expected: unspecified.has(code) ? code : `${code} x${count}`, actual: "missing" });
+    } else if (!unspecified.has(code) && found.get(code) !== count) {
       differences.push({ field: `diagnostics ${code}`, expected: count, actual: found.get(code) });
     }
   }
-  const wanted = new Set(expected.map(({ code }) => code));
   for (const [code, count] of found) {
     if (!wanted.has(code)) {
       differences.push({ field: "diagnostics", expected: "none", actual: `unexpected ${code} x${count}` });

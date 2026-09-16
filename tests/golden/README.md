@@ -205,9 +205,9 @@ comparison, the diff and the ratchets are tested without any real fixture or bin
 
 Values there follow the research brief’s
 [synthetic double-counting example](../../docs/project/research/research-2026-09-13-portable-agent-usage.md#synthetic-double-counting-example);
-the report shapes and diagnostic codes are provisional until
-`urollup report --format json` lands, and the bead that lands it updates the extractors
-and these samples together.
+their report shapes follow the milestone 0.1 JSON rendering contract, while `sample.*`
+diagnostic codes remain deliberately synthetic so the checker’s missing and unexpected
+diagnostic paths are exercised.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

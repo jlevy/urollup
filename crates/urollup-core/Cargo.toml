@@ -20,7 +20,13 @@ path = "src/lib.rs"
 # No CLI, HTTP or async-runtime dependencies, ever (design §8.1). The CI dependency guard
 # (`make dependency-guard`) fails if one appears in this crate's tree.
 [dependencies]
-jiff = { version = "0.2.35", default-features = false, features = ["std"] }
+jiff = { version = "0.2.35", default-features = false, features = [
+  "std",
+  "tz-fat",
+  "tz-system",
+  "tzdb-concatenated",
+  "tzdb-zoneinfo",
+] }
 memchr = "2.8.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

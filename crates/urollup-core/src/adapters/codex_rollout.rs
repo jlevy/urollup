@@ -135,11 +135,8 @@ fn decode_record(raw: &RawRecord<'_>, records: &mut Vec<ParsedRecord>) -> Record
             text(&value, &["payload", "type"]),
             Some("thread_settings_applied" | "token_count")
         ));
-    if !relevant {
-        return RecordDisposition::Skipped;
-    }
     records.push(ParsedRecord { evidence: raw.evidence.clone(), value });
-    RecordDisposition::Decoded
+    if relevant { RecordDisposition::Decoded } else { RecordDisposition::Skipped }
 }
 
 fn normalize(
@@ -295,11 +292,10 @@ fn normalize(
         {
             copied_regions = copied_regions.saturating_add(1);
             if !has_direct && native_boundary.is_none() {
-                let evidence = own_meta.map(|record| record.evidence.clone()).into_iter();
                 diagnostics.push(Diagnostic::new(
                     DiagnosticCode::CodexCopiedHistoryInferred,
                     thread_ids.get(&source.file_thread).cloned(),
-                    evidence,
+                    legacy_copied_evidence(source, &known_turns),
                     "Codex copied-history boundary was inferred from legacy rollout records",
                 ));
             }
@@ -521,6 +517,42 @@ fn normalize(
     Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
 }
 
+fn legacy_copied_evidence(
+    source: &ParsedSource,
+    known_turns: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<EvidenceRef> {
+    let mut active_thread = source.file_thread.clone();
+    let mut evidence = Vec::new();
+    for record in &source.records {
+        match text(&record.value, &["type"]) {
+            Some("session_meta") => {
+                if let Some(thread_id) = text(&record.value, &["payload", "id"]) {
+                    thread_id.clone_into(&mut active_thread);
+                }
+            }
+            Some("turn_context") if active_thread != source.file_thread => {
+                let is_child_turn =
+                    text(&record.value, &["payload", "turn_id"]).is_some_and(|turn| {
+                        known_turns.get(&active_thread).is_some_and(|known| !known.contains(turn))
+                    });
+                if is_child_turn {
+                    active_thread.clone_from(&source.file_thread);
+                }
+            }
+            Some("event_msg")
+                if text(&record.value, &["payload", "type"]) == Some("thread_settings_applied") =>
+            {
+                active_thread.clone_from(&source.file_thread);
+            }
+            Some(_) | None => {}
+        }
+        if active_thread != source.file_thread {
+            evidence.push(record.evidence.clone());
+        }
+    }
+    evidence
+}
+
 #[derive(Clone, Copy)]
 struct CounterObservation<'a> {
     role: ObservationRole,
@@ -639,12 +671,15 @@ fn source_diagnostics(manifest: &SnapshotManifest) -> Vec<Diagnostic> {
                 length: 0,
             })
         });
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::CodexRolloutDuplicateLocation,
-            None,
-            evidence,
-            "the same Codex thread and rollout were found at multiple locations",
-        ));
+        diagnostics.push(
+            Diagnostic::new(
+                DiagnosticCode::CodexRolloutDuplicateLocation,
+                None,
+                evidence,
+                "the same Codex thread and rollout were found at multiple locations",
+            )
+            .with_occurrences(u64::try_from(entries.len()).unwrap_or(u64::MAX)),
+        );
     }
     diagnostics
 }

@@ -6,29 +6,17 @@
     {
       "name": "report",
       "args": ["report", "--all", "--format", "json", "--timezone", "UTC"],
-      "compare": "all",
-      "pending": {
-        "bead": "uro-d135",
-        "unblock": "urollup report prints JSON; then delete this pending entry and fix the report extractor"
-      }
+      "compare": "all"
     },
     {
       "name": "daily",
       "args": ["daily", "--all", "--format", "json", "--timezone", "UTC"],
-      "compare": ["requests", "ownership", "tokens"],
-      "pending": {
-        "bead": "uro-d135",
-        "unblock": "urollup daily prints JSON; then delete this pending entry and fix the rows extractor"
-      }
+      "compare": ["requests", "ownership", "tokens"]
     },
     {
       "name": "sessions",
       "args": ["sessions", "--all", "--format", "json", "--timezone", "UTC"],
-      "compare": ["requests", "ownership", "tokens"],
-      "pending": {
-        "bead": "uro-d135",
-        "unblock": "urollup sessions prints JSON; then delete this pending entry and fix the rows extractor"
-      }
+      "compare": ["requests", "ownership", "tokens"]
     }
   ]
 }

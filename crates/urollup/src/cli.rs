@@ -4,12 +4,21 @@
 //! unit-testable without spawning a process. stdout carries only requested data (help and
 //! version text count as requested); every diagnostic goes to stderr.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, Write};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use urollup_core::adapters::discovery::DiscoveryEnvironment;
+use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
+use urollup_core::query::{
+    GroupBy, QueryMetadata, QuerySource, ResolvedTimeZone, daily, report, sessions,
+};
+use urollup_core::selection::{
+    Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
+};
 
-/// The process exit classes this scaffold can produce.
+/// The process exit classes milestone 0.1 can produce.
 ///
 /// The full contract in design §6.5 also defines 3 (unmet coverage), 4 (exceeded
 /// threshold) and 130 (interrupted); those variants are added with the features that
@@ -20,7 +29,7 @@ pub enum Exit {
     Success,
     /// Runtime failure, such as an I/O or write failure.
     Runtime,
-    /// Invalid invocation or request, including a command that is not implemented yet.
+    /// Invalid invocation or request.
     Usage,
 }
 
@@ -62,6 +71,16 @@ impl Command {
             Self::Sessions(_) => "sessions",
         }
     }
+
+    fn args(&self) -> &SelectionArgs {
+        match self {
+            Self::Report(args) | Self::Daily(args) | Self::Sessions(args) => args,
+        }
+    }
+
+    const fn defaults_to_all(&self) -> bool {
+        matches!(self, Self::Daily(_) | Self::Sessions(_))
+    }
 }
 
 /// Session selection shared by every milestone 0.1 report command.
@@ -82,6 +101,18 @@ struct SelectionArgs {
     /// Include only selected threads or also their spawned subagent descendants
     #[arg(long, value_enum, value_name = "SCOPE")]
     scope: Option<ScopeArg>,
+
+    /// Output as a terminal table or JSON document
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    /// IANA timezone for calendar grouping; defaults to the system timezone
+    #[arg(long, value_name = "ZONE")]
+    timezone: Option<String>,
+
+    /// Report breakdown; repeatable and comma-delimited
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION")]
+    group_by: Vec<GroupByArg>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -89,6 +120,41 @@ enum ScopeArg {
     #[value(name = "self")]
     SelfOnly,
     Descendants,
+}
+
+impl From<ScopeArg> for Scope {
+    fn from(value: ScopeArg) -> Self {
+        match value {
+            ScopeArg::SelfOnly => Self::SelfOnly,
+            ScopeArg::Descendants => Self::Descendants,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum OutputFormat {
+    #[default]
+    Table,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GroupByArg {
+    Project,
+    Account,
+    Model,
+    Effort,
+}
+
+impl From<GroupByArg> for GroupBy {
+    fn from(value: GroupByArg) -> Self {
+        match value {
+            GroupByArg::Project => Self::Project,
+            GroupByArg::Account => Self::Account,
+            GroupByArg::Model => Self::Model,
+            GroupByArg::Effort => Self::Effort,
+        }
+    }
 }
 
 /// Parse `args` (including the program name), perform the command and return its exit
@@ -106,7 +172,166 @@ where
         Ok(cli) => cli,
         Err(error) => return report_parse_outcome(&error, stdout, stderr),
     };
-    not_implemented(&cli.command, stderr)
+    match execute(&cli.command) {
+        Ok(output) => {
+            finish_stdout(stdout.write_all(output.as_bytes()).and_then(|()| stdout.flush()), stderr)
+        }
+        Err(failure) => {
+            let _ = writeln!(stderr, "error: {}", failure.message);
+            failure.exit
+        }
+    }
+}
+
+struct Corpus {
+    claude: Ingested,
+    codex: Ingested,
+    index: SessionIndex,
+}
+
+impl Corpus {
+    fn discover() -> Result<Self, Failure> {
+        let environment = DiscoveryEnvironment::from_process();
+        let claude_roots = environment.claude_project_roots();
+        let codex_roots = environment.codex_homes();
+        let claude =
+            claude_project::ingest_roots(&claude_roots.roots, claude_roots.missing_is_error())
+                .map_err(|error| Failure::adapter(&error))?;
+        let codex = codex_rollout::ingest_roots(&codex_roots.roots, codex_roots.missing_is_error())
+            .map_err(|error| Failure::adapter(&error))?;
+        let mut index = SessionIndex::default();
+        index.add(Agent::Claude, &claude).map_err(|error| Failure::selection(&error))?;
+        index.add(Agent::Codex, &codex).map_err(|error| Failure::selection(&error))?;
+        Ok(Self { claude, codex, index })
+    }
+
+    fn sources(&self) -> [QuerySource<'_>; 2] {
+        [
+            QuerySource { agent: Agent::Claude, ingested: &self.claude },
+            QuerySource { agent: Agent::Codex, ingested: &self.codex },
+        ]
+    }
+}
+
+struct Failure {
+    exit: Exit,
+    message: String,
+}
+
+impl Failure {
+    fn usage(message: impl Into<String>) -> Self {
+        Self { exit: Exit::Usage, message: message.into() }
+    }
+
+    fn runtime(message: impl Into<String>) -> Self {
+        Self { exit: Exit::Runtime, message: message.into() }
+    }
+
+    fn adapter(error: &AdapterError) -> Self {
+        Self::runtime(error.to_string())
+    }
+
+    fn selection(error: &SelectionError) -> Self {
+        let exit = match error {
+            SelectionError::UnknownSelector(_)
+            | SelectionError::ConflictingThread(_)
+            | SelectionError::UnsavedSession { .. } => Exit::Runtime,
+            SelectionError::AmbiguousSelector { .. }
+            | SelectionError::NoSelector
+            | SelectionError::CurrentNotDetected
+            | SelectionError::AmbiguousCurrent(_)
+            | SelectionError::UnsupportedAgent(_)
+            | SelectionError::HookJson { .. }
+            | SelectionError::HookField(_)
+            | SelectionError::HookMismatch => Exit::Usage,
+        };
+        Self { exit, message: error.to_string() }
+    }
+}
+
+fn execute(command: &Command) -> Result<String, Failure> {
+    let args = command.args();
+    let timezone = ResolvedTimeZone::resolve(args.timezone.as_deref())
+        .map_err(|error| Failure::usage(error.to_string()))?;
+    let explicit = args.current || !args.sessions.is_empty() || args.all;
+    let wants_current = args.current || (!explicit && !command.defaults_to_all());
+    let wants_all = args.all || (!explicit && command.defaults_to_all());
+    let current = wants_current
+        .then(|| CurrentEnvironment::from_process().detect(&BTreeSet::new()))
+        .transpose()
+        .map_err(|error| Failure::selection(&error))?;
+    let scope = args.scope.map_or_else(
+        || {
+            if wants_current || !args.sessions.is_empty() {
+                Scope::Descendants
+            } else {
+                Scope::SelfOnly
+            }
+        },
+        Scope::from,
+    );
+    let query = SelectionQuery {
+        current,
+        sessions: args.sessions.clone(),
+        all: wants_all,
+        scope: Some(scope),
+        ..SelectionQuery::default()
+    };
+    let selection_name = selection_name(&query);
+    let corpus = Corpus::discover()?;
+    let selected = corpus.index.select(&query).map_err(|error| Failure::selection(&error))?;
+    let all = query.all && query.current.is_none() && query.sessions.is_empty();
+    let sources = corpus.sources();
+    let metadata = QueryMetadata::new(command.name(), selection_name, scope, &timezone);
+
+    let mut output = match command {
+        Command::Report(_) => {
+            let groups = args.group_by.iter().copied().map(GroupBy::from).collect();
+            let document = report(&sources, &corpus.index, &selected, all, metadata, &groups)
+                .map_err(|error| Failure::runtime(error.to_string()))?;
+            match args.format {
+                OutputFormat::Table => crate::render::report(&document),
+                OutputFormat::Json => serde_json::to_string_pretty(&document)
+                    .map_err(|error| Failure::runtime(error.to_string()))?,
+            }
+        }
+        Command::Daily(_) => {
+            let document = daily(&sources, &selected, all, metadata, &timezone)
+                .map_err(|error| Failure::runtime(error.to_string()))?;
+            match args.format {
+                OutputFormat::Table => crate::render::daily(&document),
+                OutputFormat::Json => serde_json::to_string_pretty(&document)
+                    .map_err(|error| Failure::runtime(error.to_string()))?,
+            }
+        }
+        Command::Sessions(_) => {
+            let document = sessions(&sources, &corpus.index, &selected, all, metadata)
+                .map_err(|error| Failure::runtime(error.to_string()))?;
+            match args.format {
+                OutputFormat::Table => crate::render::sessions(&document),
+                OutputFormat::Json => serde_json::to_string_pretty(&document)
+                    .map_err(|error| Failure::runtime(error.to_string()))?,
+            }
+        }
+    };
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn selection_name(query: &SelectionQuery) -> String {
+    let mut parts = Vec::new();
+    if query.current.is_some() {
+        parts.push("current");
+    }
+    if !query.sessions.is_empty() {
+        parts.push("session");
+    }
+    if query.all {
+        parts.push("all");
+    }
+    parts.join("+")
 }
 
 /// Render clap's help, version or usage-error outcome to the stream it belongs on.
@@ -137,21 +362,11 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write) -> Exit {
     }
 }
 
-/// The milestone 0.1 commands exist as names only until their reports are implemented.
-fn not_implemented(command: &Command, stderr: &mut dyn Write) -> Exit {
-    let _ = writeln!(
-        stderr,
-        "error: `urollup {}` is not implemented yet; this build is the repository scaffold",
-        command.name()
-    );
-    Exit::Usage
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::{self, Write};
 
-    use super::{Cli, Command, Exit, ScopeArg, run};
+    use super::{Cli, Command, Exit, OutputFormat, ScopeArg, run};
     use clap::Parser;
 
     struct Outcome {
@@ -227,22 +442,6 @@ mod tests {
     }
 
     #[test]
-    fn stub_commands_exit_two_with_a_diagnostic_and_no_data() {
-        for command in ["report", "daily", "sessions"] {
-            let outcome = invoke(&[command]);
-            assert_eq!(outcome.exit, Exit::Usage, "{command}");
-            assert_eq!(outcome.stdout, "", "{command}");
-            assert_eq!(
-                outcome.stderr,
-                format!(
-                    "error: `urollup {command}` is not implemented yet; \
-                     this build is the repository scaffold\n"
-                ),
-            );
-        }
-    }
-
-    #[test]
     fn report_accepts_milestone_selection_flags() {
         let cli = Cli::try_parse_from([
             "urollup",
@@ -264,6 +463,7 @@ mod tests {
         assert_eq!(selection.sessions, ["native-one", "thr-two"]);
         assert!(selection.all);
         assert_eq!(selection.scope, Some(ScopeArg::Descendants));
+        assert_eq!(selection.format, OutputFormat::Table);
     }
 
     #[test]
@@ -271,7 +471,7 @@ mod tests {
         for command in ["report", "daily", "sessions"] {
             let outcome = invoke(&[command, "--help"]);
             assert_eq!(outcome.exit, Exit::Success, "{command}");
-            for flag in ["--current", "--session", "--all", "--scope"] {
+            for flag in ["--current", "--session", "--all", "--scope", "--format", "--timezone"] {
                 assert!(outcome.stdout.contains(flag), "{command} help lacks {flag}");
             }
         }
@@ -300,7 +500,7 @@ mod tests {
     fn a_closed_stderr_does_not_change_the_exit_class() {
         let mut stdout = Vec::new();
         let mut stderr = FailingWriter(io::ErrorKind::BrokenPipe);
-        assert_eq!(run(["urollup", "report"], &mut stdout, &mut stderr), Exit::Usage);
+        assert_eq!(run(["urollup", "not-a-command"], &mut stdout, &mut stderr), Exit::Usage);
         assert_eq!(run(["urollup"], &mut stdout, &mut stderr), Exit::Usage);
     }
 }

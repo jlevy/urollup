@@ -3,16 +3,19 @@ sandbox: true
 path:
   - $UROLLUP_BIN
 env:
+  CLAUDE_CONFIG_DIR: $GOLDEN_EMPTY_ROOT
+  CODEX_HOME: $GOLDEN_EMPTY_ROOT
   LANG: C
   LC_ALL: C
   NO_COLOR: "1"
+  PI_CODING_AGENT_SESSION_DIR: $GOLDEN_EMPTY_ROOT/sessions
   TZ: UTC
 ---
 # CLI Surface
 
-The milestone 0.1 scaffold defines the command surface and the exit contract (design
-§6.5) before any report exists.
-Run these sessions with `make golden`; never regenerate them without reading the diff.
+The milestone 0.1 CLI defines the command surface, selection defaults and exit contract
+(design §6.5). Run these sessions with `make golden`; never regenerate them without
+reading the diff.
 
 ## Version Is Exact and on Stdout
 
@@ -42,24 +45,35 @@ Options:
 ? 0
 ```
 
-## Unimplemented Commands Exit 2 With a Diagnostic and No Data
+## Report Defaults to the Current Session
 
 ```console
 $ urollup report
-! error: `urollup report` is not implemented yet; this build is the repository scaffold
+! error: current session was not detected; use --session or --all
 ? 2
 ```
 
+With no current-agent environment variable, the default is a usage error rather than an
+implicit all-sessions report.
+
+## Rollups Default to All Sessions
+
 ```console
-$ urollup daily
-! error: `urollup daily` is not implemented yet; this build is the repository scaffold
-? 2
+$ urollup daily --timezone UTC
+urollup daily
+Selection all  Scope self  Timezone UTC
+
+DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
+? 0
 ```
 
 ```console
-$ urollup sessions
-! error: `urollup sessions` is not implemented yet; this build is the repository scaffold
-? 2
+$ urollup sessions --timezone UTC
+urollup sessions
+Selection all  Scope self  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+? 0
 ```
 
 ## Usage Errors Exit 2 on Stderr

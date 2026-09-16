@@ -1,5 +1,6 @@
 //! End-to-end adapter tests over the frozen public dialect fixtures.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -50,6 +51,27 @@ fn assert_limit_observations(actual: &[ProviderLimitObservation], expected: &Val
         let native = Value::Object(actual.native.clone().into_iter().collect());
         assert_eq!(native, expected["native"], "{name}: native limit fields {index}");
     }
+}
+
+fn assert_diagnostic_counts(
+    actual: &[urollup_core::ledger::diagnostics::Diagnostic],
+    expected: &Value,
+    name: &str,
+) {
+    let mut actual_counts = BTreeMap::new();
+    for diagnostic in actual {
+        *actual_counts.entry(diagnostic.code.token()).or_insert(0_u64) += diagnostic.occurrences;
+    }
+    let mut expected_counts = BTreeMap::new();
+    for diagnostic in
+        expected["diagnostics"].as_array().expect("fixture diagnostics must be an array")
+    {
+        let code = diagnostic["code"].as_str().expect("diagnostic code must be a string");
+        let references = diagnostic["refs"].as_array().expect("diagnostic refs must be an array");
+        let count = u64::try_from(references.len()).expect("diagnostic count fits in u64");
+        *expected_counts.entry(code).or_insert(0_u64) += count.max(1);
+    }
+    assert_eq!(actual_counts, expected_counts, "{name}: diagnostic occurrence counts");
 }
 
 #[test]
@@ -217,6 +239,7 @@ fn every_claude_fixture_matches_metadata_counts() {
         actual_codes.sort_unstable();
         expected_codes.sort_unstable();
         assert_eq!(actual_codes, expected_codes, "{name}: diagnostic codes");
+        assert_diagnostic_counts(&ingested.ledger.diagnostics, &expected, &name);
         assert_limit_observations(&ingested.limit_observations, &expected, &name);
     }
 }
@@ -321,6 +344,7 @@ fn every_codex_fixture_matches_metadata_counts() {
         actual_codes.sort_unstable();
         expected_codes.sort_unstable();
         assert_eq!(actual_codes, expected_codes, "{name}: diagnostic codes");
+        assert_diagnostic_counts(&ingested.ledger.diagnostics, &expected, &name);
         assert_limit_observations(&ingested.limit_observations, &expected, &name);
     }
 }

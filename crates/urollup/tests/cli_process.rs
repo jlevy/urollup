@@ -26,13 +26,12 @@ fn version_exits_zero_on_stdout() {
 }
 
 #[test]
-fn stub_commands_exit_two_on_stderr() {
+fn report_command_help_exits_zero_on_stdout() {
     for command in ["report", "daily", "sessions"] {
-        let output = urollup(&[command]);
-        assert_eq!(output.status.code(), Some(2), "{command}");
-        assert!(output.stdout.is_empty(), "{command}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("is not implemented yet"), "{command}: {stderr}");
+        let output = urollup(&[command, "--help"]);
+        assert_eq!(output.status.code(), Some(0), "{command}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("--format"), "{command}");
+        assert!(output.stderr.is_empty(), "{command}");
     }
 }
 

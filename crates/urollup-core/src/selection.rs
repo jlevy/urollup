@@ -442,7 +442,7 @@ pub enum SelectionError {
     #[error("no session selector was supplied")]
     NoSelector,
     /// No current-session signal was present.
-    #[error("current session was not detected; use --session, --latest or --all")]
+    #[error("current session was not detected; use --session or --all")]
     CurrentNotDetected,
     /// Several nested-agent signals were present.
     #[error("current session is ambiguous among agents {0:?}; use --agent")]

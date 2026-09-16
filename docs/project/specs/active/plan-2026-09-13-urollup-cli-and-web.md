@@ -121,7 +121,7 @@ The capture store lands only after the uncached engine is the correctness refere
   ([§6.1](../../../urollup-design.md#61-workflows-and-session-selection),
   [§6.2](../../../urollup-design.md#62-current-session-detection),
   [§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index)).
-- [ ] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
+- [x] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
   account, model and effort grouping, request sizes, deterministic output, and the
   [end-to-end goldens and result checks](#golden-and-end-to-end-result-checks) on every
   fixture case; list-price estimates wait for 0.4
