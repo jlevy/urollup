@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 32
+version: 36
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -44,10 +44,15 @@ child_order_hints:
   - is-01m2nerjrrsfghn5avwj8mjr6a
   - is-01m2nh4cky25nw5gjc3qhzh05s
   - is-01m2nrdts2g88hmxm1pn9gzvkn
+  - is-01m2nrq2x33grg7kg9v3c9psph
+  - is-01m2nrq5y06fsr5zjk075ks6fc
+  - is-01m2nrrbmesqz5w2hzh0phza1v
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-16T18:42:21.089Z
+updated_at: 2026-09-16T18:52:38.064Z
 ---
-Scaffold, sanitized fixtures, snapshot reading, identities and ledger, claude-project and codex-rollout adapters, --current/--session/--all with the discovery index and hierarchy crawler, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md.
+Scaffold, sanitized fixtures, snapshot reading, identities and ledger, Claude Code and Codex adapters, exact session selection, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md.
+
+Status 2026-09-16: the uncached Claude Code and Codex engine, exact session selection, report/daily/sessions output, 29 fixture cases, 239 golden blocks, normalized-entity reconciliation, ledger snapshots and the pinned ccusage fixture-parity gate are implemented on PR #4. Remaining milestone work includes terminal-aware color (uro-nazs), interactive progress (uro-wqf8), the privacy-tested local acceptance path, maintainer decisions, and an independent full implementation review (uro-nncx). Passing automated gates does not represent those items as complete.
 
 ## Notes
 
