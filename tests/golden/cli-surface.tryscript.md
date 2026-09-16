@@ -31,7 +31,7 @@ urollup 0.1.0
 $ urollup --help
 Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session logs
 
-Usage: urollup <COMMAND>
+Usage: urollup [OPTIONS] <COMMAND>
 
 Commands:
   report    Session report: totals, breakdowns, sizes, tools and limitations
@@ -40,8 +40,24 @@ Commands:
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help     Print help
-  -V, --version  Print version
+      --color <COLOR>
+          Colorize human output: auto, always or never
+
+          Possible values:
+          - auto:   Style human output only when its destination is a terminal
+          - always: Style human output even when its destination is redirected
+          - never:  Never style output
+
+          [default: auto]
+
+      --no-progress
+          Disable the interactive progress indicator
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ? 0
 ```
 
@@ -82,7 +98,7 @@ THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
 $ urollup --no-such-flag
 ! error: unexpected argument '--no-such-flag' found
 !
-! Usage: urollup <COMMAND>
+! Usage: urollup [OPTIONS] <COMMAND>
 !
 ! For more information, try '--help'.
 ? 2
@@ -94,7 +110,7 @@ A bare invocation is a usage error too: it prints help on stderr, not stdout.
 $ urollup
 ! Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session logs
 !
-! Usage: urollup <COMMAND>
+! Usage: urollup [OPTIONS] <COMMAND>
 !
 ! Commands:
 !   report    Session report: totals, breakdowns, sizes, tools and limitations
@@ -103,8 +119,10 @@ $ urollup
 !   help      Print this message or the help of the given subcommand(s)
 !
 ! Options:
-!   -h, --help     Print help
-!   -V, --version  Print version
+!       --color <COLOR>  Colorize human output: auto, always or never [default: auto] [possible values: auto, always, never]
+!       --no-progress    Disable the interactive progress indicator
+!   -h, --help           Print help (see more with '--help')
+!   -V, --version        Print version
 ? 2
 ```
 

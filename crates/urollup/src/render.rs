@@ -2,27 +2,38 @@
 
 use std::fmt::Write as _;
 
+use clap::builder::styling::{AnsiColor, Style as AnsiStyle};
+
 use urollup_core::query::{
     DailyDocument, ReportDocument, RequestCounts, SessionsDocument, TokenCounts,
 };
 
-pub(crate) fn report(document: &ReportDocument) -> String {
+const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
+const STYLE_COMPLETE: AnsiStyle = AnsiColor::Green.on_default().bold();
+const STYLE_PARTIAL: AnsiStyle = AnsiColor::Yellow.on_default().bold();
+
+pub(crate) fn report(document: &ReportDocument, color: bool) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "urollup report");
+    let _ = writeln!(output, "{}", paint("urollup report", STYLE_HEADING, color));
     write_query(&mut output, &document.query);
     let _ = writeln!(output);
-    let _ = writeln!(output, "TOTALS");
+    let _ = writeln!(output, "{}", paint("TOTALS", STYLE_HEADING, color));
     let _ = writeln!(output, "Requests  {}", number(request_total(document.totals.requests)));
     let _ = writeln!(output, "Owned     {}", number(document.totals.requests.owned));
     let _ = writeln!(output, "Ambiguous {}", number(document.totals.requests.ambiguous));
     let _ = writeln!(output, "Unknown   {}", number(document.totals.requests.unknown));
     write_tokens(&mut output, &document.totals.tokens);
     let _ = writeln!(output);
-    let _ = writeln!(output, "COVERAGE");
+    let _ = writeln!(output, "{}", paint("COVERAGE", STYLE_HEADING, color));
+    let coverage = if document.coverage.complete {
+        paint("complete", STYLE_COMPLETE, color)
+    } else {
+        paint("partial", STYLE_PARTIAL, color)
+    };
     let _ = writeln!(
         output,
         "Status {}  Copies excluded {}  Limit observations {}",
-        if document.coverage.complete { "complete" } else { "partial" },
+        coverage,
         number(document.coverage.copies_excluded),
         number(document.coverage.limit_observations),
     );
@@ -34,7 +45,11 @@ pub(crate) fn report(document: &ReportDocument) -> String {
         number(document.coverage.requests_without_usage),
     );
     let _ = writeln!(output);
-    let _ = writeln!(output, "REQUEST SIZES (inclusive input tokens)");
+    let _ = writeln!(
+        output,
+        "{}",
+        paint("REQUEST SIZES (inclusive input tokens)", STYLE_HEADING, color)
+    );
     let _ = writeln!(
         output,
         "Count {}  p50 {}  p90 {}  p99 {}  max {}",
@@ -46,7 +61,8 @@ pub(crate) fn report(document: &ReportDocument) -> String {
     );
     for (group, rows) in &document.breakdowns {
         let _ = writeln!(output);
-        let _ = writeln!(output, "{} BREAKDOWN", group.to_uppercase());
+        let heading = format!("{} BREAKDOWN", group.to_uppercase());
+        let _ = writeln!(output, "{}", paint(&heading, STYLE_HEADING, color));
         let _ = writeln!(output, "VALUE | REQUESTS | INPUT | OUTPUT | TOTAL");
         for row in rows {
             let _ = writeln!(
@@ -60,13 +76,13 @@ pub(crate) fn report(document: &ReportDocument) -> String {
             );
         }
     }
-    write_diagnostics(&mut output, &document.diagnostics);
+    write_diagnostics(&mut output, &document.diagnostics, color);
     output
 }
 
-pub(crate) fn daily(document: &DailyDocument) -> String {
+pub(crate) fn daily(document: &DailyDocument, color: bool) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "urollup daily");
+    let _ = writeln!(output, "{}", paint("urollup daily", STYLE_HEADING, color));
     write_query(&mut output, &document.query);
     let _ = writeln!(output);
     let _ =
@@ -84,13 +100,13 @@ pub(crate) fn daily(document: &DailyDocument) -> String {
             optional_number(row.tokens.total),
         );
     }
-    write_diagnostics(&mut output, &document.diagnostics);
+    write_diagnostics(&mut output, &document.diagnostics, color);
     output
 }
 
-pub(crate) fn sessions(document: &SessionsDocument) -> String {
+pub(crate) fn sessions(document: &SessionsDocument, color: bool) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "urollup sessions");
+    let _ = writeln!(output, "{}", paint("urollup sessions", STYLE_HEADING, color));
     write_query(&mut output, &document.query);
     let _ = writeln!(output);
     let _ = writeln!(output, "THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL");
@@ -107,7 +123,7 @@ pub(crate) fn sessions(document: &SessionsDocument) -> String {
             optional_number(row.tokens.total),
         );
     }
-    write_diagnostics(&mut output, &document.diagnostics);
+    write_diagnostics(&mut output, &document.diagnostics, color);
     output
 }
 
@@ -128,12 +144,16 @@ fn write_tokens(output: &mut String, tokens: &TokenCounts) {
     let _ = writeln!(output, "Total tokens   {}", optional_number(tokens.total));
 }
 
-fn write_diagnostics(output: &mut String, diagnostics: &[urollup_core::query::DiagnosticSummary]) {
+fn write_diagnostics(
+    output: &mut String,
+    diagnostics: &[urollup_core::query::DiagnosticSummary],
+    color: bool,
+) {
     if diagnostics.is_empty() {
         return;
     }
     let _ = writeln!(output);
-    let _ = writeln!(output, "DIAGNOSTICS");
+    let _ = writeln!(output, "{}", paint("DIAGNOSTICS", STYLE_HEADING, color));
     for diagnostic in diagnostics {
         let _ =
             writeln!(output, "{} x{}: {}", diagnostic.code, diagnostic.count, diagnostic.detail);
@@ -174,6 +194,10 @@ fn number(value: u64) -> String {
         output.push(char::from(byte));
     }
     output
+}
+
+fn paint(text: &str, style: AnsiStyle, color: bool) -> String {
+    if color { format!("{style}{text}{style:#}") } else { text.to_owned() }
 }
 
 #[cfg(test)]

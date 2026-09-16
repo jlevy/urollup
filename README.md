@@ -38,18 +38,19 @@ explicitly named sources.
 Run `urollup <command> --help` for selection, scope, grouping and output options.
 
 For the 0.1.0 terminal contract, automatic color is limited to interactive human-facing
-output and can always be disabled with `--color never` or `NO_COLOR`. Noticeably long
-operations show progress by default only during interactive human use; progress is
-written to stderr and `--no-progress` always disables it.
+output and can always be disabled with `--color never` or `NO_COLOR`; `--color always`
+and `FORCE_COLOR` support an explicitly forced human presentation.
+Noticeably long operations show progress by default only during interactive human use;
+progress is written to stderr and `--no-progress` always disables it.
 Redirected, piped and machine-readable workflows stay plain and noninteractive.
 
 ## Status
 
 Milestone 0.1’s accounting and report implementation and fixture-backed ccusage
-reconciliation are complete.
-Terminal-aware color, interactive progress, the privacy-tested local aggregate diff,
-consented real-log acceptance and recorded maintainer decisions remain before the
-milestone is accepted.
+reconciliation are complete, as are terminal-aware color, interactive progress and the
+privacy-tested local acceptance tools.
+The consented real-log run, recorded maintainer decisions and independent implementation
+review remain before the milestone is accepted.
 Packaging implementation and rehearsal follow that acceptance gate.
 
 ## Documentation
@@ -85,6 +86,15 @@ make test    # Rust tests and CLI goldens
 make check   # the handoff gate CI also runs
 make fix     # format Rust, TOML and Markdown
 tbd ready    # beads ready to work on
+```
+
+The maintainer-only acceptance targets never run in CI and refuse to read default agent
+logs without explicit consent.
+They write allowlisted aggregates under ignored `target/` directories:
+
+```bash
+make e2e-local CONSENT_LOCAL_LOGS=1
+make parity-local CONSENT_LOCAL_LOGS=1
 ```
 
 See [AGENTS.md](AGENTS.md) for toolchain setup and contributor conventions,

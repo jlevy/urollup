@@ -46,8 +46,8 @@ not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | The accounting, reports and fixture gates are complete; terminal color, interactive progress and their stream-safety tests remain |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | Not complete; this is the critical path to declaring milestone 0.1 accepted |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implemented on the stacked 0.1 terminal-UX and acceptance PR; the full repository gate must pass at its final commit |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | The opt-in local tools and privacy sentinels are implemented; the consented run, review and remaining decisions are not complete |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 

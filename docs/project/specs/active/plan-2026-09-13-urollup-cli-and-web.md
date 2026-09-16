@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 accounting and reports are complete, with terminal UX, local acceptance and remaining maintainer decisions in progress
+status: Active; milestone 0.1 automated product and local tooling are complete, with consented acceptance, decisions and independent review in progress
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -141,24 +141,27 @@ The capture store lands only after the uncached engine is the correctness refere
   `codex-rollout` fixtures in CI, and the explained-differences ledger
   ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
-- [ ] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
+- [x] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
   human-facing output on an interactive terminal; keep redirected, piped and
   machine-readable output free of ANSI escapes; and make `--color never` and `NO_COLOR`
   unconditional disables.
-  Test automatic color through a pseudo-terminal, plain redirected output, both disable
-  mechanisms on a terminal, and every machine-readable format
+  Test automatic color with injected destination capabilities, plain redirected output,
+  both disable mechanisms, real process streams and every machine-readable format
   ([Decision 29](../../../urollup-design.md#decision-29-terminal-aware-color),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
-- [ ] Add progress for noticeably long operations as a 0.1 baseline: enable it by
+- [x] Add progress for noticeably long operations as a 0.1 baseline: enable it by
   default only during interactive human use, render it on stderr without contaminating
   stdout, suppress it for non-TTY, redirected, piped and machine-readable workflows, and
   make `--no-progress` an unconditional disable.
-  Test pseudo-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
+  Test injected-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
   machine stdout without ANSI or control sequences, and cleanup on both success and
   error ([Decision 30](../../../urollup-design.md#decision-30-interactive-progress),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
-- [ ] Add the privacy-tested local aggregate diff script and run the consented real-log
-  acceptance checks without committing log content, paths or identifiers
+- [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
+  diff with privacy sentinels that reject log content, paths, identifiers, prompts,
+  project names and custom model names.
+- [ ] Run the consented real-log acceptance checks and review the resulting aggregates
+  without committing log content, paths or identifiers
   ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
   [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
@@ -444,8 +447,8 @@ records what each rule cost when it was missing, and
   replacing every string value, identifier and path with a consistent synthetic
   stand-in, reviewed before commit.
   A consented local corpus is never committed: it is checked in place with
-  `check-e2e-results.mjs --fixtures <dir>`, and the planned local-only mode prints
-  aggregates alone under the same privacy rules as
+  `check-e2e-results.mjs --fixtures <dir>`, and `make e2e-local` prints aggregates alone
+  under the same privacy rules as
   [the local ccusage diff](#ccusage-reconciliation-harness), including its sentinel
   test. That mode is also how an [acceptance goal](#end-to-end-acceptance-goals) run on
   real local logs is checked and recorded; the automated goldens and result checks never

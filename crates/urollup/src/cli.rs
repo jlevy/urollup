@@ -1,16 +1,18 @@
 //! Argument parsing, stream handling and exit translation for the `urollup` executable.
 //!
-//! [`run`] takes stdout and stderr as injected writers, so stream and exit behavior is
-//! unit-testable without spawning a process. stdout carries only requested data (help and
-//! version text count as requested); every diagnostic goes to stderr.
+//! [`run_with_context`] takes stdout and stderr as injected writers plus explicit
+//! terminal capabilities, so stream and exit behavior is unit-testable without spawning
+//! a process. stdout carries only requested data (help and version text count as
+//! requested); every diagnostic goes to stderr.
 
 use std::collections::BTreeSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
+use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
 use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
 use urollup_core::query::{
@@ -20,6 +22,42 @@ use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
 };
 use urollup_core::sources::roots;
+
+const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
+const STYLE_ERROR: AnsiStyle = AnsiColor::Red.on_default().bold();
+const CLI_STYLES: Styles = Styles::styled()
+    .header(STYLE_HEADING)
+    .usage(STYLE_HEADING)
+    .literal(AnsiColor::Green.on_default())
+    .placeholder(AnsiColor::Cyan.on_default())
+    .error(STYLE_ERROR)
+    .valid(AnsiColor::Green.on_default())
+    .invalid(AnsiColor::Yellow.on_default());
+
+/// Whether the process streams are attached to interactive terminals.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TerminalContext {
+    pub(crate) stdout_is_terminal: bool,
+    pub(crate) stderr_is_terminal: bool,
+}
+
+/// Color-related environment state, separated from policy so tests do not mutate the
+/// process environment.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ColorEnvironment {
+    no_color: bool,
+    force_color: bool,
+}
+
+impl ColorEnvironment {
+    pub(crate) fn from_process() -> Self {
+        Self {
+            no_color: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+            force_color: std::env::var_os("FORCE_COLOR")
+                .is_some_and(|value| !value.is_empty() && value != "0"),
+        }
+    }
+}
 
 /// The process exit classes milestone 0.1 can produce.
 ///
@@ -52,8 +90,28 @@ impl Exit {
 // otherwise take it from argv[0], which is `urollup.exe` when Windows runs a full path.
 #[command(name = "urollup", bin_name = "urollup", version, about, arg_required_else_help = true)]
 struct Cli {
+    /// Colorize human output: auto, always or never
+    #[arg(long, value_enum, default_value_t = ColorWhen::Auto, global = true)]
+    color: ColorWhen,
+
+    /// Disable the interactive progress indicator
+    #[arg(long, global = true)]
+    no_progress: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// When terminal styling should be enabled.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum ColorWhen {
+    /// Style human output only when its destination is a terminal.
+    #[default]
+    Auto,
+    /// Style human output even when its destination is redirected.
+    Always,
+    /// Never style output.
+    Never,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -174,21 +232,79 @@ impl From<GroupByArg> for GroupBy {
 /// Output written to `stdout` is flushed before a success is reported, so a failed write
 /// can never be reported as success. A consumer that closes stdout after the output was
 /// produced is still success (design §6.5).
-pub fn run<I, T>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Exit
+#[cfg(test)]
+fn run<I, T>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Exit
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(error) => return report_parse_outcome(&error, stdout, stderr),
-    };
-    match execute(&cli.command) {
-        Ok(output) => {
-            finish_stdout(stdout.write_all(output.as_bytes()).and_then(|()| stdout.flush()), stderr)
+    run_with_context(args, stdout, stderr, TerminalContext::default(), ColorEnvironment::default())
+}
+
+/// Run with explicit terminal and environment capabilities.
+///
+/// Keeping these inputs separate from the writers makes the TTY branches deterministic
+/// under unit tests while `main` still probes the real destination streams.
+pub(crate) fn run_with_context<I, T>(
+    args: I,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    terminals: TerminalContext,
+    color_environment: ColorEnvironment,
+) -> Exit
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let requested_color = requested_color(&args);
+    let machine_requested = machine_format_requested(&args);
+    let command = Cli::command().styles(CLI_STYLES).color(ColorChoice::Always);
+    let matches = match command.try_get_matches_from(&args) {
+        Ok(matches) => matches,
+        Err(error) => {
+            return report_parse_outcome(
+                &error,
+                stdout,
+                stderr,
+                terminals,
+                ColorContext {
+                    when: requested_color,
+                    machine: machine_requested,
+                    environment: color_environment,
+                },
+            );
         }
+    };
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let _ = writeln!(stderr, "error: {error}");
+            return Exit::Usage;
+        }
+    };
+    let machine = cli.command.args().format == OutputFormat::Json;
+    let stdout_color = ColorContext { when: cli.color, machine, environment: color_environment }
+        .enabled(terminals.stdout_is_terminal);
+    let stderr_color = ColorContext { when: cli.color, machine, environment: color_environment }
+        .enabled(terminals.stderr_is_terminal);
+    let progress = !cli.no_progress && !machine && terminals.stderr_is_terminal;
+    if progress {
+        write_progress(stderr, "Reading usage logs…");
+    }
+    let result = execute(&cli.command, stdout_color);
+    if progress {
+        clear_progress(stderr);
+    }
+    match result {
+        Ok(output) => finish_stdout(
+            stdout.write_all(output.as_bytes()).and_then(|()| stdout.flush()),
+            stderr,
+            stderr_color,
+        ),
         Err(failure) => {
-            let _ = writeln!(stderr, "error: {}", failure.message);
+            let label = paint("error:", STYLE_ERROR, stderr_color);
+            let _ = writeln!(stderr, "{label} {}", failure.message);
             failure.exit
         }
     }
@@ -384,7 +500,7 @@ impl Failure {
     }
 }
 
-fn execute(command: &Command) -> Result<String, Failure> {
+fn execute(command: &Command, color: bool) -> Result<String, Failure> {
     let args = command.args();
     let timezone = ResolvedTimeZone::resolve(args.timezone.as_deref())
         .map_err(|error| Failure::usage(error.to_string()))?;
@@ -427,7 +543,7 @@ fn execute(command: &Command) -> Result<String, Failure> {
             let document = report(&sources, &corpus.index, &selected, all, metadata, &groups)
                 .map_err(|error| Failure::runtime(error.to_string()))?;
             match args.format {
-                OutputFormat::Table => crate::render::report(&document),
+                OutputFormat::Table => crate::render::report(&document, color),
                 OutputFormat::Json => serde_json::to_string_pretty(&document)
                     .map_err(|error| Failure::runtime(error.to_string()))?,
             }
@@ -436,7 +552,7 @@ fn execute(command: &Command) -> Result<String, Failure> {
             let document = daily(&sources, &selected, all, metadata, &timezone)
                 .map_err(|error| Failure::runtime(error.to_string()))?;
             match args.format {
-                OutputFormat::Table => crate::render::daily(&document),
+                OutputFormat::Table => crate::render::daily(&document, color),
                 OutputFormat::Json => serde_json::to_string_pretty(&document)
                     .map_err(|error| Failure::runtime(error.to_string()))?,
             }
@@ -445,7 +561,7 @@ fn execute(command: &Command) -> Result<String, Failure> {
             let document = sessions(&sources, &corpus.index, &selected, all, metadata)
                 .map_err(|error| Failure::runtime(error.to_string()))?;
             match args.format {
-                OutputFormat::Table => crate::render::sessions(&document),
+                OutputFormat::Table => crate::render::sessions(&document, color),
                 OutputFormat::Json => serde_json::to_string_pretty(&document)
                     .map_err(|error| Failure::runtime(error.to_string()))?,
             }
@@ -476,24 +592,121 @@ fn report_parse_outcome(
     error: &clap::Error,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    terminals: TerminalContext,
+    color: ColorContext,
 ) -> Exit {
-    let rendered = error.render().to_string();
+    let rendered = error.render();
     if error.use_stderr() {
+        let rendered = styled_text(&rendered, color.enabled(terminals.stderr_is_terminal));
         // A closed stderr must not change a status that is already decided.
         let _ = stderr.write_all(rendered.as_bytes()).and_then(|()| stderr.flush());
         return Exit::Usage;
     }
+    let rendered = styled_text(&rendered, color.enabled(terminals.stdout_is_terminal));
     // `--help` and `--version` are requested data, so they go to stdout.
-    finish_stdout(stdout.write_all(rendered.as_bytes()).and_then(|()| stdout.flush()), stderr)
+    finish_stdout(
+        stdout.write_all(rendered.as_bytes()).and_then(|()| stdout.flush()),
+        stderr,
+        color.enabled(terminals.stderr_is_terminal),
+    )
+}
+
+fn requested_color(args: &[OsString]) -> ColorWhen {
+    let mut arguments = args.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--" {
+            break;
+        }
+        if argument == "--color" {
+            return arguments.next().and_then(|value| color_value(value)).unwrap_or_default();
+        }
+        if let Some(value) = argument.to_str().and_then(|value| value.strip_prefix("--color=")) {
+            return color_value(OsStr::new(value)).unwrap_or_default();
+        }
+    }
+    ColorWhen::Auto
+}
+
+fn color_value(value: &OsStr) -> Option<ColorWhen> {
+    match value.to_str()? {
+        "auto" => Some(ColorWhen::Auto),
+        "always" => Some(ColorWhen::Always),
+        "never" => Some(ColorWhen::Never),
+        _ => None,
+    }
+}
+
+fn machine_format_requested(args: &[OsString]) -> bool {
+    let mut arguments = args.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--" {
+            break;
+        }
+        if argument == "--format" {
+            return arguments.next().is_some_and(|value| value == "json");
+        }
+        if argument.to_str().and_then(|value| value.strip_prefix("--format=")) == Some("json") {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ColorContext {
+    when: ColorWhen,
+    machine: bool,
+    environment: ColorEnvironment,
+}
+
+impl ColorContext {
+    fn enabled(self, destination_is_terminal: bool) -> bool {
+        if self.machine || self.when == ColorWhen::Never || self.environment.no_color {
+            return false;
+        }
+        match self.when {
+            ColorWhen::Always => true,
+            ColorWhen::Auto if self.environment.force_color => true,
+            ColorWhen::Auto => destination_is_terminal,
+            ColorWhen::Never => false,
+        }
+    }
+}
+
+fn styled_text(rendered: &clap::builder::StyledStr, color: bool) -> String {
+    let rendered = if color { rendered.ansi().to_string() } else { rendered.to_string() };
+    let mut output = String::with_capacity(rendered.len());
+    for line in rendered.split_inclusive('\n') {
+        let (content, newline) =
+            line.strip_suffix('\n').map_or((line, ""), |content| (content, "\n"));
+        output.push_str(content.trim_end_matches([' ', '\t']));
+        output.push_str(newline);
+    }
+    output
+}
+
+fn paint(text: &str, style: AnsiStyle, color: bool) -> String {
+    if color { format!("{style}{text}{style:#}") } else { text.to_owned() }
+}
+
+fn write_progress(stderr: &mut dyn Write, message: &str) {
+    // The clear-and-rewrite sequence is emitted only after stderr has been proven to be
+    // a terminal. Redirected and machine-oriented workflows never see control bytes.
+    let _ = write!(stderr, "\r\x1b[2K{message}").and_then(|()| stderr.flush());
+}
+
+fn clear_progress(stderr: &mut dyn Write) {
+    let _ = write!(stderr, "\r\x1b[2K").and_then(|()| stderr.flush());
 }
 
 /// Classify the result of writing and flushing stdout after the required work succeeded.
-fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write) -> Exit {
+fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write, color: bool) -> Exit {
     match result {
         Ok(()) => Exit::Success,
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Exit::Success,
         Err(error) => {
-            let _ = writeln!(stderr, "error: failed to write output: {error}");
+            let label = paint("error:", STYLE_ERROR, color);
+            let _ = writeln!(stderr, "{label} failed to write output: {error}");
             Exit::Runtime
         }
     }
@@ -501,11 +714,13 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write) -> Exit {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::io::{self, Write};
     use std::path::PathBuf;
 
     use super::{
-        Cli, Command, Exit, ExplicitDialect, OutputFormat, ScopeArg, classify_explicit_source, run,
+        Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit, ExplicitDialect,
+        OutputFormat, ScopeArg, TerminalContext, classify_explicit_source, run, run_with_context,
     };
     use clap::Parser;
 
@@ -525,6 +740,33 @@ mod tests {
             stdout: String::from_utf8(stdout).expect("stdout is UTF-8"),
             stderr: String::from_utf8(stderr).expect("stderr is UTF-8"),
         }
+    }
+
+    fn invoke_with_context(
+        args: Vec<OsString>,
+        terminals: TerminalContext,
+        environment: ColorEnvironment,
+    ) -> Outcome {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit = run_with_context(args, &mut stdout, &mut stderr, terminals, environment);
+        Outcome {
+            exit,
+            stdout: String::from_utf8(stdout).expect("stdout is UTF-8"),
+            stderr: String::from_utf8(stderr).expect("stderr is UTF-8"),
+        }
+    }
+
+    fn fixture_report_args(extra: &[&str]) -> Vec<OsString> {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../urollup-core/tests/fixtures/claude-project/nested-null-tool-input");
+        ["urollup", "report", "--source"]
+            .into_iter()
+            .map(OsString::from)
+            .chain(std::iter::once(source.into_os_string()))
+            .chain(["--no-default-sources"].into_iter().map(OsString::from))
+            .chain(extra.iter().copied().map(OsString::from))
+            .collect()
     }
 
     /// A writer whose every write fails with one error kind.
@@ -563,6 +805,152 @@ mod tests {
             assert!(outcome.stdout.contains(command), "help lacks {command}:\n{}", outcome.stdout);
         }
         assert_eq!(outcome.stderr, "");
+    }
+
+    #[test]
+    fn automatic_color_follows_the_destination_stream() {
+        let help = invoke_with_context(
+            ["urollup", "--help"].into_iter().map(OsString::from).collect(),
+            TerminalContext { stdout_is_terminal: true, stderr_is_terminal: false },
+            ColorEnvironment::default(),
+        );
+        assert!(help.stdout.contains("\u{1b}["), "{:?}", help.stdout);
+        assert_eq!(help.stderr, "");
+
+        let redirected = invoke_with_context(
+            ["urollup", "--help"].into_iter().map(OsString::from).collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert!(!redirected.stdout.contains("\u{1b}["), "{:?}", redirected.stdout);
+
+        let error = invoke_with_context(
+            ["urollup", "not-a-command"].into_iter().map(OsString::from).collect(),
+            TerminalContext { stdout_is_terminal: false, stderr_is_terminal: true },
+            ColorEnvironment::default(),
+        );
+        assert!(error.stderr.contains("\u{1b}["), "{:?}", error.stderr);
+        assert_eq!(error.stdout, "");
+    }
+
+    #[test]
+    fn explicit_and_environment_color_controls_have_stable_precedence() {
+        let always = invoke_with_context(
+            ["urollup", "--color", "always", "--help"].into_iter().map(OsString::from).collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert!(always.stdout.contains("\u{1b}["), "{:?}", always.stdout);
+
+        let no_color = invoke_with_context(
+            ["urollup", "--color", "always", "--help"].into_iter().map(OsString::from).collect(),
+            TerminalContext { stdout_is_terminal: true, stderr_is_terminal: true },
+            ColorEnvironment { no_color: true, force_color: true },
+        );
+        assert!(!no_color.stdout.contains("\u{1b}["), "{:?}", no_color.stdout);
+
+        let forced = invoke_with_context(
+            ["urollup", "--help"].into_iter().map(OsString::from).collect(),
+            TerminalContext::default(),
+            ColorEnvironment { no_color: false, force_color: true },
+        );
+        assert!(forced.stdout.contains("\u{1b}["), "{:?}", forced.stdout);
+
+        let never = ColorContext {
+            when: ColorWhen::Never,
+            machine: false,
+            environment: ColorEnvironment { no_color: false, force_color: true },
+        };
+        assert!(!never.enabled(true));
+    }
+
+    #[test]
+    fn machine_output_is_plain_and_suppresses_progress() {
+        let outcome = invoke_with_context(
+            fixture_report_args(&["--format", "json", "--color", "always"]),
+            TerminalContext { stdout_is_terminal: true, stderr_is_terminal: true },
+            ColorEnvironment { no_color: false, force_color: true },
+        );
+        assert_eq!(outcome.exit, Exit::Success);
+        assert!(!outcome.stdout.contains("\u{1b}["), "{:?}", outcome.stdout);
+        assert_eq!(outcome.stderr, "");
+        serde_json::from_str::<serde_json::Value>(&outcome.stdout).expect("plain JSON output");
+    }
+
+    #[test]
+    fn terminal_tables_share_the_color_policy() {
+        let terminals = TerminalContext { stdout_is_terminal: true, stderr_is_terminal: false };
+        let colored =
+            invoke_with_context(fixture_report_args(&[]), terminals, ColorEnvironment::default());
+        assert_eq!(colored.exit, Exit::Success);
+        assert!(colored.stdout.contains("\u{1b}["), "{:?}", colored.stdout);
+        assert_eq!(colored.stderr, "");
+
+        let plain = invoke_with_context(
+            fixture_report_args(&["--color", "always"]),
+            terminals,
+            ColorEnvironment { no_color: true, force_color: true },
+        );
+        assert_eq!(plain.exit, Exit::Success);
+        assert!(!plain.stdout.contains("\u{1b}["), "{:?}", plain.stdout);
+        assert_eq!(plain.stderr, "");
+    }
+
+    #[test]
+    fn interactive_table_progress_is_stderr_only_and_cleans_up() {
+        let terminals = TerminalContext { stdout_is_terminal: true, stderr_is_terminal: true };
+        let outcome = invoke_with_context(
+            fixture_report_args(&["--color", "never"]),
+            terminals,
+            ColorEnvironment::default(),
+        );
+        assert_eq!(outcome.exit, Exit::Success);
+        assert_eq!(outcome.stderr, "\r\u{1b}[2KReading usage logs…\r\u{1b}[2K");
+        assert!(outcome.stdout.starts_with("urollup report\n"), "{}", outcome.stdout);
+        assert!(!outcome.stdout.contains("Reading usage logs"));
+
+        let disabled = invoke_with_context(
+            fixture_report_args(&["--no-progress", "--color", "never"]),
+            terminals,
+            ColorEnvironment::default(),
+        );
+        assert_eq!(disabled.exit, Exit::Success);
+        assert_eq!(disabled.stderr, "");
+
+        let redirected = invoke_with_context(
+            fixture_report_args(&["--color", "never"]),
+            TerminalContext { stdout_is_terminal: true, stderr_is_terminal: false },
+            ColorEnvironment::default(),
+        );
+        assert_eq!(redirected.exit, Exit::Success);
+        assert_eq!(redirected.stderr, "");
+    }
+
+    #[test]
+    fn progress_cleans_up_before_runtime_diagnostics() {
+        let outcome = invoke_with_context(
+            [
+                "urollup",
+                "report",
+                "--source",
+                "/urollup-test/missing-source",
+                "--no-default-sources",
+                "--color",
+                "never",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext { stdout_is_terminal: true, stderr_is_terminal: true },
+            ColorEnvironment::default(),
+        );
+        assert_eq!(outcome.exit, Exit::Runtime);
+        assert_eq!(outcome.stdout, "");
+        assert!(
+            outcome.stderr.starts_with("\r\u{1b}[2KReading usage logs…\r\u{1b}[2Kerror:"),
+            "{:?}",
+            outcome.stderr
+        );
     }
 
     #[test]
@@ -625,6 +1013,8 @@ mod tests {
                 "--no-default-sources",
                 "--format",
                 "--timezone",
+                "--color",
+                "--no-progress",
             ] {
                 assert!(outcome.stdout.contains(flag), "{command} help lacks {flag}");
             }

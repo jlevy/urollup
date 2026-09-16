@@ -23,6 +23,33 @@ both sides, and no inherited agent-discovery variables.
 The harness invokes the native platform executable directly rather than `npx`, `bunx`,
 `pnpm dlx`, or ccusage’s JavaScript launcher.
 
+## Local acceptance
+
+Two maintainer-only targets exercise default local roots.
+They are absent from `test`, `check` and CI, and both refuse to run unless the caller
+supplies explicit consent:
+
+```bash
+make e2e-local CONSENT_LOCAL_LOGS=1
+make parity-local CONSENT_LOCAL_LOGS=1
+```
+
+`e2e-local` writes `target/acceptance/local-aggregate.json`. It includes only complete
+days before the current local day, fixed request and token counters, counts of stable
+sessions, coverage counters and internal diagnostic codes.
+`parity-local` writes `target/parity/local.json` with tool versions, platform, timezone,
+the half-open interval, token totals and deltas, per-day deltas, the safe `other` model
+bucket, matched and one-sided session counts, a relative-delta histogram and the
+unexplained residual.
+
+Both scripts may hold paths and identifiers in memory while joining results, but their
+output builders use fixed allowlists.
+CI unit tests feed unique markers through paths, projects, sessions, requests, prompts
+and custom model names and fail if any marker reaches the rendered record.
+Subprocess failures are reported without forwarding tool diagnostics that could contain
+a private path. Generated reports remain under the ignored `target/` tree until a
+maintainer reviews an aggregate for release records.
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->
