@@ -480,14 +480,19 @@ package = false
 exclude-newer = "14 days"
 
 [tool.uv.exclude-newer-package]
-softschema = "2099-12-31"
-flowmark-rs = "2099-12-31"
+softschema = "2100-01-01T00:00:00Z"
+flowmark-rs = "2100-01-01T00:00:00Z"
 ```
 
 - *(Updated 2026-09-15: the cool-off and first-party exemptions now live in a root
   `uv.toml` that every command passes as `uv --config-file uv.toml`, so user-level uv
   configuration never changes resolution, and `pyproject.toml` keeps only
   `[tool.uv] package = false` beside the dev group above.)*
+- *(Updated 2026-09-15: exemption values must be full RFC 3339 UTC timestamps.
+  uv resolves a date-only value such as `"2099-12-31"` in the machine’s local timezone
+  and records that instant in `uv.lock`, so a lock written in one timezone fails
+  `uv lock --check` on a CI runner in another; milestone 0.1’s first CI run hit exactly
+  this.)*
 - Keep fdu’s `uv` version preflight so an old uv fails with a version message rather
   than a TOML date error.
 
