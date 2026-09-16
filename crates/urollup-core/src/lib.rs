@@ -16,6 +16,7 @@
 #![deny(clippy::panic)]
 
 pub mod accounting;
+pub mod adapters;
 pub mod artifacts;
 pub mod ledger;
 pub mod query;

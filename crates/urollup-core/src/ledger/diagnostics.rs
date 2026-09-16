@@ -31,6 +31,30 @@ pub enum DiagnosticCode {
     CounterReset,
     /// A cumulative counter's sequence skipped values.
     CounterGap,
+    /// Claude block observations of one response disagree on usage.
+    ClaudeBlockUsageConflict,
+    /// Claude's cache-creation total disagrees with its lifetime breakdown.
+    ClaudeCacheCreationBreakdownMismatch,
+    /// A nested Claude copy has no original observation.
+    ClaudeNestedCopyWithoutOriginal,
+    /// Distinct observations claim the same native identity key.
+    IdentityKeyConflict,
+    /// A legacy Codex copied-history boundary had to be inferred.
+    CodexCopiedHistoryInferred,
+    /// A Codex cumulative counter decreased and opened a new epoch.
+    CodexCounterEpochReset,
+    /// Codex emitted a compaction estimate instead of measured usage.
+    CodexEstimateCompaction,
+    /// Codex emitted a context-window-fill estimate instead of measured usage.
+    CodexEstimateContextWindowFill,
+    /// One Codex rollout was found at more than one location.
+    CodexRolloutDuplicateLocation,
+    /// A complete source line was malformed.
+    MalformedLine,
+    /// A source ended with an incomplete pending line.
+    PendingTail,
+    /// A thread names a parent whose rollout was not discovered.
+    ThreadOrphan,
 }
 
 impl DiagnosticCode {
@@ -48,6 +72,20 @@ impl DiagnosticCode {
             Self::UsageInconsistency => "usage-inconsistency",
             Self::CounterReset => "counter-reset",
             Self::CounterGap => "counter-gap",
+            Self::ClaudeBlockUsageConflict => "claude-block-usage-conflict",
+            Self::ClaudeCacheCreationBreakdownMismatch => {
+                "claude-cache-creation-breakdown-mismatch"
+            }
+            Self::ClaudeNestedCopyWithoutOriginal => "claude-nested-copy-without-original",
+            Self::IdentityKeyConflict => "identity-key-conflict",
+            Self::CodexCopiedHistoryInferred => "codex-copied-history-inferred",
+            Self::CodexCounterEpochReset => "codex-counter-epoch-reset",
+            Self::CodexEstimateCompaction => "codex-estimate-compaction",
+            Self::CodexEstimateContextWindowFill => "codex-estimate-context-window-fill",
+            Self::CodexRolloutDuplicateLocation => "codex-rollout-duplicate-location",
+            Self::MalformedLine => "malformed-line",
+            Self::PendingTail => "pending-tail",
+            Self::ThreadOrphan => "thread-orphan",
         }
     }
 }

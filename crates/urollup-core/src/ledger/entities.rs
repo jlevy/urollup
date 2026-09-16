@@ -196,6 +196,17 @@ pub struct ModelName {
     pub basis: ModelBasis,
 }
 
+/// One model's contribution to a request's usage.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ModelUsage {
+    /// The model, when the source identifies it.
+    pub model: Option<ModelName>,
+    /// The usage attributed to this model.
+    pub usage: TokenUsage,
+    /// The stable dialect field or record kind that carried this component.
+    pub source: &'static str,
+}
+
 /// Whether a request's selected usage is its final revision.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RevisionStatus {
@@ -212,6 +223,8 @@ pub struct UsageRevision {
     pub evidence: EvidenceRef,
     /// Its usage.
     pub usage: TokenUsage,
+    /// The usage split by model when one request invokes more than one model.
+    pub model_usage: Vec<ModelUsage>,
 }
 
 /// The usage revision a request counts.

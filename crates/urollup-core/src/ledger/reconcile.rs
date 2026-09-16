@@ -34,8 +34,8 @@ use jiff::Timestamp;
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
-    AccountAttribution, Counting, ModelBasis, ModelName, Ownership, Request, RevisionStatus,
-    SelectedUsage, UsageRevision,
+    AccountAttribution, Counting, ModelBasis, ModelName, ModelUsage, Ownership, Request,
+    RevisionStatus, SelectedUsage, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::linking::{LinkGraph, ResolvedKey, resolve_linked_set};
@@ -81,6 +81,8 @@ pub struct RequestObservation {
     pub owner: OwnerEvidence,
     /// The record's usage, when it carries any.
     pub usage: Option<TokenUsage>,
+    /// This record's usage split by model.
+    pub model_usage: Vec<ModelUsage>,
     /// A native revision sequence, when the dialect orders revisions.
     pub sequence: Option<u64>,
     /// Revision-invariant fields; observations sharing a key must agree on every field
@@ -113,6 +115,7 @@ impl RequestObservation {
             role: ObservationRole::Original,
             owner: OwnerEvidence::None,
             usage: None,
+            model_usage: Vec::new(),
             sequence: None,
             invariants: BTreeMap::new(),
             candidate_tokens: BTreeSet::new(),
@@ -494,7 +497,11 @@ fn build_request(
             ));
         }
         chosen.usage.clone().map(|usage| SelectedUsage {
-            revision: UsageRevision { evidence: chosen.evidence.clone(), usage },
+            revision: UsageRevision {
+                evidence: chosen.evidence.clone(),
+                usage,
+                model_usage: chosen.model_usage.clone(),
+            },
             status: choice.status,
             rule: selector.rule(),
         })
@@ -530,7 +537,11 @@ fn build_request(
         revisions: revisions
             .iter()
             .filter_map(|r| {
-                r.usage.clone().map(|usage| UsageRevision { evidence: r.evidence.clone(), usage })
+                r.usage.clone().map(|usage| UsageRevision {
+                    evidence: r.evidence.clone(),
+                    usage,
+                    model_usage: r.model_usage.clone(),
+                })
             })
             .collect(),
         evidence: originals.iter().map(|o| o.evidence.clone()).collect(),

@@ -109,7 +109,7 @@ The capture store lands only after the uncached engine is the correctness refere
   [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules),
   [§3.6](../../../urollup-design.md#36-analytical-identities),
   [§4.2](../../../urollup-design.md#42-ownership-and-totals)).
-- [ ] Implement the `claude-project` and `codex-rollout` adapters with default
+- [x] Implement the `claude-project` and `codex-rollout` adapters with default
   discovery, override variables, snapshot manifests, source links and provider limit
   observations; document unsupported fields and the agent versions each fixture covers
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
