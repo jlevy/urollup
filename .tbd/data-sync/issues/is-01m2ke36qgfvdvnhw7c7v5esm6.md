@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 37
+version: 38
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -49,12 +49,10 @@ child_order_hints:
   - is-01m2nrrbmesqz5w2hzh0phza1v
   - is-01m2nw89ncs6egan0784hkk356
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-16T19:49:14.027Z
+updated_at: 2026-09-16T20:21:01.857Z
 ---
-Scaffold, sanitized fixtures, snapshot reading, identities and ledger, Claude Code and Codex adapters, exact session selection, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md.
-
-Status 2026-09-16: the uncached Claude Code and Codex engine, exact session selection, report/daily/sessions output, 29 fixture cases, 239 golden blocks, normalized-entity reconciliation, ledger snapshots and the pinned ccusage fixture-parity gate are implemented on PR #4. Remaining milestone work includes terminal-aware color (uro-nazs), interactive progress (uro-wqf8), the privacy-tested local acceptance path, maintainer decisions, and an independent full implementation review (uro-nncx). Passing automated gates does not represent those items as complete.
+Scaffold, sanitized fixtures, snapshot reading, identities and ledger, Claude Code and Codex adapters, exact session selection, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md. Status 2026-09-16: the uncached engine, 29 fixture cases, 239 golden blocks, pinned ccusage fixture parity, terminal-aware color, interactive progress, and privacy-safe consent-gated local acceptance tooling are implemented. Remaining acceptance gates are the consented real-log run, recorded maintainer decisions, independent full implementation review, and release/publishing rehearsal. Automated fixture gates do not represent those human gates as complete.
 
 ## Notes
 
-Status 2026-09-16: the uncached Claude Code and Codex engine, exact session selection, report/daily/sessions output, 29 fixture cases, 239 golden blocks, normalized-entity reconciliation, ledger snapshots and the pinned ccusage fixture-parity gate are implemented on PR #4. Remaining milestone work is uro-d36a, uro-qp7j, uro-4gxg, uro-89s7 and the maintainer-decision beads; none is represented as complete by fixture CI.
+Completed on the terminal-UX/acceptance stack: uro-nazs, uro-wqf8, uro-4gxg, uro-qp7j, grouped by uro-pwjv. The local commands deliberately were not run against real logs without fresh consent. Remaining milestone blockers include uro-d36a, uro-nncx, uro-89s7 and the maintainer-decision beads; packaging and publication remain downstream.
