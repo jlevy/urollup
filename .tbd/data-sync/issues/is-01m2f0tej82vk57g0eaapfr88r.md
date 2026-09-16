@@ -5,7 +5,7 @@ title: Implement analytical identities, ledger, reconciliation and ownership
 kind: task
 status: open
 priority: 2
-version: 10
+version: 15
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -19,9 +19,19 @@ dependencies:
     target: is-01m2f0tfxphsg75gwnpfyzb6k7
   - type: blocks
     target: is-01m2gvvvpc0hrbp287e8a08ras
+  - type: blocks
+    target: is-01m2ksma5tmkfs0acfc62p7z23
+  - type: blocks
+    target: is-01m2ksmr7x9e0t324y8zfx071j
+  - type: blocks
+    target: is-01m2ksms2rd2kwm66zpy8p159d
+  - type: blocks
+    target: is-01m2ksn95jby3mhe38s81vm2ap
+  - type: blocks
+    target: is-01m2ksnt5qd09gtrxkgvaxw9vw
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.152Z
-updated_at: 2026-09-15T21:08:00.331Z
+updated_at: 2026-09-16T00:25:42.326Z
 ---
 Normalized ledger, deterministic analytical identities with collision detection and re-derivation from stored keys, reconciliation, ownership status and coverage. See design doc (docs/urollup-design.md): Normalized Ledger, Analytical Identities.
 

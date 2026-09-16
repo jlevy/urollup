@@ -5,7 +5,7 @@ title: "Milestone 0.2: Contracts, summaries, bundles and merge"
 kind: epic
 status: open
 priority: 1
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.2
@@ -13,7 +13,8 @@ dependencies: []
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 child_order_hints:
   - is-01m2f0tfk4sshgqxctqqgfb2fe
+  - is-01m2ksn95jby3mhe38s81vm2ap
 created_at: 2026-09-15T21:03:49.986Z
-updated_at: 2026-09-15T21:05:02.153Z
+updated_at: 2026-09-16T00:25:24.911Z
 ---
 softschema contracts and serde validators, export, summary and bundle readers and writers, redaction and export allow-list, --sources-file, overlap-safe merge, validate and schema. Plan milestone 0.2.

@@ -5,7 +5,7 @@ title: Freeze sanitized fixtures and representative corpus manifest
 kind: task
 status: open
 priority: 2
-version: 7
+version: 16
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -17,9 +17,27 @@ dependencies:
     target: is-01m2khsdqz3qndz3aetey1f5c7
   - type: blocks
     target: is-01m2ks6m5jg3tqh3dv22mqmv17
+  - type: blocks
+    target: is-01m2ksns5eqx65np449amxw7wd
+  - type: blocks
+    target: is-01m2ksntwyn71sp9tdqxrvv5wn
+  - type: blocks
+    target: is-01m2ksp6dstb6fwkbmy587tt8a
+  - type: blocks
+    target: is-01m2ksp7t02wzxrgvs75js0a7d
+  - type: blocks
+    target: is-01m2kspssne0kaf0ykdmt0pbe3
+  - type: blocks
+    target: is-01m2ksptx4kzgd5wrf4vdvaaa0
+  - type: blocks
+    target: is-01m2kspw1xv17v916gr7bv3943
+  - type: blocks
+    target: is-01m2ksqceec58vjff114xqjafr
+  - type: blocks
+    target: is-01m2ksqdqtvwncabnag6zkehd0
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:21.852Z
-updated_at: 2026-09-16T00:17:24.656Z
+updated_at: 2026-09-16T00:26:35.105Z
 ---
 Public synthetic or sanitized fixtures, including the research brief's double-counting cases, plus a consented representative corpus manifest.
 

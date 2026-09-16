@@ -5,7 +5,7 @@ title: Add ccusage reconciliation harness for token totals on fixtures
 kind: task
 status: open
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -18,9 +18,11 @@ dependencies:
     target: is-01m2khsqrw2qc4khnkxmca2p88
   - type: blocks
     target: is-01m2f0th11tcymcgy8zqfqkn2g
+  - type: blocks
+    target: is-01m2ksqda8y7hfm5pstky74ms1
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-15T22:07:52.062Z
-updated_at: 2026-09-15T22:08:49.054Z
+updated_at: 2026-09-16T00:26:34.689Z
 ---
 Milestone 0.1: side-by-side ccusage reconciliation harness for token totals, per the plan's "ccusage reconciliation harness" section (Testing Strategy), the design's §10.6 ccusage use-case coverage, and the research brief's "ccusage Feature Inventory".
 

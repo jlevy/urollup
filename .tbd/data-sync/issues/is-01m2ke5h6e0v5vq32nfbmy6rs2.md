@@ -5,7 +5,7 @@ title: "Milestone 0.5: Full Phase 1 surface, benchmarks and parity"
 kind: epic
 status: open
 priority: 1
-version: 12
+version: 15
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.5
@@ -23,7 +23,10 @@ child_order_hints:
   - is-01m2ks7q1qfsdbrvb62ed5g79a
   - is-01m2ksd74mkre0zjh8rka36a4p
   - is-01m2ksd8fxt209yqwabvy5r8kd
+  - is-01m2ksnwetnwwwdp2gg33d0e3t
+  - is-01m2ksqceec58vjff114xqjafr
+  - is-01m2ksqdqtvwncabnag6zkehd0
 created_at: 2026-09-15T21:04:34.440Z
-updated_at: 2026-09-16T00:21:02.074Z
+updated_at: 2026-09-16T00:26:35.105Z
 ---
 metaproc log-processing port and captured-stream adapters, remaining selection flags, remaining commands and formats, remaining CI, benchmarks and the ccusage/agentfdr feature matrix. Plan milestone 0.5.
