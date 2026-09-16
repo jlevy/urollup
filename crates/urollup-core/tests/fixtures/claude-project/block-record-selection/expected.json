@@ -1,0 +1,189 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "block-record-selection",
+  "dialect": "claude-project",
+  "summary": "Block records of one response disagree on output_tokens and on cache fields; one whole record is selected by largest output_tokens, then last in file order.",
+  "rules": [
+    "design §3.4 Claude Code block records"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl",
+      "lines": 10,
+      "thread": "00000000-0000-4000-8000-000200000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000200000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 7,
+          "cache_read": 93300,
+          "cache_write": 1210,
+          "output": 470,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic02B1",
+        "request_id": "req_011Synthetic02B1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:03.100Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": 30000,
+        "cache_write": 1200,
+        "output": 180,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:3",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic02B2",
+        "request_id": "req_011Synthetic02B2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:06.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 31200,
+        "cache_write": 10,
+        "output": 250,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:6"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:6",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:7"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic02B3",
+        "request_id": "req_011Synthetic02B3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:09.250Z",
+      "tokens": {
+        "uncached_input": 1,
+        "cache_read": 32100,
+        "cache_write": 0,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:10"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:9",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:10"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 7,
+      "cache_read": 93300,
+      "cache_write": 1210,
+      "output": 470,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "claude-block-usage-conflict",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:6",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:7"
+      ],
+      "detail": "cache_creation_input_tokens 10 and 12; the record with the larger output_tokens (line 6) is selected whole"
+    },
+    {
+      "code": "claude-block-usage-conflict",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:9",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000200000001.jsonl:10"
+      ],
+      "detail": "cache_read_input_tokens 32000 and 32100; output_tokens tie, so the last record in file order (line 10) is selected whole"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 7,
+      "tokens": {
+        "uncached_input": 18,
+        "cache_read": 216500,
+        "cache_write": 3622,
+        "output": 545,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Field-wise maximum per request (receipts miner); B2 combines cache_creation 12 with output 250, which no record held",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 7,
+        "cache_read": 93300,
+        "cache_write": 1212,
+        "output": 470,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": []
+}

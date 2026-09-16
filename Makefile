@@ -22,8 +22,8 @@ FLOWMARK = $(UV_RUN) flowmark
 TAPLO := node_modules/.bin/taplo
 
 .PHONY: help build test rust-test golden golden-update golden-lint e2e-results check toolchain uv-version \
-	supply-chain lint-policy fmt-check toml-fmt-check docs-format-check uv-lock-check clippy \
-	docs dependency-guard msrv audit npm-audit gate-proofs fix clean
+	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
+	clippy docs dependency-guard msrv audit npm-audit gate-proofs fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
@@ -35,6 +35,7 @@ help:
 	@echo "make check              Handoff gate: everything CI enforces, fastest first"
 	@echo "make fix                Format Rust, TOML and Markdown"
 	@echo "make supply-chain       Verify release age, provenance, pins and CI trust controls"
+	@echo "make fixtures-check     Check the dialect fixtures parse, match expected.json and stay synthetic"
 	@echo "make dependency-guard   Prove no HTTP or async crate reaches the core or a no-serve build"
 	@echo "make msrv               Compile and test the workspace on Rust $(MSRV)"
 	@echo "make audit              cargo-deny advisories, licenses, bans and sources"
@@ -82,8 +83,8 @@ e2e-results: build
 	$(NODE) scripts/check-e2e-results.mjs
 
 # Everything CI enforces, in the order that fails fastest.
-check: toolchain uv-version supply-chain lint-policy fmt-check toml-fmt-check docs-format-check \
-	uv-lock-check clippy test docs dependency-guard msrv audit npm-audit gate-proofs
+check: toolchain uv-version supply-chain lint-policy fixtures-check fmt-check toml-fmt-check \
+	docs-format-check uv-lock-check clippy test docs dependency-guard msrv audit npm-audit gate-proofs
 
 # A rustc other than the pin, a missing MSRV toolchain or a different cargo-deny each fail
 # later in a way that reads as something else; say so up front instead.
@@ -150,6 +151,13 @@ supply-chain:
 lint-policy:
 	$(NODE) --test scripts/check-lint-policy.test.mjs
 	$(NODE) scripts/check-lint-policy.mjs
+
+# Frozen test data needs a gate of its own, before any build: the fixtures are a public,
+# synthetic corpus, and a case whose expected.json drifts from its records, or a record
+# that carries a real path, name or key, is not something a Rust test would catch.
+fixtures-check:
+	$(NODE) --test scripts/check-fixtures.test.mjs scripts/sanitize-claude-fixture.test.mjs
+	$(NODE) scripts/check-fixtures.mjs
 
 fmt-check:
 	$(CARGO) fmt --all --check

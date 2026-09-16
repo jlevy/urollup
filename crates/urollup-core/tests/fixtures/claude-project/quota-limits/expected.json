@@ -1,0 +1,219 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "quota-limits",
+  "dialect": "claude-project",
+  "summary": "quotaLimits entries on assistant records and a <synthetic> usage-limit error record become provider limit observations; the error record is not a provider request.",
+  "rules": [
+    "design §3.1 Entities (provider limit observation)",
+    "design §4.4 Usage Windows",
+    "design §4.1 Measure Contracts (Calls: synthetic events)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The quotaLimits key set is the one observed in a Claude Code 2.1.270 session (see the fixtures README); the values here are invented."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl",
+      "lines": 6,
+      "thread": "00000000-0000-4000-8000-001000000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001000000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 8100,
+          "cache_write": 150,
+          "output": 95,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic10K1",
+        "request_id": "req_011Synthetic10K1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001000000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-02T10:00:03.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 4000,
+        "cache_write": 100,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic10K2",
+        "request_id": "req_011Synthetic10K2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001000000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-02T10:05:04.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 4100,
+        "cache_write": 50,
+        "output": 55,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:4"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "synthetic_events": 1,
+    "tokens": {
+      "uncached_input": 5,
+      "cache_read": 8100,
+      "cache_write": 150,
+      "output": 95,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:2",
+      "source": "quotaLimits",
+      "limit": "five_hour",
+      "window_minutes": null,
+      "resets_at": 1788354000,
+      "status": "allowed",
+      "utilization": null,
+      "observed_at": "2026-09-02T10:00:03.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "00000000-0000-4000-8000-001000000001",
+      "owner_request": {
+        "message_id": "msg_01Synthetic10K1",
+        "request_id": "req_011Synthetic10K1"
+      },
+      "native": {
+        "status": "allowed",
+        "rateLimitType": "five_hour",
+        "resetsAt": 1788354000,
+        "isUsingOverage": false,
+        "overageStatus": "allowed",
+        "overageDisabledReason": null,
+        "unifiedRateLimitFallbackAvailable": false
+      }
+    },
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:4",
+      "source": "quotaLimits",
+      "limit": "seven_day",
+      "window_minutes": null,
+      "resets_at": 1788354000,
+      "status": "rejected",
+      "utilization": null,
+      "observed_at": "2026-09-02T10:05:04.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "00000000-0000-4000-8000-001000000001",
+      "owner_request": {
+        "message_id": "msg_01Synthetic10K2",
+        "request_id": "req_011Synthetic10K2"
+      },
+      "native": {
+        "status": "rejected",
+        "rateLimitType": "seven_day",
+        "resetsAt": 1788354000,
+        "isUsingOverage": false,
+        "overageStatus": "rejected",
+        "overageDisabledReason": "out_of_credits",
+        "unifiedRateLimitFallbackAvailable": true
+      }
+    },
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:6",
+      "source": "api-error-text",
+      "limit": null,
+      "window_minutes": null,
+      "resets_at": 1788354000,
+      "status": null,
+      "utilization": null,
+      "observed_at": "2026-09-02T10:06:01.000Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "00000000-0000-4000-8000-001000000001",
+      "owner_request": null,
+      "native": {
+        "text": "Claude AI usage limit reached|1788354000"
+      }
+    }
+  ],
+  "naive": [
+    {
+      "rule": "Count every assistant record as a request",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 8100,
+        "cache_write": 150,
+        "output": 95,
+        "reasoning": null
+      }
+    }
+  ],
+  "synthetic_events": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:6",
+      "model": "<synthetic>",
+      "api_error": true,
+      "tokens": {
+        "uncached_input": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 0,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Claude limit records carry no window length, so window_minutes is null and a window needs a configured length (design §4.4).",
+    "The error-text observation follows the research brief's Provider windows row and ccusage's usage-limit parser; design §3.1 names only quotaLimits for claude-project, so confirm the api-error-text source when the adapter lands.",
+    "quotaLimits keys and the rateLimitType, status, overageStatus and overageDisabledReason values follow a 2026-09-15 observation of a real session; a limit record's status can be rejected, which is when the synthetic error record follows."
+  ]
+}

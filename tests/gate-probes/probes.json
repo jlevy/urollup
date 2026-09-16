@@ -64,6 +64,30 @@
       "expect": "members with no \\[lints\\] table: urollup-core"
     },
     {
+      "id": "fixtures-private-path",
+      "gate": "fixtures-check",
+      "violation": "a fixture record names a home directory that is not a placeholder",
+      "edits": [
+        {
+          "path": "crates/urollup-core/tests/fixtures/claude-project/timestamp-precision/projects/-Users-example-project/00000000-0000-4000-8000-000800000001.jsonl",
+          "append": "files/fixture-private-path.jsonl.probe"
+        }
+      ],
+      "expect": "a home directory that is not a placeholder"
+    },
+    {
+      "id": "fixtures-unparsable-line",
+      "gate": "fixtures-check",
+      "violation": "a fixture line does not parse and is not declared malformed or pending",
+      "edits": [
+        {
+          "path": "crates/urollup-core/tests/fixtures/codex-rollout/brief-repeated-snapshot/sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl",
+          "append": "files/fixture-unparsable-line.jsonl.probe"
+        }
+      ],
+      "expect": "does not parse as a JSON object and is not declared malformed or pending"
+    },
+    {
       "id": "rustfmt",
       "gate": "fmt-check",
       "violation": "Rust code rustfmt would reformat",

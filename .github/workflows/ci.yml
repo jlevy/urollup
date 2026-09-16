@@ -72,6 +72,9 @@ jobs:
         with:
           node-version: 24.19.0
       - run: make lint-policy
+      # Frozen fixtures are public test data: they must parse, match their expected.json
+      # and stay synthetic, whatever the checkout's line endings.
+      - run: make fixtures-check
       - run: make clippy
 
   test:
