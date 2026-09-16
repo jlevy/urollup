@@ -3,9 +3,9 @@ type: is
 id: is-01m2kspssne0kaf0ykdmt0pbe3
 title: Fold the observed Claude transcript shapes into the research brief and adapter
 kind: task
-status: open
+status: closed
 priority: 2
-version: 1
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -13,7 +13,11 @@ labels:
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:26:14.707Z
-updated_at: 2026-09-16T00:26:14.707Z
+updated_at: 2026-09-16T08:12:04.181Z
+closed_at: 2026-09-16T08:12:04.180Z
+close_reason: "Implemented in e4965f1: the Claude project adapter records apiBlockIndex as the native block sequence and uses it before file position for equal-output selection; unit tests cover that tie-break and prove ordinary message iterations are not added twice. The portable research brief now records the complete observed quotaLimits shape and values, block-record omissions, iteration behavior, mixed transcript record types and keys, and expanded subagent metadata; the fixture research notes no longer call quotaLimits unverified. Markdown was formatted with the pinned Flowmark command and CARGO_INCREMENTAL=0 make check passes."
+resolution: null
+duplicate_of: null
 ---
 A 2026-09-15 scan of a real Claude Code 2.1.270 session (recorded in the fixtures README's research notes) settled shapes the portable research brief leaves open or omits. Fold the ones that change behavior into docs/project/research/research-2026-09-13-portable-agent-usage.md and the claude-project adapter (uro-y2qj):
 
