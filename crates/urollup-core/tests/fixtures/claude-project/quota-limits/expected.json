@@ -10,7 +10,7 @@
   ],
   "agent": {
     "name": "Claude Code",
-    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified. The quotaLimits object shape (status, rateLimitType, resetsAt) is undocumented and modeled from the research brief's key list."
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The quotaLimits key set is the one observed in a Claude Code 2.1.270 session (see the fixtures README); the values here are invented."
   },
   "files": [
     {
@@ -135,16 +135,20 @@
       "native": {
         "status": "allowed",
         "rateLimitType": "five_hour",
-        "resetsAt": 1788354000
+        "resetsAt": 1788354000,
+        "isUsingOverage": false,
+        "overageStatus": "allowed",
+        "overageDisabledReason": null,
+        "unifiedRateLimitFallbackAvailable": false
       }
     },
     {
       "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001000000001.jsonl:4",
       "source": "quotaLimits",
-      "limit": "five_hour",
+      "limit": "seven_day",
       "window_minutes": null,
       "resets_at": 1788354000,
-      "status": "allowed_warning",
+      "status": "rejected",
       "utilization": null,
       "observed_at": "2026-09-02T10:05:04.000Z",
       "observed_at_basis": "record-timestamp",
@@ -154,9 +158,13 @@
         "request_id": "req_011Synthetic10K2"
       },
       "native": {
-        "status": "allowed_warning",
-        "rateLimitType": "five_hour",
-        "resetsAt": 1788354000
+        "status": "rejected",
+        "rateLimitType": "seven_day",
+        "resetsAt": 1788354000,
+        "isUsingOverage": false,
+        "overageStatus": "rejected",
+        "overageDisabledReason": "out_of_credits",
+        "unifiedRateLimitFallbackAvailable": true
       }
     },
     {
@@ -205,6 +213,7 @@
   ],
   "notes": [
     "Claude limit records carry no window length, so window_minutes is null and a window needs a configured length (design §4.4).",
-    "The error-text observation follows the research brief's Provider windows row and ccusage's usage-limit parser; design §3.1 names only quotaLimits for claude-project, so confirm the api-error-text source when the adapter lands."
+    "The error-text observation follows the research brief's Provider windows row and ccusage's usage-limit parser; design §3.1 names only quotaLimits for claude-project, so confirm the api-error-text source when the adapter lands.",
+    "quotaLimits keys and the rateLimitType, status, overageStatus and overageDisabledReason values follow a 2026-09-15 observation of a real session; a limit record's status can be rejected, which is when the synthetic error record follows."
   ]
 }

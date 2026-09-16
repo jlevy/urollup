@@ -84,6 +84,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `claude-project/workflow-subagents` | `subagents/workflows/` transcripts and a nested spawn edge | §3.2, §4.2 | agentfdr workflow test; ccusage paths | Claude Code 2.1.x |
 | `claude-project/cache-creation-breakdown` | A 5-minute and 1-hour breakdown disagreeing with the flat count | §4.1 | ccusage cache accessor; receipts weights | Claude Code 2.1.x |
 | `claude-project/gateway-message-id-reuse` | One `message.id` reused across sessions, beside a true copy | §3.6, §9.1, §4.2, §3.2 | ccusage commit `a4b8420` | Claude Code 2.1.x |
+| `claude-project/derived-block-records-subagent` | A sanitized real session: agreeing block records, a spawn, and subagent block records disagreeing on `output_tokens` | §3.4, §3.2, §4.1 | Sanitized from this project’s own logs | Claude Code 2.1.270 |
 | `codex-rollout/brief-repeated-snapshot` | Cumulative `token_count` with a repeated identical snapshot: the brief’s example | §3.4, §3.1 | Codex protocol and rollout tests | Codex CLI 0.150.0 |
 | `codex-rollout/info-null` | `info: null` before the first usage, and a rate-limit-only update | §3.4, §3.1 | Codex `turn.rs` and session tests | Codex CLI 0.150.0 |
 | `codex-rollout/counter-reset-epoch` | A cumulative total that restarts lower, opening a new epoch | §3.4, §3.3 | ccusage total-only path | Codex CLI 0.150.0 |
@@ -114,11 +115,74 @@ the double-counting example is in the
   belong with the capture work.
 - **Claude Code inline sidechains:** older transcripts that keep subagent turns inline
   with `isSidechain` and no spawn ID.
-- **Cases derived from real sessions:** the maintainer approved sanitizing this
-  project’s own Claude Code logs, but the running environment’s permission system
-  refused access to `~/.claude`, so every Claude case here stays synthetic.
+- **More cases derived from real sessions:** one case,
+  `claude-project/derived-block-records-subagent`, is sanitized from this project’s own
+  Claude Code logs; every other case is synthetic.
+  The corpus scanned held no `progress` records, no `advisor_message` iterations, no
+  `subagents/workflows/` directory, no `uuid` replay and no sub-millisecond timestamp,
+  so those rules keep their synthetic cases until a session that shows them appears.
+
+## Deriving a case from real sessions
+
+`scripts/sanitize-claude-fixture.mjs` turns selected transcript excerpts into
+structure-only fixtures, so a case can carry real record shapes without real content:
+
+```bash
+# 1. Copy only the records the case needs into an excerpt tree that mirrors the config
+#    directory: projects/<encoded-project>/<session>.jsonl, <session>/subagents/…
+# 2. Sanitize into a new case directory.
+node scripts/sanitize-claude-fixture.mjs --input <excerpt-dir> \
+  --output crates/urollup-core/tests/fixtures/claude-project/<case>
+# 3. Write expected.json and README.md by hand, then run make fixtures-check.
+```
+
+It keeps record order and count, keys, `type` and `role`, models, `usage` numbers, stop
+reasons, tool names, `version` and booleans; remaps every ID-shaped value and map key
+(UUIDs, `msg_`, `req_`, `toolu_`, agent IDs, `wireToolInputs` keys) through one
+deterministic table, in file names too, so duplicates and links still line up; replaces
+every other string and every key that is not identifier-shaped; and shifts timestamps by
+one whole-second offset taken from the records’ own `timestamp` fields, so nested older
+times cannot leave records near their real dates.
+It scans its output with the fixture privacy check and writes nothing when anything
+still looks private.
+Review the result before committing it: the script cannot know that an enum-like value
+it keeps, such as a custom `agentType`, is private in a particular workspace.
 
 ## Research notes, 2026-09-15
+
+From the sanitized Claude Code 2.1.270 session (Claude Code’s transcript format is
+internal and undocumented, so these are observations, not a contract):
+
+- **`quotaLimits`** is an object with `status`, `rateLimitType`, `resetsAt`,
+  `isUsingOverage`, `overageStatus`, `overageDisabledReason` and
+  `unifiedRateLimitFallbackAvailable`, more than the research brief’s three keys.
+  Observed values: `status` and `overageStatus` `rejected`, `rateLimitType` `five_hour`
+  and `seven_day`, `overageDisabledReason` `org_level_disabled_until` and
+  `out_of_credits`, `resetsAt` in epoch seconds.
+  The synthetic `quota-limits` case uses this key set with invented values.
+- **`apiBlockIndex`** numbers each content-block record within its response (0, 1, 2 …),
+  so block records are identifiable without comparing content.
+- **Usage fields** on every assistant record: `input_tokens`,
+  `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`,
+  `output_tokens_details.thinking_tokens`, `server_tool_use`, `service_tier`,
+  `cache_creation`, `inference_geo`, `iterations` and `speed`. A streaming block record
+  can omit `output_tokens_details`, `server_tool_use`, `iterations` and `speed` while a
+  later one has them, which is why one whole record is selected rather than a field-wise
+  merge.
+- **`iterations`** appeared on almost every record with a single `message` element equal
+  to the top-level usage; no `advisor_message` iteration appeared in this corpus.
+- **Other record types** in a session file: `attachment` (with types `environment`,
+  `model`, `skill_listing`, `instructions`, `session_context`, `date`,
+  `deferred_tools_delta`, `prompt_snapshot`, `remote_session_change`,
+  `total_tokens_reminder`), `file-history-snapshot`, `last-prompt`, `custom-title`,
+  `agent-name`, `mode`, `atis-latch`, `pr-link`, `bridge-session` and `queue-operation`.
+- **Other record keys:** `entrypoint`, `promptId`, `effort` and `perTurnEffort` at the
+  record level, `wireToolInputs` keyed by tool-use ID, `sourceToolAssistantUUID` on tool
+  results, and `container`, `stop_details`, `diagnostics` and `context_management`
+  inside `message`.
+- **Subagent `.meta.json`** carries more than the documented keys: `agentType`,
+  `description`, `toolUseId`, `spawnDepth`, plus `worktreePath`, `worktreeBranch`,
+  `spawnedWithWorktree`, `requestShape` and `requestNonInteractive`.
 
 Shapes these fixtures needed that go beyond the research briefs, all read from Codex
 `rust-v0.154.0` at

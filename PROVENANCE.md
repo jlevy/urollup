@@ -37,6 +37,34 @@ the reference repository for the
 | `SUPPLY-CHAIN-SECURITY.md` | `SUPPLY-CHAIN-SECURITY.md` | urollup commands, bootstrap scripts and the reviewed version record |
 | `SECURITY.md` | `SECURITY.md` | Adds urollup’s private-data rule for reports and fixtures |
 
+## metaproc at `d101cd9`
+
+Source:
+[jlevy/metaproc at `d101cd9`](https://github.com/jlevy/metaproc/tree/d101cd9d7f41bcb7e590fe679f058e1026cfe8bc).
+
+| urollup file | metaproc source | What changed |
+| --- | --- | --- |
+| `scripts/check-fixtures.mjs` (privacy scanner) | `devtools/public_hygiene.py` | Ported the home-path, email and credential patterns to JavaScript and added Claude Code’s encoded project names, the account and home-directory name of the machine running the check, and more key formats; dropped the hashed private-vocabulary list and the archive walker |
+
+## squares at `f2e24e0`
+
+Source:
+[jlevy/squares at `f2e24e0`](https://github.com/jlevy/squares/tree/f2e24e07be8c94fa3ac603c3534dce7c454da99b).
+
+| urollup file | squares source | What changed |
+| --- | --- | --- |
+| `crates/urollup-core/tests/fixtures/codex-rollout/legacy-subagent-prefix/` | `packing/tests/test_codex_log_rollup.py` synthetic record builders and prefix-cut cases | Rebuilt as committed JSONL with urollup’s expected results, extended with `token_usage_record`, repeated snapshots, orphaned parents and counter epochs |
+
+## Test fixtures
+
+`crates/urollup-core/tests/fixtures/` is synthetic, with one case sanitized from the
+maintainer’s own Claude Code session logs by `scripts/sanitize-claude-fixture.mjs` on
+2026-09-15, which keeps structure and usage and replaces every ID, path, name and
+free-text value; no original content is retained.
+Cases whose shape follows a third-party project’s tests are attributed in the
+[fixtures README](crates/urollup-core/tests/fixtures/README.md); no source file was
+copied, so no third-party notice file is required yet.
+
 These urollup files follow fdu patterns without copying a source file:
 `crates/urollup/src/cli.rs` (the `run` function with injected writers, from
 `crates/fdu/src/cli.rs`), `scripts/check-dependency-guard.mjs` (the captured

@@ -140,7 +140,7 @@ lint-policy:
 # synthetic corpus, and a case whose expected.json drifts from its records, or a record
 # that carries a real path, name or key, is not something a Rust test would catch.
 fixtures-check:
-	$(NODE) --test scripts/check-fixtures.test.mjs
+	$(NODE) --test scripts/check-fixtures.test.mjs scripts/sanitize-claude-fixture.test.mjs
 	$(NODE) scripts/check-fixtures.mjs
 
 fmt-check:
