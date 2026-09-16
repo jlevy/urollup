@@ -5,15 +5,15 @@ title: Check a consented corpus against a provider usage export
 kind: task
 status: open
 priority: 2
-version: 2
-spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
+version: 3
+spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - release
   - parity
 dependencies: []
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:52.161Z
-updated_at: 2026-09-16T16:54:15.318Z
+updated_at: 2026-09-16T16:55:19.696Z
 ---
 Pre-1.0 ground truth, required by the plan's Testing Strategy before 1.0. Design §4.1 and §4.2.
 
