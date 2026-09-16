@@ -31,9 +31,9 @@ the reference repository for the
 | `scripts/check-supply-chain.mjs` | `scripts/check-supply-chain.mjs` | One root `uv.lock`; read-only top-level permissions in every workflow; no write grants in pull-request jobs; expired exceptions fail; nested agent worktrees skipped |
 | `scripts/check-supply-chain.test.mjs` | `scripts/check-supply-chain.test.mjs` | Tests for the added rules |
 | `scripts/check-uv-version.test.mjs` | `scripts/check-uv-version.test.mjs` | urollup files; matches `uv` as a command word rather than a substring |
-| `scripts/run-golden.mjs` | `scripts/run-golden.mjs` | One surface; honors `CARGO_TARGET_DIR`; an empty corpus fails |
-| `scripts/check-golden-invocations.mjs` | `scripts/check-golden-invocations.mjs` | `$UROLLUP_BIN`; no helper-script rule, since there are no helpers |
-| `scripts/check-portability.mjs` | `scripts/check-portability.mjs` | Golden sessions only; an empty corpus fails |
+| `scripts/run-golden.mjs` | `scripts/run-golden.mjs` | One surface; honors `CARGO_TARGET_DIR`; an empty corpus fails; runs in the hermetic environment of `scripts/golden-env.mjs`, guards `--update` against unstaged changes, and requires the pass count to equal the selected blocks |
+| `scripts/check-golden-invocations.mjs` | `scripts/check-golden-invocations.mjs` | `$UROLLUP_BIN`; no helper-script rule, since there are no helpers; adds the sandbox, environment, annotation, wildcard, shell-portability, timezone and canary rules |
+| `scripts/check-portability.mjs` | `scripts/check-portability.mjs` | Every file under `tests/golden`; an empty corpus fails |
 | `SUPPLY-CHAIN-SECURITY.md` | `SUPPLY-CHAIN-SECURITY.md` | urollup commands, bootstrap scripts and the reviewed version record |
 | `SECURITY.md` | `SECURITY.md` | Adds urollup’s private-data rule for reports and fixtures |
 

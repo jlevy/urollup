@@ -65,7 +65,7 @@ spec.
 
 ```bash
 make build   # debug build of the workspace
-make test    # Rust tests (default and no-default features) and tryscript CLI goldens
+make test    # Rust tests (default and no-default features), CLI goldens and result checks
 make check   # handoff gate: everything CI enforces, fastest first
 make fix     # format Rust (rustfmt), TOML (taplo) and Markdown (flowmark)
 ```
@@ -90,10 +90,15 @@ uv --config-file uv.toml sync --locked                                        # 
 npm ci --ignore-scripts                                                       # tryscript, taplo
 ```
 
-- **CLI goldens:** sessions in `tests/golden/*.tryscript.md` run against
-  `target/debug/urollup` through `$UROLLUP_BIN`. After an intentional output change run
+- **CLI goldens and result checks:** sessions in `tests/golden/**/*.tryscript.md` run
+  against `target/debug/urollup` through `$UROLLUP_BIN` in a hermetic environment that
+  can reach no real log, and `make e2e-results` checks each fixture case’s reconciled
+  totals against its `expected.json`. After an intentional output change run
   `make golden-update` and read the diff; `--update` writes what it saw, and
-  `make golden-lint` rejects machine-specific paths.
+  `make golden-lint` rejects machine-specific paths and non-hermetic sessions.
+  [tests/golden/README.md](tests/golden/README.md) has the session rules, the
+  fixture-to-golden mapping and the results contract; never point a golden or a check at
+  a real `~/.claude` or `~/.codex`.
 - **Serving boundary:** the `serve` feature of `crates/urollup` is default-on and empty
   until Phase 2. HTTP, async-runtime and web-asset crates may enter only as `optional`
   dependencies behind it; `make dependency-guard` fails if one reaches `urollup-core` or

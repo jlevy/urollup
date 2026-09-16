@@ -276,7 +276,10 @@ function main() {
     findings.push(...lintSession(file, readFileSync(path.join(ROOT, file), "utf8")));
   }
   for (const file of findFiles(ROOT)) {
-    findings.push(...lintCanary(file, readFileSync(path.join(ROOT, file), "utf8")));
+    // READMEs document the canary; recorded output and fixture data must never hold it.
+    if (path.basename(file) !== "README.md") {
+      findings.push(...lintCanary(file, readFileSync(path.join(ROOT, file), "utf8")));
+    }
   }
   if (sessions.length === 0) {
     findings.push("tests/golden: no *.tryscript.md sessions; the golden corpus is missing");

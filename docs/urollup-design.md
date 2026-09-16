@@ -2095,7 +2095,7 @@ installing the crate never needs Node, uv or Python:
 | `crates/urollup/assets/web/` | Built web bundle, included only by the `serve` feature; source in `web/` |
 | `contracts/`, `contracts/fixtures/` | Pydantic contract models and valid and invalid fixtures |
 | `scripts/check_contracts.py` | The contract gate behind `make contracts-check` |
-| `tests/golden/` | tryscript CLI goldens |
+| `tests/golden/` | tryscript CLI goldens, the end-to-end result checks’ configuration and their harness samples |
 | `bench/` | Benchmark generator and harness, with reference-laptop results under `bench/results/` |
 
 The engineering baseline’s
@@ -2132,6 +2132,16 @@ The choices that shape the design:
   `tests/golden/`. `make check`, not a justfile, is the local gate and runs what CI
   runs; `make fix` formats with rustfmt, taplo and flowmark.
   Workflows use read-only permissions, SHA-pinned actions and `--locked`.
+- **Golden testing:** CLI behavior is tested in two layers over one fixture corpus,
+  transcript goldens for complete output and result checks for reconciled truth, both
+  run against a hermetic environment that can reach no real log.
+  The rules are `tbd guidelines golden-testing-guidelines` and the reference of the
+  pinned [tryscript](https://github.com/jlevy/tryscript) (`tryscript docs`); the
+  strategy is the plan’s
+  [golden and end-to-end result checks](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#golden-and-end-to-end-result-checks),
+  the audit behind it is the
+  [golden testing audit](project/research/research-2026-09-15-golden-testing-audit.md),
+  and the operating guide is `tests/golden/README.md`.
 - **Supply chain:** a 14-day release cool-off for crates, npm and PyPI packages, actions
   and toolchains, with first-party packages exempt from release age only.
   Every `deny.toml` ignore names a bead and a removal condition.

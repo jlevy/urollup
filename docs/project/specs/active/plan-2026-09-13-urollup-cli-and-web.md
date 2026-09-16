@@ -86,8 +86,9 @@ The capture store lands only after the uncached engine is the correctness refere
   [§6.2](../../../urollup-design.md#62-current-session-detection),
   [§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index)).
 - [ ] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
-  account, model and effort grouping, request sizes, deterministic output and CLI
-  goldens; list-price estimates wait for 0.4
+  account, model and effort grouping, request sizes, deterministic output, and the
+  [end-to-end goldens and result checks](#golden-and-end-to-end-result-checks) on every
+  fixture case; list-price estimates wait for 0.4
   ([§6.3](../../../urollup-design.md#63-commands),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams),
   [§6.5](../../../urollup-design.md#65-exit-codes),
@@ -241,6 +242,7 @@ Each area tests the rules in these design sections:
 | Surfaces | [§6.2](../../../urollup-design.md#62-current-session-detection), [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams), [§6.5](../../../urollup-design.md#65-exit-codes), [§7.2](../../../urollup-design.md#72-web-ui) |
 | Web security | [§7.3](../../../urollup-design.md#73-security-controls) |
 | Parity | [§1.5](../../../urollup-design.md#15-non-goals), [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage) |
+| Goldens and end-to-end results | [§6.3](../../../urollup-design.md#63-commands)–[§6.5](../../../urollup-design.md#65-exit-codes), [§4.2](../../../urollup-design.md#42-ownership-and-totals), [§8.2](../../../urollup-design.md#82-engineering-conventions) |
 
 - **Accounting:** golden fixtures and conservation and property tests cover streaming
   updates, synthetic messages, repeated imports, request IDs spanning files, forked
@@ -307,6 +309,65 @@ Each area tests the rules in these design sections:
 - **Parity:** the [ccusage reconciliation harness](#ccusage-reconciliation-harness) runs
   pinned ccusage and urollup on the same inputs and fails on any difference that the
   explained-differences ledger does not cite.
+- **Goldens and end-to-end results:** the
+  [golden and end-to-end result checks](#golden-and-end-to-end-result-checks) record
+  every command’s complete output per fixture case and check each case’s reconciled
+  totals against its committed truth.
+
+### Golden and end-to-end result checks
+
+CLI behavior is tested in two complementary layers over one fixture corpus, following
+`tbd guidelines golden-testing-guidelines` and the pinned tryscript 0.2.1. The
+[golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
+records what each rule cost when it was missing, and
+[tests/golden/README.md](../../../tests/golden/README.md) is the operating guide.
+
+- **Transcript goldens (tryscript).** End-to-end sessions run the built binary through
+  `$UROLLUP_BIN` and record complete stdout, stderr and exit status for `report`,
+  `daily` and `sessions` in table and JSON form, plus the exit-code contract
+  ([§6.5](../../../urollup-design.md#65-exit-codes)): usage errors and undetected
+  sessions exit 2, `--strict` coverage gaps exit 3, and a runtime failure exits 1.
+  Sessions show whole outputs; extracting one value with `grep` or `jq` is refused,
+  since it turns a session test back into a unit test.
+- **Final-result checks.** `scripts/check-e2e-results.mjs` runs each command’s JSON
+  output per case and compares unique requests, token categories, ownership counts,
+  excluded copies, limit observations and diagnostics with the case’s `expected.json`,
+  failing with a field-by-field diff and printing the naive-sum overcount for context
+  ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
+  [§4.2](../../../urollup-design.md#42-ownership-and-totals)). Rollup rows must sum to
+  the report’s totals, and each command runs twice and must print identical bytes.
+  The checker’s own decision logic is unit-tested on synthetic outputs and sample cases
+  in `tests/golden/samples/`.
+- **Isolation.** Discovery is never inherited: runs get an allowlisted environment with
+  a hermetic `HOME`, `XDG_*` and `UROLLUP_CAPTURE_DIR` in a temporary root, the case’s
+  roots named by `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `PI_CODING_AGENT_SESSION_DIR`,
+  empty roots for every other agent, `--no-default-sources` with `--source` where a
+  session tests explicit inputs, and a fixed `--timezone`. Canary logs sit in every
+  default root under that `HOME`, so a run that reads defaults prints a token the lint
+  and the checker refuse, and a write into that `HOME` fails the run.
+  The [ccusage reconciliation harness](#ccusage-reconciliation-harness) isolates its
+  runs the same way over the same fixture roots.
+- **Mapping.** One case directory,
+  `crates/urollup-core/tests/fixtures/<dialect>/<case>/`, maps to one session,
+  `tests/golden/e2e/<dialect>/<case>.tryscript.md`, and to one automatic result check.
+  A new dialect case gets its golden from
+  `node scripts/new-e2e-golden.mjs <dialect>/<case>` followed by
+  `run-golden.mjs --expand` and a line-by-line review; a case without a golden fails
+  once `report` exists, and a golden without a case always fails.
+- **Pending states.** While a command is still a scaffold stub or the corpus has not
+  landed, the run reports `PENDING` with the bead that unblocks it, never silent
+  success, and the entry fails the run as soon as its blocker is gone, so the checks
+  start with the first build that can produce results.
+- **Real-log realism.** Fixture cases become realistic through a structure-only
+  sanitizer, `scripts/sanitize-claude-fixture.mjs`, which derives a case from a local
+  session by keeping record types, keys, nesting, ordering and usage numbers while
+  replacing every string value, identifier and path with a consistent synthetic
+  stand-in, reviewed before commit.
+  A consented local corpus is never committed: it is checked in place with
+  `check-e2e-results.mjs --fixtures <dir>`, and the planned local-only mode prints
+  aggregates alone under the same privacy rules as
+  [the local ccusage diff](#ccusage-reconciliation-harness), including its sentinel
+  test.
 
 ### ccusage reconciliation harness
 
@@ -348,7 +409,9 @@ lists the use cases the harness measures.
     commit, with the same version check.
   - Updating the pin is a pull request that moves to the latest release past the
     cool-off, reruns every case and retires the ledger entries that stop matching.
-- **Isolated, deterministic runs:**
+- **Isolated, deterministic runs:** the same rules as the
+  [golden and end-to-end result checks](#golden-and-end-to-end-result-checks), over the
+  same fixture roots.
   - Both tools read a temporary copy of the same fixture roots.
     `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` point at an empty directory, and
     `CLAUDE_CONFIG_DIR` and `CODEX_HOME` point at the copy.
