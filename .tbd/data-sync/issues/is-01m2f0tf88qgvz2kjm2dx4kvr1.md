@@ -5,7 +5,7 @@ title: Implement current-session detection, --session, --all and hierarchy crawl
 kind: task
 status: open
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,9 +15,11 @@ dependencies:
     target: is-01m2f0tg7kbpmm11wycct2vb5n
   - type: blocks
     target: is-01m2kefnq411wpc8xfmxcq8tjm
+  - type: blocks
+    target: is-01m2ksd5yzhp73gb475pzbvvg6
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.855Z
-updated_at: 2026-09-16T00:18:33.304Z
+updated_at: 2026-09-16T00:20:59.482Z
 ---
 Milestone 0.1: --current environment detection (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID; a detected Pi session exits 2 with an unsupported-dialect diagnostic), --session, --all, the discovery index and hierarchy crawler behind --scope self|descendants, per design §6.1, §6.2 and §3.2. Remaining selection flags are milestone 0.5.
 

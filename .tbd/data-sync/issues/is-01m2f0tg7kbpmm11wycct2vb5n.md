@@ -5,7 +5,7 @@ title: Add report, daily and sessions in table and JSON
 kind: task
 status: open
 priority: 2
-version: 18
+version: 19
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -33,9 +33,11 @@ dependencies:
     target: is-01m2khsrseppmwbrx7ykx4c1dp
   - type: blocks
     target: is-01m2ks6m5jg3tqh3dv22mqmv17
+  - type: blocks
+    target: is-01m2ksd5yzhp73gb475pzbvvg6
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:23.858Z
-updated_at: 2026-09-16T00:18:34.158Z
+updated_at: 2026-09-16T00:20:59.482Z
 ---
 Milestone 0.1: report, daily and sessions commands in table and JSON formats with project, account, model and effort grouping, request sizes, deterministic output, exit codes and CLI goldens, per design §6.3-§6.5, §4.1 and §4.3; list-price estimates wait for milestone 0.4. Remaining commands and formats are milestone 0.5.
 
