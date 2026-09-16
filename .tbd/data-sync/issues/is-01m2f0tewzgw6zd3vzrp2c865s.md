@@ -3,9 +3,9 @@ type: is
 id: is-01m2f0tewzgw6zd3vzrp2c865s
 title: Implement claude-project and codex-rollout adapters
 kind: task
-status: open
+status: closed
 priority: 2
-version: 13
+version: 15
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -25,7 +25,11 @@ dependencies:
     target: is-01m2kt252w8nytk407sj8p30ta
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-14T03:54:22.494Z
-updated_at: 2026-09-16T00:32:26.715Z
+updated_at: 2026-09-16T05:17:02.698Z
+closed_at: 2026-09-16T05:17:02.694Z
+close_reason: Implemented Claude project and Codex rollout adapters with default and override discovery, manifests, native identities and hierarchy evidence, copy/revision reconciliation, per-model advisor usage, rate-limit observations, stable diagnostics, and hermetic coverage over all 28 frozen fixture cases. Added failure coverage for unreadable roots and malformed sidecars plus zero-token Claude sessions. Full make check passes; CLI transcript goldens and result checks remain ratcheted to downstream uro-d135 and uro-xsfj once commands exist.
+resolution: null
+duplicate_of: null
 ---
 Milestone 0.1: claude-project and codex-rollout adapters with default discovery (CLAUDE_CONFIG_DIR, ~/.claude/projects, XDG_CONFIG_HOME/claude, subagents/ and subagents/workflows/; CODEX_HOME sessions/ and archived_sessions/, .jsonl and .jsonl.zst), UROLLUP_* override variables, snapshot manifests, source links and provider limit observations, following design §2.1, §2.2, §3.4 and §4.4; document unsupported fields and the agent versions each fixture covers. Captured-stream dialects (claude-stream, codex-exec) and the metaproc port are milestone 0.5 (uro-i6o2).
 
