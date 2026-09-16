@@ -223,11 +223,11 @@ Shapes these fixtures needed that go beyond the research briefs, all read from C
   struct
   ([history/src/lib.rs:253-264](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/history/src/lib.rs#L253-L264)).
 
-Two Claude shapes stay unverified and are flagged in their cases: the `quotaLimits`
-object (the research brief records the keys `rateLimitType`, `resetsAt` and `status`,
-not the object layout) and the `agent-aaside_question-<hex>` file name for `/btw` side
-questions, which combines ccusage’s note that `/btw` logs live under `subagents/` with
+The `agent-aaside_question-<hex>` file name for `/btw` side questions stays unverified.
+It combines ccusage’s note that `/btw` logs live under `subagents/` with
 session-report’s labeled-agent file convention.
+The `quotaLimits` object shape is verified by the sanitized Claude Code 2.1.270 sample;
+its values remain invented in the committed synthetic case.
 
 Environment note: `.jsonl.zst` members were written with Node’s `zlib.zstdCompressSync`
 at level 3, the level Codex compresses with.

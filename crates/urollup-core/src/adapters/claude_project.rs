@@ -523,6 +523,7 @@ fn normalize(
         let (usage, model_usage) = claude_usage(&record.value)?;
         observation.usage = Some(usage);
         observation.model_usage = model_usage;
+        observation.sequence = unsigned(&record.value, &["apiBlockIndex"]);
         observation.model = text(&record.value, &["message", "model"])
             .map(|name| ModelName { name: name.to_owned(), basis: ModelBasis::Served });
         observation.effort = text(&record.value, &["effort"]).map(str::to_owned);
@@ -838,6 +839,7 @@ fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation
     };
     output(left)
         .cmp(&output(right))
+        .then_with(|| left.sequence.cmp(&right.sequence))
         .then_with(|| left.evidence.offset.cmp(&right.evidence.offset))
         .then_with(|| right.evidence.source.cmp(&left.evidence.source))
 }
@@ -864,5 +866,59 @@ fn thread_from_path(locator: &str) -> NativeThread {
                 .map_or_else(|| locator.to_owned(), |stem| stem.to_string_lossy().into_owned()),
             agent: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClaudeBlockSelector, claude_usage};
+    use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
+    use crate::ledger::reconcile::{RequestObservation, RevisionSelector};
+    use crate::ledger::tokens::TokenMeasures;
+    use crate::sources::evidence::EvidenceRef;
+
+    fn observation(offset: u64, block: u64) -> RequestObservation {
+        let source =
+            IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::text("claude")])
+                .derive_id()
+                .unwrap();
+        let mut observation =
+            RequestObservation::new(EvidenceRef { source, offset, length: 1 }, "claude-project");
+        observation.sequence = Some(block);
+        observation.usage = Some(crate::ledger::tokens::TokenUsage {
+            measures: TokenMeasures { output: Some(10), ..TokenMeasures::default() },
+            native: std::collections::BTreeMap::new(),
+        });
+        observation
+    }
+
+    #[test]
+    fn block_index_breaks_equal_output_ties_before_file_position() {
+        let later_offset = observation(20, 0);
+        let later_block = observation(10, 1);
+        let choice = ClaudeBlockSelector.select(&[&later_offset, &later_block]);
+        assert_eq!(choice.selected, 1);
+    }
+
+    #[test]
+    fn message_iterations_repeat_top_level_usage_without_adding_it() {
+        let value = serde_json::json!({
+            "message": {
+                "model": "claude-test",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 10,
+                    "iterations": [{
+                        "type": "message",
+                        "input_tokens": 3,
+                        "output_tokens": 10
+                    }]
+                }
+            }
+        });
+        let (usage, model_usage) = claude_usage(&value).unwrap();
+        assert_eq!(usage.measures.uncached_input, Some(3));
+        assert_eq!(usage.measures.output, Some(10));
+        assert_eq!(model_usage.len(), 1);
     }
 }

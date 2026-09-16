@@ -450,7 +450,7 @@ from the agent name.
 
 | Dialect | Writer | Location | Records |
 | --- | --- | --- | --- |
-| `claude-project` | Claude Code sessions with persistence | `<config>/projects/<project>/<session-id>.jsonl`, `<config>` being `CLAUDE_CONFIG_DIR` or `~/.claude` (ccusage also searches `$XDG_CONFIG_HOME/claude`), and `<project>` the cwd with non-alphanumerics replaced by `-`; subagents in `<session-id>/subagents/agent-<agent-id>.jsonl` beside `agent-<agent-id>.meta.json`, and under `subagents/workflows/<workflow-id>/` | One entry per message, content block or metadata record, with `type`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch`, `version` and `isSidechain`; `progress` records can nest a subagent’s assistant record; user entries carry `promptId` |
+| `claude-project` | Claude Code sessions with persistence | `<config>/projects/<project>/<session-id>.jsonl`, `<config>` being `CLAUDE_CONFIG_DIR` or `~/.claude` (ccusage also searches `$XDG_CONFIG_HOME/claude`), and `<project>` the cwd with non-alphanumerics replaced by `-`; subagents in `<session-id>/subagents/agent-<agent-id>.jsonl` beside `agent-<agent-id>.meta.json`, and under `subagents/workflows/<workflow-id>/` | One entry per message, content block, attachment or lifecycle record, with `type`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch`, `version` and `isSidechain`; `progress` records can nest a subagent’s assistant record; user entries carry `promptId` |
 | `claude-stream` | `claude -p --output-format stream-json --verbose`, saved by the caller | Explicit input only | SDK messages: `system` `init`; `assistant` and `user` with `session_id` and `parent_tool_use_id`; a final `result` with `usage`, `modelUsage`, `total_cost_usd`, `num_turns` and `duration_ms` |
 | `codex-rollout` | Codex CLI, IDE extension, Desktop and non-ephemeral `codex exec` runs | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-time>-<thread-id>.jsonl`, with local-time date directories; archiving moves files into flat `archived_sessions/`; a thread revert adds a `_<rollout-id>` file; a default-off feature compresses week-old files to `.jsonl.zst` | `{timestamp, ordinal, type, payload}` lines, `ordinal` only in paginated history (0.145+): `session_meta`, `turn_context`, `response_item`, `event_msg`, `compacted`, `token_usage_record`, `inter_agent_communication`, `world_state`, `retained_context`, `security_risk_score`, `realtime_item` and others |
 | `codex-exec` | `codex exec --json`, saved by the caller | Explicit input only | `thread.started` (`thread_id`), `turn.started`, `item.started`, `item.updated`, `item.completed`, `turn.completed` (`usage`), `turn.failed` and `error`; one turn per stream; no timestamps, model, turn or response IDs |
@@ -506,6 +506,16 @@ The source shows reader hazards that no format table captures:
 - **Prefilters and nulls:** a byte-pattern prefilter may only route lines to full
   parsing, and a null nested field is never a reason to reject a record, as ccusage’s
   dropped records show.
+- **Claude’s mixed record stream:** a Claude Code 2.1.270 session contained `attachment`
+  records for environment, model, skills, instructions, session context, date, deferred
+  tool changes, prompt snapshots, remote-session changes and token reminders, plus
+  `file-history-snapshot`, `last-prompt`, `custom-title`, `agent-name`, `mode`,
+  `atis-latch`, `pr-link`, `bridge-session` and `queue-operation` records.
+  Transcript records also carried `entrypoint`, `promptId`, `effort`, `perTurnEffort`,
+  `wireToolInputs` and `sourceToolAssistantUUID`; the nested message carried
+  `container`, `stop_details`, `diagnostics` and `context_management`. An accounting
+  adapter must accept and skip unrelated records rather than model the transcript as
+  messages only.
 - **Unwritten sessions:** Codex creates a rollout only when it first persists a thread,
   and Pi creates a session file only at the first assistant message; Codex `--ephemeral`
   threads and Pi `--no-session` runs write no file.
@@ -518,17 +528,25 @@ The source shows reader hazards that no format table captures:
 | Fields | `message.usage`: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`, `cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`, `output_tokens_details.thinking_tokens`, `server_tool_use`, `service_tier`, `speed`, `inference_geo`, `iterations` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens` (0.145+), `output_tokens`, `reasoning_output_tokens`, `total_tokens`; records add `turn_token_usage` and `thread_token_usage` running sums | `usage`: `input`, `output`, `cacheRead`, `cacheWrite`, optional `cacheWrite1h` and `reasoning`, `totalTokens`, and a `cost` breakdown computed by Pi |
 | Carriers | Assistant entries; `advisor_message` items in `iterations` carry a second model’s usage | `token_usage_record` payloads and `token_count` events; `compacted.latest_token_usage_record` is a copy | Assistant messages; since 0.81.0 also `toolResult` messages, `compaction` entries and `branch_summary` entries, all without a model |
 | Inclusion | `input_tokens` excludes cache reads and writes; top-level counts equal the sum of `message` iterations and exclude `advisor_message` iterations | `input_tokens` includes `cached_input_tokens`, and whether it includes `cache_write_input_tokens` is unverified; `reasoning_output_tokens` is part of `output_tokens` | `input` excludes `cacheRead` and `cacheWrite`; `reasoning` is part of `output`; `totalTokens` is provider-reported for Google, Bedrock and Mistral and can differ from the component sum |
-| Counter kind | Per response, repeated on every content-block entry of one request | `token_count.info.total_token_usage` is cumulative per thread and `last_token_usage` the latest delta, with `info: null` before the first recorded usage; `token_usage_record.usage` is per response | Per message, written once in the file that recorded it |
+| Counter kind | Per response, repeated on every content-block entry of one request; `apiBlockIndex` numbers the records within that response | `token_count.info.total_token_usage` is cumulative per thread and `last_token_usage` the latest delta, with `info: null` before the first recorded usage; `token_usage_record.usage` is per response | Per message, written once in the file that recorded it |
 | Model and effort | `message.model`; entry-level `effort` | `turn_context` `model`, the requested model because the served model is not saved, and `effort`; `thread_settings_applied` service-tier changes | `message.provider`, `message.model`, optional `responseModel` and `providerThinkingLevel`; `model_change` and `thinking_level_change` entries |
-| Provider windows | `quotaLimits` on some assistant entries: `rateLimitType`, `resetsAt`, `status`; usage-limit error text with a reset time | `token_count.rate_limits`: `limit_id`, `plan_type`, `credits`, and `primary` and `secondary` windows with `used_percent`, `window_minutes`, `resets_at` | None recorded |
+| Provider windows | `quotaLimits` on some assistant entries: `status`, `rateLimitType`, `resetsAt`, `isUsingOverage`, `overageStatus`, `overageDisabledReason` and `unifiedRateLimitFallbackAvailable`; usage-limit error text with a reset time | `token_count.rate_limits`: `limit_id`, `plan_type`, `credits`, and `primary` and `secondary` windows with `used_percent`, `window_minutes`, `resets_at` | None recorded |
 
 Evidence and caveats for the usage fields:
 
 - **Claude:** Anthropic defines `input_tokens` as tokens after the last cache breakpoint
   ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
-  In a small local sample, all entries sharing a `requestId` had one `message.id` and
-  identical usage, but Anthropic’s receipts miner reports that about 13% of block
-  records for one response disagree on `output_tokens` while it streams
+  In a sanitized Claude Code 2.1.270 sample, `apiBlockIndex` numbered each response’s
+  content-block records from zero, and nearly every usage object had one `message`
+  iteration equal to its top-level usage.
+  Such iterations repeat evidence and do not add usage; `advisor_message` iterations
+  remain separate model usage.
+  One early streaming record omitted `output_tokens_details`, `server_tool_use`,
+  `iterations` and `speed` that a later block record carried, so reconciliation selects
+  one whole record rather than merging fields.
+  All sample entries sharing a `requestId` had one `message.id`, but Anthropic’s
+  receipts miner reports that about 13% of block records for one response disagree on
+  `output_tokens` while it streams
   ([mine-transcripts.mjs](https://github.com/anthropics/claude-plugins-official/blob/f0dce59fec064db10450cb6ed6e33c1080d61537/plugins/receipts/skills/receipts/scripts/mine-transcripts.mjs#L412-L432)).
   Parsers resolve that disagreement differently: ccusage keeps the one whole record with
   the largest token total, session-report the largest `output_tokens` within a file, and
@@ -542,8 +560,11 @@ Evidence and caveats for the usage fields:
   `cache_creation_input_tokens` when both exist, so a mismatch needs a diagnostic, and
   receipts found 1-hour and 5-minute cache writes near an even split on one corpus, so
   pricing all writes at the 5-minute rate misprices them.
-  `effort`, `iterations`, `speed`, `inference_geo` and `quotaLimits` were observed
-  locally and are undocumented, and `message.model` can be `<synthetic>`.
+  The sample’s `quotaLimits` objects used `five_hour` and `seven_day` rate-limit types;
+  `status` and `overageStatus` included `rejected`, and `overageDisabledReason` included
+  `org_level_disabled_until` and `out_of_credits`. These fields, `effort`, `iterations`,
+  `speed` and `inference_geo` remain undocumented, and `message.model` can be
+  `<synthetic>`.
 - **Codex:** The protocol defines `TokenUsage`, `TokenUsageRecord`, `SessionMeta` and
   the rate-limit types
   ([protocol.rs](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/protocol/src/protocol.rs#L2215-L2391)),
@@ -607,7 +628,7 @@ Evidence and caveats for the usage fields:
 | Linkage | `claude-project` | `codex-rollout` | `pi-session` |
 | --- | --- | --- | --- |
 | Session identity | File name stem; entries copied by resume or fork keep their original `sessionId`, so one file can hold several | `session_meta.payload.id` is the thread and `session_id` the root thread (since `rust-v0.142.0`); revert chains and paginated forks spread one thread over several files, and resume appends to the original file | Header `id`, a UUIDv7 since 0.67.1; `--session-id` accepts caller-chosen IDs that are unique only within a project directory, and export then import writes a second file with the same `id` |
-| Subagents | Entries carry `agentId` and `isSidechain: true`; `.meta.json` has `agentType`, `description`, `toolUseId` and `spawnDepth`; `toolUseId` matches the spawning `Agent` `tool_use.id` in the parent or another subagent, whose `toolUseResult` records `agentId`; labeled `agent-a<label>-<hex>` files are internal background forks such as `compact` | `parent_thread_id`; `source.subagent.thread_spawn` with `parent_thread_id`, `depth`, `agent_nickname`, `agent_role` and `agent_path`; other sources `review`, `compact`, `memory_consolidation` and `other`; `thread_source` is `user`, `subagent`, `guardian_review`, `memory_consolidation` or a feature name; `token_usage_record.root_turn_id` links a subagent request to its root turn | None built in; Pi’s subagent example runs children with `--no-session`, so their usage survives only inside the parent’s tool-result `details` |
+| Subagents | Entries carry `agentId` and `isSidechain: true`; `.meta.json` has `agentType`, `description`, `toolUseId`, `spawnDepth`, `worktreePath`, `worktreeBranch`, `spawnedWithWorktree`, `requestShape` and `requestNonInteractive`; `toolUseId` matches the spawning `Agent` `tool_use.id` in the parent or another subagent, whose `toolUseResult` records `agentId`; labeled `agent-a<label>-<hex>` files are internal background forks such as `compact` | `parent_thread_id`; `source.subagent.thread_spawn` with `parent_thread_id`, `depth`, `agent_nickname`, `agent_role` and `agent_path`; other sources `review`, `compact`, `memory_consolidation` and `other`; `thread_source` is `user`, `subagent`, `guardian_review`, `memory_consolidation` or a feature name; `token_usage_record.root_turn_id` links a subagent request to its root turn | None built in; Pi’s subagent example runs children with `--no-session`, so their usage survives only inside the parent’s tool-result `details` |
 | Forks and resumes | `/branch` and `--fork-session` create a new session ID holding copied history; `--resume` keeps the ID; fork-style subagents replay parent entries with identical `uuid`s; older transcripts keep subagent turns inline, marked `isSidechain`, with no spawn ID | `forked_from_id` with `forked_from_ordinal_exclusive` (0.152+); `subagent_history_start_ordinal` (0.145+, paginated history) marks where a subagent’s own records begin | Header `parentSession`, the source file’s absolute path, for `/fork`, `/clone` and `--fork`; in-file branches through `parentId` and `branch_summary.fromId` |
 | Directory and branch | Entry `cwd` and `gitBranch` | `session_meta` `cwd` and `git` (`commit_hash`, `branch`, `repository_url`) per thread; `turn_context.cwd` per turn | Header `cwd`; no branch |
 
