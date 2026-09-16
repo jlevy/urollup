@@ -3,9 +3,9 @@ type: is
 id: is-01m2ks6m5jg3tqh3dv22mqmv17
 title: Run the first real end-to-end goldens and result checks on fixtures
 kind: task
-status: open
+status: closed
 priority: 2
-version: 3
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -18,7 +18,11 @@ dependencies:
     target: is-01m2ks7q1qfsdbrvb62ed5g79a
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:17:24.656Z
-updated_at: 2026-09-16T00:18:00.374Z
+updated_at: 2026-09-16T06:56:40.052Z
+closed_at: 2026-09-16T06:56:40.051Z
+close_reason: "Completed all 28 fixture transcript goldens with default-discovery and explicit --source/--no-default-sources sessions views (231 blocks total), real result extractors, deterministic JSON/table output, direct JSONL/zstd input detection, and updated gate proof. make check and PR #4 CI pass."
+resolution: null
+duplicate_of: null
 ---
 Milestone 0.1: turn on the end-to-end layer once report JSON and the fixture corpus exist, per the plan's Golden and end-to-end result checks and tests/golden/README.md. The harness is in place (uro-3ht1); this bead only adds cases and fixes the provisional parts.
 
