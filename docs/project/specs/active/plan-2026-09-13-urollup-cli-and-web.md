@@ -47,6 +47,42 @@ in the design’s
 Queued review decisions get phase items only once confirmed
 ([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
+## End-to-End Acceptance Goals
+
+These goals say what “working” means for a person using urollup on real logs, beyond
+each milestone’s checklist.
+Every one is tested on the maintainer’s own machine, and any committed artifact records
+aggregates only, never log content, paths or IDs.
+
+- **G1, this project’s sessions (milestone 0.1).** `urollup report --current` inside a
+  session of this repository, `urollup sessions` and `urollup daily` roll up every
+  Claude Code session for this project, including its many subagent sessions, with
+  subagent usage attributed to its parent under `--scope descendants`, no session or
+  request counted twice, explicit coverage for anything unread, and a non-zero exit only
+  on real errors. Token totals per session and per day reconcile against pinned ccusage,
+  with every difference explained in the ledger
+  ([ccusage reconciliation harness](#ccusage-reconciliation-harness)).
+- **G2, all recent local sessions (milestones 0.1 and 0.5).** `urollup daily --all` and
+  `urollup sessions --all` roll up every recent session on the machine across projects:
+  Claude Code and Codex in 0.1, captured streams in 0.5, and Pi and Gemini CLI when
+  their adapters land.
+  Grouping by project, account, model and effort works across agents, archived and
+  compressed rollouts are included, and unsupported dialects appear as explicit coverage
+  gaps rather than silence.
+- **G3, friendly from the CLI (0.1, polished through 0.5).** The common case takes no
+  flags and one command.
+  Help lists the commands with examples, default tables are readable at terminal width,
+  diagnostics name the flag or fix to use, exit codes follow
+  [§6.5](../../../urollup-design.md#65-exit-codes), nothing prompts, and a small report
+  meets the [performance targets](#performance-targets).
+- **G4, browsable web reports (Phase 2).** A generated self-contained HTML report opens
+  in a browser with no server, and `urollup serve` browses the same results live
+  ([§7](../../../urollup-design.md#7-serving-layer-optional),
+  [static HTML reports](../../../urollup-design.md#static-html-reports)).
+
+Each goal has an acceptance bead that runs it against real local logs and records the
+result as aggregates.
+
 ## Implementation Plan
 
 ### Phase 1: Accounting core and useful uncached CLI
