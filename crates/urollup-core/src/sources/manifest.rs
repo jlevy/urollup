@@ -154,6 +154,14 @@ pub enum CoverageFailure {
         /// Decoded bytes produced before the stream ended.
         decoded_offset: u64,
     },
+    /// A compressed twin whose first record differs from the file read, so it is a
+    /// different logical source that this scan did not read.
+    TwinFingerprintMismatch {
+        /// The twin's path.
+        path: PathBuf,
+        /// The locator both files claim.
+        locator: String,
+    },
     /// An I/O error ended the scan early.
     ReadError {
         /// Decoded bytes read before the error.
