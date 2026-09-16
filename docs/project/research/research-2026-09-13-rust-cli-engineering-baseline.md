@@ -145,9 +145,9 @@ publishes artifact attestations.
 | Practice | Guidelines | fdu | flowmark-rs | urollup baseline |
 | --- | --- | --- | --- | --- |
 | Orchestration | One release identity; dry run; least privilege; idempotent reruns; testable release logic | `release.yml` rehearsal with a tested plan script and evidence job; publication deliberately absent | `release.yml` with dry-run dispatch, tested plan script, reusable crates and PyPI workflows that skip published versions | flowmark-rs’s flow with fdu’s protected `release` environment and evidence job |
-| Archives | Native runners where smoke testing matters | None yet | `{x86_64,aarch64}` × `apple-darwin`, `pc-windows-msvc`, static `unknown-linux-musl`; aarch64 Linux cross-built and not run | Five targets, each built and run natively (see Recommendations) |
+| Archives | Native runners where smoke testing matters | None yet | `{x86_64,aarch64}` × `apple-darwin`, `pc-windows-msvc`, static `unknown-linux-musl`; aarch64 Linux cross-built and not run | Five GitHub archive targets, each built and run natively (see Recommendations) |
 | crates.io | Trusted publishing; interdependent crates in one invocation | `cargo package --locked -p fdu-core -p fdu`, then installs the extracted crate | Trusted publishing via `rust-lang/crates-io-auth-action` | fdu’s packaging with flowmark-rs’s publishing |
-| PyPI | Trusted publishing; smoke-test each wheel’s console command | abi3 extension wheels and a tested sdist | Binary wheels (`bindings = "bin"`) for manylinux 2_17, macOS and Windows | flowmark-rs’s binary wheel, without an sdist |
+| PyPI | Trusted publishing; smoke-test each wheel’s console command | abi3 extension wheels and a tested sdist | Binary wheels (`bindings = "bin"`) for manylinux 2_17, macOS and Windows | flowmark-rs’s `urollup` binary wheel, without an sdist; Linux wheels are genuine manylinux builds, separate from the static musl archives |
 | Other channels | Explicit channel audiences | No Homebrew for 0.1.0 | Homebrew tap updated manually; README advertises `cargo binstall` without binstall metadata | Defer Homebrew, npm and binstall |
 | Integrity | Checksums, provenance | `SHA256SUMS`, release manifest, CycloneDX SBOM check in wheels; attestations planned | `SHA256SUMS` on the GitHub Release | `SHA256SUMS` plus GitHub build-provenance attestations |
 
@@ -400,22 +400,28 @@ be. Run counts, corpus definitions and thresholds live in the plan’s Testing S
 
 | Target | Runner | Artifacts | Primary users |
 | --- | --- | --- | --- |
-| `x86_64-unknown-linux-musl` | `ubuntu-24.04` | `.tar.gz` archive, manylinux x86_64 wheel | Cloud sandboxes, Linux hosts, CI |
-| `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `.tar.gz` archive, manylinux aarch64 wheel | Arm64 sandboxes and hosts |
+| `x86_64-unknown-linux-musl` | `ubuntu-24.04` | Static `.tar.gz` archive | Cloud sandboxes, Linux hosts, CI |
+| `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | Static `.tar.gz` archive | Arm64 sandboxes and hosts |
+| `x86_64-unknown-linux-gnu` in manylinux 2_17 | x86_64 manylinux environment on `ubuntu-24.04` | manylinux x86_64 wheel | Agent and local `uvx` use on glibc Linux |
+| `aarch64-unknown-linux-gnu` in manylinux 2_17 | arm64 manylinux environment on `ubuntu-24.04-arm` | manylinux aarch64 wheel | Agent and local `uvx` use on glibc Arm64 Linux |
 | `aarch64-apple-darwin` | `macos-15` | `.tar.gz` archive, wheel | Local macOS |
 | `x86_64-apple-darwin` | `macos-15-intel` | `.tar.gz` archive, wheel | Local Intel macOS |
 | `x86_64-pc-windows-msvc` | `windows-latest` | `.zip` archive, wheel | Local Windows |
 
 - Linux archives are static musl builds, as in flowmark-rs, but built and smoke-tested
-  on native runners. **Decision:** defer `aarch64-pc-windows-msvc`, which flowmark-rs
+  on native runners. Linux PyPI wheels are separate manylinux 2_17 builds so uv can
+  select them on ordinary glibc systems; a musl binary is not relabeled as manylinux.
+  **Decision:** defer musllinux wheels and `aarch64-pc-windows-msvc`, which flowmark-rs
   ships.
 - Channels, in dependency order: GitHub Release archives; crates.io `urollup-core` and
-  `urollup` packaged in one invocation; PyPI binary wheels.
+  `urollup` packaged in one invocation; PyPI `urollup` binary wheels.
   All registry publishing uses trusted publishing from a protected `release`
   environment. **Decision:** defer Homebrew, npm and binstall.
-  Confirm the `urollup` and `urollup-core` names are available on crates.io and PyPI
-  before the first release.
-  *(Checked 2026-09-13: both names were unregistered, though not reserved; see design
+  Confirm `urollup` and `urollup-core` on crates.io and `urollup` on PyPI before the
+  first release. Record the optional `urollup-core` PyPI name for a future bindings
+  decision, but do not publish an empty placeholder.
+  *(Checked 2026-09-13: all four crate/package name lookups were unregistered, though
+  not reserved; see design
   [Decision 1](../../urollup-design.md#decision-1-product-name).)*
 - Integrity: one `SHA256SUMS`, GitHub build-provenance attestations for every archive
   and wheel, the fdu evidence manifest, and wheel SBOM inspection.
@@ -435,7 +441,9 @@ The skill resolves a binary in this order and records which path it used:
    digest committed in the repository’s skill copy before extraction, then
    `urollup --version`. Where `gh` is available, `gh attestation verify` adds
    provenance.
-3. `uv tool install urollup==X.Y.Z` from PyPI.
+3. `uvx --isolated urollup@X.Y.Z` for an ephemeral exact-version run, or
+   `uv tool install urollup==X.Y.Z` for a persistent install, from the same PyPI binary
+   wheel.
 4. `cargo install --locked urollup@X.Y.Z` from crates.io, which also needs a Rust
    toolchain and build time.
 5. When no registry or GitHub host is reachable: an environment setup step run with

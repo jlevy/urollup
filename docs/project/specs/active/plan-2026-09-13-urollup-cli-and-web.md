@@ -641,7 +641,10 @@ Binaries with the embedded UI are published only after fixture, packaged-binary,
 feature-matrix and Testing Strategy release checks pass, and dependencies are pinned
 under the supply-chain policy as crates and frontend tools are chosen.
 
-Release mechanics follow the baseline’s
+Release mechanics follow the focused
+[0.1.0 publishing and distribution plan](plan-2026-09-16-first-release-publishing.md),
+which owns the end-to-end setup, artifact contract, rehearsal, publication sequence,
+post-publish validation and recovery steps, and the baseline’s
 [targets, channels and versioning](../../research/research-2026-09-13-rust-cli-engineering-baseline.md#targets-channels-and-versioning),
 within the confirmed
 [release scope](../../../urollup-design.md#decision-27-release-scope):
@@ -652,12 +655,17 @@ within the confirmed
   for demand.
 - **Channels:** one `release.yml` publishes from a protected `release` environment to
   GitHub Release archives with `SHA256SUMS` (the channel the cloud skill pins),
-  crates.io `urollup-core` and `urollup` in one invocation, and PyPI binary wheels.
+  crates.io `urollup-core` and `urollup` in one invocation, and a PyPI `urollup` binary
+  wheel built with Maturin `bindings = "bin"` for exact-version `uvx` and persistent
+  `uv tool install` use.
   Registries use trusted publishing, except a short-lived scoped token for the first
   crates.io upload. A dispatch dry run skips only upload, and reruns skip identical
   artifacts and fail on different bytes under one version.
   Homebrew, npm and cargo-binstall wait for demand.
-  `urollup` and `urollup-core` were unregistered on crates.io and PyPI on 2026-09-13.
+  Importable Python bindings are a separate future artifact and do not make the CLI
+  Python-dependent. `urollup` and `urollup-core` were unregistered on crates.io and PyPI
+  on 2026-09-13; only the real `urollup` binary package is published to PyPI in the
+  first release, rather than an empty placeholder for a possible bindings package.
 - **Verification:** `--locked` builds from the tagged commit, with a build-provenance
   attestation for every archive and wheel; no GPG or minisign signature.
 - **Versioning:** SemVer from `[workspace.package] version`, checked against the tag by

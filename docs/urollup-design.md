@@ -3160,16 +3160,22 @@ recalibrated against a consented corpus.
 #### Decision 27: Release Scope
 
 **Choice:** No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or
-minisign signing.
+minisign signing. The PyPI `urollup` package is a Maturin `bindings = "bin"` wheel for
+exact-version `uvx` and `uv tool install` use, not a Python wrapper or importable
+module.
 
 **Rationale:** Those channels and targets wait for demand, and build-provenance
 attestations for every archive and wheel verify releases.
 
 **Tradeoffs:** Users of those package managers install from GitHub Release archives,
 crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
+Importable Python bindings remain a separate future artifact so they can choose their
+own API, ABI and platform matrix without coupling the standalone CLI to Python.
 
 **Confirmed:** 2026-09-14; see the plan’s
-[rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan).
+[rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan)
+and the focused
+[first-release publishing plan](project/specs/active/plan-2026-09-16-first-release-publishing.md).
 
 #### Decision 28: Gemini CLI Planned Support
 
