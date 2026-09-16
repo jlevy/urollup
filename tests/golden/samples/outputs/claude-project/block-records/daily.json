@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "query": { "command": "daily", "selection": "all", "scope": "self", "timezone": "UTC" },
+  "diagnostics": [{ "code": "sample.block_usage_differs", "severity": "info", "count": 1 }],
+  "rows": [
+    {
+      "date": "2026-09-12",
+      "requests": { "owned": 1, "ambiguous": 0, "unknown": 0 },
+      "tokens": { "uncached_input": 3, "cache_read": 40000, "cache_write": 0, "output": 600, "reasoning": 0 }
+    }
+  ]
+}

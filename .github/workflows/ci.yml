@@ -99,12 +99,17 @@ jobs:
       - run: cargo test --locked --workspace --no-default-features
       - name: Build the CLI for golden tests
         run: cargo build --locked --workspace
-      - name: Check the golden corpus resolves urollup only from the build under test
+      # The harness decides what a hermetic, complete golden run is; test it on every platform.
+      - name: Test the golden and end-to-end harness
+        run: node --test scripts/golden-env.test.mjs scripts/check-golden-invocations.test.mjs scripts/run-golden.test.mjs scripts/new-e2e-golden.test.mjs scripts/check-e2e-results.test.mjs
+      - name: Check the golden corpus is hermetic and resolves urollup only from the build under test
         run: node scripts/check-golden-invocations.mjs
       - name: Check committed goldens name no machine
         run: node scripts/check-portability.mjs
       - name: Compare the CLI golden contract
         run: node scripts/run-golden.mjs
+      - name: Check reconciled results on every fixture case
+        run: node scripts/check-e2e-results.mjs
 
   docs:
     name: Docs, Markdown and uv lock

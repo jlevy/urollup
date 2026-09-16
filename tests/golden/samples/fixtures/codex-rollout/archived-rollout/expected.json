@@ -1,0 +1,16 @@
+{
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs: an archived rollout read through CODEX_HOME's archived_sessions directory.",
+  "case": "codex-rollout/archived-rollout",
+  "dialect": "codex-rollout",
+  "reconciled": {
+    "requests": 1,
+    "ownership": { "owned": 1, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 1200, "cache_read": 0, "cache_write": 0, "output": 300, "reasoning": 100 },
+    "copies_excluded": 0,
+    "diagnostics": []
+  },
+  "naive_sum": {
+    "requests": 1,
+    "tokens": { "uncached_input": 1200, "cache_read": 0, "cache_write": 0, "output": 300, "reasoning": 100 }
+  }
+}

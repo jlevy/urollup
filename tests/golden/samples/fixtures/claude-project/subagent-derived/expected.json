@@ -1,0 +1,11 @@
+{
+  "$comment": "Harness sample in the flat alias style a structure-derived case may use: result keys at the top level and alternative key names, which the checker normalizes.",
+  "dialect": "claude-project",
+  "derived_from": "structure-only sanitizer output (synthetic stand-in)",
+  "unique_requests": 2,
+  "ownership_counts": { "owned": 2, "ambiguous": 0, "unknown": 0 },
+  "token_totals": { "uncached_input": 15, "cache_read": 28000, "cache_write": 500, "output": 290, "reasoning": 0 },
+  "excluded_copies": 0,
+  "expected_diagnostics": [],
+  "naive": { "requests": 2, "tokens": { "uncached_input": 15, "cache_read": 28000, "cache_write": 500, "output": 290 } }
+}

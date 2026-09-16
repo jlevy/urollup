@@ -1,0 +1,19 @@
+{
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, not an accounting fixture; values follow the research brief's synthetic double-counting example.",
+  "case": "claude-project/block-records",
+  "dialect": "claude-project",
+  "description": "One response split into thinking, text and tool-use block records, with the last record replayed into a resumed session file.",
+  "reconciled": {
+    "requests": 1,
+    "ownership": { "owned": 1, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 3, "cache_read": 40000, "cache_write": 0, "output": 600, "reasoning": 0 },
+    "copies_excluded": 3,
+    "unresolved": { "requests": 0, "extents": 0 },
+    "limit_observations": 0,
+    "diagnostics": [{ "code": "sample.block_usage_differs", "count": 1 }]
+  },
+  "naive_sum": {
+    "requests": 4,
+    "tokens": { "uncached_input": 12, "cache_read": 160000, "cache_write": 0, "output": 1224, "reasoning": 0 }
+  }
+}

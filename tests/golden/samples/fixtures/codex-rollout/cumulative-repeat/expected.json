@@ -1,0 +1,18 @@
+{
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, not an accounting fixture; values follow the research brief's cumulative-counter example.",
+  "case": "codex-rollout/cumulative-repeat",
+  "dialect": "codex-rollout",
+  "description": "Two advancing token_count events, a repeat that does not advance the running total, and a limit-only event.",
+  "reconciled": {
+    "requests": 2,
+    "ownership": { "owned": 2, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 7000, "cache_read": 16000, "cache_write": 0, "output": 2000, "reasoning": 0 },
+    "copies_excluded": 1,
+    "limit_observations": 1,
+    "diagnostics": ["sample.repeated_token_count"]
+  },
+  "naive_sum": {
+    "requests": 3,
+    "tokens": { "uncached_input": 17000, "cache_read": 38000, "cache_write": 0, "output": 5000, "reasoning": 0 }
+  }
+}

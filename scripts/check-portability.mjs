@@ -7,11 +7,14 @@
 // named patterns into literals. A regenerated golden can then carry a home directory or a
 // sandbox path and pass only on the recording machine, which is also the machine checking
 // it. This check does not depend on where it runs. It also keeps private local paths,
-// which urollup's fixtures must never contain, out of committed test data.
+// which urollup's fixtures must never contain, out of committed test data, including the
+// golden root that scripts/golden-env.mjs creates (`urollup-golden-*`).
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { findFiles, findSessions } from './check-golden-invocations.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -22,10 +25,9 @@ const MACHINE_SPECIFIC = [
   { pattern: /\b[A-Z]:\\(?:Users|a)\\/, why: 'a Windows path from the recording machine' },
 ];
 
-const goldenDir = join(root, 'tests', 'golden');
-const targets = readdirSync(goldenDir)
-  .filter((f) => f.endsWith('.tryscript.md'))
-  .map((name) => [join('tests', 'golden', name), join(goldenDir, name)]);
+// Every file under tests/golden: sessions at any depth, and the results checker's sample
+// cases and outputs, which a regenerated sample could fill with local paths just the same.
+const targets = findFiles(root).map((name) => [name, join(root, name)]);
 
 const findings = [];
 for (const [name, file] of targets) {
@@ -40,7 +42,7 @@ for (const [name, file] of targets) {
     });
 }
 
-if (targets.length === 0) {
+if (findSessions(root).length === 0) {
   findings.push('tests/golden: no *.tryscript.md sessions to check');
 }
 

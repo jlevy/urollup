@@ -233,9 +233,58 @@
         {
           "path": "tests/golden/cli-surface.tryscript.md",
           "delete": true
+        },
+        {
+          "path": "tests/golden/e2e-scaffold.tryscript.md",
+          "delete": true
         }
       ],
       "expect": "golden corpus is missing"
+    },
+    {
+      "id": "golden-skip-annotation",
+      "gate": "test",
+      "violation": "a golden block is skipped, which tryscript reports as passed",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "## Version Is Exact and on Stdout\n",
+            "to": "## Version Is Exact and on Stdout <!-- skip -->\n"
+          }
+        }
+      ],
+      "expect": "`<!-- skip -->` hides blocks"
+    },
+    {
+      "id": "golden-ambient-env",
+      "gate": "test",
+      "violation": "a golden session expands a discovery root from the invoking environment's HOME",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "  TZ: UTC\n---\n",
+            "to": "  TZ: UTC\n  CLAUDE_CONFIG_DIR: $HOME/.claude\n---\n"
+          }
+        }
+      ],
+      "expect": "env CLAUDE_CONFIG_DIR expands \\$HOME"
+    },
+    {
+      "id": "e2e-results-stub-declared-implemented",
+      "gate": "test",
+      "violation": "the end-to-end results config drops a stubbed command's pending entry, so its results would go unchecked",
+      "edits": [
+        {
+          "path": "tests/golden/e2e.config.json",
+          "substitute": {
+            "from": "      \"compare\": \"all\",\n      \"pending\": {\n        \"bead\": \"uro-d135\",\n        \"unblock\": \"urollup report prints JSON; then delete this pending entry and fix the report extractor\"\n      }\n",
+            "to": "      \"compare\": \"all\"\n"
+          }
+        }
+      ],
+      "expect": "urollup report is still the scaffold stub, but tests/golden/e2e\\.config\\.json lists it as implemented"
     },
     {
       "id": "golden-machine-path",

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "query": { "command": "report", "selection": "all", "scope": "self", "timezone": "UTC" },
+  "coverage": { "copies_excluded": 3, "limit_observations": 0 },
+  "diagnostics": [{ "code": "sample.block_usage_differs", "severity": "info", "count": 1 }],
+  "totals": {
+    "requests": { "owned": 1, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 3, "cache_read": 40000, "cache_write": 0, "output": 600, "reasoning": 0 },
+    "unresolved": { "requests": 0, "extents": 0 },
+    "possible": { "requests": 0 }
+  }
+}

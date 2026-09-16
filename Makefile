@@ -21,15 +21,17 @@ UV_RUN = $(UV) --config-file uv.toml run --frozen
 FLOWMARK = $(UV_RUN) flowmark
 TAPLO := node_modules/.bin/taplo
 
-.PHONY: help build test rust-test golden golden-update golden-lint check toolchain uv-version \
+.PHONY: help build test rust-test golden golden-update golden-lint e2e-results check toolchain uv-version \
 	supply-chain lint-policy fmt-check toml-fmt-check docs-format-check uv-lock-check clippy \
 	docs dependency-guard msrv audit npm-audit gate-proofs fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
-	@echo "make test               Rust tests (default and no-default features) and CLI goldens"
-	@echo "make golden             Build and compare the tryscript CLI goldens"
+	@echo "make test               Rust tests, CLI goldens and end-to-end result checks"
+	@echo "make golden             Build and compare the tryscript CLI goldens, hermetically"
 	@echo "make golden-update      Regenerate intentional golden changes, then compare"
+	@echo "                        (GOLDEN=<session> limits the update to named sessions)"
+	@echo "make e2e-results        Check reconciled results on every fixture case"
 	@echo "make check              Handoff gate: everything CI enforces, fastest first"
 	@echo "make fix                Format Rust, TOML and Markdown"
 	@echo "make supply-chain       Verify release age, provenance, pins and CI trust controls"
@@ -41,7 +43,7 @@ help:
 build:
 	$(CARGO) build --locked --workspace
 
-test: rust-test golden
+test: rust-test golden e2e-results
 
 rust-test:
 	$(CARGO) test --locked --workspace
@@ -50,20 +52,34 @@ rust-test:
 $(NODE_INSTALL_STAMP): package.json package-lock.json .npmrc
 	$(NPM) ci --ignore-scripts
 
+# The harness scripts are gates too, so their decision logic is tested before they run.
+GOLDEN_HARNESS_TESTS := scripts/golden-env.test.mjs scripts/check-golden-invocations.test.mjs \
+	scripts/run-golden.test.mjs scripts/new-e2e-golden.test.mjs
+
 golden-lint:
+	$(NODE) --test $(GOLDEN_HARNESS_TESTS)
 	$(NODE) scripts/check-golden-invocations.mjs
 	$(NODE) scripts/check-portability.mjs
 
 golden: build golden-lint $(NODE_INSTALL_STAMP)
 	$(NODE) scripts/run-golden.mjs
 
-# tryscript returns nonzero when it updates a previously failing block. The immediate
-# comparison is authoritative and catches execution failures or incomplete updates.
-# `--update` writes what it saw, so read the diff, and `make golden-lint` refuses literals
-# it expanded from machine-specific output.
+# tryscript returns 1 when it updates a previously failing block, so only that status is
+# tolerated; run-golden exits 3 when unstaged golden changes would mix into the diff. The
+# immediate comparison is authoritative and catches execution failures or incomplete
+# updates. `--update` writes what it saw, so read the diff, and `make golden-lint` refuses
+# literals it expanded from machine-specific output.
+GOLDEN ?=
+
 golden-update: build $(NODE_INSTALL_STAMP)
-	-$(NODE) scripts/run-golden.mjs --update
+	$(NODE) scripts/run-golden.mjs --update $(GOLDEN) || test $$? -eq 1
 	$(MAKE) golden
+
+# Structured final-result checks beside the transcript goldens (tests/golden/README.md).
+# Commands still stubbed and a fixture corpus not yet landed print PENDING with their bead.
+e2e-results: build
+	$(NODE) --test scripts/check-e2e-results.test.mjs
+	$(NODE) scripts/check-e2e-results.mjs
 
 # Everything CI enforces, in the order that fails fastest.
 check: toolchain uv-version supply-chain lint-policy fmt-check toml-fmt-check docs-format-check \
