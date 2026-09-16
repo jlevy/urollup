@@ -3159,10 +3159,13 @@ recalibrated against a consented corpus.
 
 #### Decision 27: Release Scope
 
-**Choice:** No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or
-minisign signing. The PyPI `urollup` package is a Maturin `bindings = "bin"` wheel for
-exact-version `uvx` and `uv tool install` use, not a Python wrapper or importable
-module.
+**Choice:** The first public alpha is `0.1.0` after milestone 0.1 acceptance.
+It ships native archives for static-musl Linux x86_64 and arm64, macOS 11.0 or newer on
+Intel and Apple silicon, and Windows x86_64; crates.io packages through Cargo
+1.90-or-newer native workspace publishing; and a PyPI `urollup` Maturin
+`bindings = "bin"` wheel for exact-version `uvx` and `uv tool install` use, not a Python
+wrapper or importable module.
+No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing.
 
 **Rationale:** Those channels and targets wait for demand, and build-provenance
 attestations for every archive and wheel verify releases.
@@ -3172,7 +3175,9 @@ crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
 Importable Python bindings remain a separate future artifact so they can choose their
 own API, ABI and platform matrix without coupling the standalone CLI to Python.
 
-**Confirmed:** 2026-09-14; see the plan’s
+**Confirmed:** 2026-09-14; refined 2026-09-16 to fix the first release at 0.1.0, the
+macOS floor at 11.0 and the Cargo workspace-publishing baseline.
+See the plan’s
 [rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan)
 and the focused
 [first-release publishing plan](project/specs/active/plan-2026-09-16-first-release-publishing.md).

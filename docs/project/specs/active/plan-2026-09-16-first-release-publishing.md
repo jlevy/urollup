@@ -3,7 +3,7 @@ title: "urollup 0.1.0 Publishing and Distribution"
 description: End-to-end plan for building, validating, publishing, and verifying the first urollup release through GitHub Releases, crates.io, and PyPI binary wheels for uvx.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Draft
+status: Active; plan finalized, release implementation not started
 ---
 # Feature: urollup 0.1.0 Publishing and Distribution
 
@@ -11,7 +11,7 @@ status: Draft
 
 **Author:** Joshua Levy with LLM assistance
 
-**Status:** Draft
+**Status:** Active; plan finalized, release implementation not started
 
 ## Overview
 
@@ -33,12 +33,33 @@ before a protected `release` environment grants short-lived publishing credentia
 A release run may resume an identical partial publication, but it never replaces
 different bytes under an existing version.
 
+The first public alpha is `0.1.0`, published after milestone 0.1 passes its local
+real-log acceptance gate.
+Later Phase 1 milestones become subsequent pre-1.0 releases; they do not delay or expand
+the first alpha.
+
 This focused plan owns the release machinery and the first-release runbook.
 The [main implementation plan](plan-2026-09-13-urollup-cli-and-web.md) owns product
 scope, milestones, and acceptance of urollup itself.
 The
 [engineering baseline](../../research/research-2026-09-13-rust-cli-engineering-baseline.md)
 owns the broader repository standards.
+
+## Current Readiness and Critical Path
+
+As of 2026-09-16, readiness is divided into four gates so a locally testable alpha is
+not confused with a publishable release:
+
+| Gate | Exit condition | Current state |
+| --- | --- | --- |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, sanitized fixture parity, goldens and repository gates pass | Complete on the milestone branch; pull request 4 is draft and its automated checks are green |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | Not complete; this is the critical path to declaring milestone 0.1 accepted |
+| Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
+| Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
+
+The local alpha can be installed and exercised before packaging machinery exists.
+Publication begins only after both the product-acceptance and packaging-rehearsal gates
+pass; neither gate is evidence for the other.
 
 ## Goals
 
@@ -137,14 +158,14 @@ These are separate build products even when they target the same CPU.
 | --- | --- | --- | --- |
 | Linux x86_64 | `x86_64-unknown-linux-musl` static binary in `.tar.gz` | `manylinux_2_17_x86_64` Maturin `bin` wheel | x86_64 Ubuntu runner; wheel built in an audited manylinux environment |
 | Linux arm64 | `aarch64-unknown-linux-musl` static binary in `.tar.gz` | `manylinux_2_17_aarch64` Maturin `bin` wheel | arm64 Ubuntu runner; wheel built in an audited manylinux environment |
-| macOS Apple silicon | `aarch64-apple-darwin` binary in `.tar.gz` | macOS arm64 Maturin `bin` wheel | Apple-silicon macOS runner |
-| macOS Intel | `x86_64-apple-darwin` binary in `.tar.gz` | macOS x86_64 Maturin `bin` wheel | Intel macOS runner |
+| macOS Apple silicon | `aarch64-apple-darwin` binary in `.tar.gz`, macOS 11.0 minimum | macOS arm64 Maturin `bin` wheel, macOS 11.0 minimum | Apple-silicon macOS runner |
+| macOS Intel | `x86_64-apple-darwin` binary in `.tar.gz`, macOS 11.0 minimum | macOS x86_64 Maturin `bin` wheel, macOS 11.0 minimum | Intel macOS runner |
 | Windows x86_64 | `x86_64-pc-windows-msvc` executable in `.zip` | Windows x86_64 Maturin `bin` wheel | x86_64 Windows runner |
 
-The release implementation records and enforces the macOS deployment target before the
-first rehearsal. Linux wheels are genuine manylinux builds; a musl executable is not
-relabeled as manylinux.
-First-release musl users use the static GitHub archive.
+The release implementation sets and verifies `MACOSX_DEPLOYMENT_TARGET=11.0` for both
+macOS architectures rather than inheriting a runner default.
+Linux wheels are genuine manylinux builds; a musl executable is not relabeled as
+manylinux. First-release musl users use the static GitHub archive.
 Musllinux wheels can be added later if uvx-on-Alpine demand justifies another tested
 matrix.
 
@@ -186,9 +207,23 @@ The root uv development lock remains separate from release package metadata.
 
 ### crates.io Packages
 
-The first release publishes `urollup-core` and then `urollup` in one Cargo invocation so
-Cargo can verify the unpublished sibling dependency against the package produced in the
-same operation.
+The release pins Cargo 1.90 or newer and uses its native workspace support for the
+interdependent crates:
+
+```bash
+cargo package --locked --workspace
+cargo publish --locked --workspace
+```
+
+Cargo verifies the full selected set and publishes `urollup-core` before its dependent
+`urollup` automatically.
+Repeated `-p` selectors are reserved for a rehearsed partial release; their command-line
+order is not treated as a sequencing contract.
+Workspace uploads are dependency-ordered but not atomic, so the partial-publication
+recovery path remains required.
+`cargo publish` creates, verifies and uploads its `.crate` in one supported operation;
+the credential-free `cargo package` rehearsal proves the same packaging rules but is not
+described as promotion of that earlier tarball.
 
 Before publishing, the release gate:
 
@@ -202,10 +237,12 @@ Before publishing, the release gate:
 - confirms package metadata, README, license, repository, minimum Rust version, and
   default features.
 
-The first crates.io release uses an expiring token limited to creating and publishing
-new crates because trusted publishing cannot be configured until the crate exists.
-Immediately after 0.1.0, both crates get the `release.yml` trusted publisher and
-trusted-publishing-only mode, and the bootstrap token is revoked.
+The first crates.io release uses one token with the shortest practical expiry, only the
+`publish-new` endpoint scope, and exact future crate-name scopes for `urollup-core` and
+`urollup`, because trusted publishing cannot be configured until each crate exists.
+Immediately after 0.1.0, both crates get the exact repository, `release.yml` workflow
+and `release` environment trusted publisher; trusted-publishing-only mode is enabled,
+and the bootstrap token is revoked and removed.
 
 ### Workflow and Permissions
 
@@ -259,9 +296,10 @@ The workflow stages and promotes artifacts in this order:
 7. **Stage GitHub Release.** Create a draft for the tag and attach the already validated
    archives, wheels, checksums, manifest, and notes.
    Existing assets are accepted only when their digests match.
-8. **Publish crates.io.** Publish `urollup-core` and `urollup` in dependency order in
-   one invocation. On a rerun, accept an existing version only when its registry checksum
-   matches the planned package.
+8. **Publish crates.io.** Run the pinned Cargo 1.90-or-newer workspace publication,
+   which verifies the full set and orders `urollup-core` before `urollup`. On a rerun,
+   accept an existing version only when its registry checksum matches the planned
+   package; treat a publish polling timeout as unknown until the registry is queried.
 9. **Publish PyPI.** Upload the already validated wheels through the pending trusted
    publisher. On a rerun, compare every expected filename and PyPI hash before skipping.
 10. **Publish GitHub Release.** Make the staged release public only after both
@@ -334,21 +372,24 @@ package contains a Rust binary rather than a Python reimplementation.
   no-publish validation path used by CI.
 - [ ] Add `crates/urollup/pyproject.toml` for a Maturin `bin` wheel without changing the
   root development-only `pyproject.toml`; pin Maturin under the supply-chain policy.
-- [ ] Build the five GitHub archive targets and five PyPI wheel targets, recording the
-  macOS deployment floor and confirming the manylinux 2.17 tag on both Linux wheels.
+- [ ] Build the five GitHub archive targets and five PyPI wheel targets, enforcing the
+  macOS 11.0 deployment floor and confirming the manylinux 2.17 tag on both Linux
+  wheels.
 - [ ] Smoke-test every archive and wheel on a matching native host, including
   `--version` and an explicit-source JSON report over a synthetic fixture.
-- [ ] Package both Cargo crates together, inspect their contents, build outside the
+- [ ] Pin Cargo 1.90 or newer; package both Cargo crates with
+  `cargo package --locked --workspace`, inspect their contents, build outside the
   workspace, and smoke-test an install from the packaged source.
 - [ ] Add `release.yml` with dispatch rehearsal and tag publication paths, SHA-pinned
   actions, read-only defaults, per-job permissions, version concurrency, artifact
   retention, and the protected `release` environment boundary.
 - [ ] Prove the release gates fail for a tag/version mismatch, missing target, malformed
-  archive, wrong wheel entry point, empty artifact set, checksum conflict, and partial
-  registry state.
+  archive, missing or wrong wheel script payload or `RECORD` entry, empty artifact set,
+  checksum conflict, and partial registry state.
 - [ ] Create the PyPI pending trusted publisher for project `urollup`, workflow
   `release.yml`, and environment `release`; configure the GitHub environment and prepare
-  an expiring first-publish crates.io token without exposing it to build jobs.
+  a shortest-expiry crates.io token with only `publish-new` and exact `urollup-core` and
+  `urollup` crate scopes, without exposing it to build jobs.
 - [ ] Run a full dispatch rehearsal from the intended 0.1.0 commit and retain its
   release plan, artifacts, smoke-test results, checksums, and manifest for review.
 
@@ -396,8 +437,10 @@ Repository tests cover the logic outside GitHub Actions:
 Each native matrix job starts from the packaged artifact, not `target/release/urollup`:
 
 - extract the archive or install the wheel into an empty temporary location;
+- for a wheel, inspect its script payload and `RECORD` before installation;
 - keep the source tree and any previously installed `urollup` off `PATH`;
-- verify the expected executable is the one invoked;
+- verify the expected executable appears on `PATH` and resolves to the binary installed
+  from that archive or wheel;
 - assert `urollup --version` reports exactly `0.1.0` and associate that installed
   artifact with the release commit through its verified manifest entry;
 - run `urollup report --source <synthetic-fixture> --no-default-sources --format json
@@ -464,24 +507,26 @@ The release is complete only when:
 No release announcement or global success result is emitted while any required channel
 or installation probe is incomplete.
 
-## Open Questions
+## Resolved Decisions
 
-- Which macOS deployment target is the supported 0.1 floor?
-  Record one value for both archive and wheel builds before implementation; do not
-  inherit a runner default.
-- Does the first public release remain 0.1.0 if product milestones beyond the current
-  uncached report surface land before publishing?
-  The release version is already declared as 0.1.0; changing it requires a deliberate
-  Cargo, tag, changelog, and plan update rather than an ad hoc workflow input.
-
-Neither question changes the selected channels or the Rust-binary-through-uv design.
+- The first public alpha is `0.1.0` and follows milestone 0.1 acceptance.
+  Later product milestones do not accumulate into this release.
+- macOS 11.0 is the minimum for both Intel and Apple-silicon archives and wheels, and
+  the final binaries are inspected to enforce it.
+- Cargo 1.90 or newer owns dependency-ordered workspace packaging and publication.
+- The PyPI convenience package remains a native Maturin `bin` wheel.
+  Future importable PyO3 bindings are a separate product surface and release decision.
 
 ## References
 
 - [Main urollup implementation plan](plan-2026-09-13-urollup-cli-and-web.md)
 - [urollup design, Decision 27](../../../urollup-design.md#decision-27-release-scope)
 - [Rust CLI engineering baseline](../../research/research-2026-09-13-rust-cli-engineering-baseline.md)
+- [tbd pull request 302: aligned CLI, packaging, and Rust guidance](https://github.com/jlevy/tbd/pull/302)
 - [Cargo `install`](https://doc.rust-lang.org/cargo/commands/cargo-install.html)
+- [Cargo `package`](https://doc.rust-lang.org/cargo/commands/cargo-package.html)
+- [Cargo `publish`](https://doc.rust-lang.org/cargo/commands/cargo-publish.html)
+- [Rust 1.90 release notes](https://blog.rust-lang.org/2025/09/18/Rust-1.90.0/)
 - [uv tool execution and installation](https://docs.astral.sh/uv/concepts/tools/)
 - [Maturin `bin` bindings](https://www.maturin.rs/bindings.html#bin)
 - [Maturin distribution and wheel compatibility](https://www.maturin.rs/distribution.html)

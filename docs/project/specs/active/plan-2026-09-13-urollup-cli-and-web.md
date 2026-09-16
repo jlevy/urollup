@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 implementation is in progress, with plan approval pending the remaining maintainer decisions
+status: Active; automated milestone 0.1 implementation is complete, with local acceptance and remaining maintainer decisions in progress
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -651,16 +651,19 @@ within the confirmed
 
 - **Targets:** static musl Linux x86_64 and arm64, macOS arm64 and x86_64, and Windows
   x86_64, each built and smoke-tested on a native runner.
+  Both macOS architectures support macOS 11.0 or newer, enforced in the build and
+  verified on the packaged binary.
   The musl build is benchmarked before choosing a global allocator; Windows arm64 waits
   for demand.
 - **Channels:** one `release.yml` publishes from a protected `release` environment to
   GitHub Release archives with `SHA256SUMS` (the channel the cloud skill pins),
-  crates.io `urollup-core` and `urollup` in one invocation, and a PyPI `urollup` binary
-  wheel built with Maturin `bindings = "bin"` for exact-version `uvx` and persistent
-  `uv tool install` use.
-  Registries use trusted publishing, except a short-lived scoped token for the first
-  crates.io upload. A dispatch dry run skips only upload, and reruns skip identical
-  artifacts and fail on different bytes under one version.
+  crates.io `urollup-core` and `urollup` through pinned Cargo 1.90-or-newer native
+  workspace publication, and a PyPI `urollup` binary wheel built with Maturin
+  `bindings = "bin"` for exact-version `uvx` and persistent `uv tool install` use.
+  Registries use trusted publishing, except a shortest-expiry token restricted to the
+  `publish-new` endpoint and the exact two crate names for the first crates.io upload.
+  A dispatch dry run skips only upload, and reruns skip identical artifacts and fail on
+  different bytes under one version.
   Homebrew, npm and cargo-binstall wait for demand.
   Importable Python bindings are a separate future artifact and do not make the CLI
   Python-dependent. `urollup` and `urollup-core` were unregistered on crates.io and PyPI
@@ -672,6 +675,9 @@ within the confirmed
   `build.rs`. Before 1.0, a minor release may change CLI or JSON contracts; report,
   bundle, query and identity contracts carry their own versions, recorded in
   `CHANGELOG.md` ([§5.6](../../../urollup-design.md#56-versioning-and-compatibility)).
+  The first public alpha is `0.1.0` immediately after milestone 0.1 local acceptance;
+  later Phase 1 milestones ship as subsequent pre-1.0 releases rather than delaying the
+  first release.
 
 ## Decisions
 
