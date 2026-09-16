@@ -5,7 +5,7 @@ title: First release 0.1.0 packaging and validation
 kind: epic
 status: in_progress
 priority: 1
-version: 13
+version: 14
 spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 delegate: claude-code@spud10.local
 labels:
@@ -18,13 +18,11 @@ child_order_hints:
   - is-01m2ksz2s56jbdehka0ddtx51j
   - is-01m2ksz57qjv1wkzygfgynae26
   - is-01m2ksz7d707rz38cfe8gh2xbj
-  - is-01m2ksz8r23b3kmymq8g06c90a
-  - is-01m2nhepspk2hs3g02ymfdv9sa
   - is-01m2npv6h58rbtp52nx2qbw61h
 hold: null
 hold_until: null
 created_at: 2026-09-16T00:30:40.663Z
-updated_at: 2026-09-16T18:22:57.791Z
+updated_at: 2026-09-16T18:37:55.960Z
 started_at: 2026-09-16T16:47:20.853Z
 ---
 Build, rehearse, publish and verify the first public urollup alpha after milestone 0.1 acceptance. This epic owns GitHub archives, crates.io workspace publication, PyPI Maturin binary wheels, release documentation, protected publishing, post-publish probes and recovery. Later Phase 1 features, provider-export validation before 1.0 and future Python bindings are tracked outside this first-release epic.
