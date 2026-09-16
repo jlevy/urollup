@@ -3,9 +3,9 @@ type: is
 id: is-01m2ksp6dstb6fwkbmy587tt8a
 title: Add fixture cases the scanned session corpus lacked
 kind: task
-status: open
+status: closed
 priority: 2
-version: 1
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -14,7 +14,11 @@ labels:
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:54.862Z
-updated_at: 2026-09-16T00:25:54.862Z
+updated_at: 2026-09-16T08:30:00.467Z
+closed_at: 2026-09-16T08:30:00.466Z
+close_reason: Added synthetic legacy inline-sidechain fixtures, fallback child-thread identities and lineage, session-scope tests, golden coverage, and parity explanations; full make check passes.
+resolution: null
+duplicate_of: null
 ---
 The Claude Code session scanned on 2026-09-15 (Claude Code 2.1.270) held no progress records, no advisor_message iterations, no subagents/workflows/ directory, no uuid replay and no sub-millisecond timestamp, so those rules rest on synthetic cases built from ccusage, session-report and agentfdr shapes.
 
