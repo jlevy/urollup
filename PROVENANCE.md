@@ -4,8 +4,8 @@ This file records code, configuration and tests ported into urollup from other
 repositories by the same maintainer, with the source path and commit for each.
 The maintainer holds full license rights to these sources, so ported files carry
 urollup’s MIT license.
-Third-party code under other licenses will be listed in a separate `THIRD-PARTY-NOTICES`
-file with the notices it requires, once any is ported.
+Third-party code under other licenses is listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) with the notices it requires.
 
 Every adapted file also names its source in a header comment where the format allows
 one.
@@ -43,6 +43,20 @@ These urollup files follow fdu patterns without copying a source file:
 `cargo tree` guard in fdu’s `make lib-only`), `scripts/install-cargo-deny.sh` (the
 digest-verified download in `scripts/bootstrap-gh-cli.sh`) and `scripts/prove-gates.mjs`
 (fdu’s violation-fed script tests and stub-driven make test).
+
+## ccusage at `bd7f89b`
+
+Source:
+[ccusage/ccusage at `bd7f89b`](https://github.com/ccusage/ccusage/tree/bd7f89b469aee5635fb2e6722dd6d70f2d113ac1),
+MIT, Copyright (c) 2025 ryoppippi.
+The license text is in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the reuse modes
+come from the research brief’s
+[reusable code table](docs/project/research/research-2026-09-13-portable-agent-usage.md#reusable-code-and-tests).
+
+| urollup file | ccusage source | What changed |
+| --- | --- | --- |
+| `crates/urollup-core/src/sources/prefilter.rs` | `rust/crates/ccusage-core/src/fast.rs` | `Vec` instead of `SmallVec`; one constructor pair for the two modes; an empty marker list admits every line; documents that a miss is a counted skip, never a dropped record |
+| `crates/urollup-core/src/sources/parallel.rs` | `rust/adapters/common/src/lib.rs` | Both `expect` panics are a `ParallelReadError`; an explicit worker bound; weights come from the caller instead of a `metadata` call that reads an unreadable file as empty; no `read_dir` collection, which the roots walk owns |
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
