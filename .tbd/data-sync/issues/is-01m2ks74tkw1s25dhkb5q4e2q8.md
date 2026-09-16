@@ -5,25 +5,22 @@ title: Add the local-only aggregate mode for end-to-end result checks
 kind: task
 status: open
 priority: 2
-version: 3
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
   - milestone-0.1
   - golden
   - privacy
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m2ksd5yzhp73gb475pzbvvg6
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:17:41.714Z
-updated_at: 2026-09-16T15:57:52.330Z
+updated_at: 2026-09-16T18:23:11.492Z
 ---
-Milestone 0.1: check urollup against a consented local corpus that cannot be committed, printing aggregates only, as the plan's Golden and end-to-end result checks describes. scripts/check-e2e-results.mjs --fixtures <dir> already runs the committed checks over an uncommitted corpus; this adds the mode for a corpus with no expected.json.
-
-- Run the JSON commands over the real default roots for a consented corpus, with the same isolation as the fixture runs and --no-capture, ending the interval at the start of the current local day so sessions still being written cannot move totals.
-- Print only aggregates: reconciled totals per token category and per day, the naive-sum overcount they prevent, session, request and diagnostic counts, and coverage gaps. Never a path, project name, prompt, or session, request or thread ID.
-- Follow the privacy rules of the local ccusage diff (uro-qp7j) and share its sentinel test: a fixture whose paths, project names, IDs, prompt text and custom model names carry unique markers, failing if any marker reaches stdout, stderr or the output file.
-- Never runs in CI; make target beside make parity-local, and documented in tests/golden/README.md.
+Milestone 0.1 local-only aggregate mode for end-to-end result checks over a consented corpus with no expected.json.\n\nAcceptance:\n- Run current uncached JSON commands over the real default roots, ending the interval at the start of the current local day so active sessions cannot move totals. Do not pass --no-capture in milestone 0.1 because the engine is uncached by construction; add it to future invocations when capture exists.\n- Print only reconciled aggregate token totals per category and day, prevented naive-sum overcount, session, request and diagnostic counts, and coverage gaps. Never print a path, project name, prompt, custom model name or session, request or thread ID.\n- Share the local ccusage diff privacy sentinel, run only by maintainer consent, never in CI, and document the make target beside parity-local.
 
 ## Notes
 
-Status 2026-09-16: fixture result checks are implemented, but this local-only task remains open. It requires a stable start-of-current-day cutoff; its specified --no-capture behavior becomes applicable with milestone 0.3. Do not treat fixture CI as completing it, and do not read local logs without maintainer consent.
+Fixture result checks are implemented. This remaining local-only gate can run before milestone 0.3 because milestone 0.1 is already uncached; the future --no-capture flag is not a prerequisite.

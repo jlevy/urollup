@@ -5,7 +5,7 @@ title: Add release.yml publishing to GitHub Releases, crates.io and PyPI
 kind: task
 status: open
 priority: 1
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels:
   - release
@@ -16,9 +16,9 @@ dependencies:
     target: is-01m2ksz57qjv1wkzygfgynae26
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:44.327Z
-updated_at: 2026-09-16T16:54:44.999Z
+updated_at: 2026-09-16T18:22:59.496Z
 ---
-One workflow publishes the first release through the three selected channels. Focused plan: Build, Validate, and Publish Flow.\n\nAcceptance:\n- release.yml stages validated GitHub archives, SHA256SUMS, wheels and a release manifest; publishes urollup-core and urollup to crates.io in one dependency-ordered invocation; and publishes only the real PyPI urollup Maturin bindings=bin wheels.\n- Exact-version uvx and persistent uv tool install are smoke-tested from local wheels before publication and from PyPI afterward. No Python downloader wrapper, importable module, npm postinstall path or sdist is added.\n- PyPI uses a pending trusted publisher for the first release. crates.io uses one expiring bootstrap token for the first upload, then both crates move to trusted-publishing-only mode and the token is revoked.\n- A dispatch rehearsal skips only external writes. Tag publishing runs from a protected release environment. Reruns skip byte-identical published files, resume missing channels and fail on checksum conflicts.\n- Build jobs are read-only, actions and release tools are immutably pinned, and publish authority is scoped per job. Homebrew, npm, cargo-binstall, musllinux wheels and Windows arm64 wait for demand.\n- urollup and urollup-core were unregistered on crates.io, and urollup was unregistered on PyPI, on 2026-09-13. Name availability is rechecked before tagging; no empty PyPI urollup-core placeholder is published.
+Implement one release workflow for GitHub Releases, crates.io and PyPI.\n\nAcceptance:\n- Pinned Cargo 1.90 or newer runs cargo package --locked --workspace and cargo publish --locked --workspace so Cargo verifies the full set and orders urollup-core before urollup; non-atomic partial publication is recoverable.\n- release.yml stages validated archives, SHA256SUMS, wheels and an immutable artifact manifest, then records post-publish channel results separately in release evidence.\n- PyPI publishes only the real Maturin bindings=bin wheels. Wheel tests inspect the script payload and RECORD, install into an empty environment, resolve urollup on PATH to the wheel binary, and exercise exact-version uvx plus persistent uv tool install.\n- PyPI uses a pending trusted publisher. The first crates.io upload uses one shortest-expiry token with only publish-new and exact urollup-core and urollup name scopes, then both crates move to trusted-publishing-only mode and the token is revoked.\n- A dispatch rehearsal skips only external writes. Tag publishing runs from a protected release environment. Independent channel jobs resume identical partial state and stop on conflicts or unknown registry state.\n- Build jobs are read-only, actions and release tools are immutably pinned, and publish authority is scoped per job. No wrapper, downloader, sdist, empty bindings package, Homebrew, npm, cargo-binstall, musllinux or Windows arm64 channel is added.
 
 ## Notes
 

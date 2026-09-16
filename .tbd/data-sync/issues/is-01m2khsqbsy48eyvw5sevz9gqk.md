@@ -5,7 +5,7 @@ title: Add local-corpus ccusage aggregate diff script
 kind: task
 status: open
 priority: 2
-version: 3
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -14,20 +14,14 @@ labels:
 dependencies:
   - type: blocks
     target: is-01m2f0th11tcymcgy8zqfqkn2g
+  - type: blocks
+    target: is-01m2ksd5yzhp73gb475pzbvvg6
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-15T22:08:01.912Z
-updated_at: 2026-09-16T15:57:51.255Z
+updated_at: 2026-09-16T18:23:11.502Z
 ---
-Milestone 0.1: maintainer-run local-corpus aggregate diff between pinned ccusage and urollup, per the plan's "ccusage reconciliation harness" section (Local corpus).
-
-- tests/parity/local_diff.py and make parity-local; run by hand or from a local scheduler, never in CI.
-- Both tools on default roots, same timezone, per-agent ccusage paths (claude, codex); interval ends at the start of the current local day; urollup with --no-capture once the capture store exists.
-- Output aggregates only: tool versions, platform, timezone, interval, per-metric totals per tool, per-day and per-model deltas, matched and one-sided session counts, a histogram of per-session relative deltas, and ledger-explained deltas with the unexplained residual. Never content, paths, project names, or session, request or thread IDs; model names only when they match urollup's price table or the pinned LiteLLM snapshot, else "other".
-- CI privacy sentinel test: a fixture whose paths, project names, IDs, prompt text and custom model names carry unique markers; fail if any marker reaches stdout, stderr or the output file.
-- Until milestone 0.5, local ledger entries give a sign and bound; request-attributed explained amounts come with the requests command (see uro-o65n).
-- Commit one reviewed record per urollup release under bench/results/parity/; an unexplained residual above 0.1% of a metric's daily total (proposed threshold) gets a bead.
-- Do not read or copy private log content into docs, fixtures or tests.
+Milestone 0.1 maintainer-run aggregate diff between pinned ccusage and urollup over a consented local corpus.\n\nAcceptance:\n- Provide tests/parity/local_diff.py and make parity-local, run by hand or a local scheduler and never in CI.\n- Run both tools on the same default roots, timezone and stable interval ending at the start of the current local day. Do not pass --no-capture in milestone 0.1 because the engine is uncached by construction; add it to future invocations when capture exists.\n- Output aggregate tool versions, platform, timezone, interval, metric totals and deltas, matched and one-sided counts, relative-delta histogram and ledger-explained residual. Never output content, paths, project names or IDs; normalize unknown model names to other.\n- A CI sentinel fixture fails if private markers reach stdout, stderr or the output file. Record only the reviewed aggregate result for a release, and open a bead when unexplained residual exceeds the documented threshold.
 
 ## Notes
 
-Status 2026-09-16: fixture parity is implemented, but this local-only task remains open. It requires a stable start-of-current-day cutoff; its specified --no-capture behavior becomes applicable with milestone 0.3. Do not treat fixture CI as completing it, and do not read local logs without maintainer consent.
+Fixture parity is implemented. This remaining local gate can run before milestone 0.3 because milestone 0.1 is already uncached; the future --no-capture flag is not a prerequisite.

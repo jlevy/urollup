@@ -1,11 +1,11 @@
 ---
 type: is
 id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
-title: Release, distribution and pre-1.0 validation
+title: First release 0.1.0 packaging and validation
 kind: epic
 status: in_progress
 priority: 1
-version: 12
+version: 13
 spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 delegate: claude-code@spud10.local
 labels:
@@ -24,13 +24,11 @@ child_order_hints:
 hold: null
 hold_until: null
 created_at: 2026-09-16T00:30:40.663Z
-updated_at: 2026-09-16T18:14:41.956Z
+updated_at: 2026-09-16T18:22:57.791Z
 started_at: 2026-09-16T16:47:20.853Z
 ---
-The plan's Rollout Plan: build and publish urollup as a standalone product, and validate it before 1.0. Covers the platform matrix, release channels, verification and versioning, release documentation, the pre-1.0 release checklist with shadow-mode validation, and the consented-corpus ground-truth check.
-
-Plan: Rollout Plan and Testing Strategy (Ground truth). Design: Decision 27 (release scope) and §5.6 (contract versioning). Baseline: the Rust CLI engineering baseline's targets, channels and versioning.
+Build, rehearse, publish and verify the first public urollup alpha after milestone 0.1 acceptance. This epic owns GitHub archives, crates.io workspace publication, PyPI Maturin binary wheels, release documentation, protected publishing, post-publish probes and recovery. Later Phase 1 features, provider-export validation before 1.0 and future Python bindings are tracked outside this first-release epic.
 
 ## Notes
 
-Focused implementation plan created at docs/project/specs/active/plan-2026-09-16-first-release-publishing.md. It selects GitHub Releases, crates.io and a PyPI urollup Maturin binary wheel, defines the native archive and wheel matrices, and gives the rehearsal, first-publish, verification and recovery sequence. Importable Python bindings remain separately tracked by uro-8vvf.
+The focused publishing plan is active and implementation-ready. It follows the release-engineering and Rust-release split in tbd PR 302: Cargo 1.90-or-newer workspace publication, macOS 11.0, exact wheel script and RECORD validation, exact-version uv paths, narrowly scoped crates.io bootstrap credentials, separate artifact manifest and release evidence, and independent channel recovery.

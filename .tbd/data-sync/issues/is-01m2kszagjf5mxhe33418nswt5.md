@@ -5,7 +5,7 @@ title: Later enhancements (unscheduled)
 kind: epic
 status: open
 priority: 3
-version: 13
+version: 14
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - later
@@ -24,7 +24,8 @@ child_order_hints:
   - is-01m2khtbcq887cy28n7a6y5xpm
   - is-01m2khtbp8g70sv96scqqpnkhr
   - is-01m2ksrpmc0aq8pjeqqw7t7wxs
+  - is-01m2nhepspk2hs3g02ymfdv9sa
 created_at: 2026-09-16T00:30:53.961Z
-updated_at: 2026-09-16T00:31:45.415Z
+updated_at: 2026-09-16T18:22:58.213Z
 ---
 Items the design's §10.2 future enhancements table lists without a phase, kept as beads so nothing is lost. None is scheduled. Several depend on a queued review decision (§9.2, walked through in uro-gxen) or a candidate decision (§9.1), and the bead says which.

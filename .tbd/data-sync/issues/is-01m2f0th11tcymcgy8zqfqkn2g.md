@@ -5,7 +5,7 @@ title: Establish feature matrix against ccusage and agentfdr
 kind: task
 status: open
 priority: 2
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -13,12 +13,10 @@ labels:
   - parity
 dependencies:
   - type: blocks
-    target: is-01m2ksz7d707rz38cfe8gh2xbj
-  - type: blocks
     target: is-01m2kt39m8dys95na8979brga2
 parent_id: is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-14T03:54:24.672Z
-updated_at: 2026-09-16T00:33:04.133Z
+updated_at: 2026-09-16T18:23:10.850Z
 ---
 Measured feature matrix against pinned ccusage and agentfdr, explaining disagreements from source records rather than treating either tool as an oracle. Milestone 0.5 extends the ccusage reconciliation harness (uro-jumy tokens, uro-qp7j local diff, uro-ne7g costs) to every shared use case in design §10.6 and records measured status in that table; see the plan's "ccusage reconciliation harness" section and the research brief's "ccusage Feature Inventory".
 
