@@ -403,7 +403,9 @@ records what each rule cost when it was missing, and
   `check-e2e-results.mjs --fixtures <dir>`, and the planned local-only mode prints
   aggregates alone under the same privacy rules as
   [the local ccusage diff](#ccusage-reconciliation-harness), including its sentinel
-  test.
+  test. That mode is also how an [acceptance goal](#end-to-end-acceptance-goals) run on
+  real local logs is checked and recorded; the automated goldens and result checks never
+  read a real log, which is what the hermetic `HOME` and its canaries enforce.
 
 ### ccusage reconciliation harness
 
