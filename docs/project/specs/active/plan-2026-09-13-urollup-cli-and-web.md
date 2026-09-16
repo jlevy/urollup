@@ -98,7 +98,7 @@ The capture store lands only after the uncached engine is the correctness refere
   fails on a committed violation
   ([§8.1](../../../urollup-design.md#81-workspace-and-crate-structure),
   [§8.2](../../../urollup-design.md#82-engineering-conventions)).
-- [ ] Freeze public sanitized fixtures, including the research brief’s
+- [x] Freeze public sanitized fixtures, including the research brief’s
   [double-counting cases](../../research/research-2026-09-13-portable-agent-usage.md#synthetic-double-counting-example)
   ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
   [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules)).
