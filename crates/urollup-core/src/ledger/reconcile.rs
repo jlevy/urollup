@@ -1,8 +1,11 @@
-//! The generic reconciliation engine: observations to logical requests (design §3.3).
+//! The generic reconciliation engine: observations to logical entities (design §3.3).
 //!
-//! Adapters emit [`RequestObservation`]s; [`reconcile`] merges them into one ledger before
-//! any aggregation. The steps, each computed from sorted data so the ledger never depends
-//! on the order files were read or observations arrived:
+//! Adapters emit normalized observations; [`reconcile`] merges them into one ledger
+//! before any aggregation. Every step uses sorted data so the ledger never depends on the
+//! order files were read or observations arrived. Threads and tool actions merge by
+//! analytical identity, relationships by kind and endpoints, and provider limit records
+//! preserve changes while collapsing identical consecutive snapshots. Request
+//! reconciliation then follows these steps:
 //!
 //! 1. **Re-reads:** observations are sorted into canonical order (evidence first).
 //!    Identical observations are one record read twice and count once. Two observations
@@ -34,8 +37,9 @@ use jiff::Timestamp;
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
-    AccountAttribution, Counting, ModelBasis, ModelName, ModelUsage, Ownership, Request,
-    RevisionStatus, SelectedUsage, UsageRevision,
+    AccountAttribution, Basis, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
+    ProviderLimitObservation, Relationship, RelationshipKind, Request, RevisionStatus,
+    SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::linking::{LinkGraph, ResolvedKey, resolve_linked_set};
@@ -209,8 +213,16 @@ impl RevisionSelector for LatestRevision {
 /// Everything one reconciliation merges.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReconcileInput {
+    /// Thread observations, in any order.
+    pub threads: Vec<Thread>,
+    /// Relationship observations, in any order.
+    pub relationships: Vec<Relationship>,
     /// Request observations, in any order.
     pub requests: Vec<RequestObservation>,
+    /// Tool action observations, in any order.
+    pub tool_actions: Vec<ToolAction>,
+    /// Provider limit observations, in any order.
+    pub limit_observations: Vec<ProviderLimitObservation>,
     /// Lineage links between request IDs.
     pub links: Vec<LineageLink>,
     /// Unobserved coverage gaps.
@@ -222,8 +234,16 @@ pub struct ReconcileInput {
 /// The reconciled request ledger.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ledger {
+    /// Logical threads by canonical ID.
+    pub threads: BTreeMap<AnalyticalId, Thread>,
+    /// Native relationships in canonical order.
+    pub relationships: Vec<Relationship>,
     /// Logical requests by canonical ID.
     pub requests: BTreeMap<AnalyticalId, Request>,
+    /// Logical tool actions by canonical ID.
+    pub tool_actions: BTreeMap<AnalyticalId, ToolAction>,
+    /// Provider limit observations in canonical order.
+    pub limit_observations: Vec<ProviderLimitObservation>,
     /// Candidate sets with more than one member.
     pub candidate_sets: Vec<BTreeSet<AnalyticalId>>,
     /// Diagnostics in canonical order.
@@ -248,6 +268,14 @@ pub enum ReconcileError {
         /// The key's prefix.
         prefix: IdPrefix,
     },
+    /// A normalized entity carries an identity with the wrong prefix.
+    #[error("{entity} carries a {prefix} identity")]
+    WrongEntityPrefix {
+        /// The normalized entity kind.
+        entity: &'static str,
+        /// The identity's prefix.
+        prefix: IdPrefix,
+    },
     /// An observation without keys sits beyond the offsets a canonical key can carry.
     #[error("record offset {0:?} is too large for an artifact-local key")]
     OffsetOutOfRange(EvidenceRef),
@@ -270,17 +298,31 @@ struct Resolved {
     local: ResolvedKey,
 }
 
-/// Reconciles request observations into a ledger; see the module documentation.
+/// Reconciles normalized observations into a ledger; see the module documentation.
 pub fn reconcile(
     input: ReconcileInput,
     selector: &dyn RevisionSelector,
 ) -> Result<Ledger, ReconcileError> {
-    let ReconcileInput { requests, mut links, mut gaps, mut diagnostics } = input;
+    let ReconcileInput {
+        threads,
+        relationships,
+        requests,
+        tool_actions,
+        limit_observations,
+        mut links,
+        mut gaps,
+        mut diagnostics,
+    } = input;
     let mut coverage =
         ReconcileCoverage { observations: count(requests.len()), ..ReconcileCoverage::default() };
 
-    let observations = dedupe_rereads(requests, &mut diagnostics, &mut coverage);
     let mut registry = IdentityRegistry::new();
+    let threads = reconcile_threads(threads, &mut registry, &mut diagnostics)?;
+    let thread_ids = canonical_thread_ids(&threads);
+    let relationships = reconcile_relationships(relationships, &thread_ids)?;
+    let requests = canonicalize_request_owners(requests, &thread_ids);
+
+    let observations = dedupe_rereads(requests, &mut diagnostics, &mut coverage);
     let resolved = resolve_identities(observations, &mut registry)?;
 
     // Link observations sharing a key ID, and IDs joined by lineage evidence.
@@ -362,11 +404,407 @@ pub fn reconcile(
     coverage.requests_without_usage =
         count(requests.values().filter(|r| r.usage.is_none()).count());
 
+    let request_ids = canonical_request_ids(&requests);
+    let tool_actions =
+        reconcile_tool_actions(tool_actions, &request_ids, &mut registry, &mut diagnostics)?;
+    let limit_observations =
+        reconcile_limit_observations(limit_observations, &thread_ids, &request_ids)?;
+
     diagnostics.sort();
     diagnostics.dedup();
     gaps.sort();
     gaps.dedup();
-    Ok(Ledger { requests, candidate_sets, diagnostics, gaps, coverage })
+    Ok(Ledger {
+        threads,
+        relationships,
+        requests,
+        tool_actions,
+        limit_observations,
+        candidate_sets,
+        diagnostics,
+        gaps,
+        coverage,
+    })
+}
+
+fn reconcile_threads(
+    mut observations: Vec<Thread>,
+    registry: &mut IdentityRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<BTreeMap<AnalyticalId, Thread>, ReconcileError> {
+    observations.sort();
+    observations.dedup();
+    let mut graph = LinkGraph::new();
+    for thread in &observations {
+        register_entity_identity(registry, &thread.identity, IdPrefix::Thread, "thread")?;
+        graph.insert(&thread.identity.id);
+        for alias in &thread.aliases {
+            register_entity_identity(registry, alias, IdPrefix::Thread, "thread alias")?;
+            graph.link(&thread.identity.id, &alias.id);
+        }
+    }
+    let mut groups: BTreeMap<AnalyticalId, Vec<Thread>> = BTreeMap::new();
+    for thread in observations {
+        groups.entry(graph.find(&thread.identity.id)).or_default().push(thread);
+    }
+    let mut reconciled = BTreeMap::new();
+    for group in groups.into_values() {
+        let canonical = group
+            .iter()
+            .min_by_key(|thread| (thread.basis, &thread.identity.id))
+            .expect("thread group is non-empty");
+        let identity = canonical.identity.clone();
+        let basis = canonical.basis;
+        let aliases = group
+            .iter()
+            .flat_map(|thread| std::iter::once(&thread.identity).chain(thread.aliases.iter()))
+            .filter(|candidate| candidate.id != identity.id)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let evidence = merged_evidence(group.iter().flat_map(|thread| &thread.evidence));
+        let mut conflicts = BTreeSet::new();
+        let native_key =
+            merge_native_keys(group.iter().map(|thread| &thread.native_key), &mut conflicts);
+        let source =
+            merge_basis("source", group.iter().map(|thread| &thread.source), &mut conflicts);
+        let initiator =
+            merge_basis("initiator", group.iter().map(|thread| &thread.initiator), &mut conflicts);
+        let purpose =
+            merge_basis("purpose", group.iter().map(|thread| &thread.purpose), &mut conflicts);
+        let execution_environment = merge_basis(
+            "execution_environment",
+            group.iter().map(|thread| &thread.execution_environment),
+            &mut conflicts,
+        );
+        let project =
+            merge_basis("project", group.iter().map(|thread| &thread.project), &mut conflicts);
+        let account =
+            merge_basis("account", group.iter().map(|thread| &thread.account), &mut conflicts);
+        diagnose_entity_conflicts("thread", &identity.id, &evidence, &conflicts, diagnostics);
+        reconciled.insert(
+            identity.id.clone(),
+            Thread {
+                identity,
+                basis,
+                aliases,
+                native_key,
+                source,
+                initiator,
+                purpose,
+                execution_environment,
+                project,
+                account,
+                evidence,
+            },
+        );
+    }
+    Ok(reconciled)
+}
+
+fn reconcile_relationships(
+    observations: Vec<Relationship>,
+    thread_ids: &BTreeMap<AnalyticalId, AnalyticalId>,
+) -> Result<Vec<Relationship>, ReconcileError> {
+    let mut groups: BTreeMap<(RelationshipKind, AnalyticalId, AnalyticalId), Vec<Relationship>> =
+        BTreeMap::new();
+    for mut relationship in observations {
+        for endpoint in [&relationship.from, &relationship.to] {
+            if endpoint.prefix() != IdPrefix::Thread {
+                return Err(ReconcileError::WrongEntityPrefix {
+                    entity: "relationship endpoint",
+                    prefix: endpoint.prefix(),
+                });
+            }
+        }
+        relationship.from = canonical_id(&relationship.from, thread_ids);
+        relationship.to = canonical_id(&relationship.to, thread_ids);
+        groups
+            .entry((relationship.kind.clone(), relationship.from.clone(), relationship.to.clone()))
+            .or_default()
+            .push(relationship);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|((kind, from, to), group)| Relationship {
+            kind,
+            from,
+            to,
+            confidence: if group.iter().any(|item| item.confidence == Confidence::Proven) {
+                Confidence::Proven
+            } else {
+                Confidence::Inferred
+            },
+            evidence: merged_evidence(group.iter().flat_map(|item| &item.evidence)),
+        })
+        .collect())
+}
+
+fn reconcile_tool_actions(
+    mut observations: Vec<ToolAction>,
+    request_ids: &BTreeMap<AnalyticalId, AnalyticalId>,
+    registry: &mut IdentityRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<BTreeMap<AnalyticalId, ToolAction>, ReconcileError> {
+    observations.sort();
+    observations.dedup();
+    let mut groups: BTreeMap<AnalyticalId, Vec<ToolAction>> = BTreeMap::new();
+    for mut action in observations {
+        register_entity_identity(registry, &action.identity, IdPrefix::Action, "tool action")?;
+        if let Some(request) = &action.request {
+            if request.prefix() != IdPrefix::Request {
+                return Err(ReconcileError::WrongEntityPrefix {
+                    entity: "tool action request",
+                    prefix: request.prefix(),
+                });
+            }
+            action.request = Some(canonical_id(request, request_ids));
+        }
+        groups.entry(action.identity.id.clone()).or_default().push(action);
+    }
+    let mut reconciled = BTreeMap::new();
+    for (id, group) in groups {
+        let first = group.first().expect("tool action group is non-empty");
+        let evidence = merged_evidence(group.iter().flat_map(|action| &action.evidence));
+        let mut conflicts = BTreeSet::new();
+        let call_id =
+            merge_optional("call_id", group.iter().map(|action| &action.call_id), &mut conflicts);
+        let tool_name = merge_optional(
+            "tool_name",
+            group.iter().map(|action| &action.tool_name),
+            &mut conflicts,
+        );
+        let request =
+            merge_optional("request", group.iter().map(|action| &action.request), &mut conflicts);
+        diagnose_entity_conflicts("tool action", &id, &evidence, &conflicts, diagnostics);
+        reconciled.insert(
+            id,
+            ToolAction {
+                identity: first.identity.clone(),
+                basis: group.iter().map(|action| action.basis).min().unwrap_or(first.basis),
+                call_id,
+                tool_name,
+                request,
+                evidence,
+            },
+        );
+    }
+    Ok(reconciled)
+}
+
+fn reconcile_limit_observations(
+    mut observations: Vec<ProviderLimitObservation>,
+    thread_ids: &BTreeMap<AnalyticalId, AnalyticalId>,
+    request_ids: &BTreeMap<AnalyticalId, AnalyticalId>,
+) -> Result<Vec<ProviderLimitObservation>, ReconcileError> {
+    for observation in &mut observations {
+        for (entity, owner, prefix) in [
+            ("provider limit thread", observation.owner_thread.as_ref(), IdPrefix::Thread),
+            ("provider limit request", observation.owner_request.as_ref(), IdPrefix::Request),
+        ] {
+            if let Some(owner) = owner {
+                if owner.prefix() != prefix {
+                    return Err(ReconcileError::WrongEntityPrefix {
+                        entity,
+                        prefix: owner.prefix(),
+                    });
+                }
+            }
+        }
+        observation.owner_thread =
+            observation.owner_thread.as_ref().map(|owner| canonical_id(owner, thread_ids));
+        observation.owner_request =
+            observation.owner_request.as_ref().map(|owner| canonical_id(owner, request_ids));
+    }
+    observations.sort_by_cached_key(limit_sort_key);
+    observations.dedup();
+    let mut reconciled: Vec<ProviderLimitObservation> = Vec::with_capacity(observations.len());
+    let mut previous: BTreeMap<LimitStreamKey, String> = BTreeMap::new();
+    for observation in observations {
+        let stream = limit_stream_key(&observation);
+        let signature = serde_json::to_string(&observation.native).unwrap_or_default();
+        let repeated = previous.get(&stream) == Some(&signature);
+        if !repeated {
+            reconciled.push(observation);
+        }
+        previous.insert(stream, signature);
+    }
+    Ok(reconciled)
+}
+
+fn canonical_thread_ids(
+    threads: &BTreeMap<AnalyticalId, Thread>,
+) -> BTreeMap<AnalyticalId, AnalyticalId> {
+    threads
+        .iter()
+        .flat_map(|(id, thread)| {
+            std::iter::once((id.clone(), id.clone()))
+                .chain(thread.aliases.iter().map(|alias| (alias.id.clone(), id.clone())))
+        })
+        .collect()
+}
+
+fn canonical_request_ids(
+    requests: &BTreeMap<AnalyticalId, Request>,
+) -> BTreeMap<AnalyticalId, AnalyticalId> {
+    requests
+        .iter()
+        .flat_map(|(id, request)| {
+            std::iter::once((id.clone(), id.clone()))
+                .chain(request.aliases.iter().map(|alias| (alias.id.clone(), id.clone())))
+        })
+        .collect()
+}
+
+fn canonical_id(
+    id: &AnalyticalId,
+    canonical: &BTreeMap<AnalyticalId, AnalyticalId>,
+) -> AnalyticalId {
+    canonical.get(id).cloned().unwrap_or_else(|| id.clone())
+}
+
+fn canonicalize_request_owners(
+    mut observations: Vec<RequestObservation>,
+    thread_ids: &BTreeMap<AnalyticalId, AnalyticalId>,
+) -> Vec<RequestObservation> {
+    for observation in &mut observations {
+        observation.owner = match &observation.owner {
+            OwnerEvidence::Proven(thread) => {
+                OwnerEvidence::Proven(canonical_id(thread, thread_ids))
+            }
+            OwnerEvidence::Candidates(candidates) => OwnerEvidence::Candidates(
+                candidates.iter().map(|thread| canonical_id(thread, thread_ids)).collect(),
+            ),
+            OwnerEvidence::None => OwnerEvidence::None,
+        };
+    }
+    observations
+}
+
+fn register_entity_identity(
+    registry: &mut IdentityRegistry,
+    identity: &super::identity::StoredIdentity,
+    prefix: IdPrefix,
+    entity: &'static str,
+) -> Result<(), ReconcileError> {
+    if identity.id.prefix() != prefix || identity.key.prefix != prefix {
+        let actual =
+            if identity.id.prefix() == prefix { identity.key.prefix } else { identity.id.prefix() };
+        return Err(ReconcileError::WrongEntityPrefix { entity, prefix: actual });
+    }
+    registry.register_stored(identity)?;
+    Ok(())
+}
+
+fn merged_evidence<'a>(evidence: impl IntoIterator<Item = &'a EvidenceRef>) -> Vec<EvidenceRef> {
+    evidence.into_iter().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+fn merge_native_keys<'a>(
+    maps: impl IntoIterator<Item = &'a BTreeMap<String, String>>,
+    conflicts: &mut BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    let mut values: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for map in maps {
+        for (field, value) in map {
+            values.entry(field).or_default().insert(value);
+        }
+    }
+    values
+        .into_iter()
+        .filter_map(|(field, values)| {
+            if values.len() == 1 {
+                Some((field.to_owned(), values.into_iter().next().unwrap_or_default().to_owned()))
+            } else {
+                conflicts.insert(format!("native_key.{field}"));
+                None
+            }
+        })
+        .collect()
+}
+
+fn merge_basis<'a>(
+    field: &str,
+    values: impl IntoIterator<Item = &'a Basis<String>>,
+    conflicts: &mut BTreeSet<String>,
+) -> Basis<String> {
+    let known: Vec<&Basis<String>> =
+        values.into_iter().filter(|value| value.value().is_some()).collect();
+    let distinct: BTreeSet<&str> =
+        known.iter().filter_map(|value| value.value().map(String::as_str)).collect();
+    if distinct.len() > 1 {
+        conflicts.insert(field.to_owned());
+        Basis::Unknown
+    } else {
+        known.into_iter().min().cloned().unwrap_or(Basis::Unknown)
+    }
+}
+
+fn merge_optional<'a, T: Clone + Ord + 'a>(
+    field: &str,
+    values: impl IntoIterator<Item = &'a Option<T>>,
+    conflicts: &mut BTreeSet<String>,
+) -> Option<T> {
+    let distinct: BTreeSet<&T> = values.into_iter().filter_map(Option::as_ref).collect();
+    if distinct.len() > 1 {
+        conflicts.insert(field.to_owned());
+        None
+    } else {
+        distinct.into_iter().next().cloned()
+    }
+}
+
+fn diagnose_entity_conflicts(
+    entity: &str,
+    id: &AnalyticalId,
+    evidence: &[EvidenceRef],
+    conflicts: &BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !conflicts.is_empty() {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ConflictingSharedKey,
+            Some(id.clone()),
+            evidence.iter().cloned(),
+            format!("{entity} observations disagree on {}", join(conflicts.iter())),
+        ));
+    }
+}
+
+type LimitStreamKey =
+    (AnalyticalId, Option<AnalyticalId>, Option<AnalyticalId>, Option<String>, Option<String>);
+
+type LimitSortKey = (
+    EvidenceRef,
+    Option<AnalyticalId>,
+    Option<AnalyticalId>,
+    Option<String>,
+    Option<String>,
+    Basis<Timestamp>,
+    String,
+);
+
+fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
+    (
+        observation.evidence.source.clone(),
+        observation.owner_thread.clone(),
+        observation.owner_request.clone(),
+        observation.limit_name.clone(),
+        observation.window.clone(),
+    )
+}
+
+fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey {
+    (
+        observation.evidence.clone(),
+        observation.owner_thread.clone(),
+        observation.owner_request.clone(),
+        observation.limit_name.clone(),
+        observation.window.clone(),
+        observation.observed_at.clone(),
+        serde_json::to_string(&observation.native).unwrap_or_default(),
+    )
 }
 
 fn dedupe_rereads(

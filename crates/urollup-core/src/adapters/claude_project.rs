@@ -535,7 +535,14 @@ fn normalize(
     }
 
     let mut ledger = reconcile(
-        ReconcileInput { requests: observations, diagnostics, ..ReconcileInput::default() },
+        ReconcileInput {
+            threads: threads.into_values().collect(),
+            relationships,
+            requests: observations,
+            limit_observations,
+            diagnostics,
+            ..ReconcileInput::default()
+        },
         &ClaudeBlockSelector,
     )?;
     for diagnostic in &mut ledger.diagnostics {
@@ -568,6 +575,9 @@ fn normalize(
         };
     }
     ledger.diagnostics.sort();
+    let threads = ledger.threads.clone();
+    let relationships = ledger.relationships.clone();
+    let limit_observations = ledger.limit_observations.clone();
     let sources = manifest
         .entries
         .iter()

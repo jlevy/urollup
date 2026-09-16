@@ -325,7 +325,7 @@ pub struct ToolAction {
 }
 
 /// A usage-limit record as the source wrote it (design §3.1).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderLimitObservation {
     /// The native limit name, such as a Codex `limit_id` or Claude `rateLimitType`.
     pub limit_name: Option<String>,

@@ -246,7 +246,6 @@ fn normalize(
     }
     let mut copied_regions = 0_u64;
     let mut limit_observations = Vec::new();
-    let mut limit_snapshots = BTreeSet::new();
     let mut known_turns: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for source in sources {
         let is_root = source
@@ -315,13 +314,7 @@ fn normalize(
             if text(&record.value, &["type"]) == Some("event_msg")
                 && text(&record.value, &["payload", "type"]) == Some("token_count")
             {
-                append_limits(
-                    record,
-                    &active_thread,
-                    &thread_ids,
-                    &mut limit_snapshots,
-                    &mut limit_observations,
-                );
+                append_limits(record, &active_thread, &thread_ids, &mut limit_observations);
             }
             match text(&record.value, &["type"]) {
                 Some("session_meta") => {
@@ -494,11 +487,21 @@ fn normalize(
     }
 
     let mut ledger = reconcile(
-        ReconcileInput { requests: observations, diagnostics, ..ReconcileInput::default() },
+        ReconcileInput {
+            threads: threads.into_values().collect(),
+            relationships,
+            requests: observations,
+            limit_observations,
+            diagnostics,
+            ..ReconcileInput::default()
+        },
         &LatestRevision,
     )?;
     ledger.coverage.copies = ledger.coverage.copies.saturating_add(copied_regions);
     ledger.diagnostics.retain(|diagnostic| diagnostic.code != DiagnosticCode::CopyWithoutOriginal);
+    let threads = ledger.threads.clone();
+    let relationships = ledger.relationships.clone();
+    let limit_observations = ledger.limit_observations.clone();
     let sources = manifest
         .entries
         .iter()
@@ -598,17 +601,12 @@ fn append_limits(
     record: &ParsedRecord,
     owner: &str,
     thread_ids: &BTreeMap<String, AnalyticalId>,
-    seen: &mut BTreeSet<(String, String)>,
     observations: &mut Vec<ProviderLimitObservation>,
 ) {
     let Some(rate_limits) = record.value.pointer("/payload/rate_limits") else {
         return;
     };
     if rate_limits.is_null() {
-        return;
-    }
-    let signature = serde_json::to_string(rate_limits).unwrap_or_default();
-    if !seen.insert((owner.to_owned(), signature)) {
         return;
     }
     let limit_name = text(rate_limits, &["limit_id"])

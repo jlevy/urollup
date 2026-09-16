@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
 
@@ -9,8 +9,11 @@ use super::{
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::DiagnosticCode;
-use crate::ledger::entities::{AccountAttribution, Counting, Ownership, RevisionStatus};
-use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent};
+use crate::ledger::entities::{
+    AccountAttribution, Basis, Confidence, Counting, Ownership, ProviderLimitObservation,
+    Relationship, RelationshipKind, RevisionStatus, Thread, ToolAction,
+};
+use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
 use crate::ledger::scope::{IdentityBasis, ScopedKey};
 use crate::ledger::tokens::{TokenMeasures, TokenUsage};
@@ -61,6 +64,63 @@ fn observed(src: u8, offset: u64, response: &str, output: u64) -> RequestObserva
     observation.owner = OwnerEvidence::Proven(thread("t1"));
     observation.usage = Some(usage(100, output));
     observation
+}
+
+fn stored(prefix: IdPrefix, kind: &str, name: &str) -> StoredIdentity {
+    StoredIdentity::derive(IdentityKey::new(prefix, kind, vec![KeyComponent::text(name)])).unwrap()
+}
+
+fn thread_observation(name: &str, src: u8, offset: u64, property: u8) -> Thread {
+    let identity = stored(IdPrefix::Thread, "test-thread", name);
+    Thread {
+        identity,
+        basis: IdentityBasis::Native,
+        aliases: Vec::new(),
+        native_key: BTreeMap::from([("session_id".to_owned(), name.to_owned())]),
+        source: match property {
+            0 => Basis::Unknown,
+            value => Basis::Observed(format!("source-{}", value % 2)),
+        },
+        initiator: Basis::Unknown,
+        purpose: Basis::Unknown,
+        execution_environment: Basis::Observed("local".to_owned()),
+        project: Basis::Unknown,
+        account: Basis::Unknown,
+        evidence: vec![evidence(src, offset)],
+    }
+}
+
+fn action_observation(name: &str, src: u8, offset: u64, property: u8) -> ToolAction {
+    ToolAction {
+        identity: stored(IdPrefix::Action, "test-action", name),
+        basis: IdentityBasis::Native,
+        call_id: (property != 0).then(|| format!("call-{}", property % 2)),
+        tool_name: (property == 0).then(|| "Read".to_owned()),
+        request: None,
+        evidence: vec![evidence(src, offset)],
+    }
+}
+
+fn relationship_observation(from: u8, to: u8, src: u8, offset: u64, proven: bool) -> Relationship {
+    Relationship {
+        kind: RelationshipKind::Spawn,
+        from: thread(&format!("t{from}")),
+        to: thread(&format!("t{to}")),
+        confidence: if proven { Confidence::Proven } else { Confidence::Inferred },
+        evidence: vec![evidence(src, offset)],
+    }
+}
+
+fn limit_observation(stream: u8, src: u8, offset: u64, value: u8) -> ProviderLimitObservation {
+    ProviderLimitObservation {
+        limit_name: Some(format!("limit-{stream}")),
+        window: Some("primary".to_owned()),
+        observed_at: Basis::Unknown,
+        owner_thread: Some(thread(&format!("t{stream}"))),
+        owner_request: None,
+        native: BTreeMap::from([("used_percent".to_owned(), serde_json::json!(value))]),
+        evidence: evidence(src, offset),
+    }
 }
 
 fn run(requests: Vec<RequestObservation>) -> super::Ledger {
@@ -392,6 +452,114 @@ fn engine_errors_are_values() {
     assert!(matches!(reconcile(input, &LatestRevision), Err(ReconcileError::WrongPrefix { .. })));
 }
 
+#[test]
+fn non_request_entities_merge_evidence_and_diagnose_conflicting_properties() {
+    let mut first_thread = thread_observation("t1", 0, 0, 1);
+    first_thread.project = Basis::Observed("alpha".to_owned());
+    let mut second_thread = thread_observation("t1", 1, 0, 0);
+    second_thread.project = Basis::Observed("beta".to_owned());
+
+    let first_action = action_observation("a1", 0, 10, 1);
+    let second_action = action_observation("a1", 1, 10, 0);
+    let input = ReconcileInput {
+        threads: vec![second_thread, first_thread],
+        relationships: vec![
+            relationship_observation(0, 1, 0, 20, false),
+            relationship_observation(0, 1, 1, 20, true),
+        ],
+        tool_actions: vec![second_action, first_action],
+        ..ReconcileInput::default()
+    };
+    let ledger = reconcile(input, &LatestRevision).unwrap();
+
+    let reconciled_thread = &ledger.threads[&thread("t1")];
+    assert_eq!(reconciled_thread.source, Basis::Observed("source-1".to_owned()));
+    assert_eq!(reconciled_thread.project, Basis::Unknown);
+    let mut thread_evidence = vec![evidence(0, 0), evidence(1, 0)];
+    thread_evidence.sort();
+    assert_eq!(reconciled_thread.evidence, thread_evidence);
+    assert_eq!(ledger.relationships.len(), 1);
+    assert_eq!(ledger.relationships[0].confidence, Confidence::Proven);
+    let mut relationship_evidence = vec![evidence(0, 20), evidence(1, 20)];
+    relationship_evidence.sort();
+    assert_eq!(ledger.relationships[0].evidence, relationship_evidence);
+    let action = ledger.tool_actions.values().next().unwrap();
+    assert_eq!(action.call_id.as_deref(), Some("call-1"));
+    assert_eq!(action.tool_name.as_deref(), Some("Read"));
+    let mut action_evidence = vec![evidence(0, 10), evidence(1, 10)];
+    action_evidence.sort();
+    assert_eq!(action.evidence, action_evidence);
+    assert_eq!(codes(&ledger), vec![DiagnosticCode::ConflictingSharedKey]);
+}
+
+#[test]
+fn entity_references_follow_reconciled_aliases() {
+    let mut fallback_thread = thread_observation("old", 0, 0, 1);
+    let canonical_thread = thread_observation("new", 0, 10, 1);
+    fallback_thread.basis = IdentityBasis::Fallback;
+    fallback_thread.aliases = vec![canonical_thread.identity.clone()];
+    fallback_thread.native_key.clear();
+
+    let request_alias = digest_key("new", "digest").key.derive_id().unwrap();
+    let request_id = response_key("msg_1").key.derive_id().unwrap();
+    let mut request = observed(0, 20, "msg_1", 1);
+    request.keys.push(digest_key("new", "digest"));
+    request.owner = OwnerEvidence::Proven(thread("old"));
+    let mut action = action_observation("a1", 0, 30, 0);
+    action.request = Some(request_alias.clone());
+    let mut limit = limit_observation(0, 0, 40, 1);
+    limit.owner_thread = Some(thread("old"));
+    limit.owner_request = Some(request_alias);
+    let mut relationship = relationship_observation(0, 1, 0, 50, true);
+    relationship.from = thread("old");
+
+    let ledger = reconcile(
+        ReconcileInput {
+            threads: vec![fallback_thread, canonical_thread],
+            relationships: vec![relationship],
+            requests: vec![request],
+            tool_actions: vec![action],
+            limit_observations: vec![limit],
+            ..ReconcileInput::default()
+        },
+        &LatestRevision,
+    )
+    .unwrap();
+
+    assert!(ledger.threads.contains_key(&thread("new")));
+    assert_eq!(ledger.relationships[0].from, thread("new"));
+    assert_eq!(ledger.requests[&request_id].ownership, Ownership::Owned { thread: thread("new") });
+    assert_eq!(ledger.tool_actions.values().next().unwrap().request, Some(request_id.clone()));
+    assert_eq!(ledger.limit_observations[0].owner_thread, Some(thread("new")));
+    assert_eq!(ledger.limit_observations[0].owner_request, Some(request_id));
+}
+
+#[test]
+fn only_consecutive_identical_limit_snapshots_collapse() {
+    let ledger = reconcile(
+        ReconcileInput {
+            limit_observations: vec![
+                limit_observation(0, 0, 30, 1),
+                limit_observation(0, 0, 0, 1),
+                limit_observation(0, 0, 20, 2),
+                limit_observation(0, 0, 10, 1),
+            ],
+            ..ReconcileInput::default()
+        },
+        &LatestRevision,
+    )
+    .unwrap();
+    assert_eq!(ledger.limit_observations.len(), 3);
+    assert_eq!(
+        ledger
+            .limit_observations
+            .iter()
+            .map(|observation| observation.evidence.offset)
+            .collect::<Vec<_>>(),
+        vec![0, 20, 30]
+    );
+}
+
 /// Observations drawn from a small universe, so keys, copies, conflicts, rereads and
 /// candidate tokens collide often.
 fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
@@ -450,6 +618,40 @@ fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
         )
 }
 
+fn arbitrary_entity_input() -> impl Strategy<Value = ReconcileInput> {
+    (
+        prop::collection::vec((0u8..3, 0u8..3, 0u8..3, 0u64..6), 0..12),
+        prop::collection::vec((0u8..3, 0u8..3, 0u8..3, 0u64..6, any::<bool>()), 0..12),
+        prop::collection::vec((0u8..3, 0u8..3, 0u8..3, 0u64..6), 0..12),
+        prop::collection::vec((0u8..2, 0u8..3, 0u64..6, 0u8..3), 0..12),
+    )
+        .prop_map(|(threads, relationships, actions, limits)| ReconcileInput {
+            threads: threads
+                .into_iter()
+                .map(|(name, property, src, slot)| {
+                    thread_observation(&format!("t{name}"), src, slot * 10, property)
+                })
+                .collect(),
+            relationships: relationships
+                .into_iter()
+                .map(|(from, to, src, slot, proven)| {
+                    relationship_observation(from, to, src, slot * 10, proven)
+                })
+                .collect(),
+            tool_actions: actions
+                .into_iter()
+                .map(|(name, property, src, slot)| {
+                    action_observation(&format!("a{name}"), src, slot * 10, property)
+                })
+                .collect(),
+            limit_observations: limits
+                .into_iter()
+                .map(|(stream, src, slot, value)| limit_observation(stream, src, slot * 10, value))
+                .collect(),
+            ..ReconcileInput::default()
+        })
+}
+
 proptest! {
     // Each case reconciles up to 48 observations in an unoptimized test build; 64 cases
     // keep the four properties to a few seconds in `make check`.
@@ -477,6 +679,31 @@ proptest! {
         prop_assert_eq!(&once.candidate_sets, &twice.candidate_sets);
         prop_assert_eq!(&once.diagnostics, &twice.diagnostics);
         prop_assert_eq!(ledger_totals(&once).unwrap(), ledger_totals(&twice).unwrap());
+    }
+
+    #[test]
+    fn entity_reconciliation_is_order_independent(
+        input in arbitrary_entity_input(),
+        seed in any::<u64>(),
+    ) {
+        let expected = reconcile(input.clone(), &LatestRevision).unwrap();
+        let mut shuffled = input;
+        shuffle(&mut shuffled.threads, seed);
+        shuffle(&mut shuffled.relationships, seed.wrapping_add(1));
+        shuffle(&mut shuffled.tool_actions, seed.wrapping_add(2));
+        shuffle(&mut shuffled.limit_observations, seed.wrapping_add(3));
+        prop_assert_eq!(expected, reconcile(shuffled, &LatestRevision).unwrap());
+    }
+
+    #[test]
+    fn repeated_entity_imports_are_idempotent(input in arbitrary_entity_input()) {
+        let expected = reconcile(input.clone(), &LatestRevision).unwrap();
+        let mut doubled = input.clone();
+        doubled.threads.extend(input.threads);
+        doubled.relationships.extend(input.relationships);
+        doubled.tool_actions.extend(input.tool_actions);
+        doubled.limit_observations.extend(input.limit_observations);
+        prop_assert_eq!(expected, reconcile(doubled, &LatestRevision).unwrap());
     }
 
     #[test]
