@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; automated milestone 0.1 implementation is complete, with local acceptance and remaining maintainer decisions in progress
+status: Active; milestone 0.1 accounting and reports are complete, with terminal UX, local acceptance and remaining maintainer decisions in progress
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -73,9 +73,13 @@ aggregates only, never log content, paths or IDs.
 - **G3, friendly from the CLI (0.1, polished through 0.5).** The common case takes no
   flags and one command.
   Help lists the commands with examples, default tables are readable at terminal width,
-  diagnostics name the flag or fix to use, exit codes follow
-  [§6.5](../../../urollup-design.md#65-exit-codes), nothing prompts, and a small report
-  meets the [performance targets](#performance-targets).
+  automatic color appears only for interactive human-facing output, redirected and piped
+  output is stable plain text, machine-readable formats contain no ANSI escapes, the CLI
+  and environment disable mechanisms always win, diagnostics name the flag or fix to
+  use, and noticeably long operations show cleanly removed stderr progress only during
+  interactive human use, with `--no-progress` as an unconditional disable.
+  Exit codes follow [§6.5](../../../urollup-design.md#65-exit-codes), nothing prompts,
+  and a small report meets the [performance targets](#performance-targets).
 - **G4, browsable web reports (Phase 2).** A generated self-contained HTML report opens
   in a browser with no server, and `urollup serve` browses the same results live
   ([§7](../../../urollup-design.md#7-serving-layer-optional),
@@ -137,6 +141,22 @@ The capture store lands only after the uncached engine is the correctness refere
   `codex-rollout` fixtures in CI, and the explained-differences ledger
   ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
+- [ ] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
+  human-facing output on an interactive terminal; keep redirected, piped and
+  machine-readable output free of ANSI escapes; and make `--color never` and `NO_COLOR`
+  unconditional disables.
+  Test automatic color through a pseudo-terminal, plain redirected output, both disable
+  mechanisms on a terminal, and every machine-readable format
+  ([Decision 29](../../../urollup-design.md#decision-29-terminal-aware-color),
+  [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
+- [ ] Add progress for noticeably long operations as a 0.1 baseline: enable it by
+  default only during interactive human use, render it on stderr without contaminating
+  stdout, suppress it for non-TTY, redirected, piped and machine-readable workflows, and
+  make `--no-progress` an unconditional disable.
+  Test pseudo-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
+  machine stdout without ANSI or control sequences, and cleanup on both success and
+  error ([Decision 30](../../../urollup-design.md#decision-30-interactive-progress),
+  [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
 - [ ] Add the privacy-tested local aggregate diff script and run the consented real-log
   acceptance checks without committing log content, paths or identifiers
   ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
@@ -217,8 +237,8 @@ The capture store lands only after the uncached engine is the correctness refere
   [existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
 - [ ] If the candidates are confirmed, add the `statusline` session segment and the
-  report presentation options: responsive and `--compact` tables, `--color`,
-  `--no-cost`, `--last` and the pooled cache-read share
+  remaining report presentation options: responsive and `--compact` tables, `--no-cost`,
+  `--last` and the pooled cache-read share
   ([§6.8](../../../urollup-design.md#68-status-line),
   [statusline command](../../../urollup-design.md#statusline-command),
   [report presentation](../../../urollup-design.md#report-presentation)).
@@ -380,7 +400,7 @@ CLI behavior is tested in two complementary layers over one fixture corpus, foll
 `tbd guidelines golden-testing-guidelines` and the pinned tryscript 0.2.1. The
 [golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
 records what each rule cost when it was missing, and
-[tests/golden/README.md](../../../tests/golden/README.md) is the operating guide.
+[tests/golden/README.md](../../../../tests/golden/README.md) is the operating guide.
 
 - **Transcript goldens (tryscript).** End-to-end sessions run the built binary through
   `$UROLLUP_BIN` and record complete stdout, stderr and exit status for `report`,
@@ -701,6 +721,7 @@ The design doc records every decision and open question:
 ## References
 
 - [urollup design specification](../../../urollup-design.md)
+- [urollup 0.1.0 publishing plan](plan-2026-09-16-first-release-publishing.md)
 - [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md),
   including its
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
@@ -708,6 +729,7 @@ The design doc records every decision and open question:
 - [squares code review](../../research/research-2026-09-14-squares-code-review.md) and
   [metaproc and qm review](../../research/research-2026-09-14-metaproc-code-review.md)
 - [Agent tool source reviews](../../research/research-2026-09-14-agent-tool-source-reviews.md)
+- [Golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
 - [Log throughput spike](../../../../explorations/log-throughput/README.md)
 - [fdu](https://github.com/jlevy/fdu) and
   [flowmark-rs](https://github.com/jlevy/flowmark-rs), the reference Rust repositories

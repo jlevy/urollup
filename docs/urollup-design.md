@@ -9,7 +9,7 @@ session logs.
 
 **First drafted**: 2026-09-13
 
-**Last updated**: 2026-09-15
+**Last updated**: 2026-09-16
 
 Sections 1 to 8 and each item in §9 carry a **Status:** line.
 **Confirmed** marks settled design that awaits no §9 decision; where a maintainer
@@ -1871,10 +1871,12 @@ urollup serve --project example --open
 
 ### 6.4 Queries, Output Formats and Streams
 
-**Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering));
-`--strict` semantics are Candidate ([§9.1](#strict-mode)); `--annotation-set` is
-Candidate ([§9.1](#cli-surface)) and Later (Phase 2); terminal presentation and presets
-are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
+**Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering),
+[Decision 29](#decision-29-terminal-aware-color) and
+[Decision 30](#decision-30-interactive-progress)); `--strict` semantics are Candidate
+([§9.1](#strict-mode)); `--annotation-set` is Candidate ([§9.1](#cli-surface)) and Later
+(Phase 2); terminal presentation and presets other than baseline color and progress are
+Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
 
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
@@ -1897,13 +1899,22 @@ are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults
   normalized query, source coverage, diagnostics, pricing version, aggregate rows and
   stable evidence references.
   JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
-- **Terminal presentation (Candidate, [§9.1](#report-presentation)):** tables fit the
-  terminal width, and below 100 columns on a terminal, or with `--compact`, they keep
-  only the period or group, token totals and cost; piped output never switches layout.
-  Formatting is locale-independent, with ISO 8601 dates and no `--locale` flag, and
-  JSON, JSONL and CSV values are never formatted for display.
-  Color still appears only on a terminal ([§8.2](#82-engineering-conventions)), and
-  `--color never` or `NO_COLOR` turns it off.
+- **Terminal color (Confirmed, [Decision 29](#decision-29-terminal-aware-color)):**
+  automatic color is permitted only for human-facing output on an interactive terminal.
+  Redirected or piped output is plain and byte-stable, and machine-readable formats
+  never contain ANSI escapes.
+  `--color never` and `NO_COLOR` each disable color unconditionally, including on a
+  terminal.
+- **Progress (Confirmed, [Decision 30](#decision-30-interactive-progress)):** noticeably
+  long operations show progress by default only during interactive human use.
+  Progress is rendered on stderr and cleaned up on success and error.
+  Noninteractive, redirected, piped and machine-readable workflows suppress it
+  automatically, and `--no-progress` disables it unconditionally.
+- **Other terminal presentation (Candidate, [§9.1](#report-presentation)):** tables fit
+  the terminal width, and below 100 columns on a terminal, or with `--compact`, they
+  keep only the period or group, token totals and cost; piped output never switches
+  layout. Formatting is locale-independent, with ISO 8601 dates and no `--locale` flag,
+  and JSON, JSONL and CSV values are never formatted for display.
   `--no-cost` omits amounts from tables and JSON while pricing coverage still appears.
   `--last <n>` selects the n most recent calendar periods of a calendar report,
   including the current one, in the report’s timezone and week start, and resolves to
@@ -2213,7 +2224,11 @@ The choices that shape the design:
 - **Lints and CLI process:** a denied pedantic clippy floor; `clippy::panic` denied in
   the core and `clippy::arithmetic_side_effects` in token counter and money modules.
   `main` returns `ExitCode` from a `run` function with injected stdout and stderr
-  writers, color appears only on a terminal, and nothing prompts.
+  writers, automatic color appears only for human-facing output on an interactive
+  terminal, redirected and machine-readable output stays plain, either documented
+  color-disable mechanism wins unconditionally, noticeably long interactive operations
+  may render progress on stderr with guaranteed cleanup, `--no-progress` always wins,
+  and nothing prompts.
 - **Tests and gates:** `insta` snapshots, `proptest` laws and tryscript CLI goldens in
   `tests/golden/`. `make check`, not a justfile, is the local gate and runs what CI
   runs; `make fix` formats with rustfmt, taplo and flowmark.
@@ -2506,9 +2521,8 @@ maintainer request, 2026-09-16.
 
 **Recommendation:** Terminal tables fit the terminal width, with essential columns below
 100 columns or with `--compact`; formatting is locale-independent with no `--locale`;
-`--color never` and `NO_COLOR` turn off terminal color; `--no-cost` omits amounts;
-`--last <n>` selects recent calendar periods as absolute bounds; and reports show the
-pooled cache-read share computed from token sums.
+`--no-cost` omits amounts; `--last <n>` selects recent calendar periods as absolute
+bounds; and reports show the pooled cache-read share computed from token sums.
 
 **Designed in:** [§6.4](#64-queries-output-formats-and-streams),
 [§6.6](#66-report-content-and-examples).
@@ -2719,7 +2733,7 @@ These decisions are confirmed by the maintainer, grouped by area:
 | Project and scope | [1](#decision-1-product-name), [2](#decision-2-mit-license), [3](#decision-3-code-reuse-and-licensing), [4](#decision-4-harness-logs-through-urollup-adapters), [5](#decision-5-qm-out-of-scope), [28](#decision-28-gemini-cli-planned-support) |
 | Capture | [6](#decision-6-data-capture-principle), [7](#decision-7-captured-records-and-strip-policies), [8](#decision-8-capture-store-and-cache), [9](#decision-9-capture-scope) |
 | Accounting and time | [10](#decision-10-recorded-usage-windows), [11](#decision-11-time-handling) |
-| CLI and output | [12](#decision-12-current-session-detection), [13](#decision-13-selection-defaults), [14](#decision-14-exit-codes), [15](#decision-15-json-as-an-output-rendering) |
+| CLI and output | [12](#decision-12-current-session-detection), [13](#decision-13-selection-defaults), [14](#decision-14-exit-codes), [15](#decision-15-json-as-an-output-rendering), [29](#decision-29-terminal-aware-color), [30](#decision-30-interactive-progress) |
 | Artifacts and contracts | [16](#decision-16-summary-and-bundle-artifacts), [17](#decision-17-request-index-on-by-default), [18](#decision-18-enforced-contract-status), [19](#decision-19-identity-keys-and-redaction), [20](#decision-20-database-input-in-phase-3) |
 | Serving | [21](#decision-21-serving-separability), [22](#decision-22-web-server-security) |
 | Engineering and release | [23](#decision-23-engineering-baseline), [24](#decision-24-dev-tooling), [25](#decision-25-contract-gate-script), [26](#decision-26-benchmarks), [27](#decision-27-release-scope) |
@@ -3213,6 +3227,43 @@ guarantee, so the adapter records the versions its fixtures cover.
 [§3.4](#34-dialect-reconciliation-rules) and the research brief’s
 [Gemini CLI dialect facts](project/research/research-2026-09-13-portable-agent-usage.md#gemini-cli-dialect-facts).
 
+#### Decision 29: Terminal-Aware Color
+
+**Choice:** Milestone 0.1 provides automatic color only for human-facing output on an
+interactive terminal.
+Redirected and piped output is plain and byte-stable, and every machine-readable format
+is free of ANSI escapes.
+`--color never` and `NO_COLOR` each disable color unconditionally, including when
+terminal detection would otherwise enable it.
+
+**Rationale:** Interactive color improves scanning, while stable plain streams remain
+safe for agents, snapshots, pipes and parsers without requiring callers to remember a
+flag.
+
+**Tradeoffs:** urollup does not promise forced color in a pipe, and every new output
+format must be classified as human-facing or machine-readable and tested accordingly.
+
+**Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
+[§8.2](#82-engineering-conventions).
+
+#### Decision 30: Interactive Progress
+
+**Choice:** Noticeably long milestone 0.1 operations show progress by default only
+during interactive human use.
+Progress renders on stderr, never stdout, and clears on both success and error.
+Noninteractive, redirected, piped and machine-readable workflows suppress it
+automatically, and `--no-progress` disables it unconditionally.
+
+**Rationale:** A person should be able to distinguish a long scan from a hung process
+without making agent, pipe, snapshot or parser output unstable.
+
+**Tradeoffs:** Short operations show no progress, elapsed-time eligibility remains an
+implementation detail, and tests need a pseudo-terminal plus explicit success and error
+paths.
+
+**Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
+[§8.2](#82-engineering-conventions).
+
 ### 10.2 Future Enhancements
 
 | Enhancement | Phase | Designed in |
@@ -3312,7 +3363,8 @@ Queries and output:
 | `--strict` | Exit 3 on any coverage gap, including unresolved usage | [§6.4](#64-queries-output-formats-and-streams), [§5.3](#53-exact-aggregation) | 1 (0.5), Candidate |
 | `--require-priced` | Exit 3 when any tokens are unpriced | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.4) |
 | `--compact` | Force the narrow terminal table layout | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
-| `--color` | Choose `auto` or `never` for terminal color; `NO_COLOR` also turns it off | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
+| `--color` | Choose `auto` or `never` for human-facing terminal color; `NO_COLOR` also turns it off unconditionally | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
+| `--no-progress` | Disable interactive progress unconditionally | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
 | `--no-cost` | Omit amounts from tables and JSON while pricing coverage still appears | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
 | `--annotation-set` | Group by a named, imported annotation set | [§3.5](#35-purpose-and-annotations) | 2, Candidate |
 | `--baseline` | Name the baseline saved JSON report for `compare` | [§6.3](#63-commands) | 2 |
@@ -3379,6 +3431,8 @@ Project documents, none of which contains private session data:
 
 - [urollup implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md):
   phases, milestones, testing strategy, performance targets and rollout
+- [urollup 0.1.0 publishing plan](project/specs/active/plan-2026-09-16-first-release-publishing.md):
+  release channels, target matrix, artifact validation and publication runbook
 - [Portable agent usage research brief](project/research/research-2026-09-13-portable-agent-usage.md):
   public-source comparisons, dialect evidence and the case for mergeable results,
   including the
@@ -3395,6 +3449,8 @@ Project documents, none of which contains private session data:
 - [Agent tool source reviews](project/research/research-2026-09-14-agent-tool-source-reviews.md):
   the detailed Codex, ccusage, Pi, agentfdr and Anthropic plugin source evidence behind
   the research brief, and where each review recommendation was applied
+- [Golden testing audit](project/research/research-2026-09-15-golden-testing-audit.md):
+  golden-harness failure modes, their resolutions and the end-to-end fixture strategy
 - [Log throughput spike](../explorations/log-throughput/README.md): the prototype behind
   the capture store measurements
 
@@ -3435,9 +3491,10 @@ A row whose design link says *Candidate* is covered only once that
 [§9.1](#91-candidate-decisions) decision is confirmed.
 The 2026-09-15 review found gaps in status line output, compact tables, color control,
 recent-period shortcuts, cost hiding, cache-hit reporting, configuration defaults and
-other agents’ logs. Candidates close the first six and set a policy for the other two,
-and [Decision 28](#decision-28-gemini-cli-planned-support) closed the agent gap for
-Gemini CLI on the same day.
+other agents’ logs. [Decision 29](#decision-29-terminal-aware-color) makes color a 0.1
+baseline; candidates address the other presentation gaps and configuration defaults, and
+[Decision 28](#decision-28-gemini-cli-planned-support) closed the agent gap for Gemini
+CLI on the same day.
 
 | Use case | ccusage 20.0.20 | urollup | Status | Design |
 | --- | --- | --- | --- | --- |
@@ -3469,7 +3526,7 @@ Gemini CLI on the same day.
 | Sort order | `--order asc\|desc` | `--sort` and `--limit` | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Terminal tables | Boxed tables with a Models column and a totals row | Terminal tables rendered from the shared report data | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Compact and responsive tables | Narrow layout below 100 columns or with `--compact` | The same rule, with `--compact` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
-| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | Color only on a terminal; `--color never` and `NO_COLOR` turn it off | Partial: no forced color in pipes | [§8.2](#82-engineering-conventions), [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | Automatic color only for interactive human-facing output; `--color never` and `NO_COLOR` disable it unconditionally; machine formats contain no ANSI | Partial by design: no forced color in pipes | [Decision 29](#decision-29-terminal-aware-color), [§6.4](#64-queries-output-formats-and-streams) |
 | Locale | `--locale` removed; fixed formats | Locale-independent formatting with no `--locale` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
 | JSON output | `--json` with per-command shapes and no output schema | JSON with schema version, normalized query, coverage and diagnostics; also JSONL, CSV and Markdown | Covered better | [§6.4](#64-queries-output-formats-and-streams), [Decision 15](#decision-15-json-as-an-output-rendering) |
 | JSON filtering | `--jq`, through an external `jq` binary | stdout carries only the requested format, so output pipes to `jq` | Covered | [§6.4](#64-queries-output-formats-and-streams) |

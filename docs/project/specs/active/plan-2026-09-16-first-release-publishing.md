@@ -7,12 +7,6 @@ status: Active; plan finalized, release implementation not started
 ---
 # Feature: urollup 0.1.0 Publishing and Distribution
 
-**Date:** 2026-09-16 (last updated 2026-09-16)
-
-**Author:** Joshua Levy with LLM assistance
-
-**Status:** Active; plan finalized, release implementation not started
-
 ## Overview
 
 urollup 0.1.0 is one Rust product released from one reviewed commit under one version.
@@ -52,7 +46,7 @@ not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, sanitized fixture parity, goldens and repository gates pass | Complete on the milestone branch; pull request 4 is draft and its automated checks are green |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | The accounting, reports and fixture gates are complete; terminal color, interactive progress and their stream-safety tests remain |
 | Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | Not complete; this is the critical path to declaring milestone 0.1 accepted |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
