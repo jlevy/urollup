@@ -5,7 +5,7 @@ title: Add the local-only aggregate mode for end-to-end result checks
 kind: task
 status: closed
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 delegate: claude-code@spud10.local
 labels:
@@ -22,7 +22,7 @@ parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 hold: null
 hold_until: null
 created_at: 2026-09-16T00:17:41.714Z
-updated_at: 2026-09-16T20:20:52.293Z
+updated_at: 2026-09-16T20:25:36.387Z
 started_at: 2026-09-16T19:49:31.373Z
 closed_at: 2026-09-16T20:20:52.292Z
 close_reason: Implemented consent-gated make e2e-local and an allowlisted local aggregate writer over complete days, with path-free failures and privacy sentinel tests. The actual consented local run remains tracked by uro-d36a.
@@ -33,4 +33,4 @@ Milestone 0.1 local-only aggregate mode for end-to-end result checks over a cons
 
 ## Notes
 
-Fixture result checks are implemented. This remaining local-only gate can run before milestone 0.3 because milestone 0.1 is already uncached; the future --no-capture flag is not a prerequisite.
+Implemented in stacked PR #8 on branch codex/v0.1-terminal-ux-acceptance. The consent-gated tooling is complete; the actual maintainer-log run remains tracked by uro-d36a. Milestone 0.1 is uncached, so a future --no-capture flag is not a prerequisite.

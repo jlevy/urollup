@@ -5,7 +5,7 @@ title: Add local-corpus ccusage aggregate diff script
 kind: task
 status: closed
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 delegate: claude-code@spud10.local
 labels:
@@ -23,7 +23,7 @@ parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 hold: null
 hold_until: null
 created_at: 2026-09-15T22:08:01.912Z
-updated_at: 2026-09-16T20:20:52.824Z
+updated_at: 2026-09-16T20:25:36.757Z
 started_at: 2026-09-16T19:49:31.764Z
 closed_at: 2026-09-16T20:20:52.823Z
 close_reason: Implemented consent-gated make parity-local against pinned native ccusage with stable-cutoff daily totals, stable-session matching, safe model normalization, aggregate residuals, threshold flags, and privacy tests. The actual consented comparison remains tracked by uro-d36a.
@@ -34,4 +34,4 @@ Milestone 0.1 maintainer-run aggregate diff between pinned ccusage and urollup o
 
 ## Notes
 
-Fixture parity is implemented. This remaining local gate can run before milestone 0.3 because milestone 0.1 is already uncached; the future --no-capture flag is not a prerequisite.
+Implemented in stacked PR #8 on branch codex/v0.1-terminal-ux-acceptance. The consent-gated pinned-ccusage harness is complete; the actual local comparison remains tracked by uro-d36a. Milestone 0.1 is uncached, so a future --no-capture flag is not a prerequisite.
