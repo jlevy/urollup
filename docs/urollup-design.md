@@ -1114,9 +1114,11 @@ such as thread or project, the request takes the value all candidates share or e
 explicit `ambiguous` group.
 Unknown values take the null group, so group rows still sum to the total.
 
-Observations that may be one request but share no key form a **candidate set**. Totals
-count the member with the strongest identity basis, then the lowest ID, and report the
-other members as **unresolved** usage, which is never added to totals.
+Observations that share a key but disagree on a revision-invariant field, such as a
+message ID reported with two models, are not merged: each becomes its own request, and
+together they form a **candidate set**. Totals count the member with the strongest
+identity basis, then the lowest ID, and report the other members as **unresolved**
+usage, which is never added to totals.
 
 Scope selection follows the same principle:
 

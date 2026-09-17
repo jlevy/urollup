@@ -255,6 +255,14 @@ report’s `unknown` bucket, `Request.aliases`, `native_request_id` and
 that duplicate the primary usage (advisor components stay), and the request identity
 registry and string link graph.
 
+As implemented, candidate tokens, candidate owners, account attribution, native request
+and response IDs, native usage maps, per-revision usage and the request identity
+registry are removed.
+`LineageLink` and `links`, `tool_actions`, `gaps` and request aliases remain, because
+they cost no memory without a producer; threads and tool actions keep their string
+identity registry, and candidate sets keep a small string link graph over split requests
+only.
+
 Kept: reread deduplication, the conflicting-shared-key split, owner and model conflict
 diagnostics, Claude block-conflict detection computed while building requests, candidate
 sets from splits, compact limit observations, coverage counters, and thread and
@@ -364,10 +372,19 @@ without an input-size limitation.
 ### Progress
 
 Implementation compacts the existing engine in place rather than building a second
-engine beside it. Each step keeps fixture, snapshot, golden, fixture-result and parity
-gates green, and its release build is compared back to back with the previous build on
-real-log slices: report, daily and sessions JSON must be identical apart from live
-sessions that append between the two runs.
+engine beside it. The [Approach](#approach) above describes the original design; the
+engine as built differs in three ways.
+Workers decode individual sources, heaviest first, and results merge in discovery order,
+rather than decoding families into a `FamilyBatch`. There are no separate `Obs` and
+`Req` types: `RequestObservation` and `Request` themselves became compact rows.
+The Claude owner rule is computed in the adapter’s normalization pass rather than a
+separate key-facts pass.
+File-rename invariance is tested for Claude session files; Codex thread identity comes
+from the rollout name, so renaming a rollout is not an invariant.
+Each step keeps fixture, snapshot, golden, fixture-result and parity gates green, and
+its release build is compared back to back with the previous build on real-log slices:
+report, daily and sessions JSON must be identical apart from live sessions that append
+between the two runs.
 The steps so far:
 
 - Fix the owner-map ordering bug (`af5f012`) before any rewrite.
