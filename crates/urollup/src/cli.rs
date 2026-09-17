@@ -708,7 +708,9 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
     let mut dialect = None;
     for discovered in &discovery.sources {
         let Some((path, _)) = discovered.files.primary() else { continue };
-        let candidate = classify_jsonl(path)?;
+        // A transcript holding only records no dialect claims, such as a lone title
+        // record, says nothing about the root; the other files decide it.
+        let Some(candidate) = classify_jsonl(path)? else { continue };
         if dialect.replace(candidate).is_some_and(|previous| previous != candidate) {
             return Err(Failure::runtime(format!(
                 "source {} contains multiple agent dialects; pass each agent root separately",
@@ -727,11 +729,13 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
     }
 }
 
-fn classify_jsonl(path: &Path) -> Result<Agent, Failure> {
+fn classify_jsonl(path: &Path) -> Result<Option<Agent>, Failure> {
     classify_jsonl_with_limit(path, MAX_CATALOG_HEADER_BYTES)
 }
 
-fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Agent, Failure> {
+/// Classifies a transcript by its first recognized record type, or `None` when none of
+/// its first 100 records belongs to a supported dialect.
+fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Option<Agent>, Failure> {
     let file = File::open(path).map_err(|error| {
         Failure::runtime(format!("cannot open source {}: {error}", path.display()))
     })?;
@@ -776,7 +780,7 @@ fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Agent, 
                     | "response_item"
             )
         ) {
-            return Ok(Agent::Codex);
+            return Ok(Some(Agent::Codex));
         }
         if matches!(
             kind,
@@ -788,12 +792,15 @@ fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Agent, 
                     | "summary"
                     | "queue-operation"
                     | "file-history-snapshot"
+                    | "attachment"
+                    | "bridge-session"
+                    | "custom-title"
             )
         ) {
-            return Ok(Agent::Claude);
+            return Ok(Some(Agent::Claude));
         }
     }
-    Err(Failure::runtime(format!("cannot identify the agent dialect of source {}", path.display())))
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -1391,6 +1398,35 @@ mod tests {
             let error = classify_jsonl_with_limit(&path, 32).unwrap_err();
             assert!(error.message.contains("classification record exceeds"));
         }
+    }
+
+    #[test]
+    fn explicit_claude_root_ignores_transcripts_without_dialect_records() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("aaaa.jsonl"),
+            "{\"type\":\"unknown-title\",\"sessionId\":\"aaaa\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            project.join("bbbb.jsonl"),
+            "{\"type\":\"custom-title\",\"sessionId\":\"bbbb\"}\n",
+        )
+        .unwrap();
+        fs::write(project.join("cccc.jsonl"), "{\"type\":\"user\",\"sessionId\":\"cccc\"}\n")
+            .unwrap();
+
+        let classified = classify_explicit_source(&project).unwrap();
+        assert!(
+            matches!(classified.as_slice(), [ExplicitDialect::Claude(path)] if path == &project)
+        );
+        assert_eq!(classify_jsonl_with_limit(&project.join("aaaa.jsonl"), 1024).unwrap(), None);
+        assert_eq!(
+            classify_jsonl_with_limit(&project.join("bbbb.jsonl"), 1024).unwrap(),
+            Some(Agent::Claude)
+        );
     }
 
     #[test]
