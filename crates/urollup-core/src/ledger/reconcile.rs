@@ -23,12 +23,11 @@
 //!    lowest ID. Original observations with usage are its revisions, passed in canonical
 //!    order to the dialect's [`RevisionSelector`]; copies are recorded as evidence and
 //!    never counted, and a request seen only as copies is [`Counting::CopyOnly`].
-//!    Ownership comes from proven owners, then candidates; conflicting accounts and
-//!    served models are diagnosed, not split.
-//! 5. **Candidate sets:** requests that share an adapter-declared candidate token, or were
-//!    split from one conflicting key, form a candidate set. It counts the member with the
-//!    strongest identity basis, then the lowest ID, and marks the others
-//!    [`Counting::Unresolved`], which totals never add.
+//!    Ownership comes from proven owners; conflicting owners and served models are
+//!    diagnosed, not split.
+//! 5. **Candidate sets:** requests split from one conflicting key form a candidate set. It
+//!    counts the member with the strongest identity basis, then the lowest ID, and marks
+//!    the others [`Counting::Unresolved`], which totals never add.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -37,7 +36,7 @@ use jiff::Timestamp;
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
-    AccountAttribution, Basis, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
+    Basis, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
     ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests, RevisionStatus,
     SelectedUsage, Thread, ToolAction, UsageRevision,
 };
@@ -62,8 +61,6 @@ pub enum ObservationRole {
 pub enum OwnerEvidence {
     /// A native field proves this thread owns the request.
     Proven(AnalyticalId),
-    /// These threads may own the request, without proof.
-    Candidates(BTreeSet<AnalyticalId>),
     /// The record says nothing about ownership.
     None,
 }
@@ -93,15 +90,10 @@ pub struct RequestObservation {
     /// Revision-invariant fields; observations sharing a key must agree on every field
     /// both carry.
     pub invariants: InlineList<(&'static str, String), 1>,
-    /// Tokens naming candidate sets: observations that may be one request but share no
-    /// key, such as a digest of copy-invariant content.
-    pub candidate_tokens: BTreeSet<String>,
     /// The model, when recorded.
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
     pub effort: Option<String>,
-    /// The stable account identifier, when recorded.
-    pub account: Option<String>,
     /// The record's timestamp.
     pub timestamp: Option<Timestamp>,
 }
@@ -119,10 +111,8 @@ impl RequestObservation {
             model_usage: Vec::new(),
             sequence: None,
             invariants: InlineList::new(),
-            candidate_tokens: BTreeSet::new(),
             model: None,
             effort: None,
-            account: None,
             timestamp: None,
         }
     }
@@ -417,7 +407,6 @@ pub fn reconcile(
         + usize::from(!order.is_empty());
     let mut requests = Vec::with_capacity(sets + sets / 32);
     let mut candidates = LinkGraph::new();
-    let mut tokens: BTreeMap<String, BTreeSet<AnalyticalId>> = BTreeMap::new();
     let mut start = 0;
     while let Some(&(root, _)) = order.get(start) {
         let end = order[start..]
@@ -452,13 +441,7 @@ pub fn reconcile(
                 else {
                     continue;
                 };
-                let id = request.id().clone();
-                for member in &part {
-                    for token in &member.candidate_tokens {
-                        tokens.entry(token.clone()).or_default().insert(id.clone());
-                    }
-                }
-                split_ids.push(id);
+                split_ids.push(request.id().clone());
                 requests.push(request);
             }
             if !split.is_empty() {
@@ -484,14 +467,6 @@ pub fn reconcile(
     drop(order);
     drop(observations);
     drop(graph);
-    for ids in tokens.values() {
-        let mut ids = ids.iter();
-        if let Some(first) = ids.next() {
-            for other in ids {
-                candidates.link(first, other);
-            }
-        }
-    }
 
     let mut requests = Requests::from_unsorted(requests);
     let candidate_sets = resolve_candidate_sets(&candidates, &mut requests, &mut diagnostics);
@@ -770,9 +745,6 @@ fn canonicalize_request_owners(
             OwnerEvidence::Proven(thread) => {
                 OwnerEvidence::Proven(canonical_id(thread, thread_ids))
             }
-            OwnerEvidence::Candidates(candidates) => OwnerEvidence::Candidates(
-                candidates.iter().map(|thread| canonical_id(thread, thread_ids)).collect(),
-            ),
             OwnerEvidence::None => OwnerEvidence::None,
         };
     }
@@ -982,10 +954,8 @@ fn release_payload(observation: &mut RequestObservation) {
     observation.keys = InlineList::new();
     observation.model_usage = Vec::new();
     observation.invariants = InlineList::new();
-    observation.candidate_tokens = BTreeSet::new();
     observation.model = None;
     observation.effort = None;
-    observation.account = None;
 }
 
 fn index_u32(index: usize) -> u32 {
@@ -1109,7 +1079,6 @@ fn build_request(
         effort: selected
             .and_then(|s| s.effort.clone())
             .or_else(|| originals.iter().filter_map(|o| o.effort.clone()).min()),
-        account: account(observations, &id, diagnostics),
         evidence: originals.iter().map(|o| o.evidence.clone()).collect(),
         copies: observations
             .iter()
@@ -1128,14 +1097,9 @@ fn ownership(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ownership {
     let mut proven = BTreeSet::new();
-    let mut candidates = BTreeSet::new();
     for observation in observations {
-        match &observation.owner {
-            OwnerEvidence::Proven(thread) => {
-                proven.insert(thread.clone());
-            }
-            OwnerEvidence::Candidates(threads) => candidates.extend(threads.iter().cloned()),
-            OwnerEvidence::None => {}
+        if let OwnerEvidence::Proven(thread) = &observation.owner {
+            proven.insert(thread.clone());
         }
     }
     if proven.len() > 1 {
@@ -1150,29 +1114,7 @@ fn ownership(
         ));
         return Ownership::Ambiguous { candidates: proven };
     }
-    if let Some(thread) = proven.into_iter().next() {
-        return Ownership::Owned { thread };
-    }
-    if candidates.is_empty() { Ownership::Unknown } else { Ownership::Ambiguous { candidates } }
-}
-
-fn account(
-    observations: &[&RequestObservation],
-    id: &AnalyticalId,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> AccountAttribution {
-    let accounts: BTreeSet<String> =
-        observations.iter().filter_map(|o| o.account.clone()).collect();
-    if accounts.len() > 1 {
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::ConflictingAccounts,
-            Some(id.clone()),
-            observations.iter().filter(|o| o.account.is_some()).map(|o| o.evidence.clone()),
-            format!("accounts {}", join(accounts.iter())),
-        ));
-        return AccountAttribution::Conflicting(accounts);
-    }
-    accounts.into_iter().next().map_or(AccountAttribution::Unknown, AccountAttribution::Attributed)
+    proven.into_iter().next().map_or(Ownership::Unknown, |thread| Ownership::Owned { thread })
 }
 
 fn model(

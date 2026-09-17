@@ -239,17 +239,6 @@ pub struct SelectedUsage {
     pub rule: &'static str,
 }
 
-/// A request's account attribution; conflicts are diagnosed, never split.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum AccountAttribution {
-    /// One stable account identifier.
-    Attributed(String),
-    /// Observations name several accounts.
-    Conflicting(BTreeSet<String>),
-    /// No account is recorded.
-    Unknown,
-}
-
 /// Whether a request's usage counts in totals.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Counting {
@@ -283,8 +272,6 @@ pub struct Request {
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
     pub effort: Option<String>,
-    /// The account attribution.
-    pub account: AccountAttribution,
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
     /// Every original record, in canonical order.

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
-use crate::ledger::entities::{AccountAttribution, Counting, Ownership, Request};
+use crate::ledger::entities::{Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{IndexedSession, SessionIndex};
@@ -384,11 +384,8 @@ fn breakdowns(
 fn group_value(group: GroupBy, request: &Request, index: &SessionIndex) -> String {
     match group {
         GroupBy::Project => project_for_owners(request, index),
-        GroupBy::Account => match &request.account {
-            AccountAttribution::Attributed(account) => account.clone(),
-            AccountAttribution::Conflicting(_) => "conflicting".to_owned(),
-            AccountAttribution::Unknown => "unknown".to_owned(),
-        },
+        // No adapter records a stable account identifier yet.
+        GroupBy::Account => "unknown".to_owned(),
         GroupBy::Model => {
             request.model.as_ref().map_or("unknown", |model| model.name.as_str()).to_owned()
         }

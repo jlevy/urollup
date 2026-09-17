@@ -10,8 +10,8 @@ use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, sele
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::DiagnosticCode;
 use crate::ledger::entities::{
-    AccountAttribution, Basis, Confidence, Counting, Ownership, ProviderLimitObservation,
-    Relationship, RelationshipKind, RevisionStatus, Thread, ToolAction,
+    Basis, Confidence, Counting, Ownership, ProviderLimitObservation, Relationship,
+    RelationshipKind, RevisionStatus, Thread, ToolAction,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
@@ -181,13 +181,13 @@ fn copies_are_evidence_and_never_counted() {
     let original = observed(0, 0, "msg_1", 10);
     let mut copy = observed(1, 400, "msg_1", 999);
     copy.role = ObservationRole::Copy;
-    copy.owner = OwnerEvidence::Candidates(BTreeSet::from([thread("child")]));
+    copy.owner = OwnerEvidence::None;
     let ledger = run(vec![copy, original]);
     let request = ledger.requests.values().next().unwrap();
     assert_eq!(request.usage.as_ref().unwrap().revision.usage.output, Some(10));
     assert_eq!(*request.copies, [evidence(1, 400)]);
     assert_eq!(request.evidence.len(), 1);
-    // Proven ownership wins over the copy's candidate.
+    // The original's proven owner owns the request.
     assert_eq!(request.ownership, Ownership::Owned { thread: thread("t1") });
     let totals = ledger_totals(&ledger).unwrap();
     assert_eq!((totals.total.requests, totals.total.tokens.output), (1, Some(10)));
@@ -255,39 +255,15 @@ fn a_shared_key_with_disagreeing_invariants_is_ambiguous_not_merged() {
 }
 
 #[test]
-fn a_candidate_set_counts_the_strongest_basis_before_the_lowest_id() {
-    let mut native = observed(0, 0, "msg_1", 10);
-    native.candidate_tokens.insert("content-digest-1".to_owned());
-    let mut fallback = RequestObservation::new(evidence(1, 0), "test");
-    fallback.keys = vec![digest_key("t1", "content-digest-1")].into();
-    fallback.usage = Some(usage(100, 10));
-    fallback.candidate_tokens.insert("content-digest-1".to_owned());
-    let ledger = run(vec![fallback, native]);
-
-    assert_eq!(ledger.candidate_sets.len(), 1);
-    let native_id = response_key("msg_1").id;
-    for request in ledger.requests.values() {
-        let expected = if *request.id() == native_id {
-            Counting::Counted
-        } else {
-            Counting::Unresolved { counted: native_id.clone() }
-        };
-        assert_eq!(request.counting, expected);
-    }
-}
-
-#[test]
 fn ownership_is_owned_ambiguous_or_unknown() {
     let owned = observed(0, 0, "owned", 1);
     let mut contested = observed(0, 100, "contested", 1);
     let mut contested_copy = observed(1, 100, "contested", 1);
     contested_copy.owner = OwnerEvidence::Proven(thread("t2"));
     contested.owner = OwnerEvidence::Proven(thread("t1"));
-    let mut candidates = observed(0, 200, "candidates", 1);
-    candidates.owner = OwnerEvidence::Candidates(BTreeSet::from([thread("t1"), thread("t3")]));
     let mut unknown = observed(0, 300, "unknown", 1);
     unknown.owner = OwnerEvidence::None;
-    let ledger = run(vec![owned, contested, contested_copy, candidates, unknown]);
+    let ledger = run(vec![owned, contested, contested_copy, unknown]);
 
     let ownership = |response: &str| {
         let id = response_key(response).id;
@@ -298,24 +274,20 @@ fn ownership_is_owned_ambiguous_or_unknown() {
         ownership("contested"),
         Ownership::Ambiguous { candidates: BTreeSet::from([thread("t1"), thread("t2")]) }
     );
-    assert_eq!(
-        ownership("candidates"),
-        Ownership::Ambiguous { candidates: BTreeSet::from([thread("t1"), thread("t3")]) }
-    );
     assert_eq!(ownership("unknown"), Ownership::Unknown);
     assert_eq!(codes(&ledger), vec![DiagnosticCode::ConflictingOwners]);
 
     let totals = ledger_totals(&ledger).unwrap();
     assert_eq!(
         (totals.owned.requests, totals.ambiguous.requests, totals.unknown.requests),
-        (1, 2, 1)
+        (1, 1, 1)
     );
-    assert_eq!(totals.total.requests, 4);
+    assert_eq!(totals.total.requests, 3);
 
     // A selection counts owned requests and ambiguous ones wholly inside it; the rest are
     // possible and never added.
     let t1 = selection_totals(&ledger, &BTreeSet::from([thread("t1")])).unwrap();
-    assert_eq!((t1.counted.requests, t1.possible.requests), (1, 2));
+    assert_eq!((t1.counted.requests, t1.possible.requests), (1, 1));
     assert_eq!(
         t1.completeness,
         Completeness::Partial(BTreeSet::from([PartialReason::PossibleUsage]))
@@ -323,24 +295,8 @@ fn ownership_is_owned_ambiguous_or_unknown() {
     let wide =
         selection_totals(&ledger, &BTreeSet::from([thread("t1"), thread("t2"), thread("t3")]))
             .unwrap();
-    assert_eq!((wide.counted.requests, wide.possible.requests), (3, 0));
+    assert_eq!((wide.counted.requests, wide.possible.requests), (2, 0));
     assert_eq!(wide.completeness, Completeness::Complete);
-}
-
-#[test]
-fn conflicting_accounts_are_diagnosed_not_split() {
-    let mut a = observed(0, 0, "msg_1", 1);
-    a.account = Some("acct-1".to_owned());
-    let mut b = observed(1, 0, "msg_1", 1);
-    b.account = Some("acct-2".to_owned());
-    let ledger = run(vec![a, b]);
-    assert_eq!(ledger.requests.len(), 1);
-    let request = ledger.requests.values().next().unwrap();
-    assert_eq!(
-        request.account,
-        AccountAttribution::Conflicting(BTreeSet::from(["acct-1".to_owned(), "acct-2".to_owned()]))
-    );
-    assert_eq!(codes(&ledger), vec![DiagnosticCode::ConflictingAccounts]);
 }
 
 #[test]
@@ -576,8 +532,8 @@ fn only_consecutive_identical_limit_snapshots_collapse() {
     );
 }
 
-/// Observations drawn from a small universe, so keys, copies, conflicts, rereads and
-/// candidate tokens collide often.
+/// Observations drawn from a small universe, so keys, copies, conflicts and rereads
+/// collide often.
 fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
     (
         (0u8..3, 0u64..6),
@@ -588,50 +544,31 @@ fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
         prop::option::of((0u64..50, 0u64..50)),
         prop::option::of(0u64..4),
         prop::option::weighted(0.15, 0u8..2),
-        prop::option::weighted(0.2, 0u8..2),
-        prop::option::weighted(0.2, 0u8..2),
     )
-        .prop_map(
-            |(
-                (src, slot),
-                response,
-                digest,
-                copy,
-                owner,
-                used,
-                sequence,
-                session,
-                token,
-                account,
-            )| {
-                let mut observation = RequestObservation::new(evidence(src, slot * 100), "test");
-                if let Some(response) = response {
-                    observation.keys.push(response_key(&format!("msg_{response}")));
-                }
-                if let Some(digest) = digest {
-                    observation.keys.push(digest_key("t1", &format!("d{digest}")));
-                }
-                if copy {
-                    observation.role = ObservationRole::Copy;
-                }
-                observation.owner = match owner {
-                    0 => OwnerEvidence::None,
-                    1 => OwnerEvidence::Proven(thread("t1")),
-                    2 => OwnerEvidence::Proven(thread("t2")),
-                    _ => OwnerEvidence::Candidates(BTreeSet::from([thread("t1"), thread("t3")])),
-                };
-                observation.usage = used.map(|(input, output)| usage(input, output));
-                observation.sequence = sequence;
-                if let Some(session) = session {
-                    observation.invariants.push(("session", format!("s{session}")));
-                }
-                if let Some(token) = token {
-                    observation.candidate_tokens.insert(format!("c{token}"));
-                }
-                observation.account = account.map(|a| format!("acct-{a}"));
-                observation
-            },
-        )
+        .prop_map(|((src, slot), response, digest, copy, owner, used, sequence, session)| {
+            let mut observation = RequestObservation::new(evidence(src, slot * 100), "test");
+            if let Some(response) = response {
+                observation.keys.push(response_key(&format!("msg_{response}")));
+            }
+            if let Some(digest) = digest {
+                observation.keys.push(digest_key("t1", &format!("d{digest}")));
+            }
+            if copy {
+                observation.role = ObservationRole::Copy;
+            }
+            observation.owner = match owner {
+                0 => OwnerEvidence::None,
+                1 => OwnerEvidence::Proven(thread("t1")),
+                2 => OwnerEvidence::Proven(thread("t2")),
+                _ => OwnerEvidence::Proven(thread("t3")),
+            };
+            observation.usage = used.map(|(input, output)| usage(input, output));
+            observation.sequence = sequence;
+            if let Some(session) = session {
+                observation.invariants.push(("session", format!("s{session}")));
+            }
+            observation
+        })
 }
 
 fn arbitrary_entity_input() -> impl Strategy<Value = ReconcileInput> {
