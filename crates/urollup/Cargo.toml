@@ -1,7 +1,7 @@
 [package]
 name = "urollup"
 # clap takes `--help`'s summary from this, so it describes the tool a user runs.
-description = "Trustworthy token, cost and usage rollups from Claude Code, Codex and Pi session logs"
+description = "Trustworthy token and usage rollups from Claude Code and Codex session logs"
 readme = "../../README.md"
 keywords = ["usage", "tokens", "claude", "codex", "cli"]
 categories = ["command-line-utilities", "development-tools"]
@@ -39,6 +39,9 @@ clap = { version = "4.6.6", default-features = false, features = [
 ] }
 serde_json = "1.0.151"
 zstd = "0.13.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

@@ -2,6 +2,8 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -12,22 +14,28 @@ use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
     RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
-use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
+use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity};
 use crate::ledger::reconcile::{
     ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, RevisionChoice,
     RevisionSelector, reconcile,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{TokenMeasures, TokenUsage};
+use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{Fingerprint, SnapshotManifest};
-use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
-use crate::sources::roots::discover;
+use crate::sources::reader::{
+    RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
+};
+use crate::sources::roots::{Discovery, discover};
 
 const DIALECT: &str = "claude-project";
 const AGENT_NAMESPACE: &str = "claude";
 const PROVIDER_NAMESPACE: &str = "anthropic";
+// Sidecars contain only launch metadata. This hard ceiling bounds allocations even for
+// library callers that deliberately use an unlimited cumulative ingestion budget.
+const MAX_SUBAGENT_META_BYTES: u64 = 1024 * 1024;
 
 const REQUEST_SLOTS: &[ComponentSlot] = &[
     ComponentSlot::required("provider", ComponentRole::Namespace),
@@ -78,10 +86,45 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 #[derive(Clone)]
 struct ParsedRecord {
     evidence: EvidenceRef,
-    value: Value,
     source_thread: NativeThread,
     forced_copy: bool,
     request_record: bool,
+    uuid: Option<String>,
+    message_id: Option<String>,
+    request_id: Option<String>,
+    session_id: Option<String>,
+    project: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    timestamp: Option<jiff::Timestamp>,
+    sequence: Option<u64>,
+    usage: ParsedUsage,
+    tool_use_ids: Vec<String>,
+    quota_limits: Option<BTreeMap<String, Value>>,
+    limit_text: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParsedUsage {
+    input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    cache_write_5m: Option<u64>,
+    cache_write_1h: Option<u64>,
+    output: Option<u64>,
+    reasoning: Option<u64>,
+    advisors: Vec<AdvisorUsage>,
+}
+
+#[derive(Clone, Debug)]
+struct AdvisorUsage {
+    iteration_index: usize,
+    model: Option<String>,
+    input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+    reasoning: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -141,11 +184,7 @@ impl NativeThread {
                     .key(vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(digest)])?
                     .key
             }
-            None => IdentityKey::new(
-                IdPrefix::Thread,
-                "agent-thread",
-                vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(self.native_id())],
-            ),
+            None => return Ok(agent_thread_identity(Agent::Claude, &self.native_id())?),
         };
         Ok(StoredIdentity::derive(key)?)
     }
@@ -166,6 +205,28 @@ pub fn ingest_root(root: &Path) -> Result<Ingested, AdapterError> {
 /// are skipped.
 pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingested, AdapterError> {
     let discovery = discover(roots);
+    ingest_discovery(discovery, missing_is_error)
+}
+
+/// Reads a previously discovered set of Claude Code transcripts.
+///
+/// Callers that need exact session selection can filter `discovery.sources` before
+/// invoking this function, avoiding a second walk and full ingestion of unrelated
+/// transcripts while preserving paired plain/compressed representations.
+pub fn ingest_discovery(
+    discovery: Discovery,
+    missing_is_error: bool,
+) -> Result<Ingested, AdapterError> {
+    let mut budget = ReadBudget::unlimited();
+    ingest_discovery_with_budget(discovery, missing_is_error, &mut budget)
+}
+
+/// Reads discovered Claude Code transcripts under a shared ingestion budget.
+pub fn ingest_discovery_with_budget(
+    discovery: Discovery,
+    missing_is_error: bool,
+    budget: &mut ReadBudget,
+) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
     }
@@ -202,13 +263,14 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
             .files
             .primary()
             .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-        let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
-            decode_record(raw, &source_thread, &mut facts, &mut records)
-        })
-        .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+        let entry =
+            read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
+                decode_record(raw, &source_thread, &mut facts, &mut records)
+            })
+            .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
         if source_thread.agent.is_some() {
             if let (Some(identity), Some(meta)) =
-                (entry.source.as_ref(), read_subagent_meta(&path)?)
+                (entry.source.as_ref(), read_subagent_meta(&path, budget)?)
             {
                 subagent_meta.push(SubagentMeta {
                     child: source_thread,
@@ -222,21 +284,45 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
         source_facts.push(facts);
     }
 
-    normalize(&records, &source_facts, &subagent_meta, manifest)
+    normalize(records, &source_facts, &subagent_meta, manifest)
 }
 
-fn read_subagent_meta(transcript: &Path) -> Result<Option<Value>, AdapterError> {
+fn read_subagent_meta(
+    transcript: &Path,
+    budget: &mut ReadBudget,
+) -> Result<Option<Value>, AdapterError> {
+    read_subagent_meta_with_limit(transcript, budget, MAX_SUBAGENT_META_BYTES)
+}
+
+fn read_subagent_meta_with_limit(
+    transcript: &Path,
+    budget: &mut ReadBudget,
+    max_sidecar_bytes: u64,
+) -> Result<Option<Value>, AdapterError> {
     let transcript = if transcript.extension() == Some(std::ffi::OsStr::new("zst")) {
         transcript.with_extension("")
     } else {
         transcript.to_owned()
     };
     let path = transcript.with_extension("meta.json");
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let file = match File::open(&path) {
+        Ok(file) => file,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(AdapterError::MetadataRead { path, source }),
     };
+    let remaining = budget.decoded_bytes_remaining().unwrap_or(u64::MAX);
+    let read_limit = max_sidecar_bytes.min(remaining).saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|source| AdapterError::MetadataRead { path: path.clone(), source })?;
+    let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    budget
+        .charge_decoded_bytes(byte_count)
+        .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+    if byte_count > max_sidecar_bytes {
+        return Err(AdapterError::MetadataTooLarge { path, maximum: max_sidecar_bytes });
+    }
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|source| AdapterError::MetadataParse { path, source })
@@ -304,16 +390,92 @@ fn decode_record(
     };
     records.push(ParsedRecord {
         evidence: raw.evidence.clone(),
-        value,
         source_thread: record_thread,
         forced_copy,
         request_record,
+        uuid: text(&value, &["uuid"]).map(str::to_owned),
+        message_id: text(&value, &["message", "id"]).map(str::to_owned),
+        request_id: text(&value, &["requestId"]).map(str::to_owned),
+        session_id: text(&value, &["sessionId"]).map(str::to_owned),
+        project: text(&value, &["cwd"])
+            .and_then(|cwd| Path::new(cwd).file_name())
+            .map(|name| name.to_string_lossy().into_owned()),
+        model: text(&value, &["message", "model"]).map(str::to_owned),
+        effort: text(&value, &["effort"]).map(str::to_owned),
+        timestamp: text(&value, &["timestamp"])
+            .and_then(|timestamp| parse_timestamp(timestamp).ok()),
+        sequence: unsigned(&value, &["apiBlockIndex"]),
+        usage: parsed_usage(&value),
+        tool_use_ids: tool_use_ids(&value),
+        quota_limits: value
+            .get("quotaLimits")
+            .and_then(Value::as_object)
+            .map(|quota| quota.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
+        limit_text: usage_limit_text(&value),
     });
     RecordDisposition::Decoded
 }
 
+fn parsed_usage(value: &Value) -> ParsedUsage {
+    let mut advisors = Vec::new();
+    if let Some(iterations) = value.pointer("/message/usage/iterations").and_then(Value::as_array) {
+        for (iteration_index, iteration) in iterations.iter().enumerate() {
+            if text(iteration, &["type"]) != Some("advisor_message") {
+                continue;
+            }
+            advisors.push(AdvisorUsage {
+                iteration_index,
+                model: text(iteration, &["model"]).map(str::to_owned),
+                input: unsigned(iteration, &["input_tokens"]),
+                cache_read: unsigned(iteration, &["cache_read_input_tokens"]),
+                cache_write: unsigned(iteration, &["cache_creation_input_tokens"]),
+                output: unsigned(iteration, &["output_tokens"]),
+                reasoning: unsigned(iteration, &["reasoning"]),
+            });
+        }
+    }
+    ParsedUsage {
+        input: unsigned(value, &["message", "usage", "input_tokens"]),
+        cache_read: unsigned(value, &["message", "usage", "cache_read_input_tokens"]),
+        cache_write: unsigned(value, &["message", "usage", "cache_creation_input_tokens"]),
+        cache_write_5m: unsigned(
+            value,
+            &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"],
+        ),
+        cache_write_1h: unsigned(
+            value,
+            &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"],
+        ),
+        output: unsigned(value, &["message", "usage", "output_tokens"]),
+        reasoning: unsigned(
+            value,
+            &["message", "usage", "output_tokens_details", "thinking_tokens"],
+        ),
+        advisors,
+    }
+}
+
+fn tool_use_ids(value: &Value) -> Vec<String> {
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| text(block, &["type"]) == Some("tool_use"))
+        .filter_map(|block| text(block, &["id"]).map(str::to_owned))
+        .collect()
+}
+
+fn usage_limit_text(value: &Value) -> Option<String> {
+    (value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true))
+        .then(|| value.pointer("/message/content/0/text").and_then(Value::as_str))
+        .flatten()
+        .filter(|message| message.starts_with("Claude AI usage limit reached"))
+        .map(str::to_owned)
+}
+
 fn normalize(
-    records: &[ParsedRecord],
+    records: Vec<ParsedRecord>,
     source_facts: &[SourceFacts],
     subagent_meta: &[SubagentMeta],
     manifest: SnapshotManifest,
@@ -327,24 +489,22 @@ fn normalize(
     let mut message_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
     let mut uuid_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
     for record in records.iter().filter(|record| record.request_record && !record.forced_copy) {
-        if let Some(message_id) = text(&record.value, &["message", "id"]) {
+        if let Some(message_id) = &record.message_id {
             message_owners
-                .entry(message_id.to_owned())
+                .entry(message_id.clone())
                 .or_insert_with(|| record.source_thread.clone());
         }
-        if let Some(uuid) = text(&record.value, &["uuid"]) {
-            uuid_owners.entry(uuid.to_owned()).or_insert_with(|| record.source_thread.clone());
+        if let Some(uuid) = &record.uuid {
+            uuid_owners.entry(uuid.clone()).or_insert_with(|| record.source_thread.clone());
         }
     }
     let mut message_models: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for record in records {
+    for record in &records {
         if !record.request_record || is_replayed_record(record, &message_owners, &uuid_owners) {
             continue;
         }
-        if let (Some(message_id), Some(model)) =
-            (text(&record.value, &["message", "id"]), text(&record.value, &["message", "model"]))
-        {
-            message_models.entry(message_id.to_owned()).or_default().insert(model.to_owned());
+        if let (Some(message_id), Some(model)) = (&record.message_id, &record.model) {
+            message_models.entry(message_id.clone()).or_default().insert(model.clone());
         }
     }
     let ambiguous_messages: BTreeSet<String> = message_models
@@ -354,10 +514,10 @@ fn normalize(
     let mut native_threads: BTreeSet<NativeThread> =
         source_facts.iter().map(|facts| facts.thread.clone()).collect();
     let mut relationships = Vec::new();
-    for record in records {
+    for record in &records {
         native_threads.insert(record.source_thread.clone());
         let recorded_session =
-            text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session).to_owned();
+            record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
         native_threads.insert(NativeThread::main(recorded_session.clone()));
         if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
             relationships.push((
@@ -389,17 +549,9 @@ fn normalize(
     }
 
     let mut tool_owners = BTreeMap::new();
-    for record in records {
-        if let Some(content) = record.value.pointer("/message/content").and_then(Value::as_array) {
-            for block in content {
-                if let (Some("tool_use"), Some(tool_use_id)) =
-                    (text(block, &["type"]), text(block, &["id"]))
-                {
-                    tool_owners
-                        .entry(tool_use_id.to_owned())
-                        .or_insert_with(|| record.source_thread.clone());
-                }
-            }
+    for record in &records {
+        for tool_use_id in &record.tool_use_ids {
+            tool_owners.entry(tool_use_id.clone()).or_insert_with(|| record.source_thread.clone());
         }
     }
     let purpose_by_thread: BTreeMap<NativeThread, String> = subagent_meta
@@ -455,16 +607,15 @@ fn normalize(
             thread_evidence.entry(inline.clone()).or_default().push(evidence.clone());
         }
     }
-    for record in records {
+    for record in &records {
         thread_evidence
             .entry(record.source_thread.clone())
             .or_default()
             .push(record.evidence.clone());
-        if let Some(project) = text(&record.value, &["cwd"])
-            .and_then(|cwd| Path::new(cwd).file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-        {
-            project_by_thread.entry(record.source_thread.clone()).or_insert(project);
+        if let Some(project) = &record.project {
+            project_by_thread
+                .entry(record.source_thread.clone())
+                .or_insert_with(|| project.clone());
         }
     }
     for evidence in thread_evidence.values_mut() {
@@ -544,7 +695,7 @@ fn normalize(
             records
                 .iter()
                 .filter(|record| {
-                    text(&record.value, &["message", "id"]) == Some(message_id.as_str())
+                    record.message_id.as_deref() == Some(message_id.as_str())
                         && !is_replayed_record(record, &message_owners, &uuid_owners)
                 })
                 .map(|record| record.evidence.clone()),
@@ -552,11 +703,11 @@ fn normalize(
         ));
     }
     for record in records {
-        append_limits(record, &ids, &ambiguous_messages, &mut limit_observations)?;
+        append_limits(&record, &ids, &ambiguous_messages, &mut limit_observations)?;
         if !record.request_record {
             continue;
         }
-        if let Some((flat, breakdown)) = cache_breakdown_mismatch(&record.value) {
+        if let Some((flat, breakdown)) = cache_breakdown_mismatch(&record.usage) {
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::UsageInconsistency,
                 None,
@@ -566,11 +717,11 @@ fn normalize(
                 ),
             ));
         }
-        let message_id = text(&record.value, &["message", "id"]);
-        let request_id = text(&record.value, &["requestId"]);
+        let message_id = record.message_id.as_deref();
+        let request_id = record.request_id.as_deref();
         let mut observation = RequestObservation::new(record.evidence.clone(), DIALECT);
         let recorded_session =
-            text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session).to_owned();
+            record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
         if let Some(message_id) = message_id {
             let key = if ambiguous_messages.contains(message_id) {
                 AMBIGUOUS_RESPONSE_KEY.key(vec![
@@ -609,7 +760,9 @@ fn normalize(
                     || (record.source_thread.is_child() && *owner != &record.source_thread)
             })
             .or_else(|| {
-                text(&record.value, &["uuid"])
+                record
+                    .uuid
+                    .as_deref()
                     .and_then(|uuid| uuid_owners.get(uuid))
                     .filter(|owner| *owner != &record.source_thread)
             });
@@ -627,17 +780,20 @@ fn normalize(
         } else {
             ObservationRole::Original
         };
-        let (usage, model_usage) = claude_usage(&record.value)?;
-        observation.usage = Some(usage);
-        observation.model_usage = model_usage;
-        observation.sequence = unsigned(&record.value, &["apiBlockIndex"]);
-        observation.model = text(&record.value, &["message", "model"])
-            .map(|name| ModelName { name: name.to_owned(), basis: ModelBasis::Served });
-        observation.effort = text(&record.value, &["effort"]).map(str::to_owned);
-        observation.timestamp = text(&record.value, &["timestamp"])
-            .and_then(|timestamp| parse_timestamp(timestamp).ok());
-        if let Some(model) = observation.model.as_ref() {
-            observation.invariants.insert("model".to_owned(), model.name.clone());
+        if observation.role == ObservationRole::Original {
+            let (usage, model_usage) = claude_usage(&record)?;
+            observation.usage = Some(usage);
+            observation.model_usage = model_usage;
+            observation.sequence = record.sequence;
+            observation.model = record
+                .model
+                .as_ref()
+                .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served });
+            observation.effort.clone_from(&record.effort);
+            observation.timestamp = record.timestamp;
+            if let Some(model) = observation.model.as_ref() {
+                observation.invariants.insert("model".to_owned(), model.name.clone());
+            }
         }
         observations.push(observation);
     }
@@ -710,8 +866,7 @@ fn append_limits(
     ambiguous_messages: &BTreeSet<String>,
     limits: &mut Vec<ProviderLimitObservation>,
 ) -> Result<(), AdapterError> {
-    let session =
-        text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session).to_owned();
+    let session = record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
     let native_owner = if record.source_thread.inline_digest.is_some() {
         record.source_thread.clone()
     } else {
@@ -722,11 +877,11 @@ fn append_limits(
         }
     };
     let owner_thread = ids.get(&native_owner).cloned();
-    let observed_at = text(&record.value, &["timestamp"])
-        .and_then(|timestamp| parse_timestamp(timestamp).ok())
-        .map_or(Basis::Unknown, Basis::Observed);
-    if let Some(quota) = record.value.get("quotaLimits").and_then(Value::as_object) {
-        let owner_request = text(&record.value, &["message", "id"])
+    let observed_at = record.timestamp.map_or(Basis::Unknown, Basis::Observed);
+    if let Some(quota) = &record.quota_limits {
+        let owner_request = record
+            .message_id
+            .as_deref()
             .map(|message_id| {
                 if ambiguous_messages.contains(message_id) {
                     AMBIGUOUS_RESPONSE_KEY.key(vec![
@@ -749,37 +904,28 @@ fn append_limits(
             observed_at: observed_at.clone(),
             owner_thread: owner_thread.clone(),
             owner_request,
-            native: quota.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            native: quota.clone(),
             evidence: record.evidence.clone(),
         });
     }
-    if record.value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-        let message = record
-            .value
-            .pointer("/message/content/0/text")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if message.starts_with("Claude AI usage limit reached") {
-            limits.push(ProviderLimitObservation {
-                limit_name: None,
-                window: None,
-                observed_at,
-                owner_thread,
-                owner_request: None,
-                native: BTreeMap::from([("text".to_owned(), Value::String(message.to_owned()))]),
-                evidence: record.evidence.clone(),
-            });
-        }
+    if let Some(message) = &record.limit_text {
+        limits.push(ProviderLimitObservation {
+            limit_name: None,
+            window: None,
+            observed_at,
+            owner_thread,
+            owner_request: None,
+            native: BTreeMap::from([("text".to_owned(), Value::String(message.clone()))]),
+            evidence: record.evidence.clone(),
+        });
     }
     Ok(())
 }
 
-fn cache_breakdown_mismatch(value: &Value) -> Option<(u64, u64)> {
-    let flat = unsigned(value, &["message", "usage", "cache_creation_input_tokens"])?;
-    let five =
-        unsigned(value, &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"]);
-    let hour =
-        unsigned(value, &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"]);
+fn cache_breakdown_mismatch(usage: &ParsedUsage) -> Option<(u64, u64)> {
+    let flat = usage.cache_write?;
+    let five = usage.cache_write_5m;
+    let hour = usage.cache_write_1h;
     if five.is_none() && hour.is_none() {
         return None;
     }
@@ -795,31 +941,31 @@ fn is_replayed_record(
     if record.forced_copy {
         return true;
     }
-    let recorded_session =
-        text(&record.value, &["sessionId"]).unwrap_or(&record.source_thread.session);
+    let recorded_session = record.session_id.as_deref().unwrap_or(&record.source_thread.session);
     if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
         return true;
     }
-    let message_replayed = text(&record.value, &["message", "id"])
+    let message_replayed = record
+        .message_id
+        .as_deref()
         .and_then(|message_id| message_owners.get(message_id))
         .is_some_and(|owner| record.source_thread.is_child() && owner != &record.source_thread);
-    let uuid_replayed = text(&record.value, &["uuid"])
+    let uuid_replayed = record
+        .uuid
+        .as_deref()
         .and_then(|uuid| uuid_owners.get(uuid))
         .is_some_and(|owner| owner != &record.source_thread);
     message_replayed || uuid_replayed
 }
 
-fn claude_usage(value: &Value) -> Result<(TokenUsage, Vec<ModelUsage>), AdapterError> {
-    let input = unsigned(value, &["message", "usage", "input_tokens"]);
-    let cache_read = unsigned(value, &["message", "usage", "cache_read_input_tokens"]);
-    let flat_write = unsigned(value, &["message", "usage", "cache_creation_input_tokens"]);
-    let five_minute_write =
-        unsigned(value, &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"]);
-    let one_hour_write =
-        unsigned(value, &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"]);
-    let output = unsigned(value, &["message", "usage", "output_tokens"]);
-    let reasoning =
-        unsigned(value, &["message", "usage", "output_tokens_details", "thinking_tokens"]);
+fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), AdapterError> {
+    let input = record.usage.input;
+    let cache_read = record.usage.cache_read;
+    let flat_write = record.usage.cache_write;
+    let five_minute_write = record.usage.cache_write_5m;
+    let one_hour_write = record.usage.cache_write_1h;
+    let output = record.usage.output;
+    let reasoning = record.usage.reasoning;
     let mut native = BTreeMap::new();
     for (name, count) in [
         ("message.usage.input_tokens", input),
@@ -853,52 +999,47 @@ fn claude_usage(value: &Value) -> Result<(TokenUsage, Vec<ModelUsage>), AdapterE
     let primary = TokenUsage { measures, native };
     let mut usage = primary.clone();
     let mut model_usage = vec![ModelUsage {
-        model: text(value, &["message", "model"])
-            .map(|name| ModelName { name: name.to_owned(), basis: ModelBasis::Served }),
+        model: record
+            .model
+            .as_ref()
+            .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served }),
         usage: primary,
         source: "message.usage",
     }];
-    if let Some(iterations) = value
-        .get("message")
-        .and_then(|message| message.get("usage"))
-        .and_then(|usage| usage.get("iterations"))
-        .and_then(Value::as_array)
-    {
-        for (index, iteration) in iterations.iter().enumerate() {
-            if text(iteration, &["type"]) != Some("advisor_message") {
-                continue;
+    for iteration in &record.usage.advisors {
+        let cache_write = iteration.cache_write;
+        let advisor = TokenMeasures {
+            uncached_input: iteration.input,
+            cache_read: iteration.cache_read,
+            cache_write_unspecified: cache_write,
+            output: iteration.output,
+            reasoning: iteration.reasoning,
+            ..TokenMeasures::default()
+        };
+        usage.measures = usage.measures.checked_add(&advisor)?;
+        let mut advisor_native = BTreeMap::new();
+        for (field, count) in [
+            ("input_tokens", advisor.uncached_input),
+            ("cache_read_input_tokens", advisor.cache_read),
+            ("cache_creation_input_tokens", advisor.cache_write_unspecified),
+            ("output_tokens", advisor.output),
+            ("reasoning", advisor.reasoning),
+        ] {
+            if let Some(count) = count {
+                let path =
+                    format!("message.usage.iterations[{}].{field}", iteration.iteration_index);
+                usage.native.insert(path.clone(), count);
+                advisor_native.insert(path, count);
             }
-            let cache_write = unsigned(iteration, &["cache_creation_input_tokens"]);
-            let advisor = TokenMeasures {
-                uncached_input: unsigned(iteration, &["input_tokens"]),
-                cache_read: unsigned(iteration, &["cache_read_input_tokens"]),
-                cache_write_unspecified: cache_write,
-                output: unsigned(iteration, &["output_tokens"]),
-                reasoning: unsigned(iteration, &["reasoning"]),
-                ..TokenMeasures::default()
-            };
-            usage.measures = usage.measures.checked_add(&advisor)?;
-            let mut advisor_native = BTreeMap::new();
-            for (field, count) in [
-                ("input_tokens", advisor.uncached_input),
-                ("cache_read_input_tokens", advisor.cache_read),
-                ("cache_creation_input_tokens", advisor.cache_write_unspecified),
-                ("output_tokens", advisor.output),
-                ("reasoning", advisor.reasoning),
-            ] {
-                if let Some(count) = count {
-                    let path = format!("message.usage.iterations[{index}].{field}");
-                    usage.native.insert(path.clone(), count);
-                    advisor_native.insert(path, count);
-                }
-            }
-            model_usage.push(ModelUsage {
-                model: text(iteration, &["model"])
-                    .map(|name| ModelName { name: name.to_owned(), basis: ModelBasis::Served }),
-                usage: TokenUsage { measures: advisor, native: advisor_native },
-                source: "advisor_message",
-            });
         }
+        model_usage.push(ModelUsage {
+            model: iteration
+                .model
+                .as_ref()
+                .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served }),
+            usage: TokenUsage { measures: advisor, native: advisor_native },
+            source: "advisor_message",
+        });
     }
     Ok((usage, model_usage))
 }
@@ -981,11 +1122,50 @@ fn thread_from_path(locator: &str) -> NativeThread {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClaudeBlockSelector, claude_usage};
+    use std::fs;
+
+    use serde_json::Value;
+
+    use super::{
+        ClaudeBlockSelector, NativeThread, ParsedRecord, claude_usage, parsed_usage,
+        read_subagent_meta_with_limit, tool_use_ids,
+    };
+    use crate::adapters::AdapterError;
     use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
     use crate::ledger::reconcile::{RequestObservation, RevisionSelector};
     use crate::ledger::tokens::TokenMeasures;
     use crate::sources::evidence::EvidenceRef;
+    use crate::sources::reader::{ReadBudget, SourceReadError};
+
+    #[test]
+    fn oversized_subagent_metadata_is_rejected_before_json_decode() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("agent-example.jsonl");
+        fs::write(transcript.with_extension("meta.json"), vec![b' '; 33]).unwrap();
+        let mut budget = ReadBudget::unlimited();
+
+        let error = read_subagent_meta_with_limit(&transcript, &mut budget, 32).unwrap_err();
+
+        assert!(matches!(error, AdapterError::MetadataTooLarge { maximum: 32, .. }));
+    }
+
+    #[test]
+    fn subagent_metadata_charges_the_shared_decoded_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("agent-example.jsonl");
+        fs::write(transcript.with_extension("meta.json"), br#"{"toolUseId":"tool-one"}"#).unwrap();
+        let mut budget = ReadBudget::new(5, u64::MAX);
+
+        let error = read_subagent_meta_with_limit(&transcript, &mut budget, 1024).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AdapterError::Read {
+                source: SourceReadError::DecodedByteBudgetExceeded { maximum: 5 },
+                ..
+            }
+        ));
+    }
 
     fn observation(offset: u64, block: u64) -> RequestObservation {
         let source =
@@ -1000,6 +1180,32 @@ mod tests {
             native: std::collections::BTreeMap::new(),
         });
         observation
+    }
+
+    fn parsed_record(value: &Value) -> ParsedRecord {
+        let source =
+            IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::text("claude")])
+                .derive_id()
+                .unwrap();
+        ParsedRecord {
+            evidence: EvidenceRef { source, offset: 0, length: 1 },
+            source_thread: NativeThread::main("session-one"),
+            forced_copy: false,
+            request_record: true,
+            uuid: None,
+            message_id: value.pointer("/message/id").and_then(Value::as_str).map(str::to_owned),
+            request_id: None,
+            session_id: None,
+            project: None,
+            model: value.pointer("/message/model").and_then(Value::as_str).map(str::to_owned),
+            effort: None,
+            timestamp: None,
+            sequence: None,
+            usage: parsed_usage(value),
+            tool_use_ids: tool_use_ids(value),
+            quota_limits: None,
+            limit_text: None,
+        }
     }
 
     #[test]
@@ -1026,9 +1232,68 @@ mod tests {
                 }
             }
         });
-        let (usage, model_usage) = claude_usage(&value).unwrap();
+        let record = parsed_record(&value);
+        let (usage, model_usage) = claude_usage(&record).unwrap();
         assert_eq!(usage.measures.uncached_input, Some(3));
         assert_eq!(usage.measures.output, Some(10));
         assert_eq!(model_usage.len(), 1);
+    }
+
+    #[test]
+    fn advisor_native_paths_keep_the_original_iteration_index() {
+        let value = serde_json::json!({
+            "message": {
+                "model": "claude-test",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 10,
+                    "iterations": [
+                        {
+                            "type": "message",
+                            "input_tokens": 3,
+                            "output_tokens": 10
+                        },
+                        {
+                            "type": "advisor_message",
+                            "model": "claude-advisor",
+                            "input_tokens": 5,
+                            "output_tokens": 7
+                        }
+                    ]
+                }
+            }
+        });
+        let record = parsed_record(&value);
+        let (usage, model_usage) = claude_usage(&record).unwrap();
+
+        let advisor_input = "message.usage.iterations[1].input_tokens";
+        assert_eq!(usage.native.get(advisor_input), Some(&5));
+        assert_eq!(model_usage[1].usage.native.get(advisor_input), Some(&5));
+        assert!(!usage.native.contains_key("message.usage.iterations[0].input_tokens"));
+    }
+
+    #[test]
+    fn typed_records_drop_content_but_keep_tool_ownership_and_usage() {
+        let payload = "x".repeat(2 * 1024 * 1024);
+        let value = serde_json::json!({
+            "type": "assistant",
+            "uuid": "record-one",
+            "message": {
+                "id": "message-one",
+                "model": "claude-test",
+                "usage": {"input_tokens": 3, "output_tokens": 10},
+                "content": [
+                    {"type": "text", "text": payload},
+                    {"type": "tool_use", "id": "tool-one", "input": {"prompt": payload}}
+                ]
+            }
+        });
+
+        let record = parsed_record(&value);
+
+        assert_eq!(record.message_id.as_deref(), Some("message-one"));
+        assert_eq!(record.tool_use_ids, ["tool-one"]);
+        assert_eq!(record.usage.input, Some(3));
+        assert_eq!(record.usage.output, Some(10));
     }
 }

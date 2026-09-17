@@ -41,9 +41,9 @@ use super::entities::{
     ProviderLimitObservation, Relationship, RelationshipKind, Request, RevisionStatus,
     SelectedUsage, Thread, ToolAction, UsageRevision,
 };
-use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
-use super::linking::{LinkGraph, ResolvedKey, resolve_linked_set};
-use super::scope::{ScopedKey, artifact_local_key};
+use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry, StoredIdentity};
+use super::linking::{LinkGraph, LinkedIdentity};
+use super::scope::{IdentityBasis, ScopedKey, artifact_local_key};
 use super::tokens::TokenUsage;
 use crate::sources::evidence::EvidenceRef;
 
@@ -294,8 +294,21 @@ pub enum ReconcileError {
 /// One observation with its derived identities.
 struct Resolved {
     observation: RequestObservation,
-    keys: Vec<ResolvedKey>,
-    local: ResolvedKey,
+    keys: Vec<ResolvedId>,
+    local: Option<ResolvedId>,
+}
+
+/// A derived observation key without another copy of its stored key components.
+struct ResolvedId {
+    precedence: u8,
+    basis: IdentityBasis,
+    id: AnalyticalId,
+}
+
+impl ResolvedId {
+    fn id(&self) -> &AnalyticalId {
+        &self.id
+    }
 }
 
 /// Reconciles normalized observations into a ledger; see the module documentation.
@@ -328,7 +341,13 @@ pub fn reconcile(
     // Link observations sharing a key ID, and IDs joined by lineage evidence.
     let mut graph = LinkGraph::new();
     for item in &resolved {
-        let first = item.keys.first().unwrap_or(&item.local).id().clone();
+        let first = item
+            .keys
+            .first()
+            .or(item.local.as_ref())
+            .expect("a resolved observation has a native or artifact-local key")
+            .id()
+            .clone();
         graph.insert(&first);
         for key in &item.keys {
             graph.link(&first, key.id());
@@ -340,7 +359,12 @@ pub fn reconcile(
     }
     let mut groups: BTreeMap<AnalyticalId, Vec<&Resolved>> = BTreeMap::new();
     for item in &resolved {
-        let first = item.keys.first().unwrap_or(&item.local).id();
+        let first = item
+            .keys
+            .first()
+            .or(item.local.as_ref())
+            .expect("a resolved observation has a native or artifact-local key")
+            .id();
         groups.entry(graph.find(first)).or_default().push(item);
     }
 
@@ -358,7 +382,7 @@ pub fn reconcile(
         let mut split_ids = Vec::new();
         for part in parts {
             let Some(request) =
-                build_request(&part, !split.is_empty(), selector, &mut diagnostics)?
+                build_request(&part, !split.is_empty(), selector, &mut registry, &mut diagnostics)?
             else {
                 continue;
             };
@@ -851,27 +875,53 @@ fn resolve_identities(
     let mut resolved = Vec::with_capacity(observations.len());
     for observation in observations {
         let mut keys = Vec::with_capacity(observation.keys.len());
-        for key in &observation.keys {
+        for key in std::mem::take(&mut observation.keys) {
             if key.key.prefix != IdPrefix::Request {
                 return Err(ReconcileError::WrongPrefix {
                     evidence: observation.evidence.clone(),
                     prefix: key.key.prefix,
                 });
             }
-            registry.derive(&key.key)?;
-            keys.push(ResolvedKey::derive(key.clone())?);
+            let id = registry.derive(&key.key)?;
+            keys.push(ResolvedId { precedence: key.precedence, basis: key.basis, id });
         }
-        let local_key = artifact_local_key(
-            IdPrefix::Request,
-            &observation.evidence.source,
-            observation.evidence.offset,
-        )
-        .ok_or_else(|| ReconcileError::OffsetOutOfRange(observation.evidence.clone()))?;
-        registry.derive(&local_key.key)?;
-        let local = ResolvedKey::derive(local_key)?;
+        let local = keys
+            .is_empty()
+            .then(|| resolve_artifact_local(&observation.evidence, registry))
+            .transpose()?;
         resolved.push(Resolved { observation, keys, local });
     }
     Ok(resolved)
+}
+
+fn resolve_artifact_local(
+    evidence: &EvidenceRef,
+    registry: &mut IdentityRegistry,
+) -> Result<ResolvedId, ReconcileError> {
+    let key = artifact_local_key(IdPrefix::Request, &evidence.source, evidence.offset)
+        .ok_or_else(|| ReconcileError::OffsetOutOfRange(evidence.clone()))?;
+    let id = registry.derive(&key.key)?;
+    Ok(ResolvedId { precedence: key.precedence, basis: key.basis, id })
+}
+
+fn resolve_compact_set<'a>(
+    members: impl IntoIterator<Item = &'a ResolvedId>,
+    registry: &IdentityRegistry,
+) -> Option<LinkedIdentity> {
+    let unique: BTreeSet<(u8, IdentityBasis, &AnalyticalId)> =
+        members.into_iter().map(|key| (key.precedence, key.basis, &key.id)).collect();
+    let mut ranked = unique.into_iter();
+    let (_, basis, canonical_id) = ranked.next()?;
+    let stored = |id: &AnalyticalId| StoredIdentity {
+        id: id.clone(),
+        key: registry.key(id).expect("every resolved observation ID is registered").clone(),
+    };
+    let canonical = stored(canonical_id);
+    let mut aliases: Vec<StoredIdentity> =
+        ranked.filter(|(_, _, id)| *id != canonical_id).map(|(_, _, id)| stored(id)).collect();
+    aliases.sort();
+    aliases.dedup_by(|left, right| left.id == right.id);
+    Some(LinkedIdentity { canonical, basis, aliases })
 }
 
 /// Revision-invariant fields on which the group's observations disagree.
@@ -893,18 +943,32 @@ fn build_request(
     members: &[&Resolved],
     split: bool,
     selector: &dyn RevisionSelector,
+    registry: &mut IdentityRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<Request>, ReconcileError> {
     // A split part has only its artifact-local ID; otherwise every key of every member
     // counts, with the artifact-local ID standing in for a member that has no key.
-    let identities = members.iter().flat_map(|member| {
-        if split || member.keys.is_empty() {
-            std::slice::from_ref(&member.local)
-        } else {
-            member.keys.as_slice()
+    let local_keys = if split {
+        members
+            .iter()
+            .map(|member| resolve_artifact_local(&member.observation.evidence, registry))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let mut identities = Vec::new();
+    if split {
+        identities.extend(local_keys.iter());
+    } else {
+        for member in members {
+            if member.keys.is_empty() {
+                identities.extend(member.local.iter());
+            } else {
+                identities.extend(member.keys.iter());
+            }
         }
-    });
-    let Some(linked) = resolve_linked_set(identities) else {
+    }
+    let Some(linked) = resolve_compact_set(identities, registry) else {
         return Ok(None);
     };
     let id = linked.canonical.id.clone();

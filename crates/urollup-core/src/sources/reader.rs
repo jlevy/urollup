@@ -76,6 +76,71 @@ impl Default for ReadOptions {
     }
 }
 
+/// A cumulative hard limit shared by one or more source scans.
+///
+/// Decoded bytes are charged after decompression, and records are charged before they
+/// are delivered to an adapter. Sharing one value across calls keeps a multi-file
+/// ingestion bounded rather than applying the full allowance to every file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadBudget {
+    max_decoded_bytes: Option<u64>,
+    max_records: Option<u64>,
+    decoded_bytes: u64,
+    records: u64,
+}
+
+impl ReadBudget {
+    /// Builds a budget with hard decoded-byte and record-count limits.
+    pub const fn new(max_decoded_bytes: u64, max_records: u64) -> Self {
+        Self {
+            max_decoded_bytes: Some(max_decoded_bytes),
+            max_records: Some(max_records),
+            decoded_bytes: 0,
+            records: 0,
+        }
+    }
+
+    /// Builds an unlimited budget for callers that manage capacity elsewhere.
+    pub const fn unlimited() -> Self {
+        Self { max_decoded_bytes: None, max_records: None, decoded_bytes: 0, records: 0 }
+    }
+
+    /// Returns the decoded-byte allowance still available, or `None` when unlimited.
+    pub fn decoded_bytes_remaining(&self) -> Option<u64> {
+        self.max_decoded_bytes.map(|maximum| maximum.saturating_sub(self.decoded_bytes))
+    }
+
+    /// Charges decoded bytes consumed outside the primary source scanner.
+    ///
+    /// Adapters use this for auxiliary inputs, such as sidecars, so every input they
+    /// decode participates in the same cumulative ingestion limit.
+    pub fn charge_decoded_bytes(&mut self, bytes: u64) -> Result<(), SourceReadError> {
+        if self.decoded_bytes_remaining().is_some_and(|remaining| bytes > remaining) {
+            return Err(SourceReadError::DecodedByteBudgetExceeded {
+                maximum: self.max_decoded_bytes.unwrap_or(0),
+            });
+        }
+        self.decoded_bytes = self.decoded_bytes.saturating_add(bytes);
+        Ok(())
+    }
+
+    fn charge_record(&mut self) -> Result<(), SourceReadError> {
+        if let Some(maximum) = self.max_records {
+            if self.records >= maximum {
+                return Err(SourceReadError::RecordBudgetExceeded { maximum });
+            }
+        }
+        self.records = self.records.saturating_add(1);
+        Ok(())
+    }
+}
+
+impl Default for ReadBudget {
+    fn default() -> Self {
+        Self::unlimited()
+    }
+}
+
 /// What the visitor did with a record, counted per source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordDisposition {
@@ -177,6 +242,18 @@ pub enum SourceReadError {
     /// The source ID could not be derived.
     #[error(transparent)]
     Identity(#[from] IdentityError),
+    /// Decompressed input exceeded the cumulative ingestion allowance.
+    #[error("decoded source input exceeds the ingestion limit of {maximum} bytes")]
+    DecodedByteBudgetExceeded {
+        /// The maximum decoded bytes allowed across the ingestion.
+        maximum: u64,
+    },
+    /// Source records exceeded the cumulative ingestion allowance.
+    #[error("source records exceed the ingestion limit of {maximum}")]
+    RecordBudgetExceeded {
+        /// The maximum records allowed across the ingestion.
+        maximum: u64,
+    },
 }
 
 /// Reads one logical source, streaming its complete records to `visit`.
@@ -190,6 +267,20 @@ where
     F: FnMut(&RawRecord<'_>) -> RecordDisposition,
 {
     read_source_with_hooks(spec, files, options, visit, &mut NoHooks)
+}
+
+/// Reads one logical source under a cumulative decoded-byte and record-count budget.
+pub fn read_source_with_budget<F>(
+    spec: &SourceSpec<'_>,
+    files: &LogicalSource,
+    options: &ReadOptions,
+    budget: &mut ReadBudget,
+    visit: F,
+) -> Result<ManifestEntry, SourceReadError>
+where
+    F: FnMut(&RawRecord<'_>) -> RecordDisposition,
+{
+    read_source_with_hooks_and_budget(spec, files, options, budget, visit, &mut NoHooks)
 }
 
 /// Points where a test can change the filesystem mid-scan; a deterministic replacement,
@@ -211,6 +302,21 @@ pub(crate) fn read_source_with_hooks<F>(
     spec: &SourceSpec<'_>,
     files: &LogicalSource,
     options: &ReadOptions,
+    visit: F,
+    hooks: &mut dyn ScanHooks,
+) -> Result<ManifestEntry, SourceReadError>
+where
+    F: FnMut(&RawRecord<'_>) -> RecordDisposition,
+{
+    let mut budget = ReadBudget::unlimited();
+    read_source_with_hooks_and_budget(spec, files, options, &mut budget, visit, hooks)
+}
+
+fn read_source_with_hooks_and_budget<F>(
+    spec: &SourceSpec<'_>,
+    files: &LogicalSource,
+    options: &ReadOptions,
+    budget: &mut ReadBudget,
     mut visit: F,
     hooks: &mut dyn ScanHooks,
 ) -> Result<ManifestEntry, SourceReadError>
@@ -248,7 +354,7 @@ where
         pending: None,
     };
     let mut reader = reader_for(opened, snapshot_len, representation);
-    scan.run(&mut reader, spec, options, &mut visit)?;
+    scan.run(&mut reader, spec, options, budget, &mut visit)?;
     hooks.after_scan(path);
 
     let twin = twin_identity(files, spec, options, &mut scan.failures);
@@ -307,6 +413,7 @@ impl Scan {
         reader: &mut dyn BufRead,
         spec: &SourceSpec<'_>,
         options: &ReadOptions,
+        budget: &mut ReadBudget,
         visit: &mut F,
     ) -> Result<(), SourceReadError>
     where
@@ -315,7 +422,12 @@ impl Scan {
         let mut buffer = Vec::new();
         loop {
             buffer.clear();
-            let line = match read_line(reader, &mut buffer, options.max_record_bytes) {
+            let line = match read_line(
+                reader,
+                &mut buffer,
+                options.max_record_bytes,
+                budget.decoded_bytes_remaining(),
+            ) {
                 Ok(line) => line,
                 Err(error) => {
                     self.failures.push(read_failure(&error, self.offset));
@@ -324,7 +436,13 @@ impl Scan {
             };
             match line {
                 Line::Eof => return Ok(()),
+                Line::BudgetExceeded => {
+                    return Err(SourceReadError::DecodedByteBudgetExceeded {
+                        maximum: budget.max_decoded_bytes.unwrap_or(0),
+                    });
+                }
                 Line::Pending { length, oversized } => {
+                    budget.charge_decoded_bytes(length)?;
                     if oversized {
                         self.counters.oversized = self.counters.oversized.saturating_add(1);
                         self.failures
@@ -335,16 +453,19 @@ impl Scan {
                     return Ok(());
                 }
                 Line::Oversized { length } => {
+                    budget.charge_decoded_bytes(length.saturating_add(1))?;
                     self.counters.oversized = self.counters.oversized.saturating_add(1);
                     self.failures.push(CoverageFailure::Oversized { offset: self.offset, length });
                     self.advance(length);
                 }
                 Line::Complete { length } => {
+                    budget.charge_decoded_bytes(length.saturating_add(1))?;
                     if buffer.iter().all(u8::is_ascii_whitespace) {
                         self.counters.blank_lines = self.counters.blank_lines.saturating_add(1);
                         self.advance(length);
                         continue;
                     }
+                    budget.charge_record()?;
                     if self.fingerprint.is_none() {
                         let fingerprint = Fingerprint::of(&buffer);
                         self.fingerprint = Some(fingerprint);
@@ -461,10 +582,17 @@ enum Line {
     Oversized { length: u64 },
     /// Bytes after the last terminator: an unfinished tail.
     Pending { length: u64, oversized: bool },
+    /// Reading another decoded byte would exceed the shared ingestion budget.
+    BudgetExceeded,
 }
 
 /// Reads one line into `buffer` without its terminator, buffering at most `limit` bytes.
-fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io::Result<Line> {
+fn read_line(
+    reader: &mut dyn BufRead,
+    buffer: &mut Vec<u8>,
+    limit: usize,
+    decoded_remaining: Option<u64>,
+) -> io::Result<Line> {
     let mut length: u64 = 0;
     let mut oversized = false;
     loop {
@@ -477,6 +605,10 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
             return Ok(if length == 0 { Line::Eof } else { Line::Pending { length, oversized } });
         }
         if let Some(newline) = memchr::memchr(b'\n', available) {
+            let decoded = length.saturating_add(newline as u64).saturating_add(1);
+            if decoded_remaining.is_some_and(|remaining| decoded > remaining) {
+                return Ok(Line::BudgetExceeded);
+            }
             if !oversized {
                 if buffer.len().saturating_add(newline) > limit {
                     oversized = true;
@@ -494,6 +626,10 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
             });
         }
         let taken = available.len();
+        let decoded = length.saturating_add(taken as u64);
+        if decoded_remaining.is_some_and(|remaining| decoded > remaining) {
+            return Ok(Line::BudgetExceeded);
+        }
         if !oversized {
             if buffer.len().saturating_add(taken) > limit {
                 oversized = true;
@@ -608,13 +744,17 @@ fn first_record_fingerprint(path: &Path) -> Option<Fingerprint> {
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
-        match read_line(&mut reader, &mut buffer, ReadOptions::DEFAULT_MAX_RECORD_BYTES).ok()? {
+        match read_line(&mut reader, &mut buffer, ReadOptions::DEFAULT_MAX_RECORD_BYTES, None)
+            .ok()?
+        {
             Line::Complete { .. } => {
                 if !buffer.iter().all(u8::is_ascii_whitespace) {
                     return Some(Fingerprint::of(&buffer));
                 }
             }
-            Line::Eof | Line::Pending { .. } | Line::Oversized { .. } => return None,
+            Line::Eof | Line::Pending { .. } | Line::Oversized { .. } | Line::BudgetExceeded => {
+                return None;
+            }
         }
     }
 }
