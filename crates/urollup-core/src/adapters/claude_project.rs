@@ -2,9 +2,9 @@
 //!
 //! Decoding keeps memory proportional to usage records, not to log bytes:
 //!
-//! - Each line is first read by [`LineHead`], which builds no JSON document; only a line
+//! - Each line is first read by `LineHead`, which builds no JSON document; only a line
 //!   that bears usage is parsed into one, and only its accounting fields are kept.
-//! - A decoded [`ParsedRecord`] is a compact row: repeated strings are interned per
+//! - A decoded `ParsedRecord` is a compact row: repeated strings are interned per
 //!   ingestion, native IDs that only join records are 128-bit digests, and rare fields
 //!   are boxed.
 //! - Records stay in per-source chunks in discovery order, which normalization consumes
