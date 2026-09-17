@@ -270,6 +270,7 @@ $ urollup sessions --all --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-4fcwaawz9nzs37kyyhszq7t0ww",
+      "session": "019f0000-0000-7000-8000-000900000001",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -320,6 +321,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-4fcwaawz9nzs37kyyhszq7t0ww",
+      "session": "019f0000-0000-7000-8000-000900000001",
       "agent": "codex",
       "project": "project",
       "requests": {

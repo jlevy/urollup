@@ -8,7 +8,7 @@ use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{AccountAttribution, Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::tokens::TokenMeasures;
-use crate::selection::SessionIndex;
+use crate::selection::{IndexedSession, SessionIndex};
 
 use super::{
     AggregateTotals, CoverageSummary, DailyDocument, DailyRow, DiagnosticSummary, GroupBy,
@@ -141,6 +141,7 @@ pub fn sessions(
             let indexed = thread.as_ref().and_then(|id| index.get(id));
             Ok(SessionRow {
                 thread: thread.map(|id| id.to_string()),
+                session: indexed.and_then(IndexedSession::native_id),
                 agent: indexed.map_or("unknown", |session| session.agent.token()).to_owned(),
                 project: indexed.and_then(|session| session.thread.project.value()).cloned(),
                 requests: row.requests,
@@ -666,6 +667,10 @@ mod tests {
         assert_eq!(daily.rows[0].requests, report.totals.requests);
         assert_eq!(sessions.rows.len(), 1);
         assert_eq!(sessions.rows[0].requests, report.totals.requests);
+        assert_eq!(
+            sessions.rows[0].session.as_deref(),
+            Some("00000000-0000-4000-8000-000200000001")
+        );
         assert_eq!(report.breakdowns.len(), 4);
         assert!(report.breakdowns.contains_key(GroupBy::Model.token()));
     }

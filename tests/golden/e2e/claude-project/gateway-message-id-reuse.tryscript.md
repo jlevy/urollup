@@ -313,6 +313,7 @@ $ urollup sessions --all --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-1rj51e38bxy9exhyr97n8vhnqf",
+      "session": "00000000-0000-4000-8000-001300000003",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -332,6 +333,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-4zveh62q6vepjzgy5hnth0xy26",
+      "session": "00000000-0000-4000-8000-001300000002",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -351,6 +353,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-556ady3m2k0hvd6wen5ccm43vf",
+      "session": "00000000-0000-4000-8000-001300000001",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -412,6 +415,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-1rj51e38bxy9exhyr97n8vhnqf",
+      "session": "00000000-0000-4000-8000-001300000003",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -431,6 +435,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-4zveh62q6vepjzgy5hnth0xy26",
+      "session": "00000000-0000-4000-8000-001300000002",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -450,6 +455,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-556ady3m2k0hvd6wen5ccm43vf",
+      "session": "00000000-0000-4000-8000-001300000001",
       "agent": "claude",
       "project": "project",
       "requests": {
