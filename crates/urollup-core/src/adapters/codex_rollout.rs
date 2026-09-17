@@ -635,10 +635,14 @@ fn normalize(
                                 .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
                             observation.usage = Some(codex_usage(usage)?);
                             if let Some(response_id) = last_response_by_thread.get(&active_thread) {
-                                observation.keys.push(RESPONSE_KEY.key(vec![
-                                    KeyComponent::text(PROVIDER_NAMESPACE),
-                                    KeyComponent::text(response_id),
-                                ])?);
+                                observation.keys.push(
+                                    RESPONSE_KEY
+                                        .key(vec![
+                                            KeyComponent::text(PROVIDER_NAMESPACE),
+                                            KeyComponent::text(response_id),
+                                        ])?
+                                        .derive()?,
+                                );
                                 observation.native_response_id = Some(response_id.clone());
                             }
                             observation.timestamp = record.timestamp;
@@ -832,10 +836,14 @@ fn counter_observation(
         .cloned()
         .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
     if let Some(thread_id) = counter.thread_ids.get(counter.owner) {
-        observation.keys.push(COUNTER_KEY.key(vec![
-            KeyComponent::text(thread_id.to_string()),
-            KeyComponent::text(counter_signature(total)),
-        ])?);
+        observation.keys.push(
+            COUNTER_KEY
+                .key(vec![
+                    KeyComponent::text(thread_id.to_string()),
+                    KeyComponent::text(counter_signature(total)),
+                ])?
+                .derive()?,
+        );
     }
     let mut usage = codex_usage(last)?;
     if let Some(delta) = counter.delta {
@@ -972,10 +980,9 @@ fn usage_observation(
         thread_ids.get(owner).cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
     if let Some(response_id) = &payload.response_id {
         observation.keys.push(
-            RESPONSE_KEY.key(vec![
-                KeyComponent::text(PROVIDER_NAMESPACE),
-                KeyComponent::text(response_id),
-            ])?,
+            RESPONSE_KEY
+                .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(response_id)])?
+                .derive()?,
         );
         observation.native_response_id = Some(response_id.clone());
     }

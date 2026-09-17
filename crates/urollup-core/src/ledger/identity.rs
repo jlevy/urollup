@@ -259,6 +259,18 @@ impl IdentityKey {
         self.rederive(self.version)
     }
 
+    /// Derives this key's ID with 64 further digest bits that tell apart two different keys
+    /// sharing that ID, so a caller can detect collisions without storing the key.
+    pub fn derive_digest(&self) -> Result<(AnalyticalId, u64), IdentityError> {
+        let canonical = self.canonical_json_for(self.version)?;
+        let full = Sha256::digest(canonical.as_bytes());
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&full[..16]);
+        let mut check = [0u8; 8];
+        check.copy_from_slice(&full[16..24]);
+        Ok((id_from_digest(self.prefix, self.version, &id), u64::from_be_bytes(check)))
+    }
+
     /// Derives this key's ID under `version`, as a reader supporting several identity
     /// versions does when merging inputs written under different ones.
     pub fn rederive(&self, version: IdentityVersion) -> Result<AnalyticalId, IdentityError> {
@@ -332,6 +344,12 @@ pub enum IdentityError {
     /// A key component has no canonical JSON form.
     #[error("key has no canonical form: {0}")]
     NotCanonical(CanonicalJsonError),
+    /// Two different keys derive one ID, detected by their further digest bits.
+    #[error("identity collision: two different keys derive {id}")]
+    DigestCollision {
+        /// The shared ID.
+        id: AnalyticalId,
+    },
 }
 
 /// IDs seen in one run, with the key each came from, so a second key producing a known ID

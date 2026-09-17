@@ -20,7 +20,7 @@
 //! observation, is built by [`artifact_local_key`] and has the `ambiguous` basis.
 
 use super::canonical_json::MAX_SAFE_INTEGER;
-use super::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent};
+use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityKey, KeyComponent};
 
 /// How strongly an identity is established. The derived order puts the strongest first.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -141,6 +141,28 @@ pub struct ScopedKey {
     pub basis: IdentityBasis,
     /// The key itself.
     pub key: IdentityKey,
+}
+
+impl ScopedKey {
+    /// Reduces the key to its digest form, which is all reconciliation needs.
+    pub fn derive(&self) -> Result<DerivedKey, IdentityError> {
+        let (id, check) = self.key.derive_digest()?;
+        Ok(DerivedKey { precedence: self.precedence, basis: self.basis, id, check })
+    }
+}
+
+/// A key reduced to its derived ID, the rank its linked set resolves by, and 64 further
+/// digest bits that detect two different keys deriving one ID.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DerivedKey {
+    /// Precedence of the key's kind; 0 is the highest.
+    pub precedence: u8,
+    /// The basis the key establishes.
+    pub basis: IdentityBasis,
+    /// The derived ID.
+    pub id: AnalyticalId,
+    /// SHA-256 digest bits 128 through 191 of the key.
+    pub check: u64,
 }
 
 /// A key spec or key value that breaks the scope rules.

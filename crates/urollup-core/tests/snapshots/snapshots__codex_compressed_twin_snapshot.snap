@@ -30,13 +30,10 @@ ledger:
           source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
       first_seen: "2026-09-08T13:00:30Z"
       id: req-v1-03y7r1f7g80x0q3xwq23wz984c
-      identity_key_kind: provider-response
       last_seen: "2026-09-08T13:00:30Z"
       model:
         basis: Requested
         name: gpt-5.2-codex
-      native_request_id: ~
-      native_response_id: resp_synthetic_c10_2
       ownership:
         owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
       selected_usage:
@@ -70,13 +67,10 @@ ledger:
           source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
       first_seen: "2026-09-08T13:00:12Z"
       id: req-v1-2kz4e1sb7tz9bn0ymhtq2cn1sf
-      identity_key_kind: provider-response
       last_seen: "2026-09-08T13:00:12Z"
       model:
         basis: Requested
         name: gpt-5.2-codex
-      native_request_id: ~
-      native_response_id: resp_synthetic_c10_1
       ownership:
         owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
       selected_usage:
@@ -110,13 +104,10 @@ ledger:
           source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
       first_seen: "2026-09-15T16:00:20Z"
       id: req-v1-4tcztj9kx7kwn06n24s2egbsd0
-      identity_key_kind: provider-response
       last_seen: "2026-09-15T16:00:20Z"
       model:
         basis: Requested
         name: gpt-5.2-codex
-      native_request_id: ~
-      native_response_id: resp_synthetic_c10_3
       ownership:
         owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
       selected_usage:

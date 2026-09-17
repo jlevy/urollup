@@ -30,13 +30,10 @@ ledger:
           source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
       first_seen: "2026-09-02T17:00:40Z"
       id: req-v1-72apsjj079kwzpm0cvr5jyn6k2
-      identity_key_kind: thread-counter-digest
       last_seen: "2026-09-02T17:00:40Z"
       model:
         basis: Requested
         name: gpt-5.2-codex
-      native_request_id: ~
-      native_response_id: ~
       ownership:
         owned: thr-v1-7zrcw4qg6ds2yawtfa2ajb4v09
       selected_usage:
@@ -70,13 +67,10 @@ ledger:
           source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
       first_seen: "2026-09-02T17:00:12Z"
       id: req-v1-79nhd4whs48yyvnewk7zj9y76q
-      identity_key_kind: thread-counter-digest
       last_seen: "2026-09-02T17:00:12Z"
       model:
         basis: Requested
         name: gpt-5.2-codex
-      native_request_id: ~
-      native_response_id: ~
       ownership:
         owned: thr-v1-7zrcw4qg6ds2yawtfa2ajb4v09
       selected_usage:
