@@ -9,7 +9,7 @@ session logs.
 
 **First drafted**: 2026-09-13
 
-**Last updated**: 2026-09-16
+**Last updated**: 2026-09-17
 
 Sections 1 to 8 and each item in §9 carry a **Status:** line.
 **Confirmed** marks settled design that awaits no §9 decision; where a maintainer
@@ -755,6 +755,7 @@ copied histories:
   Each later usage update is a new **usage revision** of that request, and the ledger
   keeps the final one with every record as evidence, or, where a dialect cannot order
   its revisions, the one its selection rule picks.
+  The usage of the other revisions is not kept.
 - One response repeated in several files is one logical observation with several
   evidence references.
   Forked or resumed history is not newly consumed usage.
@@ -766,7 +767,9 @@ copied histories:
   Ambiguous candidates are preserved rather than fabricating a unique API-call count.
 - Conflicting observations keep diagnostics and follow a documented, source-specific
   resolution rule, never first-wins traversal order.
-  Conflicting account attributions for one request are diagnosed, not split.
+  Once an adapter records accounts, conflicting account attributions for one request
+  will be diagnosed, not split; no current adapter records one, so every request’s
+  account is unknown.
 - Observed, configured, inferred and unknown values stay distinct.
 - A copy nested inside another record never counts, and usage that never reaches local
   logs is an unobserved coverage gap, never zero ([§2.1](#21-dialects-and-discovery)).
@@ -784,18 +787,48 @@ The source reviews summarized in the
 [portable research brief](project/research/research-2026-09-13-portable-agent-usage.md)
 set these source-specific rules:
 
+- **Claude Code decoding:** a first pass reads each line’s type, `isSidechain` flag, CLI
+  version, working directory and whether it bears usage without building a JSON
+  document. Only an `assistant` line with an unsigned `message.usage.output_tokens`, or a
+  `progress` line whose nested message has one, is parsed into a document, and only its
+  accounting fields are kept.
+  The first pass reads every value as a document parse would, so a line is malformed
+  exactly when it is not valid JSON, a repeated key keeps its last value, and a null or
+  mistyped field reads as missing.
 - **Claude Code block records:** block records of one response can disagree on
   `output_tokens`, so reconciliation selects one whole record (largest `output_tokens`,
-  then last in file order, then lowest `src-` ID), adds a diagnostic when input or cache
-  fields differ, and never merges fields.
-- **Claude Code copies:** a record that replays a parent message is a copy owned by the
-  parent, not an ambiguous key: a `progress` record nesting a subagent’s assistant
-  message, a `/btw` side-question record with the parent’s `message.id` under a new
-  `requestId`, and a fork-style subagent record with a parent record’s `uuid`. A
-  main-session record whose `sessionId` names another session is a resumed replay.
-  Only records that are neither nested nor replays can own a `message.id` or `uuid`, and
-  main-session records claim ownership before subagent records, then the earliest
-  timestamp, then evidence position, so results never depend on file names.
+  then highest block index, then last in file order, then lowest `src-` ID), adds a
+  diagnostic when input or cache fields differ, and never merges fields.
+- **Claude Code copies:** a record that replays another thread’s record is a copy owned
+  by that thread, never counted and never an ambiguous key.
+  A `progress` record nesting a subagent’s assistant message is always a copy.
+  A subagent record is a copy when another thread owns its `message.id`, as with a
+  `/btw` side-question record that repeats the parent’s `message.id` under a new
+  `requestId`. Any record is a copy when another thread owns its `uuid`, as with a
+  fork-style subagent record.
+- **Claude Code owners:** each `message.id` and `uuid` is owned by the first
+  original-eligible record in canonical order.
+  Original-eligible records are request records that are neither nested copies nor
+  resumed replays. The canonical order puts main-session records before subagent records,
+  then records with a timestamp before records without one, then the earliest timestamp,
+  then evidence position (`src-` ID, offset and length).
+  Discovery order and worker count never enter, so renaming session files does not move
+  ownership. The one exception is records with equal timestamps: there the `src-` ID,
+  which derives from the root-relative path, breaks the tie.
+- **Claude Code resumed sessions:** a main-session record whose `sessionId` names
+  another session is a resumed replay.
+  It is a copy, owned by the thread that owns its `uuid`, or else by the session it
+  names, and it adds a fork edge from that session to the resuming one, with a thread
+  for the named session even when its file was not discovered.
+  A replay never claims ownership, so a resuming session whose file sorts before the
+  original cannot take the original’s usage.
+- **Claude Code shared message IDs:** when records that are not replays report one
+  `message.id` with more than one model, as when a gateway reuses message IDs across
+  sessions, that message’s key is scoped to the recorded session instead of the
+  provider. Each session’s records then form their own request, and each such message
+  adds one `identity-key-conflict` occurrence that cites its records.
+  A message ID reported with one model keeps its provider-scoped key and merges across
+  files.
 - **`claude-stream`:** a capture and its transcript share `session_id` and `message.id`,
   so their requests merge by response ID.
 - **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
@@ -808,14 +841,29 @@ set these source-specific rules:
   provider limit observation, compaction estimates and context-window-full fills (zero
   input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
   in any cumulative component opens a new counter epoch with a diagnostic.
-- **Codex copied history:** a child rollout’s own records start at
-  `subagent_history_start_ordinal`, else at the first `thread_settings_applied` naming
-  the child (0.152 and later).
-  Otherwise it is inferred, in order, from turn IDs also present in the parent rollout,
-  the last foreign `session_meta` record, and turns without their own `turn_context`,
-  and the excluded usage is labeled `inferred` with a diagnostic.
-  A fork or subagent continues the parent’s running total, so the child’s counters start
-  from the inherited total.
+- **Codex decoding:** a line that contains none of the quoted relevant type tokens
+  (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
+  `thread_settings_applied`) is validated without building a document and counted as
+  skipped or malformed.
+  Every other line is read by a typed pass that borrows its strings and builds no JSON
+  document except a `rate_limits` object, with the same malformed-line, repeated-key and
+  null-field rules as Claude Code decoding.
+  Consecutive identical `rate_limits` snapshots in a rollout share one value.
+  Whether a rollout uses `token_usage_record` lines or cumulative counters is decided
+  for the whole file.
+- **Codex copied history:** usage after a `session_meta` that names another thread
+  belongs to that thread and is a copy.
+  A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
+  `thread_settings_applied` event (0.152 and later), which assigns later records to the
+  thread it names. In a rollout without `token_usage_record` lines, the copy also ends at
+  the first `turn_context` whose turn ID the copied thread’s root rollout never
+  recorded; turn IDs are matched across rollouts by 128-bit digest.
+  When such a rollout has a parent, another thread’s `session_meta` and no
+  `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
+  every copied line, skipped lines included.
+  In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
+  is a copy keyed to the copied thread’s last response ID. A fork or subagent continues
+  the parent’s running total, so the child’s counters start from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
   copied lines contribute neither usage nor times to the child; paginated forks copy
@@ -855,6 +903,18 @@ set these source-specific rules:
   unrecorded utility calls, so they are a reconciliation check on the session file,
   never an observation ([§2.6](#26-harness-captures)).
 
+Every dialect shares two reconciliation rules:
+
+- **Request-key collisions:** observations carry each request key as its derived ID plus
+  the next 64 SHA-256 bits, not as key text.
+  Keys whose 192 digest bits agree are one key, and two keys that derive one ID but
+  differ in those further bits fail with an identity-collision error.
+  Thread identities are still checked against their stored keys.
+- **Diagnostics:** the ledger keeps one diagnostic per code and subject.
+  Identical diagnostics count once, occurrences are summed, the detail is the first in
+  canonical order, and at most three evidence references are kept as samples.
+  Reports then emit one row per code for the selected subjects.
+
 ### 3.5 Purpose and Annotations
 
 **Status:** Candidate ([§9.1](#purpose-sources)); configured purpose and annotation sets
@@ -891,9 +951,11 @@ receives the same ID on every machine and in every merge order.
 - **Components:** native IDs enter keys verbatim and also remain separate fields.
   Namespace components are registry tokens such as `anthropic` or `codex`; unknown
   components are `null`.
-- **Stored keys:** keys are stored with their IDs, so a binary can re-derive IDs under
-  another supported identity version.
+- **Stored keys:** portable artifacts store keys with their IDs, so a binary can
+  re-derive IDs under another supported identity version.
   Two different keys that produce one ID are an identity-collision error.
+  The in-memory ledger keeps request keys only as digests and detects that collision
+  from further digest bits ([§3.4](#34-dialect-reconciliation-rules)).
 - **Fingerprints:** a fingerprint identifies bytes, not necessarily a logical session.
 
 | Prefix | Key, in precedence order |
@@ -1095,8 +1157,8 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
   Null is an explicit group.
 - Percentiles are recomputed from observations or from mergeable histograms, never
   averaged across groups.
-  Query reports compute exact percentiles under the memory budget in
-  [§8.3](#uncached-engine), and approximate percentiles require recorded method and
+  Query reports compute exact percentiles in memory from the reconciled requests
+  ([§8.3](#uncached-engine)), and approximate percentiles require recorded method and
   error metadata.
 
 Branch and agent-path grouping and inferred timestamps for records without one are
@@ -2273,15 +2335,75 @@ acceptance criteria in the plan’s
 
 #### Uncached Engine
 
-The uncached engine uses buffered streaming reads, lightweight dialect decoding, bounded
-parallelism across files, deterministic merges and compact typed records, and keeps
-source offsets instead of in-memory transcript copies.
-Discovery follows the skip rule in [§2.2](#22-snapshot-boundary).
-Runs have explicit memory and worker limits and record scan bytes, records per second,
-phase timings, peak RSS and output size.
-A ledger or exact percentile over its memory budget spills to an ephemeral external-sort
-store, and past that store’s limit the run exits 1 with a capacity diagnostic rather
-than report a partial total.
+The uncached engine reads the whole selected history on every run and keeps source
+offsets instead of in-memory transcript copies.
+Its memory grows with the number of usage-bearing records, not with log bytes.
+The
+[scalable-ingestion plan](project/specs/active/plan-2026-09-16-scalable-ingestion.md)
+records how the engine reached this shape, with dated whole-history measurements in its
+[progress section](project/specs/active/plan-2026-09-16-scalable-ingestion.md#progress).
+
+- **Discovery and selection:** discovery follows the skip rule in
+  [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
+  sources to the selected session families before any source is decoded.
+- **Parallel decoding:** Claude Code sources, then Codex sources, decode independently
+  on bounded worker threads that take sources heaviest first from one shared queue,
+  weighting zstd files by an assumed expansion.
+  The default is `min(available_parallelism, 8)` workers.
+  `UROLLUP_JOBS` sets a count from 1 to 256; an empty value counts as unset, and any
+  other value is a usage error.
+  The CLI reads `UROLLUP_JOBS` and passes the count to the core library.
+- **Typed line decoding:** each source is read once as a stream of complete lines.
+  A typed first pass borrows strings from the line and reads only the fields accounting
+  needs, and Codex first rules lines out with a byte prefilter on relevant type tokens
+  ([§3.4](#34-dialect-reconciliation-rules)). A line that is ruled out or ignored is
+  still validated, so malformed-line counts match a full parse.
+  Only a usage-bearing Claude Code line and a Codex `rate_limits` object are built as
+  JSON documents, and no document outlives its line.
+- **Compact rows:** decoded records are fixed-size rows whose size limits are
+  compile-time assertions.
+  Repeated strings are interned per source, native IDs that only join records are
+  128-bit digests, model and effort names are interned once per process, usage is eight
+  counters with a presence mask, and timestamps are compact.
+  Each source’s records are freed as soon as its observations are built, and maps needed
+  only to build observations are dropped before reconciliation.
+- **Request grouping:** reconciliation sorts observations into canonical order in place
+  and removes re-reads.
+  An index-based union-find over request key IDs, whose set root is always the lowest
+  ID, links observations that share a key.
+  Groups form by sorting root and index pairs.
+  Each group builds its request, or one request per observation when the group splits on
+  a conflicting shared key, and releases its observations’ owned data before the next
+  group. Requests are stored in a vector sorted by ID, and only requests split from a
+  conflicting shared key enter the candidate-set graph.
+- **Capacity ceiling:** each agent’s reconciliation refuses more request observations
+  than fit in 2 GiB of observation rows, checked before any request is built.
+  The limit is 2 GiB divided by the observation row size, so it rises as rows shrink.
+  The CLI exits 1 with the observation count and the ceiling and suggests narrower
+  `--source` roots with `--no-default-sources`. The ceiling is a safety net, not a
+  budget users tune. It replaced the temporary 512 MiB input guard and its read budgets;
+  per-record and sidecar size limits remain.
+  No run spills to disk.
+- **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
+  stderr after the command runs and before its output or error: the worker count, wall
+  time per phase (discovery, Claude Code ingest, Codex ingest, session index, and query
+  and render), per-agent source, observation, request, limit-observation and diagnostic
+  counts, and the total.
+  A failed command prints only the phases it finished.
+  The lines hold no paths, IDs or model names.
+  Unset, empty or `0` disables statistics, and any other value is a usage error.
+- **Determinism:** per-source results, including Claude Code string tables, merge in
+  discovery order whatever order workers finish in, and every global step sorts by
+  canonical position or ID, so output is identical for any worker count.
+  Claude Code ownership follows the canonical order in
+  [§3.4](#34-dialect-reconciliation-rules), so renaming session files does not change
+  results, apart from the equal-timestamp tie-break described there.
+  Tests ingest every fixture on 1, 2, 3, 8 and 64 workers, compare CLI JSON across
+  `UROLLUP_JOBS` values, and reverse every Claude Code fixture’s session names.
+
+Scale is gated on generated corpora rather than on private logs: `make test` includes a
+raw-bytes independence check, a footprint extrapolation bound and a `daily --all` run
+under an RSS watchdog ([scale measurement guide](project/qa/scale-measurement.md)).
 
 #### Capture Cache
 
@@ -2347,7 +2469,7 @@ read-only snapshot input ([§5.1](#51-portable-inputs-and-artifacts)).
   separately.
 - **Scaling:** the request index adds roughly 40 bytes per request to a summary.
   Bundles grow with request count and are compressed; exact percentiles over merged
-  requests need bundles and a memory budget.
+  requests need bundles, and their memory cost is declared separately.
 
 * * *
 

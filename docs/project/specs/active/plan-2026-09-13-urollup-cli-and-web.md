@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 functional core is complete, with memory-bounded selection, all-log acceptance, decisions and independent review in progress
+status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard, with the memory target, whole-history acceptance, decisions and independent review in progress
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -160,15 +160,21 @@ The capture store lands only after the uncached engine is the correctness refere
 - [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
   diff with privacy sentinels that reject log content, paths, identifiers, prompts,
   project names and custom model names.
-- [ ] Bound persistent-log memory before release: compact adapter records to accounting
-  fields, resolve `--current` and exact selectors against the lightweight discovery
-  index before full parsing, keep a temporary fail-safe for unusually large selected
-  inputs, and meet the `bench-1g` peak-RSS target for `--all` through streaming or spill
-  rather than retained corpus-wide state
+- [ ] Bound persistent-log memory before release.
+  The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
+  after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary
+  512 MiB input guard made `--all` refuse the default corpus.
+  Done so far: exact selectors and `--current` narrow discovery to the selected session
+  families before decoding; adapters decode on bounded parallel workers into compact
+  rows; and the input guard is replaced by a 2 GiB compact-row capacity ceiling, so
+  whole-history `sessions`, `daily` and `report --all` complete
   ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
-  [performance targets](#performance-targets)).
-- [ ] Run the consented real-log acceptance checks and review the resulting aggregates
-  without committing log content, paths or identifiers
+  [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining: meet that
+  plan’s peak-footprint goal on the whole default corpus and the `bench-1g` peak-RSS
+  target, without spilling to disk ([performance targets](#performance-targets)).
+- [ ] Run the consented real-log acceptance checks, including the
+  [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md), and review
+  the resulting aggregates without committing log content, paths or identifiers
   ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
   [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
@@ -732,6 +738,7 @@ The design doc records every decision and open question:
 
 - [urollup design specification](../../../urollup-design.md)
 - [urollup 0.1.0 publishing plan](plan-2026-09-16-first-release-publishing.md)
+- [Scalable whole-history ingestion plan](plan-2026-09-16-scalable-ingestion.md)
 - [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md),
   including its
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)

@@ -75,10 +75,15 @@ Milestone 0.1’s accounting and report implementation and fixture-backed ccusag
 reconciliation are complete, as are terminal-aware color, interactive progress and the
 privacy-tested local acceptance tools.
 A bounded, consented real-log corpus passed the command and memory-watchdog checks.
-Compact parallel ingestion now reads the roughly 15 GB default corpus in under 25
-seconds, so the temporary 512 MiB input guard and its read budgets are removed; an
-internal 2 GiB compact-row ceiling fails with a capacity error instead of growing
-without bound. The whole-history `--all` case still needs acceptance under the
+Whole-history `sessions`, `daily` and `report --all` runs now complete on large local
+corpora: sources decode on parallel workers into compact rows, so memory follows the
+number of usage records rather than log bytes.
+The temporary 512 MiB input guard is gone; an internal 2 GiB compact-row ceiling exits
+with a capacity error instead of growing without bound.
+The
+[scalable-ingestion plan](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
+records dated measurements and the remaining memory work.
+Whole-history results still need acceptance under the
 [full-history QA playbook](tests/qa/full-history-rollup.qa.md).
 Recorded maintainer decisions and independent implementation review also remain before
 the milestone is accepted, after which packaging implementation and rehearsal can begin.
@@ -97,7 +102,8 @@ the milestone is accepted, after which packaging implementation and rehearsal ca
 | [metaproc and qm review](docs/project/research/research-2026-09-14-metaproc-code-review.md) | Captured streams, harness pitfalls, accounts and quotas |
 | [Golden testing audit](docs/project/research/research-2026-09-15-golden-testing-audit.md) | Golden-harness risks, fixes and the end-to-end fixture strategy |
 | [Milestone 0.1 local QA playbook](tests/qa/milestone-0.1-local-acceptance.qa.md) | Consent, terminal, bounded-corpus, privacy and cleanup checks for manual acceptance |
-| [2026-09-16 milestone 0.1 QA report](docs/project/qa/qa-report-2026-09-16-milestone-0.1.md) | Privacy-safe evidence, aggregate results and the unresolved large-corpus limitation |
+| [2026-09-16 milestone 0.1 QA report](docs/project/qa/qa-report-2026-09-16-milestone-0.1.md) | Privacy-safe evidence, aggregate results and the large-corpus limitation that scalable ingestion later removed |
+| [Scalable-ingestion plan](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md) | Whole-history ingestion design, semantic changes and dated measurements |
 
 The portable research brief also records a throughput spike on real local logs; its
 prototype is kept in
