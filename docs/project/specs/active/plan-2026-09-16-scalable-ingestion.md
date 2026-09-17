@@ -3,7 +3,7 @@ title: "Scalable Whole-History Ingestion"
 description: Replace urollup's retain-everything ingestion with bounded parallel family decoding into a compact global ledger, so whole-history reports over tens of gigabytes of Claude Code and Codex logs run in seconds within a few hundred MiB.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Active; design reviewed, implementation not started
+status: Active; Phase 1 in progress
 ---
 # Feature: Scalable Whole-History Ingestion
 
@@ -276,7 +276,7 @@ codes.
 
 ### Phase 1: Whole History Works
 
-- [ ] Fix the Claude owner-map ordering bug (`uro-sn1e`) in the current engine, with
+- [x] Fix the Claude owner-map ordering bug (`uro-sn1e`) in the current engine, with
   renamed-file cases for `gateway-message-id-reuse` and `brief-double-counting`, so the
   oracle is correct before the rewrite.
 - [ ] Add a projection oracle test comparing the current engine with the new one on all
@@ -291,13 +291,13 @@ codes.
 - [ ] Implement global assembly: source table, thread and relationship reconcile, the
   Claude key-facts pass and compact request reconciliation.
 - [ ] Port `accounting::totals`, `query` and `SessionIndex` to the compact ledger.
-- [ ] Add the bounded family worker pool and `UROLLUP_JOBS`, with worker-count and
+- [x] Add the bounded family worker pool and `UROLLUP_JOBS`, with worker-count and
   file-rename invariance tests.
 - [ ] Remove the 512 MiB guard and the read budgets it required; add the 2 GiB
   compact-row ceiling and `UROLLUP_STATS`.
-- [ ] Add the native session ID as an additive `session` field on `sessions` rows, so
+- [x] Add the native session ID as an additive `session` field on `sessions` rows, so
   whole-history results join to ccusage in one pass.
-- [ ] Update CLI goldens and `scripts/check-e2e-results.mjs` for aggregated diagnostics.
+- [x] Update CLI goldens and `scripts/check-e2e-results.mjs` for aggregated diagnostics.
 
 Acceptance: `make check` passes; whole-history `sessions`, `daily` and `report --all` on
 the maintainer’s corpus exit 0 in at most 25 seconds at no more than 512 MiB peak
@@ -321,7 +321,7 @@ seconds; the scale gates pass in CI.
 
 ### Phase 3: Acceptance and Cleanup
 
-- [ ] Replace the per-session urollup invocations in `tests/parity/local_diff.py` with
+- [x] Replace the per-session urollup invocations in `tests/parity/local_diff.py` with
   one whole-history run joined on the native `session` field.
 - [ ] Execute the
   [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md) on this
@@ -331,6 +331,43 @@ seconds; the scale gates pass in CI.
 
 Acceptance: the QA playbook passes, and milestone 0.1 local acceptance is recorded
 without an input-size limitation.
+
+### Progress
+
+Implementation compacts the existing engine in place rather than building a second
+engine beside it. Each step keeps fixture, snapshot, golden, fixture-result and parity
+gates green, and its release build is compared back to back with the previous build on
+real-log slices: report, daily and sessions JSON must be identical apart from live
+sessions that append between the two runs.
+The steps so far:
+
+- Fix the owner-map ordering bug (`af5f012`) before any rewrite.
+- Store analytical IDs as 17-byte digests, drop native usage maps and stored revisions,
+  and reconcile requests by 192-bit key digest instead of a string registry.
+- Decode Codex records into typed rows, collapse limit snapshots while streaming, and
+  skip irrelevant Codex lines with a byte prefilter.
+- Reconcile without copying observations: an index-based union-find over key digests,
+  groups built by sorting indices, observation heap released per group, and requests in
+  a sorted vector.
+- Decode sources on bounded parallel workers with `UROLLUP_JOBS`.
+- Aggregate diagnostics per code, add the `session` field, and join local parity in one
+  pass.
+- Keep observation keys and invariants inline, and remove candidate tokens, candidate
+  owners and account attribution.
+
+Whole-history measurements on 2026-09-16 used a local build with the input guard raised,
+under the RSS watchdog, on the maintainer’s corpus:
+
+| Input | Requests | Earlier result | Latest measurement |
+| --- | ---: | --- | --- |
+| Codex 2026-07, 1.6 GB | 68,921 | refused by the guard | 160 MiB, 1.5 s (`cf9b704`) |
+| Codex 2026-09, 8.4 GB | 139,375 | refused by the guard | 306 MiB, 6.5 s (`cf9b704`) |
+| All Claude projects, 2.8 GB | 176,634 | 1,386 MiB, 14.3 s (`1924d8f`) | 860 MiB, 11 s (`e9fe862`) |
+| Both trees, `sessions`, `daily` and `report --all` | 461,049 | above 20 GB (milestone 0.1 engine) | 963–1,028 MiB, 22–24 s (`9f290e6`) |
+
+Whole history now completes within the Phase 1 time target.
+Peak footprint is still about twice the 512 MiB goal; the Claude adapter’s decoded
+records and owner maps set the peak, and compacting them is the next step.
 
 ## Testing Strategy
 
