@@ -274,6 +274,31 @@ pub enum ReconcileError {
         /// The number of revisions.
         count: usize,
     },
+    /// More request observations arrived than one reconciliation holds.
+    #[error(
+        "{observations} request observations exceed the reconciliation capacity of {maximum} compact rows (2 GiB)"
+    )]
+    CapacityExceeded {
+        /// The observations received.
+        observations: usize,
+        /// The most observations one reconciliation accepts.
+        maximum: usize,
+    },
+}
+
+/// The most request observations one reconciliation accepts: 2 GiB of observation rows.
+///
+/// This is a safety net, not a budget users tune. Whole history is far below it, and an
+/// input above it fails with [`ReconcileError::CapacityExceeded`] before any request is
+/// built rather than growing without bound.
+pub const MAX_OBSERVATIONS: usize = 2 * 1024 * 1024 * 1024 / size_of::<RequestObservation>();
+
+/// Refuses more than `maximum` observations.
+fn ensure_capacity(observations: usize, maximum: usize) -> Result<(), ReconcileError> {
+    if observations > maximum {
+        return Err(ReconcileError::CapacityExceeded { observations, maximum });
+    }
+    Ok(())
 }
 
 /// Request key IDs as union-find nodes, with the further digest bits that catch two
@@ -359,6 +384,7 @@ pub fn reconcile(
     input: ReconcileInput,
     selector: &dyn RevisionSelector,
 ) -> Result<Ledger, ReconcileError> {
+    ensure_capacity(input.requests.len(), MAX_OBSERVATIONS)?;
     let ReconcileInput {
         threads,
         relationships,

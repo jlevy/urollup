@@ -69,8 +69,9 @@ fn usage_errors_exit_two() {
     assert!(stderr.contains("Usage: urollup [OPTIONS] <COMMAND>"), "{stderr}");
 }
 
-/// A JSON report over a multi-source fixture with `UROLLUP_JOBS` set to `jobs`.
-fn fixture_report(jobs: &str) -> Output {
+/// A JSON report over a multi-source fixture with only `variable` of the urollup tuning
+/// variables set, to `value`.
+fn fixture_report(variable: &str, value: &str) -> Output {
     let source = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../urollup-core/tests/fixtures/claude-project/workflow-subagents"
@@ -78,18 +79,20 @@ fn fixture_report(jobs: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_urollup"))
         .args(["report", "--source", source, "--no-default-sources", "--format", "json"])
         .env("NO_COLOR", "1")
-        .env("UROLLUP_JOBS", jobs)
+        .env_remove("UROLLUP_JOBS")
+        .env_remove("UROLLUP_STATS")
+        .env(variable, value)
         .output()
         .expect("the urollup binary runs")
 }
 
 #[test]
 fn jobs_variable_sets_workers_without_changing_output() {
-    let one = fixture_report("1");
+    let one = fixture_report("UROLLUP_JOBS", "1");
     assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
     assert!(!one.stdout.is_empty());
     for jobs in ["2", "8"] {
-        let parallel = fixture_report(jobs);
+        let parallel = fixture_report("UROLLUP_JOBS", jobs);
         assert_eq!(parallel.status.code(), Some(0), "UROLLUP_JOBS={jobs}");
         assert_eq!(parallel.stdout, one.stdout, "UROLLUP_JOBS={jobs}");
     }
@@ -98,10 +101,53 @@ fn jobs_variable_sets_workers_without_changing_output() {
 #[test]
 fn invalid_jobs_variable_is_a_usage_error() {
     for jobs in ["0", "many"] {
-        let output = fixture_report(jobs);
+        let output = fixture_report("UROLLUP_JOBS", jobs);
         assert_eq!(output.status.code(), Some(2), "UROLLUP_JOBS={jobs}");
         assert!(output.stdout.is_empty(), "UROLLUP_JOBS={jobs}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("UROLLUP_JOBS must be a whole number"), "{stderr}");
+    }
+}
+
+#[test]
+fn stats_variable_writes_privacy_safe_stats_to_stderr_only() {
+    let plain = fixture_report("UROLLUP_STATS", "0");
+    assert_eq!(plain.status.code(), Some(0), "{}", String::from_utf8_lossy(&plain.stderr));
+    assert!(plain.stderr.is_empty());
+
+    let with_stats = fixture_report("UROLLUP_STATS", "1");
+    assert_eq!(with_stats.status.code(), Some(0));
+    assert_eq!(with_stats.stdout, plain.stdout, "stats never change stdout");
+    let stderr = String::from_utf8(with_stats.stderr).expect("stats are UTF-8");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(lines.iter().all(|line| line.starts_with("stats: ")), "{stderr}");
+    for expected in [
+        "stats: workers=",
+        "stats: phase=discovery seconds=",
+        "stats: phase=claude_ingest seconds=",
+        "stats: phase=codex_ingest seconds=",
+        "stats: phase=session_index seconds=",
+        "stats: phase=query_render seconds=",
+        "stats: agent=claude sources=",
+        "stats: agent=codex sources=0 observations=0 requests=0 ",
+        "stats: total seconds=",
+    ] {
+        assert!(lines.iter().any(|line| line.starts_with(expected)), "no {expected:?}: {stderr}");
+    }
+    // Only names, numbers and `key=value` pairs: no path, analytical ID or model name.
+    assert!(stderr.chars().all(|c| c.is_ascii_alphanumeric() || " :=._\n".contains(c)), "{stderr}");
+    for private in ["workflow", "thr-", "src-", "req-", "claude-", "fixtures"] {
+        assert!(!stderr.contains(private), "{private}: {stderr}");
+    }
+}
+
+#[test]
+fn invalid_stats_variable_is_a_usage_error() {
+    for value in ["2", "yes"] {
+        let output = fixture_report("UROLLUP_STATS", value);
+        assert_eq!(output.status.code(), Some(2), "UROLLUP_STATS={value}");
+        assert!(output.stdout.is_empty(), "UROLLUP_STATS={value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with("error: UROLLUP_STATS must be 1"), "{stderr}");
     }
 }

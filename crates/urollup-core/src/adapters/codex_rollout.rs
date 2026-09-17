@@ -25,9 +25,7 @@ use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned, vali
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
-use crate::sources::reader::{
-    RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
-};
+use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
 use crate::sources::roots::{DiscoveredSource, Discovery, discover};
 
 const DIALECT: &str = "codex-rollout";
@@ -225,29 +223,22 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
 /// Callers that need exact session selection can filter `discovery.sources` before
 /// invoking this function, avoiding a second walk and full ingestion of unrelated
 /// rollouts while preserving paired plain/compressed representations. Rollouts decode on
-/// the [default worker bound](default_workers) with no ingestion budget.
+/// the [default worker bound](default_workers).
 pub fn ingest_discovery(
     discovery: Discovery,
     missing_is_error: bool,
 ) -> Result<Ingested, AdapterError> {
-    ingest_discovery_with_budget(
-        discovery,
-        missing_is_error,
-        &ReadBudget::unlimited(),
-        default_workers(),
-    )
+    ingest_discovery_with_workers(discovery, missing_is_error, default_workers())
 }
 
-/// Reads discovered Codex rollouts on at most `workers` threads under a shared ingestion
-/// budget.
+/// Reads discovered Codex rollouts on at most `workers` threads.
 ///
 /// Each rollout decodes independently, and the results merge in discovery order before
 /// normalization, so the result is the same for every worker count. A failure returns
 /// the error of the first failing rollout in discovery order, as a sequential read does.
-pub fn ingest_discovery_with_budget(
+pub fn ingest_discovery_with_workers(
     discovery: Discovery,
     missing_is_error: bool,
-    budget: &ReadBudget,
     workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
@@ -264,7 +255,7 @@ pub fn ingest_discovery_with_budget(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
-        |source| decode_source(source, budget),
+        decode_source,
     )?;
     let (entries, parsed_sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
@@ -273,10 +264,7 @@ pub fn ingest_discovery_with_budget(
 }
 
 /// Reads one rollout, independently of every other source.
-fn decode_source(
-    source: &DiscoveredSource,
-    budget: &ReadBudget,
-) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
+fn decode_source(source: &DiscoveredSource) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
     let rollout = rollout_name(&source.locator);
     let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
     let spec = SourceSpec {
@@ -292,11 +280,10 @@ fn decode_source(
     let mut records = Vec::new();
     let mut skipped = SkippedSpan::default();
     let mut last_limits = None;
-    let entry =
-        read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
-            decode_record(raw, &mut records, &mut skipped, &mut last_limits)
-        })
-        .map_err(|source| AdapterError::Read { path, source })?;
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+        decode_record(raw, &mut records, &mut skipped, &mut last_limits)
+    })
+    .map_err(|source| AdapterError::Read { path, source })?;
     Ok((entry, ParsedSource { file_thread: rollout.thread_id, records, trailing_skipped: skipped }))
 }
 
@@ -1094,19 +1081,13 @@ fn rollout_name(locator: &str) -> RolloutName {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
-    use super::{
-        RateLimits, RecordKind, SkippedSpan, decode_record, ingest_discovery_with_budget,
-        ingest_root, record_kind,
-    };
-    use crate::adapters::AdapterError;
+    use super::{RateLimits, RecordKind, SkippedSpan, decode_record, ingest_root, record_kind};
     use crate::ledger::diagnostics::DiagnosticCode;
     use crate::ledger::identity::AnalyticalId;
     use crate::sources::evidence::EvidenceRef;
-    use crate::sources::reader::{RawRecord, ReadBudget, RecordDisposition, SourceReadError};
-    use crate::sources::roots::discover;
+    use crate::sources::reader::{RawRecord, RecordDisposition};
 
     #[test]
     fn skipped_record_payloads_are_not_retained() {
@@ -1182,41 +1163,6 @@ mod tests {
         let ingested = ingest_root(home.path()).unwrap();
 
         assert_eq!(ingested.manifest.entries.len(), 1);
-    }
-
-    #[test]
-    fn adapter_threads_one_record_budget_across_rollout_files() {
-        let home = tempfile::tempdir().unwrap();
-        let sessions = home.path().join("sessions/2026/09/16");
-        fs::create_dir_all(&sessions).unwrap();
-        for suffix in ["000000000001", "000000000002"] {
-            let thread = format!("00000000-0000-7000-8000-{suffix}");
-            let rollout = sessions.join(format!("rollout-2026-09-16T12-00-00-{thread}.jsonl"));
-            fs::write(
-                rollout,
-                format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread}\"}}}}\n"),
-            )
-            .unwrap();
-        }
-        for workers in [1, 8] {
-            let discovery = discover(std::slice::from_ref(&sessions));
-            let budget = ReadBudget::new(u64::MAX, 1);
-            let workers = NonZeroUsize::new(workers).unwrap();
-
-            let error =
-                ingest_discovery_with_budget(discovery, true, &budget, workers).unwrap_err();
-
-            assert!(
-                matches!(
-                    error,
-                    AdapterError::Read {
-                        source: SourceReadError::RecordBudgetExceeded { maximum: 1 },
-                        ..
-                    }
-                ),
-                "{workers} workers"
-            );
-        }
     }
 
     #[test]

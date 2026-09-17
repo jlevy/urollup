@@ -7,15 +7,18 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
 use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
 use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
+use urollup_core::ledger::reconcile::ReconcileError;
 use urollup_core::query::{
     GroupBy, QueryMetadata, QuerySource, ResolvedTimeZone, daily, report, sessions,
 };
@@ -25,20 +28,19 @@ use urollup_core::selection::{
 };
 use urollup_core::sources::manifest::Representation;
 use urollup_core::sources::parallel;
-use urollup_core::sources::reader::{ReadBudget, ReadOptions};
+use urollup_core::sources::reader::ReadOptions;
 use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
 
 const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
 const STYLE_ERROR: AnsiStyle = AnsiColor::Red.on_default().bold();
-const MAX_ESTIMATED_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_INGESTED_RECORDS: u64 = 1_000_000;
-const ZSTD_ESTIMATED_EXPANSION: u64 = 64;
 const MAX_CATALOG_HEADER_BYTES: u64 = ReadOptions::DEFAULT_MAX_RECORD_BYTES as u64;
 /// The environment variable that sets how many threads decode sources.
 const JOBS_VARIABLE: &str = "UROLLUP_JOBS";
 /// The most workers `UROLLUP_JOBS` may request, so a mistyped value cannot exhaust the
 /// process's threads.
 const MAX_JOBS: usize = 256;
+/// The environment variable that prints privacy-safe run statistics to stderr.
+const STATS_VARIABLE: &str = "UROLLUP_STATS";
 const CLI_STYLES: Styles = Styles::styled()
     .header(STYLE_HEADING)
     .usage(STYLE_HEADING)
@@ -302,13 +304,24 @@ where
         .enabled(terminals.stdout_is_terminal);
     let stderr_color = ColorContext { when: cli.color, machine, environment: color_environment }
         .enabled(terminals.stderr_is_terminal);
+    let show_stats = match stats_requested(std::env::var_os(STATS_VARIABLE).as_deref()) {
+        Ok(show_stats) => show_stats,
+        Err(failure) => return report_failure(stderr, &failure, stderr_color),
+    };
     let progress = !cli.no_progress && !machine && terminals.stderr_is_terminal;
     if progress {
         write_progress(stderr, "Reading usage logs…");
     }
-    let result = execute(&cli.command, stdout_color);
+    let mut stats = Stats::default();
+    let started = Instant::now();
+    let result = execute(&cli.command, stdout_color, &mut stats);
+    let total = started.elapsed();
     if progress {
         clear_progress(stderr);
+    }
+    if show_stats {
+        // Statistics are diagnostics: a closed stderr must not change the outcome.
+        let _ = stderr.write_all(stats.render(total).as_bytes()).and_then(|()| stderr.flush());
     }
     match result {
         Ok(output) => finish_stdout(
@@ -316,12 +329,15 @@ where
             stderr,
             stderr_color,
         ),
-        Err(failure) => {
-            let label = paint("error:", STYLE_ERROR, stderr_color);
-            let _ = writeln!(stderr, "{label} {}", failure.message);
-            failure.exit
-        }
+        Err(failure) => report_failure(stderr, &failure, stderr_color),
     }
+}
+
+/// Write a failure's diagnostic to stderr and return its exit class.
+fn report_failure(stderr: &mut dyn Write, failure: &Failure, color: bool) -> Exit {
+    let label = paint("error:", STYLE_ERROR, color);
+    let _ = writeln!(stderr, "{label} {}", failure.message);
+    failure.exit
 }
 
 struct Corpus {
@@ -331,8 +347,14 @@ struct Corpus {
 }
 
 impl Corpus {
-    fn discover(args: &SelectionArgs, query: &SelectionQuery) -> Result<Self, Failure> {
+    fn discover(
+        args: &SelectionArgs,
+        query: &SelectionQuery,
+        stats: &mut Stats,
+    ) -> Result<Self, Failure> {
+        let started = Instant::now();
         let workers = decoding_workers(std::env::var_os(JOBS_VARIABLE).as_deref())?;
+        stats.workers = Some(workers);
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
             (Vec::new(), false)
@@ -360,28 +382,33 @@ impl Corpus {
         let codex_roots = codex_rollout::rollout_roots(&codex_roots);
         let mut codex_discovery = roots::discover(&codex_roots);
         narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query)?;
-        ensure_discovery_capacity(
-            [&claude_discovery, &codex_discovery],
-            MAX_ESTIMATED_SOURCE_BYTES,
-        )?;
-        let budget = ReadBudget::new(MAX_ESTIMATED_SOURCE_BYTES, MAX_INGESTED_RECORDS);
-        let claude = claude_project::ingest_discovery_with_budget(
+        stats.phase("discovery", started);
+
+        let started = Instant::now();
+        let claude = claude_project::ingest_discovery_with_workers(
             claude_discovery,
             claude_missing_is_error,
-            &budget,
             workers,
         )
         .map_err(|error| Failure::adapter(&error))?;
-        let codex = codex_rollout::ingest_discovery_with_budget(
+        stats.phase("claude_ingest", started);
+        stats.agent("claude", &claude);
+
+        let started = Instant::now();
+        let codex = codex_rollout::ingest_discovery_with_workers(
             codex_discovery,
             codex_missing_is_error,
-            &budget,
             workers,
         )
         .map_err(|error| Failure::adapter(&error))?;
+        stats.phase("codex_ingest", started);
+        stats.agent("codex", &codex);
+
+        let started = Instant::now();
         let mut index = SessionIndex::default();
         index.add(Agent::Claude, &claude).map_err(|error| Failure::selection(&error))?;
         index.add(Agent::Codex, &codex).map_err(|error| Failure::selection(&error))?;
+        stats.phase("session_index", started);
         Ok(Self { claude, codex, index })
     }
 
@@ -414,37 +441,86 @@ fn decoding_workers(jobs: Option<&OsStr>) -> Result<NonZeroUsize, Failure> {
         })
 }
 
-#[cfg(test)]
-fn ensure_source_capacity(
-    claude_roots: &[PathBuf],
-    codex_homes: &[PathBuf],
-    maximum: u64,
-) -> Result<(), Failure> {
-    let codex_roots = codex_rollout::rollout_roots(codex_homes);
-    let discoveries = [roots::discover(claude_roots), roots::discover(&codex_roots)];
-    ensure_discovery_capacity([&discoveries[0], &discoveries[1]], maximum)
+/// Whether `UROLLUP_STATS` asks for run statistics.
+///
+/// Only `1` enables them. An empty value counts as unset, as it does for `UROLLUP_JOBS`,
+/// and `0` disables them; anything else is a usage error rather than a silent no.
+fn stats_requested(value: Option<&OsStr>) -> Result<bool, Failure> {
+    let Some(value) = value else { return Ok(false) };
+    match value.as_encoded_bytes() {
+        b"" | b"0" => Ok(false),
+        b"1" => Ok(true),
+        _ => Err(Failure::usage(format!(
+            "{STATS_VARIABLE} must be 1 to print run statistics, or 0 or empty to disable them, not {:?}",
+            value.to_string_lossy()
+        ))),
+    }
 }
 
-fn ensure_discovery_capacity(discoveries: [&Discovery; 2], maximum: u64) -> Result<(), Failure> {
-    let mut estimated = 0_u64;
-    for discovery in discoveries {
-        for source in &discovery.sources {
-            let Some((path, representation)) = source.files.primary() else { continue };
-            let bytes = path.metadata().map_err(|error| {
-                Failure::runtime(format!("cannot inspect source size {}: {error}", path.display()))
-            })?;
-            let expansion =
-                if representation == Representation::Zstd { ZSTD_ESTIMATED_EXPANSION } else { 1 };
-            estimated = estimated.saturating_add(bytes.len().saturating_mul(expansion));
-            if estimated > maximum {
-                return Err(Failure::runtime(format!(
-                    "discovered source input exceeds the v0.1 safety limit (more than {} MiB of estimated decoded input); pass a narrower --source root while bounded large-corpus streaming is implemented",
-                    maximum / (1024 * 1024)
-                )));
-            }
-        }
+/// Privacy-safe measurements of one command, which `UROLLUP_STATS=1` prints to stderr.
+///
+/// Only phase names, wall times, the worker count and row counts are kept, never a path,
+/// ID or model name, so the lines can be shared from a private corpus.
+#[derive(Debug, Default)]
+struct Stats {
+    workers: Option<NonZeroUsize>,
+    phases: Vec<(&'static str, Duration)>,
+    agents: Vec<AgentStats>,
+}
+
+/// Row counts from one agent's ingestion.
+#[derive(Debug, Eq, PartialEq)]
+struct AgentStats {
+    agent: &'static str,
+    sources: usize,
+    observations: u64,
+    requests: usize,
+    limit_observations: usize,
+    diagnostics: usize,
+}
+
+impl Stats {
+    /// Records a phase that began at `started` and ends now.
+    fn phase(&mut self, name: &'static str, started: Instant) {
+        self.phases.push((name, started.elapsed()));
     }
-    Ok(())
+
+    fn agent(&mut self, agent: &'static str, ingested: &Ingested) {
+        self.agents.push(AgentStats {
+            agent,
+            sources: ingested.manifest.entries.len(),
+            observations: ingested.ledger.coverage.observations,
+            requests: ingested.ledger.requests.len(),
+            limit_observations: ingested.limit_observations.len(),
+            diagnostics: ingested.ledger.diagnostics.len(),
+        });
+    }
+
+    /// One `stats:` line per measurement in `key=value` form, ending with the command's
+    /// total wall time. Phases that a failure prevented are absent.
+    fn render(&self, total: Duration) -> String {
+        let mut lines = String::new();
+        if let Some(workers) = self.workers {
+            let _ = writeln!(lines, "stats: workers={workers}");
+        }
+        for (name, elapsed) in &self.phases {
+            let _ = writeln!(lines, "stats: phase={name} seconds={:.3}", elapsed.as_secs_f64());
+        }
+        for agent in &self.agents {
+            let _ = writeln!(
+                lines,
+                "stats: agent={} sources={} observations={} requests={} limit_observations={} diagnostics={}",
+                agent.agent,
+                agent.sources,
+                agent.observations,
+                agent.requests,
+                agent.limit_observations,
+                agent.diagnostics
+            );
+        }
+        let _ = writeln!(lines, "stats: total seconds={:.3}", total.as_secs_f64());
+        lines
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -487,9 +563,9 @@ impl CatalogSource {
 ///
 /// Ordinary analytical IDs are derived from catalog native IDs. Analytical IDs for
 /// inline Claude sidechains cannot be recovered without decoding the transcript, so an
-/// unmatched `thr-` selector deliberately falls back to full ingestion under the
-/// capacity guard. Family-level retention keeps the records needed to reconcile copies
-/// and determine the final descendant selection without reading unrelated runs.
+/// unmatched `thr-` selector deliberately falls back to full ingestion. Family-level
+/// retention keeps the records needed to reconcile copies and determine the final
+/// descendant selection without reading unrelated runs.
 fn narrow_discoveries(
     claude: &mut Discovery,
     codex: &mut Discovery,
@@ -850,6 +926,11 @@ impl Failure {
     }
 
     fn adapter(error: &AdapterError) -> Self {
+        if matches!(error, AdapterError::Reconcile(ReconcileError::CapacityExceeded { .. })) {
+            return Self::runtime(format!(
+                "{error}; pass narrower --source roots with --no-default-sources"
+            ));
+        }
         Self::runtime(error.to_string())
     }
 
@@ -871,7 +952,7 @@ impl Failure {
     }
 }
 
-fn execute(command: &Command, color: bool) -> Result<String, Failure> {
+fn execute(command: &Command, color: bool, stats: &mut Stats) -> Result<String, Failure> {
     let args = command.args();
     let timezone = ResolvedTimeZone::resolve(args.timezone.as_deref())
         .map_err(|error| Failure::usage(error.to_string()))?;
@@ -902,7 +983,8 @@ fn execute(command: &Command, color: bool) -> Result<String, Failure> {
         ..SelectionQuery::default()
     };
     let selection_name = selection_name(&query);
-    let corpus = Corpus::discover(args, &query)?;
+    let corpus = Corpus::discover(args, &query, stats)?;
+    let started = Instant::now();
     let selected = corpus.index.select(&query).map_err(|error| Failure::selection(&error))?;
     let all = query.all && query.current.is_none() && query.sessions.is_empty();
     let sources = corpus.sources();
@@ -941,6 +1023,7 @@ fn execute(command: &Command, color: bool) -> Result<String, Failure> {
     if !output.ends_with('\n') {
         output.push('\n');
     }
+    stats.phase("query_render", started);
     Ok(output)
 }
 
@@ -1088,17 +1171,20 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::{self, Write};
+    use std::num::NonZeroUsize;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use super::{
-        Agent, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit, ExplicitDialect,
-        MAX_JOBS, OutputFormat, ScopeArg, TerminalContext, ZSTD_ESTIMATED_EXPANSION,
+        Agent, AgentStats, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit,
+        ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ScopeArg, Stats, TerminalContext,
         classify_explicit_source, classify_jsonl_with_limit, decoding_workers,
-        derive_agent_thread_id, ensure_discovery_capacity, ensure_source_capacity,
-        narrow_discoveries, run, run_with_context,
+        derive_agent_thread_id, execute, narrow_discoveries, run, run_with_context,
+        stats_requested,
     };
     use clap::Parser;
-    use urollup_core::adapters::{claude_project, codex_rollout};
+    use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
+    use urollup_core::ledger::reconcile::ReconcileError;
     use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
     use urollup_core::sources::roots;
 
@@ -1461,29 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn source_capacity_rejects_oversized_plain_and_compressed_inputs() {
-        let fixtures =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
-        let claude = fixtures.join("claude-project/nested-null-tool-input");
-        let plain_error = ensure_source_capacity(&[claude], &[], 0).unwrap_err();
-        assert!(plain_error.message.contains("v0.1 safety limit"));
-
-        let compressed = fixtures.join(
-            "codex-rollout/zst-twin/sessions/2026/09/08/\
-             rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
-        );
-        let compressed_bytes = compressed.metadata().unwrap().len();
-        let compressed_error = ensure_source_capacity(
-            &[],
-            &[compressed],
-            compressed_bytes * ZSTD_ESTIMATED_EXPANSION - 1,
-        )
-        .unwrap_err();
-        assert!(compressed_error.message.contains("v0.1 safety limit"));
-    }
-
-    #[test]
-    fn exact_claude_selection_prunes_unrelated_oversized_input_before_capacity_check() {
+    fn exact_claude_selection_prunes_unrelated_sessions_before_ingestion() {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("projects/project");
         let subagents = project.join("selected-session/subagents");
@@ -1504,10 +1568,18 @@ mod tests {
             ),
         )
         .unwrap();
-        let unrelated = fs::File::create(project.join("unrelated-session.jsonl")).unwrap();
-        unrelated.set_len(super::MAX_ESTIMATED_SOURCE_BYTES + 1).unwrap();
+        // A third request in an unrelated session would appear if selection read it.
+        fs::write(
+            project.join("unrelated-session.jsonl"),
+            concat!(
+                r#"{"type":"assistant","uuid":"uuid-other","sessionId":"unrelated-session","requestId":"request-other","cwd":"/workspace/project","timestamp":"2026-09-16T12:02:00Z","message":{"id":"message-other","model":"claude-test","usage":{"input_tokens":11,"output_tokens":13},"content":[]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
 
         let original = roots::discover(&[root.path().join("projects")]);
+        assert_eq!(original.sources.len(), 3);
         let mut analytical_claude = original.clone();
         let mut analytical_codex = roots::Discovery::default();
         let analytical_query = SelectionQuery {
@@ -1536,7 +1608,6 @@ mod tests {
 
         assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
         assert_eq!(claude.sources.len(), 2);
-        ensure_discovery_capacity([&claude, &codex], super::MAX_ESTIMATED_SOURCE_BYTES).unwrap();
 
         let ingested = claude_project::ingest_discovery(claude, false).unwrap();
         let mut index = SessionIndex::default();
@@ -1691,6 +1762,92 @@ mod tests {
             );
             assert!(failure.message.contains(&format!("{value:?}")), "{}", failure.message);
         }
+    }
+
+    #[test]
+    fn stats_are_off_unless_the_variable_is_one() {
+        assert!(!stats_requested(None).unwrap());
+        assert!(!stats_requested(Some(OsStr::new(""))).unwrap());
+        assert!(!stats_requested(Some(OsStr::new("0"))).unwrap());
+        assert!(stats_requested(Some(OsStr::new("1"))).unwrap());
+    }
+
+    #[test]
+    fn other_stats_values_are_usage_errors() {
+        for value in ["2", "01", " 1", "1 ", "true", "yes"] {
+            let failure = stats_requested(Some(OsStr::new(value))).unwrap_err();
+            assert_eq!(failure.exit, Exit::Usage, "{value:?}");
+            assert!(failure.message.starts_with("UROLLUP_STATS must be 1"), "{value:?}");
+            assert!(failure.message.contains(&format!("{value:?}")), "{}", failure.message);
+        }
+    }
+
+    #[test]
+    fn stats_render_phases_workers_and_counts_as_key_value_lines() {
+        let stats = Stats {
+            workers: NonZeroUsize::new(8),
+            phases: vec![
+                ("discovery", Duration::from_millis(41)),
+                ("claude_ingest", Duration::from_micros(11_203_400)),
+            ],
+            agents: vec![AgentStats {
+                agent: "claude",
+                sources: 2920,
+                observations: 350_112,
+                requests: 176_634,
+                limit_observations: 3,
+                diagnostics: 7,
+            }],
+        };
+        assert_eq!(
+            stats.render(Duration::from_millis(11_250)),
+            concat!(
+                "stats: workers=8\n",
+                "stats: phase=discovery seconds=0.041\n",
+                "stats: phase=claude_ingest seconds=11.203\n",
+                "stats: agent=claude sources=2920 observations=350112 requests=176634 ",
+                "limit_observations=3 diagnostics=7\n",
+                "stats: total seconds=11.250\n",
+            )
+        );
+        assert_eq!(Stats::default().render(Duration::ZERO), "stats: total seconds=0.000\n");
+    }
+
+    #[test]
+    fn a_command_records_every_phase_and_both_agents() {
+        let cli = Cli::try_parse_from(fixture_report_args(&["--format", "json"])).unwrap();
+        let mut stats = Stats::default();
+        execute(&cli.command, false, &mut stats).unwrap();
+
+        assert!(stats.workers.is_some());
+        let phases: Vec<_> = stats.phases.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            phases,
+            ["discovery", "claude_ingest", "codex_ingest", "session_index", "query_render"]
+        );
+        let [claude, codex] = stats.agents.as_slice() else {
+            panic!("expected one row per agent: {:?}", stats.agents);
+        };
+        assert_eq!((claude.agent, codex.agent), ("claude", "codex"));
+        assert!(claude.sources > 0 && claude.requests > 0, "{claude:?}");
+        assert!(claude.observations >= u64::try_from(claude.requests).unwrap(), "{claude:?}");
+        assert_eq!(codex.sources, 0);
+        assert_eq!(codex.observations, 0);
+    }
+
+    #[test]
+    fn a_capacity_failure_exits_one_and_suggests_narrower_sources() {
+        let error = AdapterError::Reconcile(ReconcileError::CapacityExceeded {
+            observations: 9_000_001,
+            maximum: 9_000_000,
+        });
+        let failure = Failure::adapter(&error);
+        assert_eq!(failure.exit, Exit::Runtime);
+        assert_eq!(
+            failure.message,
+            "9000001 request observations exceed the reconciliation capacity of 9000000 compact \
+             rows (2 GiB); pass narrower --source roots with --no-default-sources"
+        );
     }
 
     #[test]
