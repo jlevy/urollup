@@ -300,12 +300,39 @@ fn decode_source(
     Ok((entry, ParsedSource { file_thread: rollout.thread_id, records, trailing_skipped: skipped }))
 }
 
+/// The quoted type tokens a relevant rollout record must contain: a record is relevant only
+/// when its `type`, or an `event_msg` payload's `type`, is one of these strings.
+const RELEVANT_TYPE_TOKENS: [&[u8]; 6] = [
+    b"\"session_meta\"",
+    b"\"turn_context\"",
+    b"\"token_usage_record\"",
+    b"\"compacted\"",
+    b"\"token_count\"",
+    b"\"thread_settings_applied\"",
+];
+
+/// Whether a line can be a relevant record. A `false` answer is exact for records whose
+/// type strings are written without escapes, as Codex writes them.
+fn may_be_relevant(bytes: &[u8]) -> bool {
+    RELEVANT_TYPE_TOKENS.iter().any(|token| memchr::memmem::find(bytes, token).is_some())
+}
+
 fn decode_record(
     raw: &RawRecord<'_>,
     records: &mut Vec<ParsedRecord>,
     skipped: &mut SkippedSpan,
     last_limits: &mut Option<Arc<RateLimits>>,
 ) -> RecordDisposition {
+    if !may_be_relevant(raw.bytes) {
+        // Validate without building a document: most rollout lines are content the adapter
+        // skips, and allocating a JSON tree for each one only fragments the heap.
+        return if serde_json::from_slice::<serde::de::IgnoredAny>(raw.bytes).is_ok() {
+            skipped.observe();
+            RecordDisposition::Skipped
+        } else {
+            RecordDisposition::Malformed
+        };
+    }
     let Ok(value) = parse_record(raw.bytes) else {
         return RecordDisposition::Malformed;
     };
@@ -1191,6 +1218,40 @@ mod tests {
                 "{workers} workers"
             );
         }
+    }
+
+    #[test]
+    fn the_prefilter_skips_valid_content_and_still_reports_malformed_lines() {
+        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
+        let decode = |line: &str| {
+            let evidence = EvidenceRef {
+                source: source.clone(),
+                offset: 0,
+                length: u64::try_from(line.len()).unwrap(),
+            };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let mut records = Vec::new();
+            let mut skipped = SkippedSpan::default();
+            let disposition = decode_record(&raw, &mut records, &mut skipped, &mut None);
+            (disposition, records.len(), skipped.count)
+        };
+
+        assert_eq!(
+            decode(r#"{"type":"response_item","payload":{"content":"text"}}"#),
+            (RecordDisposition::Skipped, 0, 1)
+        );
+        assert_eq!(
+            decode(r#"{"type":"response_item","payload":{"content":"#),
+            (RecordDisposition::Malformed, 0, 0)
+        );
+        assert_eq!(
+            decode(r#"{"type":"response_item","payload":{"content":"a \"token_count\" mention"}}"#),
+            (RecordDisposition::Skipped, 0, 1)
+        );
+        assert_eq!(
+            decode(r#"{"type":"turn_context","payload":{"turn_id":"t1"}}"#),
+            (RecordDisposition::Decoded, 1, 0)
+        );
     }
 
     #[test]
