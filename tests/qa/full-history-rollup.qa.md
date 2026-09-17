@@ -3,7 +3,7 @@ title: Full-History Rollup QA
 description: Manual end-to-end validation that urollup rolls up the whole local Claude Code and Codex history on a real machine, fast and within its memory bound, with correct per-project, per-session and resumed-history totals.
 date: 2026-09-16
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Active; blocked until Phase 1 of the scalable ingestion plan lands
+status: Active; ready to run now that the input guard is removed
 ---
 # QA Playbook: Full-History Rollup
 
@@ -31,8 +31,8 @@ history and recording.
 
 | Phase | Status | Notes |
 | --- | --- | --- |
-| Phase 1: Setup | ⏸️ Blocked | Requires Phase 1 of the scalable ingestion plan |
-| Phase 2: Whole-history runs | ⏸️ Blocked | The current engine refuses input above 512 MiB |
+| Phase 1: Setup | ⏳ Pending |  |
+| Phase 2: Whole-history runs | ⏳ Pending | The 512 MiB input guard is removed |
 | Phase 3: Invariants and determinism | ⏸️ Blocked | Commands validated on fixtures |
 | Phase 4: Per-project cross-checks | ⏸️ Blocked | Needs Phase 2 whole-history runs |
 | Phase 5: Hand-summed sessions | ⏸️ Blocked | Commands validated on fixtures |
@@ -46,11 +46,12 @@ history and recording.
 
 - Invariant, hand-sum and measurement commands → ✅ validated against fixture corpora
   with the current engine.
-- Whole-history runs → ⏸️ blocked by the 512 MiB input guard.
+- Whole-history runs → ⏳ pending; the 512 MiB input guard and read budgets are removed,
+  so the default corpus is no longer refused.
 
 **Next steps:**
 
-1. Land Phase 1 of the
+1. Finish Phase 1 of the
    [scalable ingestion plan](../../docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md).
 2. Run Phases 1–8 of this playbook and record results in a dated QA report.
 
@@ -99,7 +100,8 @@ mkdir -p target/qa/full-history
 export UR=target/release/urollup
 export QA=target/qa/full-history
 export CCUSAGE=tests/parity/ccusage/node_modules/@ccusage/ccusage-darwin-arm64/bin/ccusage
-unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID
+export UROLLUP_STATS=1
+unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID UROLLUP_JOBS
 measure() {
   local name=$1; shift
   uv --config-file uv.toml run --frozen python scripts/run-rss-watchdog.py \
@@ -116,7 +118,10 @@ Always measure the freshly built `target/release/urollup`, never an installed co
 `/usr/bin/time -l` reports **peak memory footprint**, which includes compressed pages
 and is the number this playbook records.
 The watchdog’s 1 GiB RSS limit is only a kill switch, because RSS omits compressed
-memory on macOS.
+memory on macOS. `UROLLUP_STATS=1` adds `stats:` lines to each run’s stderr file with
+phase wall times, the worker count, and source, observation, request, limit-observation
+and diagnostic counts per agent; they contain no paths, IDs or model names, so the dated
+report may quote them.
 
 **Verify:**
 
@@ -159,19 +164,23 @@ then three `valid` lines.
 
 **Verify:**
 
-- [ ] Every command exits 0; none prints a safety-limit or capacity error.
+- [ ] Every command exits 0; none prints a reconciliation capacity error.
 - [ ] Wall time is at most 25 s after plan Phase 1 and at most 10 s after plan Phase 2.
 - [ ] Peak footprint is at most 512 MiB for every command.
 - [ ] No watchdog report has `"killed_for_rss": true`.
 - [ ] `jq '.coverage.limit_observations' "$QA/report.json"` is greater than 0 and
   `jq '.diagnostics | length' "$QA/report.json"` is at most 30.
-- [ ] Negative check: `grep -c 'safety limit' "$QA"/*.stderr` prints 0 for every file.
+- [ ] Negative check: `grep -c 'reconciliation capacity' "$QA"/*.stderr` prints 0 for
+  every file.
+- [ ] Each stderr file has `stats:` lines for all five phases and both agents; record
+  the phase times and per-agent counts from the `report` run.
 
 **Troubleshooting:**
 
 - **Issue:** the watchdog kills a run.
   **Fix:** mark the phase **Failed**; do not retry without the watchdog.
-  Rerun with `UROLLUP_STATS=1` on a single project root to find the phase that grows.
+  Rerun on a single project root and compare its `stats:` lines to find the phase that
+  grows.
 - **Issue:** a run is much slower the first time.
   **Fix:** record the first run as cold and rerun once for a warm time; the thresholds
   apply to the warm run.
