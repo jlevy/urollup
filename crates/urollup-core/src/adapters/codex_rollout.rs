@@ -279,7 +279,7 @@ pub fn ingest_discovery_with_budget(
         });
     }
 
-    normalize(&parsed_sources, manifest)
+    normalize(parsed_sources, manifest)
 }
 
 fn decode_record(
@@ -397,11 +397,11 @@ pub fn rollout_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn normalize(
-    sources: &[ParsedSource],
+    sources: Vec<ParsedSource>,
     manifest: SnapshotManifest,
 ) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
-    for source in sources {
+    for source in &sources {
         for record in &source.records {
             if let Some(version) = record.session_meta().and_then(|meta| meta.cli_version.as_ref())
             {
@@ -413,7 +413,7 @@ fn normalize(
     }
     let mut native_threads: BTreeSet<String> = BTreeSet::new();
     let mut meta_by_thread: BTreeMap<String, (&SessionMeta, EvidenceRef)> = BTreeMap::new();
-    for source in sources {
+    for source in &sources {
         native_threads.insert(source.file_thread.clone());
         for record in &source.records {
             let Some(meta) = record.session_meta() else { continue };
@@ -484,7 +484,8 @@ fn normalize(
         });
     }
 
-    let mut observations = Vec::new();
+    let mut observations =
+        Vec::with_capacity(sources.iter().map(|source| source.records.len()).sum());
     let mut diagnostics = source_diagnostics(&manifest);
     for (thread, (meta, evidence)) in &meta_by_thread {
         if meta.parent().is_some_and(|parent| !thread_ids.contains_key(parent)) {
@@ -499,7 +500,7 @@ fn normalize(
     let mut copied_regions = 0_u64;
     let mut limit_observations = Vec::new();
     let mut known_turns: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for source in sources {
+    for source in &sources {
         let is_root =
             source.records.iter().find_map(ParsedRecord::session_meta).is_some_and(|meta| {
                 meta.id.as_deref() == Some(source.file_thread.as_str())
@@ -518,7 +519,7 @@ fn normalize(
             }));
         }
     }
-    for source in sources {
+    for source in &sources {
         let has_direct =
             source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)));
         let own_meta = source
@@ -595,7 +596,7 @@ fn normalize(
                         &thread_ids,
                         &turns,
                     )?;
-                    if let Some(response_id) = observation.native_response_id.clone() {
+                    if let Some(response_id) = payload.response_id.clone() {
                         let owner = payload.thread_id.as_ref().unwrap_or(&source.file_thread);
                         last_response_by_thread.insert(owner.clone(), response_id);
                     }
@@ -643,7 +644,6 @@ fn normalize(
                                         ])?
                                         .derive()?,
                                 );
-                                observation.native_response_id = Some(response_id.clone());
                             }
                             observation.timestamp = record.timestamp;
                             if let Some(context) =
@@ -730,6 +730,9 @@ fn normalize(
         }
     }
 
+    // Decoded records are not needed once observations exist; free them before the
+    // reconciliation peak.
+    drop(sources);
     let mut ledger = reconcile(
         ReconcileInput {
             threads: threads.into_values().collect(),
@@ -984,7 +987,6 @@ fn usage_observation(
                 .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(response_id)])?
                 .derive()?,
         );
-        observation.native_response_id = Some(response_id.clone());
     }
     if let Some(usage) = &payload.usage {
         observation.usage = Some(codex_usage(usage)?);

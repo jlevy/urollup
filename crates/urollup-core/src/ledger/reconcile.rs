@@ -95,10 +95,6 @@ pub struct RequestObservation {
     /// Tokens naming candidate sets: observations that may be one request but share no
     /// key, such as a digest of copy-invariant content.
     pub candidate_tokens: BTreeSet<String>,
-    /// The native request ID.
-    pub native_request_id: Option<String>,
-    /// The native response ID.
-    pub native_response_id: Option<String>,
     /// The model, when recorded.
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
@@ -123,8 +119,6 @@ impl RequestObservation {
             sequence: None,
             invariants: Vec::new(),
             candidate_tokens: BTreeSet::new(),
-            native_request_id: None,
-            native_response_id: None,
             model: None,
             effort: None,
             account: None,
@@ -291,11 +285,17 @@ pub enum ReconcileError {
     },
 }
 
-/// One observation with its keys, or its artifact-local key when it has none.
-struct Resolved {
-    observation: RequestObservation,
+/// One observation's keys, or its artifact-local key when it has none.
+struct ObservationKeys {
     keys: Vec<DerivedKey>,
     local: Option<DerivedKey>,
+}
+
+/// One observation with its keys, borrowed so reconciliation never copies observations.
+struct Resolved<'a> {
+    observation: &'a RequestObservation,
+    keys: &'a [DerivedKey],
+    local: Option<&'a DerivedKey>,
 }
 
 /// Request IDs seen in one run with their further digest bits, so two different keys
@@ -351,9 +351,19 @@ pub fn reconcile(
     let relationships = reconcile_relationships(relationships, &thread_ids)?;
     let requests = canonicalize_request_owners(requests, &thread_ids);
 
-    let observations = dedupe_rereads(requests, &mut diagnostics, &mut coverage);
+    let mut observations = requests;
+    dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
     let mut digests = DigestRegistry::default();
-    let resolved = resolve_identities(observations, &mut digests)?;
+    let key_sets = resolve_identities(&mut observations, &mut digests)?;
+    let resolved: Vec<Resolved<'_>> = observations
+        .iter()
+        .zip(&key_sets)
+        .map(|(observation, keys)| Resolved {
+            observation,
+            keys: &keys.keys,
+            local: keys.local.as_ref(),
+        })
+        .collect();
 
     // Link observations sharing a key ID, and IDs joined by lineage evidence.
     let mut graph = LinkGraph::new();
@@ -361,12 +371,12 @@ pub fn reconcile(
         let first = item
             .keys
             .first()
-            .or(item.local.as_ref())
+            .or(item.local)
             .expect("a resolved observation has a native or artifact-local key")
             .id
             .clone();
         graph.insert(&first);
-        for key in &item.keys {
+        for key in item.keys {
             graph.link(&first, &key.id);
         }
     }
@@ -374,12 +384,12 @@ pub fn reconcile(
     for link in &links {
         graph.link(&link.a, &link.b);
     }
-    let mut groups: BTreeMap<AnalyticalId, Vec<&Resolved>> = BTreeMap::new();
+    let mut groups: BTreeMap<AnalyticalId, Vec<&Resolved<'_>>> = BTreeMap::new();
     for item in &resolved {
         let first = item
             .keys
             .first()
-            .or(item.local.as_ref())
+            .or(item.local)
             .expect("a resolved observation has a native or artifact-local key");
         groups.entry(graph.find(&first.id)).or_default().push(item);
     }
@@ -847,13 +857,16 @@ fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey {
     )
 }
 
+/// Sorts observations into canonical order and removes re-reads in place: identical
+/// observations count once, and a later observation of a kept record location with
+/// different content is diagnosed and dropped.
 fn dedupe_rereads(
-    mut observations: Vec<RequestObservation>,
+    observations: &mut Vec<RequestObservation>,
     diagnostics: &mut Vec<Diagnostic>,
     coverage: &mut ReconcileCoverage,
-) -> Vec<RequestObservation> {
+) {
     // Key order and repeated keys do not change the content of a record.
-    for observation in &mut observations {
+    for observation in observations.iter_mut() {
         observation.keys.sort();
         observation.keys.dedup();
     }
@@ -861,35 +874,32 @@ fn dedupe_rereads(
     let before = observations.len();
     observations.dedup();
     coverage.rereads = count(before.saturating_sub(observations.len()));
-    let mut kept: Vec<RequestObservation> = Vec::with_capacity(observations.len());
-    for observation in observations {
-        match kept.last() {
-            Some(previous) if previous.evidence == observation.evidence => {
-                coverage.conflicting_rereads = coverage.conflicting_rereads.saturating_add(1);
-                diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::ConflictingReread,
-                    None,
-                    [observation.evidence.clone()],
-                    "one record location was observed with different content",
-                ));
-            }
-            Some(_) | None => {
-                if observation.role == ObservationRole::Copy {
-                    coverage.copies = coverage.copies.saturating_add(1);
-                }
-                kept.push(observation);
-            }
+    let mut previous: Option<EvidenceRef> = None;
+    observations.retain(|observation| {
+        if previous.as_ref() == Some(&observation.evidence) {
+            coverage.conflicting_rereads = coverage.conflicting_rereads.saturating_add(1);
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::ConflictingReread,
+                None,
+                [observation.evidence.clone()],
+                "one record location was observed with different content",
+            ));
+            return false;
         }
-    }
-    kept
+        if observation.role == ObservationRole::Copy {
+            coverage.copies = coverage.copies.saturating_add(1);
+        }
+        previous = Some(observation.evidence.clone());
+        true
+    });
 }
 
 fn resolve_identities(
-    observations: Vec<RequestObservation>,
+    observations: &mut [RequestObservation],
     digests: &mut DigestRegistry,
-) -> Result<Vec<Resolved>, ReconcileError> {
+) -> Result<Vec<ObservationKeys>, ReconcileError> {
     let mut resolved = Vec::with_capacity(observations.len());
-    for mut observation in observations {
+    for observation in observations {
         let keys = std::mem::take(&mut observation.keys);
         for key in &keys {
             if key.id.prefix() != IdPrefix::Request {
@@ -904,7 +914,7 @@ fn resolve_identities(
             .is_empty()
             .then(|| resolve_artifact_local(&observation.evidence, digests))
             .transpose()?;
-        resolved.push(Resolved { observation, keys, local });
+        resolved.push(ObservationKeys { keys, local });
     }
     Ok(resolved)
 }
@@ -937,7 +947,7 @@ fn resolve_compact_set<'a>(
 }
 
 /// Revision-invariant fields on which the group's observations disagree.
-fn conflicting_fields(members: &[&Resolved]) -> BTreeSet<String> {
+fn conflicting_fields(members: &[&Resolved<'_>]) -> BTreeSet<String> {
     let mut values: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for member in members {
         for (field, value) in &member.observation.invariants {
@@ -952,7 +962,7 @@ fn conflicting_fields(members: &[&Resolved]) -> BTreeSet<String> {
 }
 
 fn build_request(
-    members: &[&Resolved],
+    members: &[&Resolved<'_>],
     split: bool,
     selector: &dyn RevisionSelector,
     digests: &mut DigestRegistry,
@@ -985,7 +995,7 @@ fn build_request(
     };
     let id = linked.id.clone();
     let observations: Vec<&RequestObservation> =
-        members.iter().map(|member| &member.observation).collect();
+        members.iter().map(|member| member.observation).collect();
     let originals: Vec<&RequestObservation> =
         observations.iter().copied().filter(|o| o.role == ObservationRole::Original).collect();
     let revisions: Vec<&RequestObservation> =
