@@ -326,7 +326,7 @@ Do not capture table rows in the QA report.
 
 ### Troubleshooting
 
-- The local parity helper performs repeated uncached scans.
+- The local parity helper performs two uncached whole-history urollup scans.
   On a large history this can be slow and memory-intensive; do not bypass the watchdog
   or ingestion boundaries to finish it.
 - A tool failure may be reported without its raw diagnostic by design.

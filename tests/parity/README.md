@@ -41,6 +41,12 @@ sessions, coverage counters and internal diagnostic codes.
 the half-open interval, token totals and deltas, per-day deltas, the safe `other` model
 bucket, matched and one-sided session counts, a relative-delta histogram and the
 unexplained residual.
+Session counts come from one whole-history urollup `sessions` run and one ccusage
+`session` run per agent, joined in memory on the native `session` field; a Codex rollout
+path joins on its trailing thread ID. Only sessions whose ccusage last activity falls
+before the current local day are compared or counted as ccusage-only.
+A urollup row that joins nothing counts as urollup-only when it has requests, unless it
+is a Claude subagent of an active session.
 
 Both scripts may hold paths and identifiers in memory while joining results, but their
 output builders use fixed allowlists.

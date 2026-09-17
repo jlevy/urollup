@@ -34,10 +34,10 @@ history and recording.
 | Phase 1: Setup | ⏸️ Blocked | Requires Phase 1 of the scalable ingestion plan |
 | Phase 2: Whole-history runs | ⏸️ Blocked | The current engine refuses input above 512 MiB |
 | Phase 3: Invariants and determinism | ⏸️ Blocked | Commands validated on fixtures |
-| Phase 4: Per-project cross-checks | ⏸️ Blocked | Codex join needs native session IDs in `sessions` rows |
+| Phase 4: Per-project cross-checks | ⏸️ Blocked | Needs Phase 2 whole-history runs |
 | Phase 5: Hand-summed sessions | ⏸️ Blocked | Commands validated on fixtures |
 | Phase 6: Resumed and forked history | ⏸️ Blocked | Order bug `uro-sn1e` reproduced on fixtures |
-| Phase 7: Live current session and local parity | ⏸️ Blocked | `make parity-local` needs a one-pass session join |
+| Phase 7: Live current session and local parity | ⏸️ Blocked | Needs Phase 2 whole-history runs |
 | Phase 8: Record and clean up | ⏸️ Blocked |  |
 
 **Status legend:** ✅ Passed | ❌ Failed | ⏳ Pending | ⏸️ Blocked
@@ -291,9 +291,6 @@ jq --rawfile ids "$QA/codex-$PROJECT.ids" '($ids | split("\n") | map(select(leng
 jq --arg p "$PROJECT" '[.rows[] | select(.agent == "codex" and .project == $p)] | {sessions: length, total: (map(.tokens.total) | add), output: (map(.tokens.output) | add)}' "$QA/sessions.json"
 ```
 
-This step requires the native session ID field in `sessions` rows that plan Phase 1
-adds.
-
 **Verify:**
 
 - [ ] Session counts match, and totals match or differ only by behaviors in the parity
@@ -428,8 +425,8 @@ make parity-local CONSENT_LOCAL_LOGS=1
 jq '{totals, sessions, unexplained_residual, review_threshold_exceeded}' target/parity/local.json
 ```
 
-This step requires the one-pass session join in `tests/parity/local_diff.py` from plan
-Phase 3; the current helper runs urollup once per session.
+The helper runs whole-history urollup `daily` and `sessions` once each and joins session
+rows to ccusage on the native `session` field.
 
 **Verify:**
 
