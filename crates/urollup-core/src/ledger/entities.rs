@@ -7,13 +7,18 @@
 //! Provider charges, resource observations and annotations are later entities and are not
 //! defined yet.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::num::NonZeroU32;
 
 use jiff::Timestamp;
 
 use super::identity::{AnalyticalId, StoredIdentity};
+use super::inline_list::InlineList;
+use super::names::Name;
 use super::scope::IdentityBasis;
-use super::tokens::TokenMeasures;
+use super::tokens::Measures;
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::ManifestEntry;
 
@@ -188,10 +193,10 @@ pub enum ModelBasis {
 }
 
 /// A model name with its basis. Placeholder names stay as observed.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ModelName {
     /// The native model name.
-    pub name: String,
+    pub name: Name,
     /// Served or requested.
     pub basis: ModelBasis,
 }
@@ -202,7 +207,7 @@ pub struct ModelUsage {
     /// The model, when the source identifies it.
     pub model: Option<ModelName>,
     /// The usage attributed to this model.
-    pub usage: TokenMeasures,
+    pub usage: Measures,
     /// The stable dialect field or record kind that carried this component.
     pub source: &'static str,
 }
@@ -216,27 +221,33 @@ pub enum RevisionStatus {
     Selected,
 }
 
-/// One usage-bearing record of a request.
+/// A list of per-model usage components, empty for almost every record, so it is one
+/// pointer that allocates only when a component exists.
+pub type ModelUsageList = InlineList<ModelUsage, 0>;
+
+/// The usage of one usage-bearing record of a request.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct UsageRevision {
-    /// The record.
-    pub evidence: EvidenceRef,
     /// Its usage.
-    pub usage: TokenMeasures,
+    pub usage: Measures,
     /// The usage split by model, recorded only when one request invokes more than one
     /// model; a single-model request's usage belongs to its own model.
-    pub model_usage: Vec<ModelUsage>,
+    pub model_usage: ModelUsageList,
 }
 
 /// The usage revision a request counts.
+///
+/// The selector's rule name is the same for every request of a ledger, so the ledger
+/// records it once as [`Ledger::revision_rule`](super::reconcile::Ledger::revision_rule).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SelectedUsage {
     /// The selected revision.
     pub revision: UsageRevision,
+    /// The selected record's position in [`Request::evidence`], which lists every
+    /// original record and so every revision.
+    pub evidence: u32,
     /// Final or selected by rule.
     pub status: RevisionStatus,
-    /// The selector's rule name.
-    pub rule: &'static str,
 }
 
 /// Whether a request's usage counts in totals.
@@ -253,7 +264,78 @@ pub enum Counting {
     CopyOnly,
 }
 
+/// A timestamp in 12 bytes: whole seconds and biased nanoseconds, whose niche keeps an
+/// optional one at 12 bytes too, where `Option<Timestamp>` takes 24.
+///
+/// Its order is the timestamp's order: sub-second nanoseconds share the sign of the
+/// seconds, so comparing seconds and then nanoseconds orders instants.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct CompactTimestamp {
+    /// Seconds since the Unix epoch as native-endian bytes, which need no alignment.
+    second: [u8; 8],
+    /// Sub-second nanoseconds plus one billion, which is never zero.
+    biased_nanosecond: NonZeroU32,
+}
+
+const _: () = assert!(std::mem::size_of::<Option<CompactTimestamp>>() == 12);
+
+impl CompactTimestamp {
+    const BIAS: i32 = 1_000_000_000;
+
+    /// The timestamp.
+    pub fn get(self) -> Timestamp {
+        let nanosecond = i32::try_from(self.biased_nanosecond.get())
+            .map_or(0, |biased| biased.saturating_sub(Self::BIAS));
+        Timestamp::new(self.second(), nanosecond).expect("a decomposed timestamp recomposes")
+    }
+
+    const fn second(self) -> i64 {
+        i64::from_ne_bytes(self.second)
+    }
+}
+
+impl From<Timestamp> for CompactTimestamp {
+    fn from(timestamp: Timestamp) -> Self {
+        let biased = timestamp.subsec_nanosecond().saturating_add(Self::BIAS);
+        Self {
+            second: timestamp.as_second().to_ne_bytes(),
+            biased_nanosecond: u32::try_from(biased)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .expect("sub-second nanoseconds lie strictly within one second"),
+        }
+    }
+}
+
+impl From<CompactTimestamp> for Timestamp {
+    fn from(timestamp: CompactTimestamp) -> Self {
+        timestamp.get()
+    }
+}
+
+impl Ord for CompactTimestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.second(), self.biased_nanosecond).cmp(&(other.second(), other.biased_nanosecond))
+    }
+}
+
+impl PartialOrd for CompactTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for CompactTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
 /// A logical request and its response (design §3.1).
+///
+/// Whole-history ledgers hold hundreds of thousands of requests, so names are interned,
+/// usage and time are stored compactly, originals and copies share one allocation, and the
+/// selected revision is a position among the originals.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Request {
     /// The canonical `req-` ID.
@@ -265,27 +347,56 @@ pub struct Request {
     /// Owner or candidates.
     pub ownership: Ownership,
     /// Earliest timestamp among original records.
-    pub first_seen: Option<Timestamp>,
+    pub first_seen: Option<CompactTimestamp>,
     /// Latest timestamp among original records.
-    pub last_seen: Option<Timestamp>,
+    pub last_seen: Option<CompactTimestamp>,
     /// The model, when recorded.
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
-    pub effort: Option<String>,
+    pub effort: Option<Name>,
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
-    /// Every original record, in canonical order.
-    pub evidence: Box<[EvidenceRef]>,
-    /// Copies of this request, recorded as evidence and never counted.
-    pub copies: Box<[EvidenceRef]>,
+    /// Every original record in canonical order, then every copy in canonical order, in
+    /// one allocation that [`Request::evidence`] and [`Request::copies`] split.
+    pub records: Box<[EvidenceRef]>,
+    /// How many of `records` are originals.
+    pub originals: u32,
     /// Whether the request counts in totals.
     pub counting: Counting,
 }
+
+// 240 bytes, down from 440: interned names, compact measures and timestamps, a position
+// in place of the selected record's evidence reference, the rule name kept once per
+// ledger, and originals and copies in one allocation.
+const _: () = assert!(std::mem::size_of::<Request>() <= 240);
 
 impl Request {
     /// The canonical ID.
     pub fn id(&self) -> &AnalyticalId {
         &self.id
+    }
+
+    /// Every original record, in canonical order.
+    pub fn evidence(&self) -> &[EvidenceRef] {
+        self.split_records().0
+    }
+
+    /// Copies of this request, recorded as evidence and never counted.
+    pub fn copies(&self) -> &[EvidenceRef] {
+        self.split_records().1
+    }
+
+    /// The record of the counted usage revision.
+    pub fn selected_evidence(&self) -> Option<&EvidenceRef> {
+        let selected = self.usage.as_ref()?;
+        self.evidence().get(usize::try_from(selected.evidence).ok()?)
+    }
+
+    fn split_records(&self) -> (&[EvidenceRef], &[EvidenceRef]) {
+        usize::try_from(self.originals)
+            .ok()
+            .and_then(|originals| self.records.split_at_checked(originals))
+            .unwrap_or((&self.records, &[]))
     }
 }
 
@@ -426,11 +537,35 @@ pub struct ProviderLimitObservation {
 
 #[cfg(test)]
 mod tests {
+    use jiff::Timestamp;
     use proptest::prelude::*;
 
-    use super::apply_permutation;
+    use super::{CompactTimestamp, apply_permutation};
+
+    /// Timestamps across jiff's whole range, and near the epoch with sub-second parts of
+    /// either sign, which jiff normalizes to the sign of the seconds.
+    fn arbitrary_timestamp() -> impl Strategy<Value = Timestamp> {
+        let range = Timestamp::MIN.as_nanosecond()..=Timestamp::MAX.as_nanosecond();
+        prop_oneof![
+            range.prop_map(|nanosecond| Timestamp::from_nanosecond(nanosecond).unwrap()),
+            (-3_i64..3, -999_999_999_i32..=999_999_999)
+                .prop_map(|(second, nanosecond)| Timestamp::new(second, nanosecond).unwrap()),
+        ]
+    }
 
     proptest! {
+        #[test]
+        fn compact_timestamps_round_trip_and_order_like_timestamps(
+            left in arbitrary_timestamp(),
+            right in arbitrary_timestamp(),
+        ) {
+            let (compact_left, compact_right) =
+                (CompactTimestamp::from(left), CompactTimestamp::from(right));
+            prop_assert_eq!(compact_left.get(), left);
+            prop_assert_eq!(compact_left.cmp(&compact_right), left.cmp(&right));
+            prop_assert_eq!(compact_left == compact_right, left == right);
+        }
+
         #[test]
         fn applying_a_sorting_permutation_matches_sorting(
             rows in prop::collection::vec(0u16..50, 0..64),

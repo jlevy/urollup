@@ -10,6 +10,7 @@ use urollup_core::adapters::claude_project::ingest_root;
 use urollup_core::adapters::codex_rollout::ingest_root as ingest_codex;
 use urollup_core::ledger::entities::{Confidence, ProviderLimitObservation, RelationshipKind};
 use urollup_core::ledger::scope::IdentityBasis;
+use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex};
 
 fn fixture(case: &str) -> PathBuf {
@@ -187,12 +188,12 @@ fn claude_advisor_usage_keeps_its_model_breakdown() {
             request.usage.as_ref().is_some_and(|usage| usage.revision.model_usage.len() == 2)
         })
         .unwrap();
-    let model_usage = &request.usage.as_ref().unwrap().revision.model_usage;
+    let model_usage: Vec<_> = request.usage.as_ref().unwrap().revision.model_usage.iter().collect();
 
     assert_eq!(model_usage[0].model.as_ref().unwrap().name, "claude-sonnet-4-5");
-    assert_eq!(model_usage[0].usage.output, Some(530));
+    assert_eq!(TokenMeasures::from(model_usage[0].usage).output, Some(530));
     assert_eq!(model_usage[1].model.as_ref().unwrap().name, "claude-opus-4-5");
-    assert_eq!(model_usage[1].usage.output, Some(7_200));
+    assert_eq!(TokenMeasures::from(model_usage[1].usage).output, Some(7_200));
 }
 
 #[test]

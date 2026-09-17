@@ -36,15 +36,16 @@ use jiff::Timestamp;
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
-    Basis, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
-    ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests, RevisionStatus,
-    SelectedUsage, Thread, ToolAction, UsageRevision,
+    Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsageList,
+    Ownership, ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests,
+    RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::inline_list::InlineList;
 use super::linking::LinkGraph;
+use super::names::Name;
 use super::scope::{DerivedKey, IdentityBasis, artifact_local_key};
-use super::tokens::TokenMeasures;
+use super::tokens::Measures;
 use crate::sources::evidence::EvidenceRef;
 
 /// Whether an observation is the request's own record or a copy of it.
@@ -68,13 +69,12 @@ pub enum OwnerEvidence {
 /// One request record as an adapter decoded it.
 ///
 /// The derived order starts with the evidence reference, which makes it the canonical
-/// observation order.
+/// observation order. Names are interned and usage and time are stored compactly, because
+/// a whole-history run holds hundreds of thousands of observations at once.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RequestObservation {
     /// Where the record is.
     pub evidence: EvidenceRef,
-    /// The dialect registry token.
-    pub dialect: &'static str,
     /// Every `req-` key the adapter could build for the record, in any order.
     pub keys: InlineList<DerivedKey, 2>,
     /// Original or copy.
@@ -82,33 +82,36 @@ pub struct RequestObservation {
     /// Owner evidence.
     pub owner: OwnerEvidence,
     /// The record's usage, when it carries any.
-    pub usage: Option<TokenMeasures>,
+    pub usage: Option<Measures>,
     /// This record's usage split by model.
-    pub model_usage: Vec<ModelUsage>,
+    pub model_usage: ModelUsageList,
     /// A native revision sequence, when the dialect orders revisions.
     pub sequence: Option<u64>,
-    /// Revision-invariant fields; observations sharing a key must agree on every field
-    /// both carry.
-    pub invariants: InlineList<(&'static str, String), 1>,
+    /// Revision-invariant fields and their interned values; observations sharing a key
+    /// must agree on every field both carry.
+    pub invariants: InlineList<(&'static str, Name), 1>,
     /// The model, when recorded.
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
-    pub effort: Option<String>,
+    pub effort: Option<Name>,
     /// The record's timestamp.
-    pub timestamp: Option<Timestamp>,
+    pub timestamp: Option<CompactTimestamp>,
 }
+
+// 288 bytes, down from 448. The evidence reference (40 bytes), two inline keys (64) and the
+// measures (72) take 176; a smaller row needs evidence that names its source by index.
+const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 288);
 
 impl RequestObservation {
     /// An original observation with no keys, owner, usage or properties yet.
-    pub fn new(evidence: EvidenceRef, dialect: &'static str) -> Self {
+    pub fn new(evidence: EvidenceRef) -> Self {
         Self {
             evidence,
-            dialect,
             keys: InlineList::new(),
             role: ObservationRole::Original,
             owner: OwnerEvidence::None,
             usage: None,
-            model_usage: Vec::new(),
+            model_usage: InlineList::new(),
             sequence: None,
             invariants: InlineList::new(),
             model: None,
@@ -147,7 +150,7 @@ pub struct RevisionChoice {
 /// Implementations must be deterministic functions of the slice, which reconciliation
 /// passes in canonical evidence order and never empty.
 pub trait RevisionSelector {
-    /// A stable rule name recorded with the selected usage.
+    /// A stable rule name, recorded once per ledger as [`Ledger::revision_rule`].
     fn rule(&self) -> &'static str;
 
     /// Chooses one revision.
@@ -231,6 +234,8 @@ pub struct Ledger {
     pub limit_observations: Vec<ProviderLimitObservation>,
     /// Candidate sets with more than one member.
     pub candidate_sets: Vec<BTreeSet<AnalyticalId>>,
+    /// The rule name of the selector that chose every request's counted usage.
+    pub revision_rule: &'static str,
     /// Diagnostics in canonical order.
     pub diagnostics: Vec<Diagnostic>,
     /// Unobserved coverage gaps in canonical order.
@@ -311,7 +316,7 @@ fn ensure_capacity(observations: usize, maximum: usize) -> Result<(), ReconcileE
 struct KeyGraph {
     nodes: HashMap<AnalyticalId, u32>,
     ids: Vec<AnalyticalId>,
-    checks: Vec<Option<u64>>,
+    checks: Vec<Option<[u8; 8]>>,
     parent: Vec<u32>,
 }
 
@@ -522,6 +527,7 @@ pub fn reconcile(
         tool_actions,
         limit_observations,
         candidate_sets,
+        revision_rule: selector.rule(),
         diagnostics,
         gaps,
         coverage,
@@ -978,10 +984,8 @@ fn artifact_local(evidence: &EvidenceRef) -> Result<DerivedKey, ReconcileError> 
 /// Frees what an observation owns once its request is built; its inline fields stay.
 fn release_payload(observation: &mut RequestObservation) {
     observation.keys = InlineList::new();
-    observation.model_usage = Vec::new();
+    observation.model_usage = InlineList::new();
     observation.invariants = InlineList::new();
-    observation.model = None;
-    observation.effort = None;
 }
 
 fn index_u32(index: usize) -> u32 {
@@ -1048,8 +1052,8 @@ fn build_request(
     let revisions: Vec<&RequestObservation> =
         originals.iter().copied().filter(|o| o.usage.is_some()).collect();
 
-    let usage = if revisions.is_empty() {
-        None
+    let (usage, selected) = if revisions.is_empty() {
+        (None, None)
     } else {
         let choice = selector.select(&revisions);
         let Some(chosen) = revisions.get(choice.selected) else {
@@ -1070,18 +1074,19 @@ fn build_request(
                 format!("{}: {}", selector.rule(), join(disagreements.iter())),
             ));
         }
-        chosen.usage.map(|usage| SelectedUsage {
-            revision: UsageRevision {
-                evidence: chosen.evidence.clone(),
-                usage,
-                model_usage: chosen.model_usage.clone(),
-            },
+        // Revisions are originals, whose evidence the request keeps in the same order.
+        let position = originals
+            .iter()
+            .position(|original| original.evidence == chosen.evidence)
+            .map(index_u32);
+        let usage = chosen.usage.zip(position).map(|(usage, evidence)| SelectedUsage {
+            revision: UsageRevision { usage, model_usage: chosen.model_usage.clone() },
+            evidence,
             status: choice.status,
-            rule: selector.rule(),
-        })
+        });
+        let selected = usage.as_ref().map(|_| *chosen);
+        (usage, selected)
     };
-    let selected_evidence = usage.as_ref().map(|u| &u.revision.evidence);
-    let selected = revisions.iter().find(|r| Some(&r.evidence) == selected_evidence);
 
     let counting = if originals.is_empty() {
         diagnostics.push(Diagnostic::new(
@@ -1101,14 +1106,14 @@ fn build_request(
         ownership: ownership(observations, &id, diagnostics),
         first_seen: originals.iter().filter_map(|o| o.timestamp).min(),
         last_seen: originals.iter().filter_map(|o| o.timestamp).max(),
-        model: model(&originals, selected.copied(), &id, diagnostics),
+        model: model(&originals, selected, &id, diagnostics),
         effort: selected
-            .and_then(|s| s.effort.clone())
-            .or_else(|| originals.iter().filter_map(|o| o.effort.clone()).min()),
-        evidence: originals.iter().map(|o| o.evidence.clone()).collect(),
-        copies: observations
+            .and_then(|s| s.effort)
+            .or_else(|| originals.iter().filter_map(|o| o.effort).min()),
+        originals: index_u32(originals.len()),
+        records: originals
             .iter()
-            .filter(|o| o.role == ObservationRole::Copy)
+            .chain(observations.iter().filter(|o| o.role == ObservationRole::Copy))
             .map(|o| o.evidence.clone())
             .collect(),
         usage,
@@ -1163,11 +1168,11 @@ fn model(
             format!("served models {}", join(served.iter())),
         ));
     }
-    selected.and_then(|s| s.model.clone()).or_else(|| {
+    selected.and_then(|s| s.model).or_else(|| {
         originals
             .iter()
-            .filter_map(|o| o.model.clone())
-            .min_by(|a, b| (a.basis, &a.name).cmp(&(b.basis, &b.name)))
+            .filter_map(|o| o.model)
+            .min_by(|a, b| (a.basis, a.name).cmp(&(b.basis, b.name)))
     })
 }
 
@@ -1193,7 +1198,7 @@ fn resolve_candidate_sets(
                 if let Some(request) = requests.get_mut(id) {
                     if *id != winner && request.counting == Counting::Counted {
                         request.counting = Counting::Unresolved { counted: winner.clone() };
-                        evidence.extend(request.evidence.iter().cloned());
+                        evidence.extend(request.evidence().iter().cloned());
                     }
                 }
             }

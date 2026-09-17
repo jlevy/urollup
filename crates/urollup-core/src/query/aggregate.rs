@@ -7,6 +7,7 @@ use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
+use crate::ledger::names::Name;
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{IndexedSession, SessionIndex};
 
@@ -84,7 +85,7 @@ pub fn daily(
             .request
             .last_seen
             .or(selected_request.request.first_seen)
-            .map(|timestamp| timezone.zone.to_datetime(timestamp).date().to_string());
+            .map(|timestamp| timezone.zone.to_datetime(timestamp.get()).date().to_string());
         dated.entry(date).or_default().add(
             ownership_class(&selected_request.request.ownership),
             selected_request.measures(),
@@ -303,7 +304,7 @@ impl SelectedRequest<'_> {
         self.request
             .usage
             .as_ref()
-            .map_or_else(TokenMeasures::default, |usage| usage.revision.usage)
+            .map_or_else(TokenMeasures::default, |usage| usage.revision.usage.into())
     }
 }
 
@@ -363,7 +364,9 @@ fn breakdowns(
                                 .as_ref()
                                 .map_or("unknown", |model| model.name.as_str())
                                 .to_owned();
-                            rows.entry(value).or_default().add(ownership, component.usage)?;
+                            rows.entry(value)
+                                .or_default()
+                                .add(ownership, component.usage.into())?;
                         }
                         continue;
                     }
@@ -389,7 +392,7 @@ fn group_value(group: GroupBy, request: &Request, index: &SessionIndex) -> Strin
         GroupBy::Model => {
             request.model.as_ref().map_or("unknown", |model| model.name.as_str()).to_owned()
         }
-        GroupBy::Effort => request.effort.clone().unwrap_or_else(|| "unknown".to_owned()),
+        GroupBy::Effort => request.effort.map_or("unknown", Name::as_str).to_owned(),
     }
 }
 
@@ -419,11 +422,9 @@ fn size_summary(requests: &[SelectedRequest<'_>]) -> Result<SizeSummary, QueryEr
     let mut values: Vec<_> = requests
         .iter()
         .filter_map(|request| {
-            request
-                .request
-                .usage
-                .as_ref()
-                .and_then(|usage| usage.revision.usage.inclusive_input().ok().flatten())
+            request.request.usage.as_ref().and_then(|usage| {
+                TokenMeasures::from(usage.revision.usage).inclusive_input().ok().flatten()
+            })
         })
         .collect();
     values.sort_unstable();

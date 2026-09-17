@@ -661,14 +661,13 @@ fn normalize(
                     }
                     if has_direct && active_thread != source.file_thread {
                         if let Some(usage) = &count.last {
-                            let mut observation =
-                                RequestObservation::new(record.evidence.clone(), DIALECT);
+                            let mut observation = RequestObservation::new(record.evidence.clone());
                             observation.role = ObservationRole::Copy;
                             observation.owner = thread_ids
                                 .get(&active_thread)
                                 .cloned()
                                 .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                            observation.usage = Some(codex_usage(usage)?);
+                            observation.usage = Some(codex_usage(usage)?.into());
                             if let Some(response_id) = last_response_by_thread.get(&active_thread) {
                                 observation.keys.push(
                                     RESPONSE_KEY
@@ -679,7 +678,7 @@ fn normalize(
                                         .derive()?,
                                 );
                             }
-                            observation.timestamp = record.timestamp;
+                            observation.timestamp = record.timestamp.map(Into::into);
                             if let Some(context) =
                                 current_turn.as_ref().and_then(|turn| turns.get(turn))
                             {
@@ -862,7 +861,7 @@ fn counter_observation(
     total: &CodexUsage,
     counter: CounterObservation<'_>,
 ) -> Result<RequestObservation, AdapterError> {
-    let mut observation = RequestObservation::new(record.evidence.clone(), DIALECT);
+    let mut observation = RequestObservation::new(record.evidence.clone());
     observation.role = counter.role;
     observation.owner = counter
         .thread_ids
@@ -883,8 +882,8 @@ fn counter_observation(
     if let Some(delta) = counter.delta {
         usage = delta;
     }
-    observation.usage = Some(usage);
-    observation.timestamp = record.timestamp;
+    observation.usage = Some(usage.into());
+    observation.timestamp = record.timestamp.map(Into::into);
     if let Some(context) = counter.context {
         apply_context(&mut observation, context);
     }
@@ -1004,7 +1003,7 @@ fn usage_observation(
     turns: &BTreeMap<String, TurnContext>,
 ) -> Result<RequestObservation, AdapterError> {
     let owner = payload.thread_id.as_deref().unwrap_or(file_thread);
-    let mut observation = RequestObservation::new(record.evidence.clone(), DIALECT);
+    let mut observation = RequestObservation::new(record.evidence.clone());
     observation.role = if default_role == ObservationRole::Copy || owner != file_thread {
         ObservationRole::Copy
     } else {
@@ -1020,9 +1019,9 @@ fn usage_observation(
         );
     }
     if let Some(usage) = &payload.usage {
-        observation.usage = Some(codex_usage(usage)?);
+        observation.usage = Some(codex_usage(usage)?.into());
     }
-    observation.timestamp = record.timestamp;
+    observation.timestamp = record.timestamp.map(Into::into);
     if let Some(context) = payload.root_turn_id.as_ref().and_then(|turn| turns.get(turn)) {
         apply_context(&mut observation, context);
     }
@@ -1033,8 +1032,8 @@ fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
     observation.model = context
         .model
         .as_ref()
-        .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Requested });
-    observation.effort.clone_from(&context.effort);
+        .map(|name| ModelName { name: name.as_str().into(), basis: ModelBasis::Requested });
+    observation.effort = context.effort.as_deref().map(Into::into);
 }
 
 fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {

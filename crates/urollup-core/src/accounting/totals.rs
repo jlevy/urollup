@@ -41,7 +41,7 @@ impl UsageTotals {
             self.requests.checked_add(1).ok_or(TokenOverflow { category: "requests" })?;
         match &request.usage {
             Some(selected) => {
-                self.tokens = self.tokens.checked_add(&selected.revision.usage)?;
+                self.tokens = self.tokens.checked_add(&selected.revision.usage.into())?;
             }
             None => {
                 self.requests_without_usage = self
