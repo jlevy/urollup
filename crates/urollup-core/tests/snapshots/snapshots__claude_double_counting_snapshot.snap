@@ -18,8 +18,7 @@ ledger:
   diagnostics: []
   gaps: []
   requests:
-    - account: unknown
-      aliases:
+    - aliases:
         - req-v1-5cbpcjb97mh03q6nzqw001052f
       basis: native
       copies:

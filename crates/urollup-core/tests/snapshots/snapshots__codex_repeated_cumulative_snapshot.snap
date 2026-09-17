@@ -18,8 +18,7 @@ ledger:
   diagnostics: []
   gaps: []
   requests:
-    - account: unknown
-      aliases: []
+    - aliases: []
       basis: fallback
       copies: []
       counting: counted
@@ -55,8 +54,7 @@ ledger:
               uncached_input: 6000
         rule: latest-revision
         status: Final
-    - account: unknown
-      aliases: []
+    - aliases: []
       basis: fallback
       copies: []
       counting: counted

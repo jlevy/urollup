@@ -18,8 +18,7 @@ ledger:
   diagnostics: []
   gaps: []
   requests:
-    - account: unknown
-      aliases: []
+    - aliases: []
       basis: native
       copies: []
       counting: counted
@@ -55,8 +54,7 @@ ledger:
               uncached_input: 1500
         rule: latest-revision
         status: Final
-    - account: unknown
-      aliases: []
+    - aliases: []
       basis: native
       copies: []
       counting: counted
@@ -92,8 +90,7 @@ ledger:
               uncached_input: 2000
         rule: latest-revision
         status: Final
-    - account: unknown
-      aliases: []
+    - aliases: []
       basis: native
       copies: []
       counting: counted

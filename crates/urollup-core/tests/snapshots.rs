@@ -6,9 +6,7 @@ use serde_json::{Value, json};
 use urollup_core::adapters::Ingested;
 use urollup_core::adapters::claude_project;
 use urollup_core::adapters::codex_rollout;
-use urollup_core::ledger::entities::{
-    AccountAttribution, Counting, ModelUsage, Ownership, Request, UsageRevision,
-};
+use urollup_core::ledger::entities::{Counting, ModelUsage, Ownership, Request, UsageRevision};
 use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::sources::evidence::EvidenceRef;
@@ -64,16 +62,6 @@ fn ownership(ownership: &Ownership) -> Value {
     }
 }
 
-fn account(account: &AccountAttribution) -> Value {
-    match account {
-        AccountAttribution::Attributed(value) => json!({ "attributed": value }),
-        AccountAttribution::Conflicting(values) => {
-            json!({ "conflicting": values.iter().collect::<Vec<_>>() })
-        }
-        AccountAttribution::Unknown => json!("unknown"),
-    }
-}
-
 fn counting(counting: &Counting) -> Value {
     match counting {
         Counting::Counted => json!("counted"),
@@ -84,7 +72,6 @@ fn counting(counting: &Counting) -> Value {
 
 fn request(request: &Request) -> Value {
     json!({
-        "account": account(&request.account),
         "aliases": request.aliases.iter().map(AnalyticalId::to_string).collect::<Vec<_>>(),
         "basis": request.basis.token(),
         "copies": request.copies.iter().map(evidence).collect::<Vec<_>>(),
