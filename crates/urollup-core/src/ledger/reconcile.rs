@@ -410,7 +410,11 @@ pub fn reconcile(
         graph.id(*left_root).cmp(graph.id(*right_root)).then(left.cmp(right))
     });
 
-    let mut requests = Vec::new();
+    // One request per set, plus rare extra parts from conflicting keys; sizing up front
+    // avoids doubling the widest vector of the run.
+    let sets = order.windows(2).filter(|pair| pair[0].0 != pair[1].0).count()
+        + usize::from(!order.is_empty());
+    let mut requests = Vec::with_capacity(sets + sets / 32);
     let mut candidates = LinkGraph::new();
     let mut tokens: BTreeMap<String, BTreeSet<AnalyticalId>> = BTreeMap::new();
     let mut start = 0;
@@ -912,7 +916,9 @@ fn dedupe_rereads(
         observation.keys.sort();
         observation.keys.dedup();
     }
-    observations.sort();
+    // Observations that compare equal are identical, so an in-place unstable sort gives
+    // the stable sort's result without its buffer of half the observations.
+    observations.sort_unstable();
     let before = observations.len();
     observations.dedup();
     coverage.rereads = count(before.saturating_sub(observations.len()));
