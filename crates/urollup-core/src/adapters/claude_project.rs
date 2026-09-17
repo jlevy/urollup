@@ -737,14 +737,18 @@ fn normalize(
                     KeyComponent::text(message_id),
                 ])?
             };
-            observation.keys.push(key);
+            observation.keys.push(key.derive()?);
             observation.native_response_id = Some(message_id.to_owned());
         }
         if let Some(request_id) = request_id {
-            observation.keys.push(REQUEST_KEY.key(vec![
-                KeyComponent::text(PROVIDER_NAMESPACE),
-                KeyComponent::text(request_id),
-            ])?);
+            observation.keys.push(
+                REQUEST_KEY
+                    .key(vec![
+                        KeyComponent::text(PROVIDER_NAMESPACE),
+                        KeyComponent::text(request_id),
+                    ])?
+                    .derive()?,
+            );
             observation.native_request_id = Some(request_id.to_owned());
         }
         let native_owner = if record.source_thread.inline_digest.is_some() {

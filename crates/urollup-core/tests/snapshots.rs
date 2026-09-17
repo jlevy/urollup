@@ -85,7 +85,7 @@ fn counting(counting: &Counting) -> Value {
 fn request(request: &Request) -> Value {
     json!({
         "account": account(&request.account),
-        "aliases": request.aliases.iter().map(|alias| alias.id.to_string()).collect::<Vec<_>>(),
+        "aliases": request.aliases.iter().map(AnalyticalId::to_string).collect::<Vec<_>>(),
         "basis": request.basis.token(),
         "copies": request.copies.iter().map(evidence).collect::<Vec<_>>(),
         "counting": counting(&request.counting),
@@ -93,14 +93,11 @@ fn request(request: &Request) -> Value {
         "evidence": request.evidence.iter().map(evidence).collect::<Vec<_>>(),
         "first_seen": request.first_seen.map(|timestamp| timestamp.to_string()),
         "id": request.id().to_string(),
-        "identity_key_kind": request.identity.key.kind,
         "last_seen": request.last_seen.map(|timestamp| timestamp.to_string()),
         "model": request.model.as_ref().map(|model| json!({
             "basis": format!("{:?}", model.basis),
             "name": model.name,
         })),
-        "native_request_id": request.native_request_id,
-        "native_response_id": request.native_response_id,
         "ownership": ownership(&request.ownership),
         "selected_usage": request.usage.as_ref().map(|selected| json!({
             "revision": revision(&selected.revision),

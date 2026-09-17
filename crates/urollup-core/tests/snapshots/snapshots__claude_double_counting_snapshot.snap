@@ -40,13 +40,10 @@ ledger:
           source: src-v1-1fwxcqgfzgdpyqwz4h5vz25vjd
       first_seen: "2026-09-01T10:00:01Z"
       id: req-v1-6ywdqwmyam9kzy10kdv7v4319k
-      identity_key_kind: provider-response
       last_seen: "2026-09-01T10:00:01.9Z"
       model:
         basis: Served
         name: claude-sonnet-4-5
-      native_request_id: req_011Synthetic01A
-      native_response_id: msg_01Synthetic01A
       ownership:
         owned: thr-v1-651kv0qwp91s22cgbfhfyj1818
       selected_usage:

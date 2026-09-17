@@ -267,16 +267,12 @@ pub enum Counting {
 /// A logical request and its response (design §3.1).
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Request {
-    /// The canonical `req-` ID with its key.
-    pub identity: StoredIdentity,
+    /// The canonical `req-` ID.
+    pub id: AnalyticalId,
     /// The identity basis.
     pub basis: IdentityBasis,
-    /// Other IDs linked to this request, with their keys.
-    pub aliases: Vec<StoredIdentity>,
-    /// The native request ID, when recorded.
-    pub native_request_id: Option<String>,
-    /// The native response ID, when recorded.
-    pub native_response_id: Option<String>,
+    /// Other IDs linked to this request.
+    pub aliases: Vec<AnalyticalId>,
     /// Owner or candidates.
     pub ownership: Ownership,
     /// Earliest timestamp among original records.
@@ -302,7 +298,7 @@ pub struct Request {
 impl Request {
     /// The canonical ID.
     pub fn id(&self) -> &AnalyticalId {
-        &self.identity.id
+        &self.id
     }
 }
 

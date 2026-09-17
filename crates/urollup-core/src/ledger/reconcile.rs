@@ -41,9 +41,9 @@ use super::entities::{
     ProviderLimitObservation, Relationship, RelationshipKind, Request, RevisionStatus,
     SelectedUsage, Thread, ToolAction, UsageRevision,
 };
-use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry, StoredIdentity};
-use super::linking::{LinkGraph, LinkedIdentity};
-use super::scope::{IdentityBasis, ScopedKey, artifact_local_key};
+use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
+use super::linking::LinkGraph;
+use super::scope::{DerivedKey, IdentityBasis, artifact_local_key};
 use super::tokens::TokenMeasures;
 use crate::sources::evidence::EvidenceRef;
 
@@ -78,7 +78,7 @@ pub struct RequestObservation {
     /// The dialect registry token.
     pub dialect: &'static str,
     /// Every `req-` key the adapter could build for the record, in any order.
-    pub keys: Vec<ScopedKey>,
+    pub keys: Vec<DerivedKey>,
     /// Original or copy.
     pub role: ObservationRole,
     /// Owner evidence.
@@ -291,24 +291,40 @@ pub enum ReconcileError {
     },
 }
 
-/// One observation with its derived identities.
+/// One observation with its keys, or its artifact-local key when it has none.
 struct Resolved {
     observation: RequestObservation,
-    keys: Vec<ResolvedId>,
-    local: Option<ResolvedId>,
+    keys: Vec<DerivedKey>,
+    local: Option<DerivedKey>,
 }
 
-/// A derived observation key without another copy of its stored key components.
-struct ResolvedId {
-    precedence: u8,
-    basis: IdentityBasis,
-    id: AnalyticalId,
+/// Request IDs seen in one run with their further digest bits, so two different keys
+/// deriving one ID are caught without storing either key.
+#[derive(Default)]
+struct DigestRegistry {
+    checks: BTreeMap<AnalyticalId, u64>,
 }
 
-impl ResolvedId {
-    fn id(&self) -> &AnalyticalId {
-        &self.id
+impl DigestRegistry {
+    fn register(&mut self, key: &DerivedKey) -> Result<(), IdentityError> {
+        match self.checks.get(&key.id) {
+            Some(check) if *check != key.check => {
+                Err(IdentityError::DigestCollision { id: key.id.clone() })
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.checks.insert(key.id.clone(), key.check);
+                Ok(())
+            }
+        }
     }
+}
+
+/// A linked set's canonical ID, the basis of its key, and its other IDs in order.
+struct LinkedRequest {
+    id: AnalyticalId,
+    basis: IdentityBasis,
+    aliases: Vec<AnalyticalId>,
 }
 
 /// Reconciles normalized observations into a ledger; see the module documentation.
@@ -336,7 +352,8 @@ pub fn reconcile(
     let requests = canonicalize_request_owners(requests, &thread_ids);
 
     let observations = dedupe_rereads(requests, &mut diagnostics, &mut coverage);
-    let resolved = resolve_identities(observations, &mut registry)?;
+    let mut digests = DigestRegistry::default();
+    let resolved = resolve_identities(observations, &mut digests)?;
 
     // Link observations sharing a key ID, and IDs joined by lineage evidence.
     let mut graph = LinkGraph::new();
@@ -346,11 +363,11 @@ pub fn reconcile(
             .first()
             .or(item.local.as_ref())
             .expect("a resolved observation has a native or artifact-local key")
-            .id()
+            .id
             .clone();
         graph.insert(&first);
         for key in &item.keys {
-            graph.link(&first, key.id());
+            graph.link(&first, &key.id);
         }
     }
     links.sort();
@@ -363,9 +380,8 @@ pub fn reconcile(
             .keys
             .first()
             .or(item.local.as_ref())
-            .expect("a resolved observation has a native or artifact-local key")
-            .id();
-        groups.entry(graph.find(first)).or_default().push(item);
+            .expect("a resolved observation has a native or artifact-local key");
+        groups.entry(graph.find(&first.id)).or_default().push(item);
     }
 
     let mut requests = BTreeMap::new();
@@ -382,7 +398,7 @@ pub fn reconcile(
         let mut split_ids = Vec::new();
         for part in parts {
             let Some(request) =
-                build_request(&part, !split.is_empty(), selector, &mut registry, &mut diagnostics)?
+                build_request(&part, !split.is_empty(), selector, &mut digests, &mut diagnostics)?
             else {
                 continue;
             };
@@ -676,7 +692,7 @@ fn canonical_request_ids(
         .iter()
         .flat_map(|(id, request)| {
             std::iter::once((id.clone(), id.clone()))
-                .chain(request.aliases.iter().map(|alias| (alias.id.clone(), id.clone())))
+                .chain(request.aliases.iter().map(|alias| (alias.clone(), id.clone())))
         })
         .collect()
 }
@@ -870,24 +886,23 @@ fn dedupe_rereads(
 
 fn resolve_identities(
     observations: Vec<RequestObservation>,
-    registry: &mut IdentityRegistry,
+    digests: &mut DigestRegistry,
 ) -> Result<Vec<Resolved>, ReconcileError> {
     let mut resolved = Vec::with_capacity(observations.len());
     for mut observation in observations {
-        let mut keys = Vec::with_capacity(observation.keys.len());
-        for key in std::mem::take(&mut observation.keys) {
-            if key.key.prefix != IdPrefix::Request {
+        let keys = std::mem::take(&mut observation.keys);
+        for key in &keys {
+            if key.id.prefix() != IdPrefix::Request {
                 return Err(ReconcileError::WrongPrefix {
                     evidence: observation.evidence.clone(),
-                    prefix: key.key.prefix,
+                    prefix: key.id.prefix(),
                 });
             }
-            let id = registry.derive(&key.key)?;
-            keys.push(ResolvedId { precedence: key.precedence, basis: key.basis, id });
+            digests.register(key)?;
         }
         let local = keys
             .is_empty()
-            .then(|| resolve_artifact_local(&observation.evidence, registry))
+            .then(|| resolve_artifact_local(&observation.evidence, digests))
             .transpose()?;
         resolved.push(Resolved { observation, keys, local });
     }
@@ -896,32 +911,29 @@ fn resolve_identities(
 
 fn resolve_artifact_local(
     evidence: &EvidenceRef,
-    registry: &mut IdentityRegistry,
-) -> Result<ResolvedId, ReconcileError> {
+    digests: &mut DigestRegistry,
+) -> Result<DerivedKey, ReconcileError> {
     let key = artifact_local_key(IdPrefix::Request, &evidence.source, evidence.offset)
-        .ok_or_else(|| ReconcileError::OffsetOutOfRange(evidence.clone()))?;
-    let id = registry.derive(&key.key)?;
-    Ok(ResolvedId { precedence: key.precedence, basis: key.basis, id })
+        .ok_or_else(|| ReconcileError::OffsetOutOfRange(evidence.clone()))?
+        .derive()?;
+    digests.register(&key)?;
+    Ok(key)
 }
 
+/// The highest-precedence key's ID, then the lowest ID; every other distinct ID is an
+/// alias.
 fn resolve_compact_set<'a>(
-    members: impl IntoIterator<Item = &'a ResolvedId>,
-    registry: &IdentityRegistry,
-) -> Option<LinkedIdentity> {
+    members: impl IntoIterator<Item = &'a DerivedKey>,
+) -> Option<LinkedRequest> {
     let unique: BTreeSet<(u8, IdentityBasis, &AnalyticalId)> =
         members.into_iter().map(|key| (key.precedence, key.basis, &key.id)).collect();
     let mut ranked = unique.into_iter();
-    let (_, basis, canonical_id) = ranked.next()?;
-    let stored = |id: &AnalyticalId| StoredIdentity {
-        id: id.clone(),
-        key: registry.key(id).expect("every resolved observation ID is registered").clone(),
-    };
-    let canonical = stored(canonical_id);
-    let mut aliases: Vec<StoredIdentity> =
-        ranked.filter(|(_, _, id)| *id != canonical_id).map(|(_, _, id)| stored(id)).collect();
+    let (_, basis, canonical) = ranked.next()?;
+    let mut aliases: Vec<AnalyticalId> =
+        ranked.filter(|(_, _, id)| *id != canonical).map(|(_, _, id)| id.clone()).collect();
     aliases.sort();
-    aliases.dedup_by(|left, right| left.id == right.id);
-    Some(LinkedIdentity { canonical, basis, aliases })
+    aliases.dedup();
+    Some(LinkedRequest { id: canonical.clone(), basis, aliases })
 }
 
 /// Revision-invariant fields on which the group's observations disagree.
@@ -943,7 +955,7 @@ fn build_request(
     members: &[&Resolved],
     split: bool,
     selector: &dyn RevisionSelector,
-    registry: &mut IdentityRegistry,
+    digests: &mut DigestRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<Request>, ReconcileError> {
     // A split part has only its artifact-local ID; otherwise every key of every member
@@ -951,7 +963,7 @@ fn build_request(
     let local_keys = if split {
         members
             .iter()
-            .map(|member| resolve_artifact_local(&member.observation.evidence, registry))
+            .map(|member| resolve_artifact_local(&member.observation.evidence, digests))
             .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
@@ -968,10 +980,10 @@ fn build_request(
             }
         }
     }
-    let Some(linked) = resolve_compact_set(identities, registry) else {
+    let Some(linked) = resolve_compact_set(identities) else {
         return Ok(None);
     };
-    let id = linked.canonical.id.clone();
+    let id = linked.id.clone();
     let observations: Vec<&RequestObservation> =
         members.iter().map(|member| &member.observation).collect();
     let originals: Vec<&RequestObservation> =
@@ -1029,8 +1041,6 @@ fn build_request(
     Ok(Some(Request {
         basis: linked.basis,
         aliases: linked.aliases,
-        native_request_id: observations.iter().filter_map(|o| o.native_request_id.clone()).min(),
-        native_response_id: observations.iter().filter_map(|o| o.native_response_id.clone()).min(),
         ownership: ownership(&observations, &id, diagnostics),
         first_seen: originals.iter().filter_map(|o| o.timestamp).min(),
         last_seen: originals.iter().filter_map(|o| o.timestamp).max(),
@@ -1047,7 +1057,7 @@ fn build_request(
             .collect(),
         usage,
         counting,
-        identity: linked.canonical,
+        id: linked.id,
     }))
 }
 

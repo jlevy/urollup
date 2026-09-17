@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 
 use super::{
-    LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError, ReconcileInput,
-    RequestObservation, RevisionChoice, RevisionSelector, reconcile,
+    DigestRegistry, LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError,
+    ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector, reconcile,
 };
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
@@ -15,7 +15,7 @@ use crate::ledger::entities::{
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
-use crate::ledger::scope::{IdentityBasis, ScopedKey};
+use crate::ledger::scope::{DerivedKey, IdentityBasis, ScopedKey};
 use crate::ledger::tokens::TokenMeasures;
 use crate::sources::evidence::EvidenceRef;
 use crate::test_support::shuffle;
@@ -36,13 +36,19 @@ fn evidence(src: u8, offset: u64) -> EvidenceRef {
     EvidenceRef { source: source(src), offset, length: 10 }
 }
 
-fn response_key(id: &str) -> ScopedKey {
-    PROVIDER_RESPONSE.key(vec![KeyComponent::text("anthropic"), KeyComponent::text(id)]).unwrap()
+fn response_key(id: &str) -> DerivedKey {
+    PROVIDER_RESPONSE
+        .key(vec![KeyComponent::text("anthropic"), KeyComponent::text(id)])
+        .unwrap()
+        .derive()
+        .unwrap()
 }
 
-fn digest_key(owner: &str, digest: &str) -> ScopedKey {
+fn digest_key(owner: &str, digest: &str) -> DerivedKey {
     THREAD_DIGEST
         .key(vec![KeyComponent::text(thread(owner).to_string()), KeyComponent::text(digest)])
+        .unwrap()
+        .derive()
         .unwrap()
 }
 
@@ -153,7 +159,7 @@ fn streamed_usage_updates_collapse_into_one_request_with_revisions() {
     assert_eq!(request.evidence.len(), 3);
     assert_eq!(request.basis, IdentityBasis::Native);
     assert_eq!(request.ownership, Ownership::Owned { thread: thread("t1") });
-    assert_eq!(*request.id(), response_key("msg_1").key.derive_id().unwrap());
+    assert_eq!(*request.id(), response_key("msg_1").id);
 }
 
 #[test]
@@ -226,7 +232,7 @@ fn a_shared_key_with_disagreeing_invariants_is_ambiguous_not_merged() {
 
     assert_eq!(ledger.requests.len(), 2);
     assert!(ledger.requests.values().all(|r| r.basis == IdentityBasis::Ambiguous));
-    assert!(!ledger.requests.contains_key(&response_key("msg_1").key.derive_id().unwrap()));
+    assert!(!ledger.requests.contains_key(&response_key("msg_1").id));
     assert_eq!(ledger.candidate_sets.len(), 1);
     assert_eq!(
         codes(&ledger),
@@ -257,7 +263,7 @@ fn a_candidate_set_counts_the_strongest_basis_before_the_lowest_id() {
     let ledger = run(vec![fallback, native]);
 
     assert_eq!(ledger.candidate_sets.len(), 1);
-    let native_id = response_key("msg_1").key.derive_id().unwrap();
+    let native_id = response_key("msg_1").id;
     for request in ledger.requests.values() {
         let expected = if *request.id() == native_id {
             Counting::Counted
@@ -282,7 +288,7 @@ fn ownership_is_owned_ambiguous_or_unknown() {
     let ledger = run(vec![owned, contested, contested_copy, candidates, unknown]);
 
     let ownership = |response: &str| {
-        let id = response_key(response).key.derive_id().unwrap();
+        let id = response_key(response).id;
         ledger.requests[&id].ownership.clone()
     };
     assert_eq!(ownership("owned"), Ownership::Owned { thread: thread("t1") });
@@ -341,8 +347,8 @@ fn lineage_links_merge_keys_and_keep_aliases() {
     let mut child_copy = RequestObservation::new(evidence(1, 0), "test");
     child_copy.keys = vec![digest_key("child", "d1")];
     child_copy.role = ObservationRole::Copy;
-    let native_id = response_key("msg_1").key.derive_id().unwrap();
-    let fallback_id = digest_key("child", "d1").key.derive_id().unwrap();
+    let native_id = response_key("msg_1").id;
+    let fallback_id = digest_key("child", "d1").id;
     let input = ReconcileInput {
         requests: vec![child_copy, parent],
         links: vec![LineageLink {
@@ -355,7 +361,7 @@ fn lineage_links_merge_keys_and_keep_aliases() {
     let ledger = reconcile(input, &LatestRevision).unwrap();
     assert_eq!(ledger.requests.len(), 1);
     let request = &ledger.requests[&native_id];
-    assert_eq!(request.aliases.iter().map(|a| a.id.clone()).collect::<Vec<_>>(), vec![fallback_id]);
+    assert_eq!(request.aliases.clone(), vec![fallback_id]);
     assert_eq!(request.copies, vec![evidence(1, 0)]);
 }
 
@@ -446,11 +452,15 @@ fn engine_errors_are_values() {
         Err(ReconcileError::InvalidRevisionChoice { selected: 1, count: 1, .. })
     ));
     let mut wrong = observed(0, 0, "m", 1);
-    wrong.keys = vec![ScopedKey {
-        precedence: 0,
-        basis: IdentityBasis::Native,
-        key: IdentityKey::new(IdPrefix::Thread, "t", vec![KeyComponent::text("x")]),
-    }];
+    wrong.keys = vec![
+        ScopedKey {
+            precedence: 0,
+            basis: IdentityBasis::Native,
+            key: IdentityKey::new(IdPrefix::Thread, "t", vec![KeyComponent::text("x")]),
+        }
+        .derive()
+        .unwrap(),
+    ];
     let input = ReconcileInput { requests: vec![wrong], ..ReconcileInput::default() };
     assert!(matches!(reconcile(input, &LatestRevision), Err(ReconcileError::WrongPrefix { .. })));
 }
@@ -503,8 +513,8 @@ fn entity_references_follow_reconciled_aliases() {
     fallback_thread.aliases = vec![canonical_thread.identity.clone()];
     fallback_thread.native_key.clear();
 
-    let request_alias = digest_key("new", "digest").key.derive_id().unwrap();
-    let request_id = response_key("msg_1").key.derive_id().unwrap();
+    let request_alias = digest_key("new", "digest").id;
+    let request_id = response_key("msg_1").id;
     let mut request = observed(0, 20, "msg_1", 1);
     request.keys.push(digest_key("new", "digest"));
     request.owner = OwnerEvidence::Proven(thread("old"));
@@ -710,15 +720,15 @@ proptest! {
     }
 
     #[test]
-    fn every_ledger_id_rederives_from_its_stored_key(
+    fn every_ledger_request_is_keyed_by_its_id_and_aliases_are_distinct(
         observations in prop::collection::vec(arbitrary_observation(), 0..24),
     ) {
         let ledger = run(observations);
         for (id, request) in &ledger.requests {
-            prop_assert_eq!(id, &request.identity.id);
-            prop_assert!(request.identity.verify().is_ok());
+            prop_assert_eq!(id, &request.id);
             for alias in &request.aliases {
-                prop_assert!(alias.verify().is_ok());
+                prop_assert_eq!(alias.prefix(), IdPrefix::Request);
+                prop_assert_ne!(alias, id);
             }
         }
     }
@@ -744,4 +754,17 @@ proptest! {
         let unresolved = ledger.requests.values().filter(|r| matches!(r.counting, Counting::Unresolved { .. })).count();
         prop_assert_eq!(u64::try_from(unresolved).unwrap(), totals.unresolved.requests);
     }
+}
+
+#[test]
+fn different_keys_deriving_one_id_are_a_collision() {
+    let key = response_key("msg_1");
+    let mut digests = DigestRegistry::default();
+    digests.register(&key).unwrap();
+    digests.register(&key).unwrap();
+    let forged = DerivedKey { check: key.check.wrapping_add(1), ..key };
+    assert!(matches!(
+        digests.register(&forged),
+        Err(crate::ledger::identity::IdentityError::DigestCollision { .. })
+    ));
 }
