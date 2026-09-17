@@ -114,7 +114,6 @@ pub struct AnalyticalId {
 const _: () = assert!(std::mem::size_of::<AnalyticalId>() == 17);
 const _: () = assert!(std::mem::size_of::<Option<AnalyticalId>>() == 17);
 
-
 impl Ord for AnalyticalId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Text order: the prefix token, then `v<number>`, then 26 digits, whose text order
