@@ -11,10 +11,11 @@ status: Active; Phase 1 in progress
 
 urollup must report on the whole local history by default.
 On the maintainer’s machine that history is about 2.7 GB of Claude Code logs in 2,920
-files and 12 GB of Codex rollouts in 8,900 files, and Codex grows by up to about 1 GB a
-day. The milestone 0.1 engine cannot read it: two unguarded runs grew a single process
-past 20 GB and stalled the machine, and the temporary 512 MiB input guard that followed
-made `urollup sessions`, `daily` and `report --all` refuse the default corpus.
+files and 19 GB of Codex rollouts in 9,900 files (12 GB active and 7 GB archived, the
+archive reached through a symlink), and Codex grows by up to about 1 GB a day.
+The milestone 0.1 engine cannot read it: two unguarded runs grew a single process past
+20 GB and stalled the machine, and the temporary 512 MiB input guard that followed made
+`urollup sessions`, `daily` and `report --all` refuse the default corpus.
 The guard prevented a crash; it did not make urollup usable.
 
 This plan replaces the ingestion and reconciliation data model rather than tuning it.
@@ -393,17 +394,23 @@ under the RSS watchdog, on the maintainer’s corpus:
 | Codex 2026-07, 1.6 GB | 68,921 | refused by the guard | 160 MiB, 1.5 s (`cf9b704`) |
 | Codex 2026-09, 8.4 GB | 139,375 | refused by the guard | 306 MiB, 6.5 s (`cf9b704`) |
 | All Claude projects, 2.8 GB | 176,634 | 1,386 MiB, 14.3 s (`1924d8f`) | 860 MiB, 11 s (`e9fe862`) |
-| Both trees, `sessions`, `daily` and `report --all` | 461,049 | above 20 GB (milestone 0.1 engine) | 963–1,028 MiB, 22–24 s (`9f290e6`) |
+| Claude projects and active Codex sessions, without the 7 GB archive | 461,049 | above 20 GB (milestone 0.1 engine) | 963–1,028 MiB, 22–24 s (`9f290e6`) |
+| Default whole history, including the Codex archive, `sessions --all` | 789,000 | above 20 GB (milestone 0.1 engine) | 1,136–1,146 MiB, 23–30 s on a loaded machine (`c332aba`) |
 
 Whole history now completes within the Phase 1 time target.
-Peak footprint is still about twice the 512 MiB goal; the Claude adapter’s decoded
-records and owner maps set the peak, and compacting them is the next step.
+Compacting the Claude adapter’s decoded records and owner maps (`8bd7580`) cut the full
+Claude corpus from 860 MiB to about 395 MiB. Measurements before 2026-09-17 used
+`--source ~/.codex/sessions` and so left out the archived Codex history, which holds
+320,000 more observations; with it, the default whole history has about 394,000 Claude
+and 609,000 Codex observations and peaks at about 1.14 GB, over twice the 512 MiB goal.
+Codex observations are nearly one per request, so row size sets that peak; compacting
+Codex decoded records and the observation and request rows is in progress.
 
-After the guard was removed, a release build ran whole-history `sessions --all` on
-2026-09-17 under a 2 GiB watchdog on a loaded machine: it exited 0 at 878 MiB peak RSS
-in 18.6 s over 468,269 requests.
-The `UROLLUP_STATS` example under [CLI and Output Changes](#cli-and-output-changes) is
-that run.
+After the guard was removed, a release build ran `sessions --all` over the Claude
+projects and active Codex sessions, without the archive, on 2026-09-17 under a 2 GiB
+watchdog on a loaded machine: it exited 0 at 878 MiB peak RSS in 18.6 s over 468,269
+requests. The `UROLLUP_STATS` example under
+[CLI and Output Changes](#cli-and-output-changes) is that run.
 
 ## Testing Strategy
 
