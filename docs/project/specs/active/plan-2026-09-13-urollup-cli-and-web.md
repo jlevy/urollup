@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 accounting and reports are complete, with terminal UX, local acceptance and remaining maintainer decisions in progress
+status: Active; milestone 0.1 functional core is complete, with memory-bounded selection, all-log acceptance, decisions and independent review in progress
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -76,7 +76,7 @@ aggregates only, never log content, paths or IDs.
   automatic color appears only for interactive human-facing output, redirected and piped
   output is stable plain text, machine-readable formats contain no ANSI escapes, the CLI
   and environment disable mechanisms always win, diagnostics name the flag or fix to
-  use, and noticeably long operations show cleanly removed stderr progress only during
+  use, and table commands show a cleanly removed stderr scan indicator only during
   interactive human use, with `--no-progress` as an unconditional disable.
   Exit codes follow [§6.5](../../../urollup-design.md#65-exit-codes), nothing prompts,
   and a small report meets the [performance targets](#performance-targets).
@@ -141,24 +141,34 @@ The capture store lands only after the uncached engine is the correctness refere
   `codex-rollout` fixtures in CI, and the explained-differences ledger
   ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
-- [ ] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
+- [x] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
   human-facing output on an interactive terminal; keep redirected, piped and
   machine-readable output free of ANSI escapes; and make `--color never` and `NO_COLOR`
   unconditional disables.
-  Test automatic color through a pseudo-terminal, plain redirected output, both disable
-  mechanisms on a terminal, and every machine-readable format
+  Test automatic color with injected destination capabilities, plain redirected output,
+  both disable mechanisms, real process streams and every machine-readable format
   ([Decision 29](../../../urollup-design.md#decision-29-terminal-aware-color),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
-- [ ] Add progress for noticeably long operations as a 0.1 baseline: enable it by
-  default only during interactive human use, render it on stderr without contaminating
-  stdout, suppress it for non-TTY, redirected, piped and machine-readable workflows, and
-  make `--no-progress` an unconditional disable.
-  Test pseudo-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
+- [x] Add a scan indicator for table commands as a 0.1 baseline: enable it by default
+  only during interactive human use, render it on stderr without contaminating stdout,
+  suppress it for non-TTY, redirected, piped and machine-readable workflows, and make
+  `--no-progress` an unconditional disable.
+  Test injected-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
   machine stdout without ANSI or control sequences, and cleanup on both success and
   error ([Decision 30](../../../urollup-design.md#decision-30-interactive-progress),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
-- [ ] Add the privacy-tested local aggregate diff script and run the consented real-log
-  acceptance checks without committing log content, paths or identifiers
+- [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
+  diff with privacy sentinels that reject log content, paths, identifiers, prompts,
+  project names and custom model names.
+- [ ] Bound persistent-log memory before release: compact adapter records to accounting
+  fields, resolve `--current` and exact selectors against the lightweight discovery
+  index before full parsing, keep a temporary fail-safe for unusually large selected
+  inputs, and meet the `bench-1g` peak-RSS target for `--all` through streaming or spill
+  rather than retained corpus-wide state
+  ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
+  [performance targets](#performance-targets)).
+- [ ] Run the consented real-log acceptance checks and review the resulting aggregates
+  without committing log content, paths or identifiers
   ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
   [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
@@ -444,8 +454,8 @@ records what each rule cost when it was missing, and
   replacing every string value, identifier and path with a consistent synthetic
   stand-in, reviewed before commit.
   A consented local corpus is never committed: it is checked in place with
-  `check-e2e-results.mjs --fixtures <dir>`, and the planned local-only mode prints
-  aggregates alone under the same privacy rules as
+  `check-e2e-results.mjs --fixtures <dir>`, and `make e2e-local` prints aggregates alone
+  under the same privacy rules as
   [the local ccusage diff](#ccusage-reconciliation-harness), including its sentinel
   test. That mode is also how an [acceptance goal](#end-to-end-acceptance-goals) run on
   real local logs is checked and recorded; the automated goldens and result checks never
@@ -703,11 +713,11 @@ within the confirmed
 
 The design doc records every decision and open question:
 
-- **Confirmed:** 28 decisions, each with its choice, rationale, tradeoffs and date, in
+- **Confirmed:** 30 decisions, each with its choice, rationale, tradeoffs and date, in
   [§10.1](../../../urollup-design.md#101-design-decisions), the newest being
-  [Gemini CLI planned support](../../../urollup-design.md#decision-28-gemini-cli-planned-support)
-  on 2026-09-15.
-- **Candidate:** 14 proposed decisions already reflected in the design, pending
+  [interactive progress](../../../urollup-design.md#decision-30-interactive-progress) on
+  2026-09-16.
+- **Candidate:** 15 proposed decisions already reflected in the design, pending
   maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions),
   including five from the 2026-09-15
   [ccusage use-case coverage](../../../urollup-design.md#106-ccusage-use-case-coverage)

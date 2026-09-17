@@ -96,10 +96,18 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
+      - if: runner.os != 'Windows'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
       - run: npm ci --ignore-scripts
       # Direct commands rather than make targets: the Windows runner's shell is PowerShell.
       - run: cargo test --locked --workspace
       - run: cargo test --locked --workspace --no-default-features
+      - name: Test the POSIX manual-QA support tools
+        if: runner.os != 'Windows'
+        run: make qa-tool-tests
       - name: Build the CLI for golden tests
         run: cargo build --locked --workspace
       # The harness decides what a hermetic, complete golden run is; test it on every platform.

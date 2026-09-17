@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use super::adapters::Ingested;
 use super::ledger::entities::{Relationship, Thread};
-use super::ledger::identity::AnalyticalId;
+use super::ledger::identity::{
+    AnalyticalId, IdPrefix, IdentityError, IdentityKey, KeyComponent, StoredIdentity,
+};
 
 /// A coding agent whose sessions urollup can select.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -28,6 +30,30 @@ impl Agent {
             Self::Pi => "pi",
         }
     }
+}
+
+/// Derives the analytical thread ID used by an agent adapter from its native thread key.
+///
+/// Claude main sessions use the session ID; Claude subagents use `session/agent`; Codex
+/// uses the rollout thread ID. Keeping this derivation shared lets lightweight discovery
+/// resolve ordinary analytical selectors without decoding complete transcripts.
+pub fn agent_thread_identity(
+    agent: Agent,
+    native_thread_key: &str,
+) -> Result<StoredIdentity, IdentityError> {
+    StoredIdentity::derive(IdentityKey::new(
+        IdPrefix::Thread,
+        "agent-thread",
+        vec![KeyComponent::text(agent.token()), KeyComponent::text(native_thread_key)],
+    ))
+}
+
+/// Derives only the analytical ID for an agent-native thread key.
+pub fn derive_agent_thread_id(
+    agent: Agent,
+    native_thread_key: &str,
+) -> Result<AnalyticalId, IdentityError> {
+    agent_thread_identity(agent, native_thread_key).map(|identity| identity.id)
 }
 
 /// Whether a session selection includes only the selected threads or their subagents.

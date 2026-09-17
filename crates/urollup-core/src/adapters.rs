@@ -66,6 +66,14 @@ pub enum AdapterError {
         #[source]
         source: std::io::Error,
     },
+    /// A Claude subagent metadata sidecar exceeds the adapter's hard size limit.
+    #[error("Claude subagent metadata {path} exceeds the {maximum}-byte size limit")]
+    MetadataTooLarge {
+        /// The sidecar path.
+        path: PathBuf,
+        /// The maximum bytes accepted for one sidecar.
+        maximum: u64,
+    },
     /// A Claude subagent metadata sidecar is not valid JSON.
     #[error("cannot parse Claude subagent metadata {path}: {source}")]
     MetadataParse {
