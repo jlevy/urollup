@@ -146,7 +146,9 @@ find ~/.codex/sessions ~/.codex/archived_sessions -name 'rollout-*' 2>/dev/null 
 **Verify:**
 
 - [ ] The corpus size and file counts are recorded; on the reference machine they were
-  about 2.7 GB in 2,920 Claude files and 12 GB in 8,900 Codex rollouts on 2026-09-16.
+  about 2.7 GB in 2,920 Claude files and 19 GB in 9,900 Codex rollouts on 2026-09-17, 7
+  GB of them archived.
+  Measure an archive reached through a symlink with `du -shL`.
 
 ## Phase 2: Whole-History Runs
 
@@ -401,13 +403,16 @@ wc -l < "$QA/forks.txt"
 ```
 
 For one fork and its parent, compare `"$UR" report --session <fork> --scope self`, the
-parent’s self report, and a report with both `--session` flags.
+parent’s self report, and a report with both `--session` flags and `--scope self`.
+Without `--scope self`, each selector also pulls in the thread’s descendants.
 
 **Verify:**
 
 - [ ] Parent self total plus fork self total equals the combined total.
-- [ ] The fork’s self total excludes its copied parent history: it is smaller than the
-  fork’s last cumulative `total_tokens`, and `copies_excluded` is greater than 0.
+- [ ] The fork’s self report has `copies_excluded` greater than 0, so its copied parent
+  history is not counted.
+  When Codex restarts the fork’s cumulative counter after the fork, the fork’s self
+  total equals its own last cumulative `total_tokens`; that is expected.
 
 ## Phase 7: Live Current Session and Local Parity
 
