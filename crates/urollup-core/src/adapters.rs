@@ -101,4 +101,7 @@ pub enum AdapterError {
     /// A dialect's inclusive input counter was below its cache-read subset.
     #[error(transparent)]
     Input(#[from] crate::ledger::tokens::InputBelowCacheRead),
+    /// A source-decoding worker thread panicked.
+    #[error(transparent)]
+    Worker(#[from] crate::sources::parallel::ParallelReadError),
 }

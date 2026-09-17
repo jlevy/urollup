@@ -229,10 +229,10 @@ fn decoded_budget_catches_a_high_ratio_compressed_record_before_the_visitor() {
     assert!(decoded.len() as u64 > (encoded.len() as u64).saturating_mul(64));
     write(&path, &encoded);
     let maximum = (encoded.len() as u64).saturating_mul(64);
-    let mut budget = ReadBudget::new(maximum, u64::MAX);
+    let budget = ReadBudget::new(maximum, u64::MAX);
     let mut visited = 0_u64;
 
-    let error = read_source_with_budget(&SPEC, &compressed(&path), &options(), &mut budget, |_| {
+    let error = read_source_with_budget(&SPEC, &compressed(&path), &options(), &budget, |_| {
         visited = visited.saturating_add(1);
         RecordDisposition::Skipped
     })
@@ -252,21 +252,20 @@ fn record_budget_is_shared_across_files_and_stops_small_skipped_records() {
     let second = root.path().join("second.jsonl");
     write(&first, b"{}\n{}\n{}\n");
     write(&second, b"{}\n{}\n{}\n{}\n{}\n{}\n");
-    let mut budget = ReadBudget::new(u64::MAX, 5);
+    let budget = ReadBudget::new(u64::MAX, 5);
     let mut visited = 0_u64;
-    read_source_with_budget(&SPEC, &plain(&first), &options(), &mut budget, |_| {
+    read_source_with_budget(&SPEC, &plain(&first), &options(), &budget, |_| {
         visited = visited.saturating_add(1);
         RecordDisposition::Skipped
     })
     .unwrap();
     let second_spec = SourceSpec { locator: "project/second.jsonl", ..SPEC };
 
-    let error =
-        read_source_with_budget(&second_spec, &plain(&second), &options(), &mut budget, |_| {
-            visited = visited.saturating_add(1);
-            RecordDisposition::Skipped
-        })
-        .unwrap_err();
+    let error = read_source_with_budget(&second_spec, &plain(&second), &options(), &budget, |_| {
+        visited = visited.saturating_add(1);
+        RecordDisposition::Skipped
+    })
+    .unwrap_err();
 
     assert!(matches!(error, SourceReadError::RecordBudgetExceeded { maximum: 5 }));
     assert_eq!(visited, 5, "the sixth record is rejected before the visitor can retain it");
@@ -552,4 +551,54 @@ fn oversized_unterminated_tail_keeps_the_actual_snapshot_boundary() {
             }
         }
     }
+}
+
+#[test]
+fn a_budget_shared_across_threads_never_grants_more_than_its_limits() {
+    let budget = ReadBudget::new(1_000, 1_000);
+    let (bytes, records) = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let (mut bytes, mut records) = (0_u64, 0_u64);
+                    for _ in 0..500 {
+                        if budget.charge_decoded_bytes(3).is_ok() {
+                            bytes += 3;
+                        }
+                        if budget.charge_record().is_ok() {
+                            records += 1;
+                        }
+                    }
+                    (bytes, records)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .fold((0, 0), |total, granted| (total.0 + granted.0, total.1 + granted.1))
+    });
+
+    assert_eq!(bytes, 999, "whole charges fill the byte limit without passing it");
+    assert_eq!(records, 1_000);
+    assert_eq!(budget.decoded_bytes_remaining(), Some(1));
+    assert!(matches!(
+        budget.charge_decoded_bytes(2),
+        Err(SourceReadError::DecodedByteBudgetExceeded { maximum: 1_000 })
+    ));
+    assert!(budget.charge_decoded_bytes(1).is_ok());
+    assert!(matches!(
+        budget.charge_record(),
+        Err(SourceReadError::RecordBudgetExceeded { maximum: 1_000 })
+    ));
+}
+
+#[test]
+fn an_unlimited_budget_never_refuses_a_charge() {
+    let budget = ReadBudget::unlimited();
+    assert!(budget.charge_decoded_bytes(u64::MAX).is_ok());
+    assert!(budget.charge_decoded_bytes(u64::MAX).is_ok());
+    assert!(budget.charge_record().is_ok());
+    assert_eq!(budget.decoded_bytes_remaining(), None);
+
 }

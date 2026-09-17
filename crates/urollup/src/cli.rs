@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
@@ -23,6 +24,7 @@ use urollup_core::selection::{
     derive_agent_thread_id,
 };
 use urollup_core::sources::manifest::Representation;
+use urollup_core::sources::parallel;
 use urollup_core::sources::reader::{ReadBudget, ReadOptions};
 use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
 
@@ -32,6 +34,11 @@ const MAX_ESTIMATED_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_INGESTED_RECORDS: u64 = 1_000_000;
 const ZSTD_ESTIMATED_EXPANSION: u64 = 64;
 const MAX_CATALOG_HEADER_BYTES: u64 = ReadOptions::DEFAULT_MAX_RECORD_BYTES as u64;
+/// The environment variable that sets how many threads decode sources.
+const JOBS_VARIABLE: &str = "UROLLUP_JOBS";
+/// The most workers `UROLLUP_JOBS` may request, so a mistyped value cannot exhaust the
+/// process's threads.
+const MAX_JOBS: usize = 256;
 const CLI_STYLES: Styles = Styles::styled()
     .header(STYLE_HEADING)
     .usage(STYLE_HEADING)
@@ -325,6 +332,7 @@ struct Corpus {
 
 impl Corpus {
     fn discover(args: &SelectionArgs, query: &SelectionQuery) -> Result<Self, Failure> {
+        let workers = decoding_workers(std::env::var_os(JOBS_VARIABLE).as_deref())?;
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
             (Vec::new(), false)
@@ -356,17 +364,19 @@ impl Corpus {
             [&claude_discovery, &codex_discovery],
             MAX_ESTIMATED_SOURCE_BYTES,
         )?;
-        let mut budget = ReadBudget::new(MAX_ESTIMATED_SOURCE_BYTES, MAX_INGESTED_RECORDS);
+        let budget = ReadBudget::new(MAX_ESTIMATED_SOURCE_BYTES, MAX_INGESTED_RECORDS);
         let claude = claude_project::ingest_discovery_with_budget(
             claude_discovery,
             claude_missing_is_error,
-            &mut budget,
+            &budget,
+            workers,
         )
         .map_err(|error| Failure::adapter(&error))?;
         let codex = codex_rollout::ingest_discovery_with_budget(
             codex_discovery,
             codex_missing_is_error,
-            &mut budget,
+            &budget,
+            workers,
         )
         .map_err(|error| Failure::adapter(&error))?;
         let mut index = SessionIndex::default();
@@ -381,6 +391,27 @@ impl Corpus {
             QuerySource { agent: Agent::Codex, ingested: &self.codex },
         ]
     }
+}
+
+/// The number of threads that decode sources: `UROLLUP_JOBS` when it is set, otherwise
+/// the core's default bound.
+///
+/// An empty value counts as unset, as it does for `NO_COLOR` and `FORCE_COLOR`. Anything
+/// but a whole number from 1 to [`MAX_JOBS`] is a usage error.
+fn decoding_workers(jobs: Option<&OsStr>) -> Result<NonZeroUsize, Failure> {
+    let Some(jobs) = jobs.filter(|jobs| !jobs.is_empty()) else {
+        return Ok(parallel::default_workers());
+    };
+    jobs.to_str()
+        .filter(|text| text.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|text| text.parse::<NonZeroUsize>().ok())
+        .filter(|workers| workers.get() <= MAX_JOBS)
+        .ok_or_else(|| {
+            Failure::usage(format!(
+                "{JOBS_VARIABLE} must be a whole number of workers from 1 to {MAX_JOBS}, not {:?}",
+                jobs.to_string_lossy()
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -1054,17 +1085,17 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write, color: bool) ->
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::{self, Write};
     use std::path::PathBuf;
 
     use super::{
         Agent, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit, ExplicitDialect,
-        OutputFormat, ScopeArg, TerminalContext, ZSTD_ESTIMATED_EXPANSION,
-        classify_explicit_source, classify_jsonl_with_limit, derive_agent_thread_id,
-        ensure_discovery_capacity, ensure_source_capacity, narrow_discoveries, run,
-        run_with_context,
+        MAX_JOBS, OutputFormat, ScopeArg, TerminalContext, ZSTD_ESTIMATED_EXPANSION,
+        classify_explicit_source, classify_jsonl_with_limit, decoding_workers,
+        derive_agent_thread_id, ensure_discovery_capacity, ensure_source_capacity,
+        narrow_discoveries, run, run_with_context,
     };
     use clap::Parser;
     use urollup_core::adapters::{claude_project, codex_rollout};
@@ -1636,6 +1667,30 @@ mod tests {
             2,
             "fork support is ingested but fork is not a descendant"
         );
+    }
+
+    #[test]
+    fn jobs_default_when_unset_and_accept_whole_numbers_in_range() {
+        let default = urollup_core::sources::parallel::default_workers();
+        assert_eq!(decoding_workers(None).unwrap(), default);
+        assert_eq!(decoding_workers(Some(OsStr::new(""))).unwrap(), default);
+        for (value, expected) in [("1", 1), ("8", 8), ("012", 12), ("256", MAX_JOBS)] {
+            assert_eq!(decoding_workers(Some(OsStr::new(value))).unwrap().get(), expected);
+        }
+    }
+
+    #[test]
+    fn jobs_outside_the_range_or_not_whole_numbers_are_usage_errors() {
+        for value in ["0", "257", "-1", "+4", " 4", "4 ", "1.5", "four", "99999999999999999999999"]
+        {
+            let failure = decoding_workers(Some(OsStr::new(value))).unwrap_err();
+            assert_eq!(failure.exit, Exit::Usage, "{value:?}");
+            assert!(
+                failure.message.starts_with("UROLLUP_JOBS must be a whole number"),
+                "{value:?}"
+            );
+            assert!(failure.message.contains(&format!("{value:?}")), "{}", failure.message);
+        }
     }
 
     #[test]

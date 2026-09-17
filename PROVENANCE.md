@@ -84,7 +84,7 @@ come from the research brief’s
 | urollup file | ccusage source | What changed |
 | --- | --- | --- |
 | `crates/urollup-core/src/sources/prefilter.rs` | `rust/crates/ccusage-core/src/fast.rs` | `Vec` instead of `SmallVec`; one constructor pair for the two modes; an empty marker list admits every line; documents that a miss is a counted skip, never a dropped record |
-| `crates/urollup-core/src/sources/parallel.rs` | `rust/adapters/common/src/lib.rs` | Both `expect` panics are a `ParallelReadError`; an explicit worker bound; weights come from the caller instead of a `metadata` call that reads an unreadable file as empty; no `read_dir` collection, which the roots walk owns |
+| `crates/urollup-core/src/sources/parallel.rs` | `rust/adapters/common/src/lib.rs` | Both `expect` panics are a `ParallelReadError`; an explicit worker bound, capped at 8 by default; a file’s size only orders the work instead of a `metadata` call that reads an unreadable file as empty; workers pull heaviest first from one shared queue instead of fixed chunks; a fallible variant returns the first error in input order and starts no later item; no `read_dir` collection, which the roots walk owns |
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
