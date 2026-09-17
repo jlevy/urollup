@@ -42,6 +42,7 @@ use super::entities::{
     SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
+use super::inline_list::InlineList;
 use super::linking::LinkGraph;
 use super::scope::{DerivedKey, IdentityBasis, artifact_local_key};
 use super::tokens::TokenMeasures;
@@ -78,7 +79,7 @@ pub struct RequestObservation {
     /// The dialect registry token.
     pub dialect: &'static str,
     /// Every `req-` key the adapter could build for the record, in any order.
-    pub keys: Vec<DerivedKey>,
+    pub keys: InlineList<DerivedKey, 2>,
     /// Original or copy.
     pub role: ObservationRole,
     /// Owner evidence.
@@ -91,7 +92,7 @@ pub struct RequestObservation {
     pub sequence: Option<u64>,
     /// Revision-invariant fields; observations sharing a key must agree on every field
     /// both carry.
-    pub invariants: Vec<(&'static str, String)>,
+    pub invariants: InlineList<(&'static str, String), 1>,
     /// Tokens naming candidate sets: observations that may be one request but share no
     /// key, such as a digest of copy-invariant content.
     pub candidate_tokens: BTreeSet<String>,
@@ -111,13 +112,13 @@ impl RequestObservation {
         Self {
             evidence,
             dialect,
-            keys: Vec::new(),
+            keys: InlineList::new(),
             role: ObservationRole::Original,
             owner: OwnerEvidence::None,
             usage: None,
             model_usage: Vec::new(),
             sequence: None,
-            invariants: Vec::new(),
+            invariants: InlineList::new(),
             candidate_tokens: BTreeSet::new(),
             model: None,
             effort: None,
@@ -913,8 +914,7 @@ fn dedupe_rereads(
 ) {
     // Key order and repeated keys do not change the content of a record.
     for observation in observations.iter_mut() {
-        observation.keys.sort();
-        observation.keys.dedup();
+        observation.keys.sort_dedup();
     }
     // Observations that compare equal are identical, so an in-place unstable sort gives
     // the stable sort's result without its buffer of half the observations.
@@ -979,9 +979,9 @@ fn artifact_local(evidence: &EvidenceRef) -> Result<DerivedKey, ReconcileError> 
 
 /// Frees what an observation owns once its request is built; its inline fields stay.
 fn release_payload(observation: &mut RequestObservation) {
-    observation.keys = Vec::new();
+    observation.keys = InlineList::new();
     observation.model_usage = Vec::new();
-    observation.invariants = Vec::new();
+    observation.invariants = InlineList::new();
     observation.candidate_tokens = BTreeSet::new();
     observation.model = None;
     observation.effort = None;

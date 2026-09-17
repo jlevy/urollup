@@ -59,7 +59,7 @@ fn usage(input: u64, output: u64) -> TokenMeasures {
 /// An original observation of `response` in `src` at `offset`, owned by thread `t1`.
 fn observed(src: u8, offset: u64, response: &str, output: u64) -> RequestObservation {
     let mut observation = RequestObservation::new(evidence(src, offset), "test");
-    observation.keys = vec![response_key(response)];
+    observation.keys = vec![response_key(response)].into();
     observation.owner = OwnerEvidence::Proven(thread("t1"));
     observation.usage = Some(usage(100, output));
     observation
@@ -135,8 +135,10 @@ fn rereads_ignore_request_key_order_and_duplicates() {
     let mut original = observed(0, 10, "msg_1", 7);
     original.keys.push(digest_key("t1", "digest_1"));
     let mut reread = original.clone();
-    reread.keys.reverse();
-    reread.keys.push(reread.keys[0].clone());
+    let mut keys: Vec<_> = reread.keys.iter().cloned().collect();
+    keys.reverse();
+    keys.push(keys[0].clone());
+    reread.keys = keys.into();
     let expected = run(vec![original.clone(), original.clone()]);
     assert_eq!(run(vec![original, reread]), expected);
 }
@@ -257,7 +259,7 @@ fn a_candidate_set_counts_the_strongest_basis_before_the_lowest_id() {
     let mut native = observed(0, 0, "msg_1", 10);
     native.candidate_tokens.insert("content-digest-1".to_owned());
     let mut fallback = RequestObservation::new(evidence(1, 0), "test");
-    fallback.keys = vec![digest_key("t1", "content-digest-1")];
+    fallback.keys = vec![digest_key("t1", "content-digest-1")].into();
     fallback.usage = Some(usage(100, 10));
     fallback.candidate_tokens.insert("content-digest-1".to_owned());
     let ledger = run(vec![fallback, native]);
@@ -345,7 +347,7 @@ fn conflicting_accounts_are_diagnosed_not_split() {
 fn lineage_links_merge_keys_and_keep_aliases() {
     let parent = observed(0, 0, "msg_1", 10);
     let mut child_copy = RequestObservation::new(evidence(1, 0), "test");
-    child_copy.keys = vec![digest_key("child", "d1")];
+    child_copy.keys = vec![digest_key("child", "d1")].into();
     child_copy.role = ObservationRole::Copy;
     let native_id = response_key("msg_1").id;
     let fallback_id = digest_key("child", "d1").id;
@@ -460,7 +462,8 @@ fn engine_errors_are_values() {
         }
         .derive()
         .unwrap(),
-    ];
+    ]
+    .into();
     let input = ReconcileInput { requests: vec![wrong], ..ReconcileInput::default() };
     assert!(matches!(reconcile(input, &LatestRevision), Err(ReconcileError::WrongPrefix { .. })));
 }
