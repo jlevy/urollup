@@ -96,14 +96,35 @@ impl IdentityVersion {
     }
 }
 
-/// A validated analytical ID string.
+/// A validated analytical ID.
 ///
-/// Ordering is string ordering, which the design's "lowest ID" tie-breaks use.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// The ID stores its prefix, version and 128-bit digest rather than its text, so IDs and
+/// the evidence references that carry them never allocate. Ordering equals the order of
+/// the ID text, which the design's "lowest ID" tie-breaks use.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnalyticalId {
-    // Field order matters: the derived ordering compares the text first.
-    text: String,
     prefix: IdPrefix,
+    version: IdentityVersion,
+    digest: u128,
+}
+
+impl Ord for AnalyticalId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Text order: the prefix token, then `v<number>`, then 26 digits, whose text order
+        // equals digest order. Version numbers are single digits, so numeric order is text
+        // order.
+        self.prefix
+            .token()
+            .cmp(other.prefix.token())
+            .then_with(|| self.version.number().cmp(&other.version.number()))
+            .then_with(|| self.digest.cmp(&other.digest))
+    }
+}
+
+impl PartialOrd for AnalyticalId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl AnalyticalId {
@@ -121,20 +142,23 @@ impl AnalyticalId {
         if number.starts_with('0') || !number.bytes().all(|b| b.is_ascii_digit()) {
             return Err(invalid());
         }
-        number.parse::<u32>().ok().and_then(IdentityVersion::from_number).ok_or_else(invalid)?;
+        let version = number
+            .parse::<u32>()
+            .ok()
+            .and_then(IdentityVersion::from_number)
+            .ok_or_else(invalid)?;
         let digits = digest.as_bytes();
         let well_formed = digits.len() == DIGEST_DIGITS
-            && digits.iter().all(|b| CROCKFORD_LOWER.contains(b))
             && digits.first().is_some_and(|first| (b'0'..=b'7').contains(first));
         if !well_formed {
             return Err(invalid());
         }
-        Ok(Self { text: text.to_owned(), prefix })
-    }
-
-    /// The ID text.
-    pub fn as_str(&self) -> &str {
-        &self.text
+        let mut value = 0_u128;
+        for digit in digits {
+            let index = CROCKFORD_LOWER.iter().position(|b| b == digit).ok_or_else(invalid)?;
+            value = (value << 5) | u128::try_from(index).map_err(|_| invalid())?;
+        }
+        Ok(Self { prefix, version, digest: value })
     }
 
     /// The entity kind this ID names.
@@ -145,7 +169,9 @@ impl AnalyticalId {
 
 impl fmt::Display for AnalyticalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        let digits = crockford_digits(self.digest);
+        let digits = std::str::from_utf8(&digits).map_err(|_| fmt::Error)?;
+        write!(f, "{}-v{}-{digits}", self.prefix.token(), self.version.number())
     }
 }
 
@@ -378,23 +404,24 @@ pub(crate) fn sha256_128(bytes: &[u8]) -> [u8; 16] {
     truncated
 }
 
-/// Writes 128 bits as 26 lowercase Crockford base32 digits, most significant first.
-pub(crate) fn crockford_base32_128(bits: &[u8; 16]) -> String {
-    let mut value = u128::from_be_bytes(*bits);
+/// 128 bits as 26 lowercase Crockford base32 digits, most significant first.
+fn crockford_digits(mut value: u128) -> [u8; DIGEST_DIGITS] {
     let mut digits = [b'0'; DIGEST_DIGITS];
     for slot in digits.iter_mut().rev() {
         // The mask keeps the index below 32.
         *slot = CROCKFORD_LOWER[usize::try_from(value & 0x1f).unwrap_or(0)];
         value >>= 5;
     }
-    digits.iter().map(|&digit| char::from(digit)).collect()
+    digits
+}
+
+/// Writes 128 bits as 26 lowercase Crockford base32 digits, most significant first.
+pub(crate) fn crockford_base32_128(bits: &[u8; 16]) -> String {
+    crockford_digits(u128::from_be_bytes(*bits)).iter().map(|&digit| char::from(digit)).collect()
 }
 
 fn id_from_digest(prefix: IdPrefix, version: IdentityVersion, digest: &[u8; 16]) -> AnalyticalId {
-    AnalyticalId {
-        text: format!("{}-v{}-{}", prefix.token(), version.number(), crockford_base32_128(digest)),
-        prefix,
-    }
+    AnalyticalId { prefix, version, digest: u128::from_be_bytes(*digest) }
 }
 
 #[cfg(test)]
@@ -430,9 +457,25 @@ pub(crate) mod tests {
         let id = response_key("anthropic", "msg_01").derive_id().unwrap();
         // Pinned, and checked independently with Python hashlib: a change here changes
         // every stored request ID under identity v1.
-        assert_eq!(id.as_str(), "req-v1-74jwmxh9ngbvdmk5zgvcrtgszc");
-        assert_eq!(AnalyticalId::parse(id.as_str()).unwrap(), id);
+        assert_eq!(id.to_string(), "req-v1-74jwmxh9ngbvdmk5zgvcrtgszc");
+        assert_eq!(AnalyticalId::parse(&id.to_string()).unwrap(), id);
         assert_eq!(id.prefix(), IdPrefix::Request);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn id_order_and_text_round_trip_match_the_text_form(
+            left_digest in proptest::prelude::any::<[u8; 16]>(),
+            right_digest in proptest::prelude::any::<[u8; 16]>(),
+            left_prefix in 0_usize..IdPrefix::ALL.len(),
+            right_prefix in 0_usize..IdPrefix::ALL.len(),
+        ) {
+            let left = id_from_digest(IdPrefix::ALL[left_prefix], IdentityVersion::V1, &left_digest);
+            let right =
+                id_from_digest(IdPrefix::ALL[right_prefix], IdentityVersion::V1, &right_digest);
+            proptest::prop_assert_eq!(left.cmp(&right), left.to_string().cmp(&right.to_string()));
+            proptest::prop_assert_eq!(AnalyticalId::parse(&left.to_string()).unwrap(), left);
+        }
     }
 
     #[test]
@@ -534,7 +577,8 @@ pub(crate) mod tests {
     #[test]
     fn rejects_malformed_id_strings() {
         let good = response_key("anthropic", "msg_01").derive_id().unwrap();
-        let digest = &good.as_str()[7..];
+        let good_text = good.to_string();
+        let digest = &good_text[7..];
         for bad in [
             String::new(),
             "req-v1".to_owned(),

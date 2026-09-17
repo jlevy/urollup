@@ -42,7 +42,7 @@ fn response_key(id: &str) -> ScopedKey {
 
 fn digest_key(owner: &str, digest: &str) -> ScopedKey {
     THREAD_DIGEST
-        .key(vec![KeyComponent::text(thread(owner).as_str()), KeyComponent::text(digest)])
+        .key(vec![KeyComponent::text(thread(owner).to_string()), KeyComponent::text(digest)])
         .unwrap()
 }
 
