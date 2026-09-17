@@ -203,6 +203,17 @@ test("a naive-sum report fails with a field-by-field diff", () => {
   assert.match(table.find((line) => line.startsWith("tokens.cache_read")), /40,000\s+160,000$/);
 });
 
+test("diagnostics compare per-code occurrence sums, not rows", () => {
+  // A fixture lists each place a code fired; a report prints one row per code.
+  const expected = normalizeExpected(JSON.parse(record({ diagnostics: [{ code: "a", refs: ["x:1", "x:2"] }, { code: "a", refs: ["y:1"] }, { code: "b", refs: ["z:1"] }] }))).reconciled;
+  const aggregated = { diagnostics: [{ code: "a", count: 3 }, { code: "b", count: 1 }] };
+  assert.deepEqual(compareResults(expected, aggregated, ["diagnostics"]).differences, []);
+  const split = { diagnostics: [{ code: "b", count: 1 }, { code: "a", count: 1 }, { code: "a", count: 2 }] };
+  assert.deepEqual(compareResults(expected, split, ["diagnostics"]).differences, [], "rows of one code sum before comparing");
+  assert.deepEqual(compareResults(expected, { diagnostics: [{ code: "a", count: 2 }, { code: "b", count: 1 }] }, ["diagnostics"]).differences, [{ field: "diagnostics a", expected: 3, actual: 2 }]);
+  assert.deepEqual(compareResults(expected, {}, ["diagnostics"]).differences, [{ field: "diagnostics", expected: "2 codes", actual: "absent" }]);
+});
+
 test("absent fields and count mismatches in diagnostics are differences, never skipped", () => {
   const { differences } = compareResults({ requests: 1, tokens: { output: 5 }, diagnostics: [{ code: "a", count: 2 }] }, { diagnostics: [{ code: "a", count: 1 }] });
   assert.deepEqual(differences, [

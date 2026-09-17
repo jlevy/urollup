@@ -324,9 +324,13 @@ function compareValue(field, expected, actual, differences) {
   }
 }
 
+/**
+ * Compare per-code occurrence sums, never row counts: reports print one row per code,
+ * while a fixture lists each place a diagnostic fired, so both sides sum by code first.
+ */
 function compareDiagnostics(expected, actual, differences) {
   if (actual === undefined) {
-    differences.push({ field: "diagnostics", expected: `${expected.length} codes`, actual: "absent" });
+    differences.push({ field: "diagnostics", expected: `${new Set(expected.map(({ code }) => code)).size} codes`, actual: "absent" });
     return;
   }
   const counts = (list) => list.reduce((map, { code, count }) => map.set(code, (map.get(code) ?? 0) + (count ?? 1)), new Map());

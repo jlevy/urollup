@@ -223,14 +223,14 @@ pub struct CoverageSummary {
     pub complete: bool,
 }
 
-/// One stable diagnostic code and occurrence count.
+/// One stable diagnostic code with its occurrences summed over the selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DiagnosticSummary {
-    /// Stable diagnostic token.
+    /// Stable diagnostic token; a document lists each code once.
     pub code: String,
-    /// Number of source-record or physical-location occurrences.
+    /// Number of source-record or physical-location occurrences of the code.
     pub count: u64,
-    /// Deterministic detail from reconciliation.
+    /// Deterministic detail of the code's first diagnostic in canonical order.
     pub detail: String,
 }
 
@@ -275,7 +275,7 @@ pub struct ReportDocument {
     pub query: QueryMetadata,
     /// Coverage counters.
     pub coverage: CoverageSummary,
-    /// Diagnostics in stable source order.
+    /// One diagnostic row per code, in stable code order.
     pub diagnostics: Vec<DiagnosticSummary>,
     /// Counted and non-additive totals.
     pub totals: AggregateTotals,
@@ -321,7 +321,7 @@ pub struct DailyDocument {
     pub query: QueryMetadata,
     /// Calendar rows in ascending date order, with the unknown bucket last.
     pub rows: Vec<DailyRow>,
-    /// Diagnostics relevant to the selected sources.
+    /// One diagnostic row per code relevant to the selection, in stable code order.
     pub diagnostics: Vec<DiagnosticSummary>,
 }
 
@@ -334,7 +334,7 @@ pub struct SessionsDocument {
     pub query: QueryMetadata,
     /// Session rows in analytical-ID order.
     pub rows: Vec<SessionRow>,
-    /// Diagnostics relevant to the selected sources.
+    /// One diagnostic row per code relevant to the selection, in stable code order.
     pub diagnostics: Vec<DiagnosticSummary>,
 }
 

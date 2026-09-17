@@ -93,7 +93,7 @@ impl DiagnosticCode {
 /// One diagnostic with its subject and evidence.
 ///
 /// The derived order is the order a ledger lists diagnostics in, so it never depends on
-/// traversal order.
+/// traversal order. A ledger holds one diagnostic per code and subject; see [`compact`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Diagnostic {
     /// What is reported.
@@ -101,6 +101,9 @@ pub struct Diagnostic {
     /// The entity the diagnostic is about, when it has one.
     pub subject: Option<AnalyticalId>,
     /// The records involved, in canonical order.
+    ///
+    /// A ledger keeps at most [`SAMPLE_EVIDENCE_LIMIT`] of them as samples; see
+    /// [`compact`].
     pub evidence: Vec<EvidenceRef>,
     /// How many source records or locations triggered this diagnostic.
     ///
@@ -131,5 +134,107 @@ impl Diagnostic {
     pub fn with_occurrences(mut self, occurrences: u64) -> Self {
         self.occurrences = self.occurrences.max(occurrences);
         self
+    }
+}
+
+/// The most evidence references a compacted diagnostic keeps as samples.
+pub const SAMPLE_EVIDENCE_LIMIT: usize = 3;
+
+/// Compacts diagnostics to one per code and subject, in canonical order.
+///
+/// Identical diagnostics are one report made twice and count once. Each remaining
+/// `(code, subject)` group sums its occurrences, keeps the detail of its first diagnostic
+/// in canonical order, and keeps at most [`SAMPLE_EVIDENCE_LIMIT`] evidence references,
+/// the first in canonical order. The result never depends on input order.
+pub fn compact(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    diagnostics.sort();
+    diagnostics.dedup();
+    let mut compacted: Vec<Diagnostic> = Vec::new();
+    for mut diagnostic in diagnostics {
+        diagnostic.evidence.sort();
+        diagnostic.evidence.dedup();
+        match compacted.last_mut() {
+            Some(group) if group.code == diagnostic.code && group.subject == diagnostic.subject => {
+                group.occurrences = group.occurrences.saturating_add(diagnostic.occurrences);
+                group.evidence.append(&mut diagnostic.evidence);
+                group.evidence.sort();
+                group.evidence.dedup();
+                group.evidence.truncate(SAMPLE_EVIDENCE_LIMIT);
+            }
+            _ => {
+                diagnostic.evidence.truncate(SAMPLE_EVIDENCE_LIMIT);
+                compacted.push(diagnostic);
+            }
+        }
+    }
+    compacted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Diagnostic, DiagnosticCode, SAMPLE_EVIDENCE_LIMIT, compact};
+    use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent};
+    use crate::sources::evidence::EvidenceRef;
+
+    fn id(prefix: IdPrefix, n: i64) -> AnalyticalId {
+        IdentityKey::new(prefix, "test-diagnostic", vec![KeyComponent::Integer(n)])
+            .derive_id()
+            .expect("test ID derives")
+    }
+
+    fn evidence(offset: u64) -> EvidenceRef {
+        EvidenceRef { source: id(IdPrefix::Source, 1), offset, length: 10 }
+    }
+
+    fn diagnostic(
+        code: DiagnosticCode,
+        subject: Option<i64>,
+        offsets: &[u64],
+        detail: &str,
+    ) -> Diagnostic {
+        Diagnostic::new(
+            code,
+            subject.map(|n| id(IdPrefix::Thread, n)),
+            offsets.iter().copied().map(evidence),
+            detail,
+        )
+    }
+
+    #[test]
+    fn compaction_sums_occurrences_per_code_and_subject() {
+        let input = vec![
+            diagnostic(DiagnosticCode::MalformedLine, None, &[40, 50], "b detail"),
+            diagnostic(DiagnosticCode::MalformedLine, None, &[10, 20, 30], "a detail"),
+            diagnostic(DiagnosticCode::MalformedLine, None, &[10, 20, 30], "a detail"),
+            diagnostic(DiagnosticCode::ThreadOrphan, Some(1), &[5], "orphan"),
+            diagnostic(DiagnosticCode::ThreadOrphan, Some(2), &[6], "orphan"),
+            diagnostic(DiagnosticCode::PendingTail, None, &[], "tail").with_occurrences(4),
+        ];
+        let mut reversed = input.clone();
+        reversed.reverse();
+
+        let compacted = compact(input);
+        assert_eq!(compact(reversed), compacted, "input order never matters");
+        let rows: Vec<_> = compacted
+            .iter()
+            .map(|d| (d.code, d.subject.is_some(), d.occurrences, d.detail.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (DiagnosticCode::MalformedLine, false, 5, "a detail"),
+                (DiagnosticCode::PendingTail, false, 4, "tail"),
+                (DiagnosticCode::ThreadOrphan, true, 1, "orphan"),
+                (DiagnosticCode::ThreadOrphan, true, 1, "orphan"),
+            ],
+            "identical reports count once and distinct subjects stay separate"
+        );
+        let malformed = &compacted[0];
+        assert_eq!(malformed.evidence.len(), SAMPLE_EVIDENCE_LIMIT);
+        assert_eq!(
+            malformed.evidence.iter().map(|e| e.offset).collect::<Vec<_>>(),
+            vec![10, 20, 30],
+            "samples are the first references in canonical order"
+        );
     }
 }

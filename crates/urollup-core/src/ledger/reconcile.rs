@@ -460,8 +460,7 @@ pub fn reconcile(
     let limit_observations =
         reconcile_limit_observations(limit_observations, &thread_ids, &request_ids)?;
 
-    diagnostics.sort();
-    diagnostics.dedup();
+    let diagnostics = super::diagnostics::compact(diagnostics);
     gaps.sort();
     gaps.dedup();
     Ok(Ledger {
