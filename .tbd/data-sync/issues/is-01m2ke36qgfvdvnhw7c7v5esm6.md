@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 39
+version: 42
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -48,8 +48,11 @@ child_order_hints:
   - is-01m2nrq5y06fsr5zjk075ks6fc
   - is-01m2nrrbmesqz5w2hzh0phza1v
   - is-01m2nw89ncs6egan0784hkk356
+  - is-01m2nyw6d2sjzx29tj860njhvz
+  - is-01m2p0zv6v24028fckjyagz1ct
+  - is-01m2p3evvpmcn8cf59wc1196f6
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-16T20:25:37.458Z
+updated_at: 2026-09-16T21:55:09.300Z
 ---
 Scaffold, sanitized fixtures, snapshot reading, identities and ledger, Claude Code and Codex adapters, exact session selection, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md. Status 2026-09-16: the uncached engine, 29 fixture cases, 239 golden blocks, pinned ccusage fixture parity, terminal-aware color, interactive progress, and privacy-safe consent-gated local acceptance tooling are implemented. Remaining acceptance gates are the consented real-log run, recorded maintainer decisions, independent full implementation review, and release/publishing rehearsal. Automated fixture gates do not represent those human gates as complete.
 
