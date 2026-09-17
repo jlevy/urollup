@@ -1,27 +1,45 @@
 //! Codex rollout adapter (`codex-rollout`).
+//!
+//! Decoding keeps memory proportional to relevant records, not to log bytes:
+//!
+//! - A line the byte prefilter rules out is only validated. Any other line is read by a
+//!   typed first pass, which borrows its strings and builds no JSON document apart from a
+//!   `rate_limits` object.
+//! - A decoded record is a compact row that allocates nothing of its own: the strings it
+//!   names are interned in its rollout's string table, its usage counts are packed into
+//!   its rollout's count buffer, and consecutive identical rate-limit snapshots share one
+//!   value.
+//! - Session metadata is summarized per rollout while it decodes, and each rollout's
+//!   records are freed as soon as its observations are built.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroUsize;
+mod line;
+
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{BuildHasher, RandomState};
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
+use self::line::{EventType, Line, Payload, RecordType, UsageFields};
 use super::{AdapterError, Ingested};
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ProviderLimitObservation, Relationship,
-    RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, ProviderLimitObservation,
+    Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
-use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity};
+use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
+use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
     LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, reconcile,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
 use crate::selection::{Agent, agent_thread_identity};
-use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned, validate_record};
+use crate::sources::decode::{parse_timestamp, validate_record};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
@@ -59,59 +77,120 @@ const COUNTER_KEY: KeySpec = KeySpec {
     slots: COUNTER_SLOTS,
 };
 
-#[derive(Clone)]
+/// The largest a decoded record may be.
+///
+/// One record is held for every relevant line of every rollout until its rollout's
+/// observations are built, so this size bounds that phase: the 508,000 records of a 12 GB
+/// Codex history take 39 MiB inline, with no allocation of their own. The layout is
+/// 76 bytes padded to 80: 16 of evidence position, an 8-byte count of skipped lines, a
+/// 16-byte optional ordinal, a 12-byte optional timestamp, and a 24-byte kind whose
+/// largest variants are a usage record (three 4-byte symbols and a 2-byte count mask,
+/// behind an option), a turn context (a symbol and two 8-byte names) and a token count (a
+/// count mask and an 8-byte shared rate-limit pointer).
+const MAX_RECORD_BYTES: usize = 80;
+
+const _: () = assert!(
+    size_of::<ParsedRecord>() <= MAX_RECORD_BYTES,
+    "a decoded Codex record outgrew its size budget"
+);
+
+/// Everything one rollout contributes before normalization.
 struct ParsedSource {
-    file_thread: String,
+    /// The source ID every record of the rollout shares; `None` only without records.
+    id: Option<AnalyticalId>,
+    /// The thread the rollout's file name records.
+    file_thread: Sym,
+    /// The table that this rollout's symbols index.
+    strings: Strings,
+    /// The usage counts of this rollout's records, packed in record order.
+    counts: Vec<u8>,
     records: Vec<ParsedRecord>,
-    trailing_skipped: SkippedSpan,
+    metas: SourceMetas,
+    /// Lines skipped after the last record.
+    trailing_skipped: u64,
 }
 
 /// The accounting fields of one relevant rollout record.
 ///
-/// Fields are extracted while the line is decoded, so no JSON document outlives its line.
-#[derive(Clone)]
+/// Its evidence source is its rollout's source ID, and the strings and counts it names
+/// are in its rollout's tables.
 struct ParsedRecord {
-    evidence: EvidenceRef,
-    skipped_before: SkippedSpan,
+    offset: u64,
+    length: u64,
+    /// Lines skipped since the previous record.
+    skipped_before: u64,
     ordinal: Option<u64>,
-    timestamp: Option<jiff::Timestamp>,
+    timestamp: Option<CompactTimestamp>,
     kind: RecordKind,
 }
 
 /// The relevant record kinds and the fields the adapter reads from each.
-#[derive(Clone)]
 enum RecordKind {
-    SessionMeta(Box<SessionMeta>),
-    TurnContext {
-        turn_id: Option<String>,
-        context: TurnContext,
+    SessionMeta {
+        id: Option<Sym>,
     },
-    UsageRecord(Box<UsagePayload>),
+    TurnContext {
+        turn_id: Option<Sym>,
+        model: Option<Name>,
+        effort: Option<Name>,
+    },
+    UsageRecord(UsageRecord),
     /// A compaction, with the latest usage record it copies when the field is present.
-    Compacted(Option<Box<UsagePayload>>),
-    TokenCount(Box<TokenCount>),
+    Compacted(Option<UsageRecord>),
+    /// A token count, whose total usage is in count slot 0 and last usage in slot 1.
+    TokenCount {
+        usage: UsageMask,
+        limits: Option<Arc<RateLimits>>,
+    },
     ThreadSettingsApplied {
-        thread_id: Option<String>,
+        thread_id: Option<Sym>,
     },
 }
 
 impl ParsedRecord {
-    fn session_meta(&self) -> Option<&SessionMeta> {
-        match &self.kind {
-            RecordKind::SessionMeta(meta) => Some(meta),
-            RecordKind::TurnContext { .. }
-            | RecordKind::UsageRecord(_)
-            | RecordKind::Compacted(_)
-            | RecordKind::TokenCount(_)
-            | RecordKind::ThreadSettingsApplied { .. } => None,
+    fn evidence(&self, source: &AnalyticalId) -> EvidenceRef {
+        EvidenceRef { source: source.clone(), offset: self.offset, length: self.length }
+    }
+}
+
+/// A `token_usage_record` payload, or the latest one a `compacted` record copies, whose
+/// usage is in count slot 0.
+#[derive(Clone, Copy)]
+struct UsageRecord {
+    thread_id: Option<Sym>,
+    response_id: Option<Sym>,
+    root_turn_id: Option<Sym>,
+    usage: UsageMask,
+}
+
+impl UsageRecord {
+    fn payload<'a>(&self, strings: &'a Strings, usage: Option<CodexUsage>) -> UsagePayload<'a> {
+        UsagePayload {
+            thread_id: self.thread_id.map(|thread| strings.resolve(thread)),
+            response_id: self.response_id.map(|response| strings.resolve(response)),
+            usage,
+            root_turn_id: self.root_turn_id,
         }
     }
 }
 
+/// A usage record with its strings and counts read back.
+struct UsagePayload<'a> {
+    thread_id: Option<&'a str>,
+    response_id: Option<&'a str>,
+    usage: Option<CodexUsage>,
+    root_turn_id: Option<Sym>,
+}
+
+/// Where a record is and when it was written, as the observations built from it cite it.
+struct RecordView {
+    evidence: EvidenceRef,
+    timestamp: Option<CompactTimestamp>,
+}
+
+/// The session metadata a rollout records for its own thread.
 #[derive(Clone, Default)]
 struct SessionMeta {
-    id: Option<String>,
-    cli_version: Option<String>,
     source: Option<String>,
     thread_source: Option<String>,
     /// The final component of the recorded working directory, never the path.
@@ -127,35 +206,23 @@ impl SessionMeta {
     }
 }
 
-/// A `token_usage_record` payload, or the latest one a `compacted` record copies.
-#[derive(Clone, Default)]
-struct UsagePayload {
-    thread_id: Option<String>,
-    response_id: Option<String>,
-    usage: Option<CodexUsage>,
-    root_turn_id: Option<String>,
-}
-
-impl UsagePayload {
-    fn from_value(payload: &Value) -> Self {
-        Self {
-            thread_id: text(payload, &["thread_id"]).map(str::to_owned),
-            response_id: text(payload, &["response_id"]).map(str::to_owned),
-            usage: payload.get("usage").map(CodexUsage::from_value),
-            root_turn_id: text(payload, &["root_turn_id"]).map(str::to_owned),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct TokenCount {
-    total: Option<CodexUsage>,
-    last: Option<CodexUsage>,
-    limits: Option<Arc<RateLimits>>,
+/// What normalization reads from a rollout's `session_meta` records, summarized while
+/// the rollout decodes.
+#[derive(Default)]
+struct SourceMetas {
+    /// The first `cli_version` any session meta reports.
+    cli_version: Option<String>,
+    /// Whether the first session meta names the rollout's own thread with neither a parent
+    /// nor a fork origin; `None` before any session meta.
+    root: Option<bool>,
+    /// The first session meta that names the rollout's own thread, with its evidence.
+    own: Option<Box<(SessionMeta, EvidenceRef)>>,
+    /// Whether any session meta names another thread.
+    foreign: bool,
 }
 
 /// Native Codex usage counters, each `None` when missing, null or not a count.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct CodexUsage {
     input: Option<u64>,
     cached_input: Option<u64>,
@@ -165,16 +232,113 @@ struct CodexUsage {
     total: Option<u64>,
 }
 
+/// The number of counters in a [`CodexUsage`].
+const USAGE_COUNTS: usize = 6;
+
 impl CodexUsage {
-    fn from_value(value: &Value) -> Self {
-        Self {
-            input: unsigned(value, &["input_tokens"]),
-            cached_input: unsigned(value, &["cached_input_tokens"]),
-            cache_write_input: unsigned(value, &["cache_write_input_tokens"]),
-            output: unsigned(value, &["output_tokens"]),
-            reasoning_output: unsigned(value, &["reasoning_output_tokens"]),
-            total: unsigned(value, &["total_tokens"]),
+    fn counts(self) -> [Option<u64>; USAGE_COUNTS] {
+        [
+            self.input,
+            self.cached_input,
+            self.cache_write_input,
+            self.output,
+            self.reasoning_output,
+            self.total,
+        ]
+    }
+
+    fn from_counts(counts: [Option<u64>; USAGE_COUNTS]) -> Self {
+        let [input, cached_input, cache_write_input, output, reasoning_output, total] = counts;
+        Self { input, cached_input, cache_write_input, output, reasoning_output, total }
+    }
+}
+
+/// Which usage objects a record carries, in numbered slots, and which of their counts are
+/// present: each slot has a presence bit followed by one bit per count, in
+/// [`CodexUsage::counts`] order. The present counts are packed into the rollout's count
+/// buffer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct UsageMask(u16);
+
+impl UsageMask {
+    const SLOT_BITS: u32 = 7;
+
+    fn has(self, bit: u32) -> bool {
+        self.0 & (1 << bit) != 0
+    }
+}
+
+/// Packs a usage object into `slot`, writing each present count as an LEB128 varint.
+fn pack_usage(counts: &mut Vec<u8>, mask: &mut UsageMask, slot: u32, usage: Option<CodexUsage>) {
+    let Some(usage) = usage else { return };
+    let base = slot * UsageMask::SLOT_BITS;
+    mask.0 |= 1 << base;
+    for (bit, count) in (base + 1..).zip(usage.counts()) {
+        let Some(mut value) = count else { continue };
+        mask.0 |= 1 << bit;
+        loop {
+            let low = value.to_le_bytes()[0] & 0x7f;
+            value >>= 7;
+            if value == 0 {
+                counts.push(low);
+                break;
+            }
+            counts.push(low | 0x80);
         }
+    }
+}
+
+/// Reads a rollout's packed counts back, record by record in record order.
+struct CountReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> CountReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    /// The usage objects of the next record, by slot.
+    fn record(&mut self, kind: &RecordKind) -> [Option<CodexUsage>; 2] {
+        match kind {
+            RecordKind::UsageRecord(record) | RecordKind::Compacted(Some(record)) => {
+                [self.usage(record.usage, 0), None]
+            }
+            RecordKind::TokenCount { usage, .. } => [self.usage(*usage, 0), self.usage(*usage, 1)],
+            RecordKind::SessionMeta { .. }
+            | RecordKind::TurnContext { .. }
+            | RecordKind::Compacted(None)
+            | RecordKind::ThreadSettingsApplied { .. } => [None, None],
+        }
+    }
+
+    fn usage(&mut self, mask: UsageMask, slot: u32) -> Option<CodexUsage> {
+        let base = slot * UsageMask::SLOT_BITS;
+        if !mask.has(base) {
+            return None;
+        }
+        let mut counts = [None; USAGE_COUNTS];
+        for (bit, count) in (base + 1..).zip(&mut counts) {
+            if mask.has(bit) {
+                *count = Some(self.varint());
+            }
+        }
+        Some(CodexUsage::from_counts(counts))
+    }
+
+    fn varint(&mut self) -> u64 {
+        let mut value = 0_u64;
+        let mut shift = 0_u32;
+        while let Some(&byte) = self.bytes.get(self.at) {
+            self.at = self.at.saturating_add(1);
+            value |= u64::from(byte & 0x7f).checked_shl(shift).unwrap_or(0);
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift = shift.saturating_add(7);
+        }
+        value
     }
 }
 
@@ -186,21 +350,104 @@ struct RateLimits {
     native: String,
 }
 
-#[derive(Clone, Default)]
-struct SkippedSpan {
-    count: u64,
+/// A turn's model and reasoning effort.
+#[derive(Clone, Copy, Debug, Default)]
+struct TurnContext {
+    model: Option<Name>,
+    effort: Option<Name>,
 }
 
-impl SkippedSpan {
-    fn observe(&mut self) {
-        self.count = self.count.saturating_add(1);
+/// The turn contexts of one rollout, by turn ID.
+type Turns = HashMap<Sym, TurnContext>;
+
+/// A 128-bit SHA-256 digest of a turn ID, which only joins a child's turns to its parent's.
+type TurnDigest = [u8; 16];
+
+/// The turn IDs of each root rollout's thread.
+type KnownTurns = HashMap<String, HashSet<TurnDigest>>;
+
+fn turn_digest(turn: &str) -> TurnDigest {
+    sha256_128(turn.as_bytes())
+}
+
+/// Whether `thread` is a root thread that never recorded `turn`.
+fn is_unknown_turn(known_turns: &KnownTurns, strings: &Strings, thread: Sym, turn: Sym) -> bool {
+    known_turns
+        .get(strings.resolve(thread))
+        .is_some_and(|known| !known.contains(&turn_digest(strings.resolve(turn))))
+}
+
+/// An interned string: its position in its rollout's string table, plus one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Sym(NonZeroU32);
+
+impl Sym {
+    fn index(self) -> usize {
+        usize::try_from(self.0.get()).map_or(usize::MAX, |position| position.saturating_sub(1))
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct TurnContext {
-    model: Option<String>,
-    effort: Option<String>,
+/// The strings one rollout's records name, each stored once in one buffer.
+///
+/// Symbols from one table compare equal exactly when their strings do.
+#[derive(Debug, Default)]
+struct Strings {
+    text: String,
+    /// Where each symbol's text ends; each starts where the previous one ends.
+    ends: Vec<usize>,
+}
+
+impl Strings {
+    fn resolve(&self, sym: Sym) -> &str {
+        let index = sym.index();
+        let start = index.checked_sub(1).map_or(0, |previous| self.ends[previous]);
+        &self.text[start..self.ends[index]]
+    }
+}
+
+/// A rollout's string table while it decodes, with the index that finds a string's symbol.
+#[derive(Default)]
+struct Interner {
+    strings: Strings,
+    hasher: RandomState,
+    /// The latest symbol with each text hash.
+    latest: HashMap<u64, Sym>,
+    /// For each symbol, the previous symbol with the same text hash.
+    earlier: Vec<Option<Sym>>,
+}
+
+impl Interner {
+    fn intern(&mut self, text: &str) -> Sym {
+        let hash = self.hasher.hash_one(text);
+        let mut candidate = self.latest.get(&hash).copied();
+        while let Some(sym) = candidate {
+            if self.strings.resolve(sym) == text {
+                return sym;
+            }
+            candidate = self.earlier[sym.index()];
+        }
+        self.strings.text.push_str(text);
+        self.strings.ends.push(self.strings.text.len());
+        let sym = u32::try_from(self.strings.ends.len())
+            .ok()
+            .and_then(NonZeroU32::new)
+            .map(Sym)
+            .expect("a rollout names fewer than 2^32 distinct strings");
+        self.earlier.push(self.latest.insert(hash, sym));
+        sym
+    }
+
+    fn intern_some(&mut self, text: Option<&str>) -> Option<Sym> {
+        text.map(|text| self.intern(text))
+    }
+
+    /// The finished table, without its index.
+    fn finish(self) -> Strings {
+        let mut strings = self.strings;
+        strings.text.shrink_to_fit();
+        strings.ends.shrink_to_fit();
+        strings
+    }
 }
 
 /// Reads one Codex home, including active, archived and compressed rollouts.
@@ -277,14 +524,11 @@ fn decode_source(source: &DiscoveredSource) -> Result<(ManifestEntry, ParsedSour
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-    let mut records = Vec::new();
-    let mut skipped = SkippedSpan::default();
-    let mut last_limits = None;
-    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
-        decode_record(raw, &mut records, &mut skipped, &mut last_limits)
-    })
-    .map_err(|source| AdapterError::Read { path, source })?;
-    Ok((entry, ParsedSource { file_thread: rollout.thread_id, records, trailing_skipped: skipped }))
+    let mut decoder = SourceDecoder::new(&rollout.thread_id);
+    let entry =
+        read_source(&spec, &source.files, &ReadOptions::default(), |raw| decoder.decode(raw))
+            .map_err(|source| AdapterError::Read { path, source })?;
+    Ok((entry, decoder.finish()))
 }
 
 /// The quoted type tokens a relevant rollout record must contain: a record is relevant only
@@ -304,98 +548,185 @@ fn may_be_relevant(bytes: &[u8]) -> bool {
     RELEVANT_TYPE_TOKENS.iter().any(|token| memchr::memmem::find(bytes, token).is_some())
 }
 
-fn decode_record(
-    raw: &RawRecord<'_>,
-    records: &mut Vec<ParsedRecord>,
-    skipped: &mut SkippedSpan,
-    last_limits: &mut Option<Arc<RateLimits>>,
-) -> RecordDisposition {
-    if !may_be_relevant(raw.bytes) {
-        // Validate without building a document: most rollout lines are content the adapter
-        // skips, and allocating a JSON tree for each one only fragments the heap.
-        return if validate_record(raw.bytes).is_ok() {
-            skipped.observe();
-            RecordDisposition::Skipped
-        } else {
-            RecordDisposition::Malformed
-        };
-    }
-    let Ok(value) = parse_record(raw.bytes) else {
-        return RecordDisposition::Malformed;
-    };
-    let Some(kind) = record_kind(&value, last_limits) else {
-        skipped.observe();
-        return RecordDisposition::Skipped;
-    };
-    records.push(ParsedRecord {
-        evidence: raw.evidence.clone(),
-        skipped_before: std::mem::take(skipped),
-        ordinal: unsigned(&value, &["ordinal"]),
-        timestamp: record_timestamp(&value),
-        kind,
-    });
-    RecordDisposition::Decoded
+/// The state of one rollout while its lines decode.
+struct SourceDecoder {
+    id: Option<AnalyticalId>,
+    file_thread: Sym,
+    interner: Interner,
+    counts: Vec<u8>,
+    records: Vec<ParsedRecord>,
+    metas: SourceMetas,
+    /// Lines skipped since the last record.
+    skipped: u64,
+    last_limits: Option<Arc<RateLimits>>,
 }
 
-/// The accounting fields of a relevant record, or `None` for a record the adapter skips.
-fn record_kind(value: &Value, last_limits: &mut Option<Arc<RateLimits>>) -> Option<RecordKind> {
-    let payload = value.get("payload").unwrap_or(&Value::Null);
-    match text(value, &["type"])? {
-        "session_meta" => Some(RecordKind::SessionMeta(Box::new(SessionMeta {
-            id: text(payload, &["id"]).map(str::to_owned),
-            cli_version: text(payload, &["cli_version"]).map(str::to_owned),
-            source: text(payload, &["source"]).map(str::to_owned),
-            thread_source: text(payload, &["thread_source"]).map(str::to_owned),
-            project: text(payload, &["cwd"])
-                .and_then(|cwd| Path::new(cwd).file_name())
-                .map(|name| name.to_string_lossy().into_owned()),
-            parent_thread_id: text(payload, &["parent_thread_id"]).map(str::to_owned),
-            forked_from_id: text(payload, &["forked_from_id"]).map(str::to_owned),
-            subagent_history_start_ordinal: unsigned(payload, &["subagent_history_start_ordinal"]),
-        }))),
-        "turn_context" => Some(RecordKind::TurnContext {
-            turn_id: text(payload, &["turn_id"]).map(str::to_owned),
-            context: TurnContext {
-                model: text(payload, &["model"]).map(str::to_owned),
-                effort: text(payload, &["effort"]).map(str::to_owned),
-            },
-        }),
-        "token_usage_record" => {
-            Some(RecordKind::UsageRecord(Box::new(UsagePayload::from_value(payload))))
+impl SourceDecoder {
+    fn new(file_thread: &str) -> Self {
+        let mut interner = Interner::default();
+        let file_thread = interner.intern(file_thread);
+        Self {
+            id: None,
+            file_thread,
+            interner,
+            counts: Vec::new(),
+            records: Vec::new(),
+            metas: SourceMetas::default(),
+            skipped: 0,
+            last_limits: None,
         }
-        "compacted" => Some(RecordKind::Compacted(
-            value
-                .pointer("/payload/latest_token_usage_record")
-                .map(|latest| Box::new(UsagePayload::from_value(latest))),
-        )),
-        "event_msg" => match text(payload, &["type"])? {
-            "thread_settings_applied" => Some(RecordKind::ThreadSettingsApplied {
-                thread_id: text(payload, &["thread_id"]).map(str::to_owned),
+    }
+
+    fn finish(self) -> ParsedSource {
+        let Self { id, file_thread, interner, mut counts, mut records, metas, skipped, .. } = self;
+        // Decoding grows the buffers by doubling; release the unused tails before the
+        // records wait for the other rollouts.
+        counts.shrink_to_fit();
+        records.shrink_to_fit();
+        ParsedSource {
+            id,
+            file_thread,
+            strings: interner.finish(),
+            counts,
+            records,
+            metas,
+            trailing_skipped: skipped,
+        }
+    }
+
+    fn skip(&mut self) -> RecordDisposition {
+        self.skipped = self.skipped.saturating_add(1);
+        RecordDisposition::Skipped
+    }
+
+    fn decode(&mut self, raw: &RawRecord<'_>) -> RecordDisposition {
+        if !may_be_relevant(raw.bytes) {
+            // Validate without building a document: most rollout lines are content the
+            // adapter skips, and allocating a JSON tree for each one only fragments the heap.
+            return if validate_record(raw.bytes).is_ok() {
+                self.skip()
+            } else {
+                RecordDisposition::Malformed
+            };
+        }
+        let Ok(line) = Line::read(raw.bytes) else {
+            return RecordDisposition::Malformed;
+        };
+        let Some(kind) = self.record_kind(line.record_type, line.payload, raw.evidence) else {
+            return self.skip();
+        };
+        self.id.get_or_insert_with(|| raw.evidence.source.clone());
+        self.records.push(ParsedRecord {
+            offset: raw.evidence.offset,
+            length: raw.evidence.length,
+            skipped_before: std::mem::take(&mut self.skipped),
+            ordinal: line.ordinal,
+            timestamp: line
+                .timestamp
+                .as_deref()
+                .and_then(|timestamp| parse_timestamp(timestamp).ok())
+                .map(CompactTimestamp::from),
+            kind,
+        });
+        RecordDisposition::Decoded
+    }
+
+    /// The accounting fields of a relevant record, or `None` for a record the adapter skips.
+    fn record_kind(
+        &mut self,
+        record_type: RecordType,
+        payload: Payload<'_>,
+        evidence: &EvidenceRef,
+    ) -> Option<RecordKind> {
+        match record_type {
+            RecordType::SessionMeta => Some(self.session_meta(payload, evidence)),
+            RecordType::TurnContext => Some(RecordKind::TurnContext {
+                turn_id: self.interner.intern_some(payload.turn_id.as_deref()),
+                model: payload.model.as_deref().map(Name::new),
+                effort: payload.effort.as_deref().map(Name::new),
             }),
-            "token_count" => Some(RecordKind::TokenCount(Box::new(TokenCount {
-                total: value.pointer("/payload/info/total_token_usage").map(CodexUsage::from_value),
-                last: value.pointer("/payload/info/last_token_usage").map(CodexUsage::from_value),
-                limits: rate_limits(payload, last_limits),
-            }))),
-            _ => None,
-        },
-        _ => None,
+            RecordType::TokenUsageRecord => {
+                Some(RecordKind::UsageRecord(self.usage_record(&payload.usage_record)))
+            }
+            RecordType::Compacted => Some(RecordKind::Compacted(
+                payload.latest_token_usage_record.as_ref().map(|latest| self.usage_record(latest)),
+            )),
+            RecordType::EventMsg => match payload.event_type {
+                EventType::ThreadSettingsApplied => Some(RecordKind::ThreadSettingsApplied {
+                    thread_id: self.interner.intern_some(payload.usage_record.thread_id.as_deref()),
+                }),
+                EventType::TokenCount => {
+                    let mut usage = UsageMask::default();
+                    pack_usage(&mut self.counts, &mut usage, 0, payload.total_token_usage);
+                    pack_usage(&mut self.counts, &mut usage, 1, payload.last_token_usage);
+                    Some(RecordKind::TokenCount {
+                        usage,
+                        limits: rate_limits(payload.rate_limits, &mut self.last_limits),
+                    })
+                }
+                EventType::Other => None,
+            },
+            RecordType::Other => None,
+        }
+    }
+
+    fn usage_record(&mut self, fields: &UsageFields<'_>) -> UsageRecord {
+        let mut usage = UsageMask::default();
+        pack_usage(&mut self.counts, &mut usage, 0, fields.usage);
+        UsageRecord {
+            thread_id: self.interner.intern_some(fields.thread_id.as_deref()),
+            response_id: self.interner.intern_some(fields.response_id.as_deref()),
+            root_turn_id: self.interner.intern_some(fields.root_turn_id.as_deref()),
+            usage,
+        }
+    }
+
+    fn session_meta(&mut self, payload: Payload<'_>, evidence: &EvidenceRef) -> RecordKind {
+        let id = self.interner.intern_some(payload.id.as_deref());
+        let metas = &mut self.metas;
+        if metas.cli_version.is_none() {
+            metas.cli_version = payload.cli_version.map(Cow::into_owned);
+        }
+        let own = id == Some(self.file_thread);
+        if metas.root.is_none() {
+            metas.root =
+                Some(own && payload.parent_thread_id.is_none() && payload.forked_from_id.is_none());
+        }
+        if !own {
+            metas.foreign |= id.is_some();
+        } else if metas.own.is_none() {
+            let meta = SessionMeta {
+                source: payload.source.map(Cow::into_owned),
+                thread_source: payload.thread_source.map(Cow::into_owned),
+                project: payload
+                    .cwd
+                    .as_deref()
+                    .and_then(|cwd| Path::new(cwd).file_name())
+                    .map(|name| name.to_string_lossy().into_owned()),
+                parent_thread_id: payload.parent_thread_id.map(Cow::into_owned),
+                forked_from_id: payload.forked_from_id.map(Cow::into_owned),
+                subagent_history_start_ordinal: payload.subagent_history_start_ordinal,
+            };
+            metas.own = Some(Box::new((meta, evidence.clone())));
+        }
+        RecordKind::SessionMeta { id }
     }
 }
 
 /// A token count's `rate_limits` object, sharing the previous snapshot when identical.
-fn rate_limits(payload: &Value, last: &mut Option<Arc<RateLimits>>) -> Option<Arc<RateLimits>> {
-    let rate_limits = payload.get("rate_limits")?;
-    let object = rate_limits.as_object()?;
+fn rate_limits(
+    rate_limits: Option<Map<String, Value>>,
+    last: &mut Option<Arc<RateLimits>>,
+) -> Option<Arc<RateLimits>> {
+    let object = rate_limits?;
     let sorted: BTreeMap<&String, &Value> = object.iter().collect();
     let native = serde_json::to_string(&sorted).unwrap_or_default();
     if let Some(previous) = last.as_ref().filter(|previous| previous.native == native) {
         return Some(Arc::clone(previous));
     }
+    let name = |key: &str| object.get(key).and_then(Value::as_str);
     let limits = Arc::new(RateLimits {
-        limit_name: text(rate_limits, &["limit_id"])
-            .or_else(|| text(rate_limits, &["limit_name"]))
-            .map(str::to_owned),
+        limit_name: name("limit_id").or_else(|| name("limit_name")).map(str::to_owned),
         windows: ["primary", "secondary"]
             .into_iter()
             .filter(|window| object.get(*window).is_some_and(|value| !value.is_null()))
@@ -434,13 +765,8 @@ fn normalize(
 ) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for source in &sources {
-        for record in &source.records {
-            if let Some(version) = record.session_meta().and_then(|meta| meta.cli_version.as_ref())
-            {
-                source_versions
-                    .entry(record.evidence.source.clone())
-                    .or_insert_with(|| version.clone());
-            }
+        if let (Some(id), Some(version)) = (&source.id, &source.metas.cli_version) {
+            source_versions.entry(id.clone()).or_insert_with(|| version.clone());
         }
     }
     let mut native_threads: BTreeSet<String> = BTreeSet::new();
@@ -448,16 +774,10 @@ fn normalize(
     // freed as soon as its observations are built.
     let mut meta_by_thread: BTreeMap<String, (SessionMeta, EvidenceRef)> = BTreeMap::new();
     for source in &sources {
-        native_threads.insert(source.file_thread.clone());
-        for record in &source.records {
-            let Some(meta) = record.session_meta() else { continue };
-            if let Some(thread_id) = &meta.id {
-                if *thread_id == source.file_thread {
-                    meta_by_thread
-                        .entry(thread_id.clone())
-                        .or_insert_with(|| (meta.clone(), record.evidence.clone()));
-                }
-            }
+        let file_thread = source.strings.resolve(source.file_thread);
+        native_threads.insert(file_thread.to_owned());
+        if let Some(own) = &source.metas.own {
+            meta_by_thread.entry(file_thread.to_owned()).or_insert_with(|| (**own).clone());
         }
     }
 
@@ -533,50 +853,45 @@ fn normalize(
     }
     let mut copied_regions = 0_u64;
     let mut limit_observations = Vec::new();
-    let mut known_turns: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut known_turns = KnownTurns::new();
     for source in &sources {
-        let is_root =
-            source.records.iter().find_map(ParsedRecord::session_meta).is_some_and(|meta| {
-                meta.id.as_deref() == Some(source.file_thread.as_str())
-                    && meta.parent_thread_id.is_none()
-                    && meta.forked_from_id.is_none()
-            });
-        if is_root {
-            let turns = known_turns.entry(source.file_thread.clone()).or_default();
-            turns.extend(source.records.iter().filter_map(|record| match &record.kind {
-                RecordKind::TurnContext { turn_id, .. } => turn_id.clone(),
-                RecordKind::SessionMeta(_)
+        if source.metas.root == Some(true) {
+            let strings = &source.strings;
+            let turns =
+                known_turns.entry(strings.resolve(source.file_thread).to_owned()).or_default();
+            turns.extend(source.records.iter().filter_map(|record| match record.kind {
+                RecordKind::TurnContext { turn_id, .. } => {
+                    turn_id.map(|turn| turn_digest(strings.resolve(turn)))
+                }
+                RecordKind::SessionMeta { .. }
                 | RecordKind::UsageRecord(_)
                 | RecordKind::Compacted(_)
-                | RecordKind::TokenCount(_)
+                | RecordKind::TokenCount { .. }
                 | RecordKind::ThreadSettingsApplied { .. } => None,
             }));
         }
     }
     for source in sources {
+        // A rollout without records has no metadata and builds nothing.
+        let Some(source_id) = source.id.as_ref() else { continue };
+        let strings = &source.strings;
+        let file_thread = source.file_thread;
+        let file_thread_text = strings.resolve(file_thread);
         let has_direct =
             source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)));
-        let own_meta = source
-            .records
-            .iter()
-            .filter_map(ParsedRecord::session_meta)
-            .find(|meta| meta.id.as_deref() == Some(source.file_thread.as_str()));
+        let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
         let parent_thread = own_meta.and_then(SessionMeta::parent);
         let native_boundary = own_meta.and_then(|meta| meta.subagent_history_start_ordinal);
-        let has_foreign_meta = source
-            .records
-            .iter()
-            .filter_map(ParsedRecord::session_meta)
-            .any(|meta| meta.id.as_ref().is_some_and(|thread| *thread != source.file_thread));
+        let has_foreign_meta = source.metas.foreign;
         if parent_thread.is_some() && has_foreign_meta && (!has_direct || native_boundary.is_some())
         {
             copied_regions = copied_regions.saturating_add(1);
             if !has_direct && native_boundary.is_none() {
-                let copied = legacy_copied_evidence(&source, &known_turns);
+                let copied = legacy_copied_evidence(&source, source_id, &known_turns);
                 diagnostics.push(
                     Diagnostic::new(
                         DiagnosticCode::CodexCopiedHistoryInferred,
-                        thread_ids.get(&source.file_thread).cloned(),
+                        thread_ids.get(file_thread_text).cloned(),
                         copied.evidence,
                         "Codex copied-history boundary was inferred from legacy rollout records",
                     )
@@ -584,87 +899,87 @@ fn normalize(
                 );
             }
         }
-        let mut active_thread = source.file_thread.clone();
-        let mut turns: BTreeMap<String, TurnContext> = BTreeMap::new();
-        let mut current_turn = None;
-        let mut last_response_by_thread: BTreeMap<String, String> = BTreeMap::new();
+        let mut active_thread = file_thread;
+        let mut turns = Turns::new();
+        let mut current_turn: Option<Sym> = None;
+        let mut last_response_by_thread: HashMap<Sym, Sym> = HashMap::new();
         let mut inherited_total = None;
         let mut counter = None;
         let mut previous_limits = BTreeMap::new();
+        let mut counts = CountReader::new(&source.counts);
         for record in &source.records {
+            // Counts are packed in record order, so every record reads its own first.
+            let [first_usage, second_usage] = counts.record(&record.kind);
+            let view =
+                RecordView { evidence: record.evidence(source_id), timestamp: record.timestamp };
             if native_boundary
                 .is_some_and(|boundary| record.ordinal.is_some_and(|ordinal| ordinal >= boundary))
             {
-                active_thread.clone_from(&source.file_thread);
+                active_thread = file_thread;
             }
             match &record.kind {
-                RecordKind::SessionMeta(meta) => {
-                    if let Some(thread_id) = &meta.id {
-                        active_thread.clone_from(thread_id);
+                RecordKind::SessionMeta { id } => {
+                    if let Some(thread_id) = *id {
+                        active_thread = thread_id;
                     }
                 }
-                RecordKind::TurnContext { turn_id, context } => {
+                RecordKind::TurnContext { turn_id, model, effort } => {
                     if !has_direct
-                        && active_thread != source.file_thread
-                        && turn_id.as_ref().is_some_and(|turn| {
-                            known_turns
-                                .get(&active_thread)
-                                .is_some_and(|known| !known.contains(turn))
+                        && active_thread != file_thread
+                        && turn_id.is_some_and(|turn| {
+                            is_unknown_turn(&known_turns, strings, active_thread, turn)
                         })
                     {
-                        active_thread.clone_from(&source.file_thread);
+                        active_thread = file_thread;
                     }
-                    if let Some(turn_id) = turn_id {
-                        turns.insert(turn_id.clone(), context.clone());
+                    if let Some(turn_id) = *turn_id {
+                        turns.insert(turn_id, TurnContext { model: *model, effort: *effort });
                     }
-                    current_turn.clone_from(turn_id);
+                    current_turn = *turn_id;
                 }
                 RecordKind::ThreadSettingsApplied { thread_id } => {
-                    active_thread.clone_from(thread_id.as_ref().unwrap_or(&source.file_thread));
+                    active_thread = thread_id.unwrap_or(file_thread);
                 }
-                RecordKind::UsageRecord(payload) => {
-                    let observation = direct_observation(
-                        record,
-                        payload,
-                        &source.file_thread,
-                        &thread_ids,
-                        &turns,
-                    )?;
-                    if let Some(response_id) = payload.response_id.clone() {
-                        let owner = payload.thread_id.as_ref().unwrap_or(&source.file_thread);
-                        last_response_by_thread.insert(owner.clone(), response_id);
+                RecordKind::UsageRecord(usage_record) => {
+                    let payload = usage_record.payload(strings, first_usage);
+                    let observation =
+                        direct_observation(&view, &payload, file_thread_text, &thread_ids, &turns)?;
+                    if let Some(response_id) = usage_record.response_id {
+                        let owner = usage_record.thread_id.unwrap_or(file_thread);
+                        last_response_by_thread.insert(owner, response_id);
                     }
                     observations.push(observation);
                 }
                 RecordKind::Compacted(latest) => {
                     if let Some(latest) = latest {
                         observations.push(usage_observation(
-                            record,
-                            latest,
+                            &view,
+                            &latest.payload(strings, first_usage),
                             ObservationRole::Copy,
-                            &source.file_thread,
+                            file_thread_text,
                             &thread_ids,
                             &turns,
                         )?);
                     }
                 }
-                RecordKind::TokenCount(count) => {
-                    if let Some(limits) = &count.limits {
+                RecordKind::TokenCount { limits, .. } => {
+                    let (total, last) = (first_usage, second_usage);
+                    if let Some(limits) = limits {
                         append_limits(
-                            record,
+                            &view,
                             limits,
-                            &active_thread,
+                            strings.resolve(active_thread),
                             &thread_ids,
                             &mut previous_limits,
                             &mut limit_observations,
                         );
                     }
-                    if has_direct && active_thread != source.file_thread {
-                        if let Some(usage) = &count.last {
-                            let mut observation = RequestObservation::new(record.evidence.clone());
+                    if has_direct && active_thread != file_thread {
+                        if let Some(usage) = &last {
+                            let mut observation = RequestObservation::new(view.evidence.clone());
                             observation.role = ObservationRole::Copy;
                             observation.owner = thread_ids
-                                .get(&active_thread)
+                                .get(strings.resolve(active_thread))
                                 .cloned()
                                 .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
                             observation.usage = Some(codex_usage(usage)?.into());
@@ -673,37 +988,33 @@ fn normalize(
                                     RESPONSE_KEY
                                         .key(vec![
                                             KeyComponent::text(PROVIDER_NAMESPACE),
-                                            KeyComponent::text(response_id),
+                                            KeyComponent::text(strings.resolve(*response_id)),
                                         ])?
                                         .derive()?,
                                 );
                             }
-                            observation.timestamp = record.timestamp.map(Into::into);
-                            if let Some(context) =
-                                current_turn.as_ref().and_then(|turn| turns.get(turn))
-                            {
+                            observation.timestamp = view.timestamp;
+                            if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
                                 apply_context(&mut observation, context);
                             }
                             observations.push(observation);
                         }
                     } else if !has_direct {
-                        let Some(total) = &count.total else { continue };
+                        let Some(total) = &total else { continue };
                         let total_usage = codex_usage(total)?;
-                        let last = count.last.as_ref();
-                        if active_thread != source.file_thread {
+                        let last = last.as_ref();
+                        if active_thread != file_thread {
                             inherited_total = Some(total_usage);
                             if let Some(last) = last {
                                 observations.push(counter_observation(
-                                    record,
+                                    &view,
                                     last,
                                     total,
                                     CounterObservation {
                                         role: ObservationRole::Copy,
-                                        owner: &active_thread,
+                                        owner: strings.resolve(active_thread),
                                         thread_ids: &thread_ids,
-                                        context: current_turn
-                                            .as_ref()
-                                            .and_then(|turn| turns.get(turn)),
+                                        context: current_turn.and_then(|turn| turns.get(&turn)),
                                         delta: None,
                                     },
                                 )?);
@@ -718,8 +1029,8 @@ fn normalize(
                         if step.event == CounterEvent::Reset {
                             diagnostics.push(Diagnostic::new(
                                 DiagnosticCode::CodexCounterEpochReset,
-                                thread_ids.get(&source.file_thread).cloned(),
-                                [record.evidence.clone()],
+                                thread_ids.get(file_thread_text).cloned(),
+                                [view.evidence.clone()],
                                 "Codex cumulative usage decreased and opened a new counter epoch",
                             ));
                         }
@@ -737,22 +1048,22 @@ fn normalize(
                                 } else {
                                     DiagnosticCode::CodexEstimateCompaction
                                 },
-                                thread_ids.get(&source.file_thread).cloned(),
-                                [record.evidence.clone()],
+                                thread_ids.get(file_thread_text).cloned(),
+                                [view.evidence.clone()],
                                 "Codex emitted an estimate with zero input and output tokens",
                             ));
                             continue;
                         }
                         if step.event != CounterEvent::Repeated {
                             observations.push(counter_observation(
-                                record,
+                                &view,
                                 last,
                                 total,
                                 CounterObservation {
                                     role: ObservationRole::Original,
-                                    owner: &source.file_thread,
+                                    owner: file_thread_text,
                                     thread_ids: &thread_ids,
-                                    context: current_turn.as_ref().and_then(|turn| turns.get(turn)),
+                                    context: current_turn.and_then(|turn| turns.get(&turn)),
                                     delta: Some(step.delta),
                                 },
                             )?);
@@ -799,44 +1110,46 @@ fn normalize(
 
 fn legacy_copied_evidence(
     source: &ParsedSource,
-    known_turns: &BTreeMap<String, BTreeSet<String>>,
+    source_id: &AnalyticalId,
+    known_turns: &KnownTurns,
 ) -> CopiedEvidence {
-    let mut active_thread = source.file_thread.clone();
+    let strings = &source.strings;
+    let file_thread = source.file_thread;
+    let mut active_thread = file_thread;
     let mut evidence = Vec::new();
     let mut occurrences = 0_u64;
     for record in &source.records {
-        if active_thread != source.file_thread {
-            occurrences = occurrences.saturating_add(record.skipped_before.count);
+        if active_thread != file_thread {
+            occurrences = occurrences.saturating_add(record.skipped_before);
         }
         match &record.kind {
-            RecordKind::SessionMeta(meta) => {
-                if let Some(thread_id) = &meta.id {
-                    active_thread.clone_from(thread_id);
+            RecordKind::SessionMeta { id } => {
+                if let Some(thread_id) = *id {
+                    active_thread = thread_id;
                 }
             }
-            RecordKind::TurnContext { turn_id, .. } if active_thread != source.file_thread => {
-                let is_child_turn = turn_id.as_ref().is_some_and(|turn| {
-                    known_turns.get(&active_thread).is_some_and(|known| !known.contains(turn))
-                });
+            RecordKind::TurnContext { turn_id, .. } if active_thread != file_thread => {
+                let is_child_turn = turn_id
+                    .is_some_and(|turn| is_unknown_turn(known_turns, strings, active_thread, turn));
                 if is_child_turn {
-                    active_thread.clone_from(&source.file_thread);
+                    active_thread = file_thread;
                 }
             }
             RecordKind::ThreadSettingsApplied { .. } => {
-                active_thread.clone_from(&source.file_thread);
+                active_thread = file_thread;
             }
             RecordKind::TurnContext { .. }
             | RecordKind::UsageRecord(_)
             | RecordKind::Compacted(_)
-            | RecordKind::TokenCount(_) => {}
+            | RecordKind::TokenCount { .. } => {}
         }
-        if active_thread != source.file_thread {
+        if active_thread != file_thread {
             occurrences = occurrences.saturating_add(1);
-            evidence.push(record.evidence.clone());
+            evidence.push(record.evidence(source_id));
         }
     }
-    if active_thread != source.file_thread {
-        occurrences = occurrences.saturating_add(source.trailing_skipped.count);
+    if active_thread != file_thread {
+        occurrences = occurrences.saturating_add(source.trailing_skipped);
     }
     CopiedEvidence { evidence, occurrences }
 }
@@ -856,7 +1169,7 @@ struct CounterObservation<'a> {
 }
 
 fn counter_observation(
-    record: &ParsedRecord,
+    record: &RecordView,
     last: &CodexUsage,
     total: &CodexUsage,
     counter: CounterObservation<'_>,
@@ -883,7 +1196,7 @@ fn counter_observation(
         usage = delta;
     }
     observation.usage = Some(usage.into());
-    observation.timestamp = record.timestamp.map(Into::into);
+    observation.timestamp = record.timestamp;
     if let Some(context) = counter.context {
         apply_context(&mut observation, context);
     }
@@ -896,7 +1209,7 @@ fn counter_observation(
 type LimitStream = (Option<AnalyticalId>, Option<String>, &'static str);
 
 fn append_limits(
-    record: &ParsedRecord,
+    record: &RecordView,
     limits: &Arc<RateLimits>,
     owner: &str,
     thread_ids: &BTreeMap<String, AnalyticalId>,
@@ -914,7 +1227,9 @@ fn append_limits(
         observations.push(ProviderLimitObservation {
             limit_name: limits.limit_name.clone(),
             window: Some((*window).to_owned()),
-            observed_at: record.timestamp.map_or(Basis::Unknown, Basis::Observed),
+            observed_at: record
+                .timestamp
+                .map_or(Basis::Unknown, |time| Basis::Observed(time.get())),
             owner_thread: owner_thread.clone(),
             owner_request: None,
             native: limits.native.as_str().into(),
@@ -985,24 +1300,24 @@ fn counter_signature(total: &CodexUsage) -> String {
 }
 
 fn direct_observation(
-    record: &ParsedRecord,
-    payload: &UsagePayload,
+    record: &RecordView,
+    payload: &UsagePayload<'_>,
     file_thread: &str,
     thread_ids: &BTreeMap<String, AnalyticalId>,
-    turns: &BTreeMap<String, TurnContext>,
+    turns: &Turns,
 ) -> Result<RequestObservation, AdapterError> {
     usage_observation(record, payload, ObservationRole::Original, file_thread, thread_ids, turns)
 }
 
 fn usage_observation(
-    record: &ParsedRecord,
-    payload: &UsagePayload,
+    record: &RecordView,
+    payload: &UsagePayload<'_>,
     default_role: ObservationRole,
     file_thread: &str,
     thread_ids: &BTreeMap<String, AnalyticalId>,
-    turns: &BTreeMap<String, TurnContext>,
+    turns: &Turns,
 ) -> Result<RequestObservation, AdapterError> {
-    let owner = payload.thread_id.as_deref().unwrap_or(file_thread);
+    let owner = payload.thread_id.unwrap_or(file_thread);
     let mut observation = RequestObservation::new(record.evidence.clone());
     observation.role = if default_role == ObservationRole::Copy || owner != file_thread {
         ObservationRole::Copy
@@ -1011,7 +1326,7 @@ fn usage_observation(
     };
     observation.owner =
         thread_ids.get(owner).cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-    if let Some(response_id) = &payload.response_id {
+    if let Some(response_id) = payload.response_id {
         observation.keys.push(
             RESPONSE_KEY
                 .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(response_id)])?
@@ -1021,19 +1336,16 @@ fn usage_observation(
     if let Some(usage) = &payload.usage {
         observation.usage = Some(codex_usage(usage)?.into());
     }
-    observation.timestamp = record.timestamp.map(Into::into);
-    if let Some(context) = payload.root_turn_id.as_ref().and_then(|turn| turns.get(turn)) {
+    observation.timestamp = record.timestamp;
+    if let Some(context) = payload.root_turn_id.and_then(|turn| turns.get(&turn)) {
         apply_context(&mut observation, context);
     }
     Ok(observation)
 }
 
 fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
-    observation.model = context
-        .model
-        .as_ref()
-        .map(|name| ModelName { name: name.as_str().into(), basis: ModelBasis::Requested });
-    observation.effort = context.effort.as_deref().map(Into::into);
+    observation.model = context.model.map(|name| ModelName { name, basis: ModelBasis::Requested });
+    observation.effort = context.effort;
 }
 
 fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
@@ -1048,10 +1360,6 @@ fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
     measures.output = usage.output;
     measures.reasoning = usage.reasoning_output;
     Ok(measures)
-}
-
-fn record_timestamp(value: &Value) -> Option<jiff::Timestamp> {
-    text(value, &["timestamp"]).and_then(|timestamp| parse_timestamp(timestamp).ok())
 }
 
 fn thread_identity(native: &str) -> Result<StoredIdentity, AdapterError> {
@@ -1082,29 +1390,40 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use super::{RateLimits, RecordKind, SkippedSpan, decode_record, ingest_root, record_kind};
+    use proptest::prelude::*;
+
+    use super::{
+        CodexUsage, CountReader, Interner, ParsedRecord, RateLimits, RecordKind, SourceDecoder,
+        UsageMask, ingest_root, pack_usage,
+    };
     use crate::ledger::diagnostics::DiagnosticCode;
     use crate::ledger::identity::AnalyticalId;
     use crate::sources::evidence::EvidenceRef;
     use crate::sources::reader::{RawRecord, RecordDisposition};
 
+    /// Decodes one line as the next line of `decoder`'s rollout.
+    fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
+        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
+        let evidence =
+            EvidenceRef { source, offset: 0, length: u64::try_from(line.len()).unwrap() };
+        decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+    }
+
+    #[test]
+    fn a_decoded_record_is_compact() {
+        assert_eq!(size_of::<ParsedRecord>(), 80);
+        assert_eq!(size_of::<RecordKind>(), 24);
+    }
+
     #[test]
     fn skipped_record_payloads_are_not_retained() {
-        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
         let payload = "x".repeat(2 * 1024 * 1024);
-        let bytes = format!(r#"{{"type":"response_item","payload":{{"content":"{payload}"}}}}"#);
-        let evidence =
-            EvidenceRef { source, offset: 0, length: u64::try_from(bytes.len()).unwrap() };
-        let raw = RawRecord { evidence: &evidence, bytes: bytes.as_bytes() };
-        let mut records = Vec::new();
-        let mut skipped = SkippedSpan::default();
+        let line = format!(r#"{{"type":"response_item","payload":{{"content":"{payload}"}}}}"#);
+        let mut decoder = SourceDecoder::new("thread");
 
-        assert_eq!(
-            decode_record(&raw, &mut records, &mut skipped, &mut None),
-            RecordDisposition::Skipped
-        );
-        assert!(records.is_empty());
-        assert_eq!(skipped.count, 1);
+        assert_eq!(decode(&mut decoder, &line), RecordDisposition::Skipped);
+        assert!(decoder.records.is_empty());
+        assert_eq!(decoder.skipped, 1);
     }
 
     #[test]
@@ -1166,18 +1485,10 @@ mod tests {
 
     #[test]
     fn the_prefilter_skips_valid_content_and_still_reports_malformed_lines() {
-        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
         let decode = |line: &str| {
-            let evidence = EvidenceRef {
-                source: source.clone(),
-                offset: 0,
-                length: u64::try_from(line.len()).unwrap(),
-            };
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
-            let mut records = Vec::new();
-            let mut skipped = SkippedSpan::default();
-            let disposition = decode_record(&raw, &mut records, &mut skipped, &mut None);
-            (disposition, records.len(), skipped.count)
+            let mut decoder = SourceDecoder::new("thread");
+            let disposition = decode(&mut decoder, line);
+            (disposition, decoder.records.len(), decoder.skipped)
         };
 
         assert_eq!(
@@ -1197,6 +1508,10 @@ mod tests {
             (RecordDisposition::Decoded, 1, 0)
         );
         assert_eq!(
+            decode(r#"{"type":"turn_context","payload":{"turn_id":"t1","x":"\ud800"}}"#),
+            (RecordDisposition::Malformed, 0, 0)
+        );
+        assert_eq!(
             decode(r#"{"type":"response_item","payload":{"content":"\ud800"}}"#),
             (RecordDisposition::Malformed, 0, 0)
         );
@@ -1209,7 +1524,7 @@ mod tests {
     #[test]
     fn relevant_records_keep_only_accounting_fields() {
         let payload = "x".repeat(2 * 1024 * 1024);
-        let value = serde_json::json!({
+        let line = serde_json::json!({
             "type": "compacted",
             "timestamp": "2026-09-16T12:00:00Z",
             "payload": {
@@ -1219,45 +1534,111 @@ mod tests {
                 },
                 "replacement_history": [{"content": payload}]
             }
-        });
+        })
+        .to_string();
+        let mut decoder = SourceDecoder::new("thread");
 
-        let latest = match record_kind(&value, &mut None) {
-            Some(RecordKind::Compacted(latest)) => latest,
+        assert_eq!(decode(&mut decoder, &line), RecordDisposition::Decoded);
+        let latest = match decoder.records.first().map(|record| &record.kind) {
+            Some(RecordKind::Compacted(Some(latest))) => Some(*latest),
             _ => None,
         }
         .expect("a compacted record keeps its latest usage record");
-
-        assert_eq!(latest.response_id.as_deref(), Some("response-one"));
-        assert_eq!(latest.usage.and_then(|usage| usage.input), Some(3));
-        assert_eq!(latest.usage.and_then(|usage| usage.output), Some(10));
+        let strings = &decoder.interner.strings;
+        assert_eq!(latest.response_id.map(|id| strings.resolve(id)), Some("response-one"));
+        let [usage, none] = CountReader::new(&decoder.counts).record(&decoder.records[0].kind);
+        assert_eq!(usage.and_then(|usage| usage.input), Some(3));
+        assert_eq!(usage.and_then(|usage| usage.output), Some(10));
+        assert_eq!(none, None);
+        assert!(strings.text.len() < 64 && decoder.counts.len() < 8, "no content is kept");
     }
 
     #[test]
     fn identical_consecutive_rate_limits_share_one_snapshot() {
-        let token_count = |used: f64| {
-            serde_json::json!({
+        let mut decoder = SourceDecoder::new("thread");
+        let mut limits = |used: f64| -> Arc<RateLimits> {
+            let line = serde_json::json!({
                 "type": "event_msg",
                 "payload": {
                     "type": "token_count",
                     "rate_limits": {"limit_id": "codex", "primary": {"used_percent": used}}
                 }
             })
-        };
-        let limits = |value: &serde_json::Value, last: &mut Option<Arc<RateLimits>>| {
-            match record_kind(value, last) {
-                Some(RecordKind::TokenCount(count)) => count.limits,
+            .to_string();
+            assert_eq!(decode(&mut decoder, &line), RecordDisposition::Decoded);
+            match decoder.records.last().map(|record| &record.kind) {
+                Some(RecordKind::TokenCount { limits: Some(limits), .. }) => {
+                    Some(Arc::clone(limits))
+                }
                 _ => None,
             }
             .expect("a token count with rate limits keeps them")
         };
-        let mut last = None;
-        let first = limits(&token_count(1.0), &mut last);
-        let repeat = limits(&token_count(1.0), &mut last);
-        let changed = limits(&token_count(2.0), &mut last);
+        let first = limits(1.0);
+        let repeat = limits(1.0);
+        let changed = limits(2.0);
 
         assert!(Arc::ptr_eq(&first, &repeat));
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(first.windows, ["primary"]);
         assert_eq!(first.limit_name.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn interned_strings_share_symbols_exactly_when_their_text_matches() {
+        let mut interner = Interner::default();
+        let texts = ["thread", "", "turn-1", "thread", "", "turn-2", "turn-1", "t\u{e9}"];
+        let symbols: Vec<_> = texts.iter().map(|text| interner.intern(text)).collect();
+        let strings = interner.finish();
+        for (left, left_text) in symbols.iter().zip(texts) {
+            assert_eq!(strings.resolve(*left), left_text);
+            for (right, right_text) in symbols.iter().zip(texts) {
+                assert_eq!(left == right, left_text == right_text);
+            }
+        }
+    }
+
+    fn usage() -> impl Strategy<Value = Option<CodexUsage>> {
+        let count = prop_oneof![
+            Just(None),
+            Just(Some(0)),
+            Just(Some(u64::MAX)),
+            (0_u64..1 << 40).prop_map(Some),
+            any::<u64>().prop_map(Some),
+        ];
+        prop::option::of(prop::array::uniform6(count).prop_map(CodexUsage::from_counts))
+    }
+
+    proptest! {
+        #[test]
+        fn packed_counts_read_back_in_record_order(
+            records in prop::collection::vec((usage(), usage(), any::<bool>()), 0..20),
+        ) {
+            let mut counts = Vec::new();
+            let kinds: Vec<RecordKind> = records
+                .iter()
+                .map(|(first, second, token_count)| {
+                    let mut mask = UsageMask::default();
+                    pack_usage(&mut counts, &mut mask, 0, *first);
+                    if *token_count {
+                        pack_usage(&mut counts, &mut mask, 1, *second);
+                        RecordKind::TokenCount { usage: mask, limits: None }
+                    } else {
+                        RecordKind::UsageRecord(super::UsageRecord {
+                            thread_id: None,
+                            response_id: None,
+                            root_turn_id: None,
+                            usage: mask,
+                        })
+                    }
+                })
+                .collect();
+            let mut reader = CountReader::new(&counts);
+            for ((first, second, token_count), kind) in records.iter().zip(&kinds) {
+                let expected = [*first, if *token_count { *second } else { None }];
+                prop_assert_eq!(reader.record(kind), expected);
+            }
+            prop_assert_eq!(reader.at, counts.len());
+        }
     }
 }
