@@ -76,6 +76,28 @@ pub struct IndexedSession {
     pub source_paths: Vec<PathBuf>,
 }
 
+impl IndexedSession {
+    /// The agent-native session ID, read from the thread's native key.
+    ///
+    /// Claude main sessions use the session ID and Claude subagents `session/agent`, the
+    /// native thread key [`agent_thread_identity`] derives from; Codex uses the thread ID.
+    /// Threads without a native key, such as inline Claude sidechains, have none.
+    pub fn native_id(&self) -> Option<String> {
+        let key = &self.thread.native_key;
+        match self.agent {
+            Agent::Claude => {
+                let session = key.get("session_id")?;
+                Some(match key.get("agent_id") {
+                    Some(agent) => format!("{session}/{agent}"),
+                    None => session.clone(),
+                })
+            }
+            Agent::Codex => key.get("thread_id").cloned(),
+            Agent::Pi => None,
+        }
+    }
+}
+
 /// Thread identities, source paths and native hierarchy edges across every adapter.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionIndex {
@@ -642,6 +664,44 @@ mod tests {
             .expect("hook input parses");
         let current = index.resolve_hook(&hook).expect("hook resolves");
         assert_eq!(current.agent, Agent::Claude);
+    }
+
+    #[test]
+    fn native_ids_name_sessions_subagents_and_codex_threads() {
+        let index = index();
+        let native_ids: BTreeSet<_> = index
+            .sessions()
+            .map(|(id, session)| {
+                let native = session.native_id().expect("fixture threads have native keys");
+                let derived = super::derive_agent_thread_id(session.agent, &native)
+                    .expect("native IDs derive analytical IDs");
+                assert_eq!(&derived, id, "the native ID is the key the thread ID derives from");
+                (session.agent, native)
+            })
+            .collect();
+        assert!(
+            native_ids
+                .contains(&(Agent::Claude, "00000000-0000-4000-8000-001100000001".to_owned()))
+        );
+        assert!(native_ids.iter().any(|(agent, native)| *agent == Agent::Claude
+            && native.starts_with("00000000-0000-4000-8000-001100000001/")));
+        assert!(
+            native_ids.contains(&(Agent::Codex, "019f0000-0000-7000-8000-000500000002".to_owned()))
+        );
+
+        let inline = claude_project::ingest_root(&fixture("claude-project", "inline-sidechains"))
+            .expect("Claude fixture ingests");
+        let mut inline_index = SessionIndex::default();
+        inline_index.add(Agent::Claude, &inline).expect("Claude sessions index");
+        let without: Vec<_> = inline_index
+            .sessions()
+            .filter(|(_, session)| {
+                session.thread.source.value().map(String::as_str) == Some("inline-sidechain")
+            })
+            .map(|(_, session)| session.native_id())
+            .collect();
+        assert!(!without.is_empty(), "fixture has inline sidechains");
+        assert!(without.iter().all(Option::is_none), "inline sidechains have no native ID");
     }
 
     #[test]

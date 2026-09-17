@@ -271,6 +271,7 @@ $ urollup sessions --all --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-0q6nd6zx5rsevepqef4zvtfzq4",
+      "session": "019f0000-0000-7000-8000-000500000001",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -290,6 +291,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-54qrcx86p7v7y23pp4bzf8c9wv",
+      "session": "019f0000-0000-7000-8000-000500000002",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -341,6 +343,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-0q6nd6zx5rsevepqef4zvtfzq4",
+      "session": "019f0000-0000-7000-8000-000500000001",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -360,6 +363,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-54qrcx86p7v7y23pp4bzf8c9wv",
+      "session": "019f0000-0000-7000-8000-000500000002",
       "agent": "codex",
       "project": "project",
       "requests": {

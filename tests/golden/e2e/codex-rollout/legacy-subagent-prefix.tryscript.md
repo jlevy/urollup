@@ -307,6 +307,7 @@ $ urollup sessions --all --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-0demasgtqpc81av8pqp9qk44g2",
+      "session": "019f0000-0000-7000-8000-000600000003",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -326,6 +327,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-0k2vgw8f5a6ad575m7j27e8vnf",
+      "session": "019f0000-0000-7000-8000-000600000002",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -345,6 +347,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-52wfqca3118hs6n8v43yabkqmp",
+      "session": "019f0000-0000-7000-8000-000600000004",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -364,6 +367,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-7q3rw8a20ffnp0hn5738jdpmnm",
+      "session": "019f0000-0000-7000-8000-000600000001",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -432,6 +436,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-0demasgtqpc81av8pqp9qk44g2",
+      "session": "019f0000-0000-7000-8000-000600000003",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -451,6 +456,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-0k2vgw8f5a6ad575m7j27e8vnf",
+      "session": "019f0000-0000-7000-8000-000600000002",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -470,6 +476,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-52wfqca3118hs6n8v43yabkqmp",
+      "session": "019f0000-0000-7000-8000-000600000004",
       "agent": "codex",
       "project": "project",
       "requests": {
@@ -489,6 +496,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-7q3rw8a20ffnp0hn5738jdpmnm",
+      "session": "019f0000-0000-7000-8000-000600000001",
       "agent": "codex",
       "project": "project",
       "requests": {

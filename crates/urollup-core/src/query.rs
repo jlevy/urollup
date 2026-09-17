@@ -301,6 +301,10 @@ pub struct DailyRow {
 pub struct SessionRow {
     /// Analytical thread ID; `None` is the ambiguous or unknown-owner group.
     pub thread: Option<String>,
+    /// Agent-native session ID: the Claude session ID, `session/agent` for a Claude
+    /// subagent, or the Codex thread ID. `None` for the null group and for threads
+    /// without a native key, such as inline Claude sidechains.
+    pub session: Option<String>,
     /// Agent token, or `unknown` for the null group.
     pub agent: String,
     /// Project name from the thread, when known.

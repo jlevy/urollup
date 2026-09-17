@@ -272,6 +272,7 @@ $ urollup sessions --all --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-01xc4q47fw48wvrq96dg7ste2f",
+      "session": "00000000-0000-4000-8000-000400000001/aaside_question-0000000000040001",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -291,6 +292,7 @@ $ urollup sessions --all --format json --timezone UTC
     },
     {
       "thread": "thr-v1-50ahyfdthb1cyyaa81sg3q9st6",
+      "session": "00000000-0000-4000-8000-000400000001",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -342,6 +344,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "rows": [
     {
       "thread": "thr-v1-01xc4q47fw48wvrq96dg7ste2f",
+      "session": "00000000-0000-4000-8000-000400000001/aaside_question-0000000000040001",
       "agent": "claude",
       "project": "project",
       "requests": {
@@ -361,6 +364,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     },
     {
       "thread": "thr-v1-50ahyfdthb1cyyaa81sg3q9st6",
+      "session": "00000000-0000-4000-8000-000400000001",
       "agent": "claude",
       "project": "project",
       "requests": {
