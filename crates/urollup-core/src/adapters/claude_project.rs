@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -24,11 +25,12 @@ use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
-use crate::sources::manifest::{Fingerprint, SnapshotManifest};
+use crate::sources::manifest::{Fingerprint, ManifestEntry, SnapshotManifest};
+use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{
     RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
 };
-use crate::sources::roots::{Discovery, discover};
+use crate::sources::roots::{DiscoveredSource, Discovery, discover};
 
 const DIALECT: &str = "claude-project";
 const AGENT_NAMESPACE: &str = "claude";
@@ -211,20 +213,31 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
 ///
 /// Callers that need exact session selection can filter `discovery.sources` before
 /// invoking this function, avoiding a second walk and full ingestion of unrelated
-/// transcripts while preserving paired plain/compressed representations.
+/// transcripts while preserving paired plain/compressed representations. Sources decode
+/// on the [default worker bound](default_workers) with no ingestion budget.
 pub fn ingest_discovery(
     discovery: Discovery,
     missing_is_error: bool,
 ) -> Result<Ingested, AdapterError> {
-    let mut budget = ReadBudget::unlimited();
-    ingest_discovery_with_budget(discovery, missing_is_error, &mut budget)
+    ingest_discovery_with_budget(
+        discovery,
+        missing_is_error,
+        &ReadBudget::unlimited(),
+        default_workers(),
+    )
 }
 
-/// Reads discovered Claude Code transcripts under a shared ingestion budget.
+/// Reads discovered Claude Code transcripts on at most `workers` threads under a shared
+/// ingestion budget.
+///
+/// Each source decodes independently, and the results merge in discovery order before
+/// normalization, so the result is the same for every worker count. A failure returns
+/// the error of the first failing source in discovery order, as a sequential read does.
 pub fn ingest_discovery_with_budget(
     discovery: Discovery,
     missing_is_error: bool,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
+    workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
@@ -236,66 +249,94 @@ pub fn ingest_discovery_with_budget(
         });
     }
 
-    let mut records = Vec::new();
-    let mut source_facts = Vec::new();
+    let decoded = try_read_in_parallel(
+        &discovery.sources,
+        workers,
+        |source| source_weight(&source.files),
+        |source| decode_source(source, budget),
+    )?;
+    let mut records = Vec::with_capacity(decoded.iter().map(|source| source.records.len()).sum());
+    let mut source_facts = Vec::with_capacity(decoded.len());
     let mut subagent_meta = Vec::new();
-    let mut manifest =
-        SnapshotManifest { entries: Vec::new(), skipped_links: discovery.skipped_links };
-    for source in discovery.sources {
-        let source_thread = thread_from_path(&source.locator);
-        let mut facts = SourceFacts {
-            thread: source_thread.clone(),
-            evidence: None,
-            version: None,
-            project: None,
-            last_main_evidence: None,
-            active_inline: None,
-            inline_threads: Vec::new(),
-        };
-        let spec = SourceSpec {
-            environment: "local",
-            dialect: DIALECT,
-            locator: &source.locator,
-            stable_locator: false,
-        };
-        let path = source
-            .files
-            .primary()
-            .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-        let entry =
-            read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
-                decode_record(raw, &source_thread, &mut facts, &mut records)
-            })
-            .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-        if source_thread.agent.is_some() {
-            if let (Some(identity), Some(meta)) =
-                (entry.source.as_ref(), read_subagent_meta(&path, budget)?)
-            {
-                subagent_meta.push(SubagentMeta {
-                    child: source_thread,
-                    tool_use_id: text(&meta, &["toolUseId"]).map(str::to_owned),
-                    agent_type: text(&meta, &["agentType"]).map(str::to_owned),
-                    evidence: EvidenceRef { source: identity.id.clone(), offset: 0, length: 0 },
-                });
-            }
-        }
-        manifest.entries.push(entry);
-        source_facts.push(facts);
+    let mut manifest = SnapshotManifest {
+        entries: Vec::with_capacity(decoded.len()),
+        skipped_links: discovery.skipped_links,
+    };
+    for source in decoded {
+        records.extend(source.records);
+        manifest.entries.push(source.entry);
+        source_facts.push(source.facts);
+        subagent_meta.extend(source.subagent_meta);
     }
 
     normalize(records, &source_facts, &subagent_meta, manifest)
 }
 
+/// Everything one transcript contributes before normalization.
+struct DecodedSource {
+    entry: ManifestEntry,
+    facts: SourceFacts,
+    subagent_meta: Option<SubagentMeta>,
+    records: Vec<ParsedRecord>,
+}
+
+/// Reads one transcript and its subagent sidecar, independently of every other source.
+fn decode_source(
+    source: &DiscoveredSource,
+    budget: &ReadBudget,
+) -> Result<DecodedSource, AdapterError> {
+    let source_thread = thread_from_path(&source.locator);
+    let mut facts = SourceFacts {
+        thread: source_thread.clone(),
+        evidence: None,
+        version: None,
+        project: None,
+        last_main_evidence: None,
+        active_inline: None,
+        inline_threads: Vec::new(),
+    };
+    let spec = SourceSpec {
+        environment: "local",
+        dialect: DIALECT,
+        locator: &source.locator,
+        stable_locator: false,
+    };
+    let path = source
+        .files
+        .primary()
+        .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
+    let mut records = Vec::new();
+    let entry =
+        read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
+            decode_record(raw, &source_thread, &mut facts, &mut records)
+        })
+        .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+    let mut subagent_meta = None;
+    if source_thread.agent.is_some() {
+        if let (Some(identity), Some(meta)) =
+            (entry.source.as_ref(), read_subagent_meta(&path, budget)?)
+        {
+            subagent_meta = Some(SubagentMeta {
+                child: source_thread,
+                tool_use_id: text(&meta, &["toolUseId"]).map(str::to_owned),
+                agent_type: text(&meta, &["agentType"]).map(str::to_owned),
+                evidence: EvidenceRef { source: identity.id.clone(), offset: 0, length: 0 },
+            });
+        }
+    }
+    Ok(DecodedSource { entry, facts, subagent_meta, records })
+}
+
 fn read_subagent_meta(
     transcript: &Path,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
 ) -> Result<Option<Value>, AdapterError> {
     read_subagent_meta_with_limit(transcript, budget, MAX_SUBAGENT_META_BYTES)
 }
 
 fn read_subagent_meta_with_limit(
     transcript: &Path,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
     max_sidecar_bytes: u64,
 ) -> Result<Option<Value>, AdapterError> {
     let transcript = if transcript.extension() == Some(std::ffi::OsStr::new("zst")) {
@@ -1146,9 +1187,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("agent-example.jsonl");
         fs::write(transcript.with_extension("meta.json"), vec![b' '; 33]).unwrap();
-        let mut budget = ReadBudget::unlimited();
+        let budget = ReadBudget::unlimited();
 
-        let error = read_subagent_meta_with_limit(&transcript, &mut budget, 32).unwrap_err();
+        let error = read_subagent_meta_with_limit(&transcript, &budget, 32).unwrap_err();
 
         assert!(matches!(error, AdapterError::MetadataTooLarge { maximum: 32, .. }));
     }
@@ -1158,9 +1199,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("agent-example.jsonl");
         fs::write(transcript.with_extension("meta.json"), br#"{"toolUseId":"tool-one"}"#).unwrap();
-        let mut budget = ReadBudget::new(5, u64::MAX);
+        let budget = ReadBudget::new(5, u64::MAX);
 
-        let error = read_subagent_meta_with_limit(&transcript, &mut budget, 1024).unwrap_err();
+        let error = read_subagent_meta_with_limit(&transcript, &budget, 1024).unwrap_err();
 
         assert!(matches!(
             error,

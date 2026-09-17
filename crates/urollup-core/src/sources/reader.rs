@@ -34,6 +34,7 @@
 use std::fs::{File, Metadata};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::ledger::identity::{IdentityError, KeyComponent, StoredIdentity};
@@ -80,13 +81,15 @@ impl Default for ReadOptions {
 ///
 /// Decoded bytes are charged after decompression, and records are charged before they
 /// are delivered to an adapter. Sharing one value across calls keeps a multi-file
-/// ingestion bounded rather than applying the full allowance to every file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// ingestion bounded rather than applying the full allowance to every file. The counters
+/// are atomic, so scans on several threads can share one budget: each charge either fits
+/// the remaining allowance and is taken whole, or fails without consuming any of it.
+#[derive(Debug)]
 pub struct ReadBudget {
     max_decoded_bytes: Option<u64>,
     max_records: Option<u64>,
-    decoded_bytes: u64,
-    records: u64,
+    decoded_bytes: AtomicU64,
+    records: AtomicU64,
 }
 
 impl ReadBudget {
@@ -95,43 +98,52 @@ impl ReadBudget {
         Self {
             max_decoded_bytes: Some(max_decoded_bytes),
             max_records: Some(max_records),
-            decoded_bytes: 0,
-            records: 0,
+            decoded_bytes: AtomicU64::new(0),
+            records: AtomicU64::new(0),
         }
     }
 
     /// Builds an unlimited budget for callers that manage capacity elsewhere.
     pub const fn unlimited() -> Self {
-        Self { max_decoded_bytes: None, max_records: None, decoded_bytes: 0, records: 0 }
+        Self {
+            max_decoded_bytes: None,
+            max_records: None,
+            decoded_bytes: AtomicU64::new(0),
+            records: AtomicU64::new(0),
+        }
     }
 
     /// Returns the decoded-byte allowance still available, or `None` when unlimited.
+    ///
+    /// Scans on other threads may consume the allowance after this returns, so it is a
+    /// hint for stopping early; [`Self::charge_decoded_bytes`] is the enforcement.
     pub fn decoded_bytes_remaining(&self) -> Option<u64> {
-        self.max_decoded_bytes.map(|maximum| maximum.saturating_sub(self.decoded_bytes))
+        self.max_decoded_bytes
+            .map(|maximum| maximum.saturating_sub(self.decoded_bytes.load(Ordering::Relaxed)))
     }
 
     /// Charges decoded bytes consumed outside the primary source scanner.
     ///
     /// Adapters use this for auxiliary inputs, such as sidecars, so every input they
     /// decode participates in the same cumulative ingestion limit.
-    pub fn charge_decoded_bytes(&mut self, bytes: u64) -> Result<(), SourceReadError> {
-        if self.decoded_bytes_remaining().is_some_and(|remaining| bytes > remaining) {
-            return Err(SourceReadError::DecodedByteBudgetExceeded {
-                maximum: self.max_decoded_bytes.unwrap_or(0),
-            });
-        }
-        self.decoded_bytes = self.decoded_bytes.saturating_add(bytes);
-        Ok(())
+    pub fn charge_decoded_bytes(&self, bytes: u64) -> Result<(), SourceReadError> {
+        let Some(maximum) = self.max_decoded_bytes else { return Ok(()) };
+        self.decoded_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes).filter(|total| *total <= maximum)
+            })
+            .map(drop)
+            .map_err(|_| SourceReadError::DecodedByteBudgetExceeded { maximum })
     }
 
-    fn charge_record(&mut self) -> Result<(), SourceReadError> {
-        if let Some(maximum) = self.max_records {
-            if self.records >= maximum {
-                return Err(SourceReadError::RecordBudgetExceeded { maximum });
-            }
-        }
-        self.records = self.records.saturating_add(1);
-        Ok(())
+    fn charge_record(&self) -> Result<(), SourceReadError> {
+        let Some(maximum) = self.max_records else { return Ok(()) };
+        self.records
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < maximum).then(|| used.saturating_add(1))
+            })
+            .map(drop)
+            .map_err(|_| SourceReadError::RecordBudgetExceeded { maximum })
     }
 }
 
@@ -274,7 +286,7 @@ pub fn read_source_with_budget<F>(
     spec: &SourceSpec<'_>,
     files: &LogicalSource,
     options: &ReadOptions,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
     visit: F,
 ) -> Result<ManifestEntry, SourceReadError>
 where
@@ -308,15 +320,14 @@ pub(crate) fn read_source_with_hooks<F>(
 where
     F: FnMut(&RawRecord<'_>) -> RecordDisposition,
 {
-    let mut budget = ReadBudget::unlimited();
-    read_source_with_hooks_and_budget(spec, files, options, &mut budget, visit, hooks)
+    read_source_with_hooks_and_budget(spec, files, options, &ReadBudget::unlimited(), visit, hooks)
 }
 
 fn read_source_with_hooks_and_budget<F>(
     spec: &SourceSpec<'_>,
     files: &LogicalSource,
     options: &ReadOptions,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
     mut visit: F,
     hooks: &mut dyn ScanHooks,
 ) -> Result<ManifestEntry, SourceReadError>
@@ -413,7 +424,7 @@ impl Scan {
         reader: &mut dyn BufRead,
         spec: &SourceSpec<'_>,
         options: &ReadOptions,
-        budget: &mut ReadBudget,
+        budget: &ReadBudget,
         visit: &mut F,
     ) -> Result<(), SourceReadError>
     where

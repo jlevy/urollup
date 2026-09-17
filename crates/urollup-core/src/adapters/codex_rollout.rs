@@ -1,6 +1,7 @@
 //! Codex rollout adapter (`codex-rollout`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,11 +23,12 @@ use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normaliz
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
-use crate::sources::manifest::SnapshotManifest;
+use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
+use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{
     RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
 };
-use crate::sources::roots::{Discovery, discover};
+use crate::sources::roots::{DiscoveredSource, Discovery, discover};
 
 const DIALECT: &str = "codex-rollout";
 const PROVIDER_NAMESPACE: &str = "openai";
@@ -222,20 +224,31 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
 ///
 /// Callers that need exact session selection can filter `discovery.sources` before
 /// invoking this function, avoiding a second walk and full ingestion of unrelated
-/// rollouts while preserving paired plain/compressed representations.
+/// rollouts while preserving paired plain/compressed representations. Rollouts decode on
+/// the [default worker bound](default_workers) with no ingestion budget.
 pub fn ingest_discovery(
     discovery: Discovery,
     missing_is_error: bool,
 ) -> Result<Ingested, AdapterError> {
-    let mut budget = ReadBudget::unlimited();
-    ingest_discovery_with_budget(discovery, missing_is_error, &mut budget)
+    ingest_discovery_with_budget(
+        discovery,
+        missing_is_error,
+        &ReadBudget::unlimited(),
+        default_workers(),
+    )
 }
 
-/// Reads discovered Codex rollouts under a shared ingestion budget.
+/// Reads discovered Codex rollouts on at most `workers` threads under a shared ingestion
+/// budget.
+///
+/// Each rollout decodes independently, and the results merge in discovery order before
+/// normalization, so the result is the same for every worker count. A failure returns
+/// the error of the first failing rollout in discovery order, as a sequential read does.
 pub fn ingest_discovery_with_budget(
     discovery: Discovery,
     missing_is_error: bool,
-    budget: &mut ReadBudget,
+    budget: &ReadBudget,
+    workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
@@ -247,39 +260,44 @@ pub fn ingest_discovery_with_budget(
         });
     }
 
-    let mut parsed_sources = Vec::new();
-    let mut manifest =
-        SnapshotManifest { entries: Vec::new(), skipped_links: discovery.skipped_links };
-    for source in discovery.sources {
-        let rollout = rollout_name(&source.locator);
-        let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
-        let spec = SourceSpec {
-            environment: "local",
-            dialect: DIALECT,
-            locator: &stable_locator,
-            stable_locator: true,
-        };
-        let path = source
-            .files
-            .primary()
-            .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-        let mut records = Vec::new();
-        let mut skipped = SkippedSpan::default();
-        let mut last_limits = None;
-        let entry =
-            read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
-                decode_record(raw, &mut records, &mut skipped, &mut last_limits)
-            })
-            .map_err(|source| AdapterError::Read { path, source })?;
-        manifest.entries.push(entry);
-        parsed_sources.push(ParsedSource {
-            file_thread: rollout.thread_id,
-            records,
-            trailing_skipped: skipped,
-        });
-    }
+    let decoded = try_read_in_parallel(
+        &discovery.sources,
+        workers,
+        |source| source_weight(&source.files),
+        |source| decode_source(source, budget),
+    )?;
+    let (entries, parsed_sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
+    let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
     normalize(parsed_sources, manifest)
+}
+
+/// Reads one rollout, independently of every other source.
+fn decode_source(
+    source: &DiscoveredSource,
+    budget: &ReadBudget,
+) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
+    let rollout = rollout_name(&source.locator);
+    let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
+    let spec = SourceSpec {
+        environment: "local",
+        dialect: DIALECT,
+        locator: &stable_locator,
+        stable_locator: true,
+    };
+    let path = source
+        .files
+        .primary()
+        .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
+    let mut records = Vec::new();
+    let mut skipped = SkippedSpan::default();
+    let mut last_limits = None;
+    let entry =
+        read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
+            decode_record(raw, &mut records, &mut skipped, &mut last_limits)
+        })
+        .map_err(|source| AdapterError::Read { path, source })?;
+    Ok((entry, ParsedSource { file_thread: rollout.thread_id, records, trailing_skipped: skipped }))
 }
 
 fn decode_record(
@@ -1050,6 +1068,7 @@ fn rollout_name(locator: &str) -> RolloutName {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     use super::{
@@ -1153,15 +1172,25 @@ mod tests {
             )
             .unwrap();
         }
-        let discovery = discover(&[sessions]);
-        let mut budget = ReadBudget::new(u64::MAX, 1);
+        for workers in [1, 8] {
+            let discovery = discover(std::slice::from_ref(&sessions));
+            let budget = ReadBudget::new(u64::MAX, 1);
+            let workers = NonZeroUsize::new(workers).unwrap();
 
-        let error = ingest_discovery_with_budget(discovery, true, &mut budget).unwrap_err();
+            let error =
+                ingest_discovery_with_budget(discovery, true, &budget, workers).unwrap_err();
 
-        assert!(matches!(
-            error,
-            AdapterError::Read { source: SourceReadError::RecordBudgetExceeded { maximum: 1 }, .. }
-        ));
+            assert!(
+                matches!(
+                    error,
+                    AdapterError::Read {
+                        source: SourceReadError::RecordBudgetExceeded { maximum: 1 },
+                        ..
+                    }
+                ),
+                "{workers} workers"
+            );
+        }
     }
 
     #[test]
