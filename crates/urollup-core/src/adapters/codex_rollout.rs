@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{AdapterError, Ingested};
 use crate::ledger::counters::{CounterEvent, RunningTotal};
@@ -12,20 +12,22 @@ use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
     RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
-use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
+use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity};
 use crate::ledger::reconcile::{
     LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, reconcile,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenUsage, normalize_input};
+use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::SnapshotManifest;
-use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
-use crate::sources::roots::discover;
+use crate::sources::reader::{
+    RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
+};
+use crate::sources::roots::{Discovery, discover};
 
 const DIALECT: &str = "codex-rollout";
-const AGENT_NAMESPACE: &str = "codex";
 const PROVIDER_NAMESPACE: &str = "openai";
 
 const PROVIDER_RESPONSE_SLOTS: &[ComponentSlot] = &[
@@ -60,12 +62,25 @@ const COUNTER_KEY: KeySpec = KeySpec {
 struct ParsedSource {
     file_thread: String,
     records: Vec<ParsedRecord>,
+    trailing_skipped: SkippedSpan,
 }
 
 #[derive(Clone)]
 struct ParsedRecord {
     evidence: EvidenceRef,
     value: Value,
+    skipped_before: SkippedSpan,
+}
+
+#[derive(Clone, Default)]
+struct SkippedSpan {
+    count: u64,
+}
+
+impl SkippedSpan {
+    fn observe(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,7 +99,30 @@ pub fn ingest_root(root: &Path) -> Result<Ingested, AdapterError> {
 /// Missing variable- or flag-selected homes are errors; missing conventional defaults
 /// are skipped.
 pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingested, AdapterError> {
-    let discovery = discover(roots);
+    let rollout_roots = rollout_roots(roots);
+    let discovery = discover(&rollout_roots);
+    ingest_discovery(discovery, missing_is_error)
+}
+
+/// Reads a previously discovered set of Codex rollouts.
+///
+/// Callers that need exact session selection can filter `discovery.sources` before
+/// invoking this function, avoiding a second walk and full ingestion of unrelated
+/// rollouts while preserving paired plain/compressed representations.
+pub fn ingest_discovery(
+    discovery: Discovery,
+    missing_is_error: bool,
+) -> Result<Ingested, AdapterError> {
+    let mut budget = ReadBudget::unlimited();
+    ingest_discovery_with_budget(discovery, missing_is_error, &mut budget)
+}
+
+/// Reads discovered Codex rollouts under a shared ingestion budget.
+pub fn ingest_discovery_with_budget(
+    discovery: Discovery,
+    missing_is_error: bool,
+    budget: &mut ReadBudget,
+) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
     }
@@ -112,18 +150,28 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
             .primary()
             .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
         let mut records = Vec::new();
-        let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
-            decode_record(raw, &mut records)
-        })
-        .map_err(|source| AdapterError::Read { path, source })?;
+        let mut skipped = SkippedSpan::default();
+        let entry =
+            read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
+                decode_record(raw, &mut records, &mut skipped)
+            })
+            .map_err(|source| AdapterError::Read { path, source })?;
         manifest.entries.push(entry);
-        parsed_sources.push(ParsedSource { file_thread: rollout.thread_id, records });
+        parsed_sources.push(ParsedSource {
+            file_thread: rollout.thread_id,
+            records,
+            trailing_skipped: skipped,
+        });
     }
 
     normalize(&parsed_sources, manifest)
 }
 
-fn decode_record(raw: &RawRecord<'_>, records: &mut Vec<ParsedRecord>) -> RecordDisposition {
+fn decode_record(
+    raw: &RawRecord<'_>,
+    records: &mut Vec<ParsedRecord>,
+    skipped: &mut SkippedSpan,
+) -> RecordDisposition {
     let Ok(value) = parse_record(raw.bytes) else {
         return RecordDisposition::Malformed;
     };
@@ -135,8 +183,80 @@ fn decode_record(raw: &RawRecord<'_>, records: &mut Vec<ParsedRecord>) -> Record
             text(&value, &["payload", "type"]),
             Some("thread_settings_applied" | "token_count")
         ));
-    records.push(ParsedRecord { evidence: raw.evidence.clone(), value });
-    if relevant { RecordDisposition::Decoded } else { RecordDisposition::Skipped }
+    if !relevant {
+        skipped.observe();
+        return RecordDisposition::Skipped;
+    }
+    records.push(ParsedRecord {
+        evidence: raw.evidence.clone(),
+        value: compact_record(value),
+        skipped_before: std::mem::take(skipped),
+    });
+    RecordDisposition::Decoded
+}
+
+fn compact_record(value: Value) -> Value {
+    let Value::Object(mut object) = value else { return value };
+    let kind = object.get("type").and_then(Value::as_str).map(str::to_owned);
+    let mut compact = take_fields(&mut object, &["type", "timestamp", "ordinal"]);
+    let Some(Value::Object(mut payload)) = object.remove("payload") else {
+        return Value::Object(compact);
+    };
+    let compact_payload = match kind.as_deref() {
+        Some("session_meta") => take_fields(
+            &mut payload,
+            &[
+                "cli_version",
+                "id",
+                "source",
+                "thread_source",
+                "cwd",
+                "parent_thread_id",
+                "forked_from_id",
+                "subagent_history_start_ordinal",
+            ],
+        ),
+        Some("turn_context") => take_fields(&mut payload, &["turn_id", "model", "effort"]),
+        Some("token_usage_record") => {
+            take_fields(&mut payload, &["thread_id", "response_id", "usage", "root_turn_id"])
+        }
+        Some("compacted") => take_fields(&mut payload, &["latest_token_usage_record"]),
+        Some("event_msg") => {
+            take_fields(&mut payload, &["type", "thread_id", "info", "rate_limits"])
+        }
+        Some(_) | None => Map::new(),
+    };
+    compact.insert("payload".to_owned(), Value::Object(compact_payload));
+    Value::Object(compact)
+}
+
+fn take_fields(object: &mut Map<String, Value>, fields: &[&str]) -> Map<String, Value> {
+    fields
+        .iter()
+        .filter_map(|field| object.remove(*field).map(|value| ((*field).to_owned(), value)))
+        .collect()
+}
+
+/// Expands Codex homes to the rollout directories the adapter actually reads.
+///
+/// A root without the standard home layout is kept as-is so an explicit directory of
+/// rollout files remains a valid source.
+pub fn rollout_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut expanded = Vec::new();
+    for root in roots {
+        let candidates = [root.join("sessions"), root.join("archived_sessions")];
+        let mut found_layout = false;
+        for candidate in candidates {
+            if candidate.is_dir() {
+                expanded.push(candidate);
+                found_layout = true;
+            }
+        }
+        if !found_layout {
+            expanded.push(root.clone());
+        }
+    }
+    expanded
 }
 
 fn normalize(
@@ -291,12 +411,16 @@ fn normalize(
         {
             copied_regions = copied_regions.saturating_add(1);
             if !has_direct && native_boundary.is_none() {
-                diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::CodexCopiedHistoryInferred,
-                    thread_ids.get(&source.file_thread).cloned(),
-                    legacy_copied_evidence(source, &known_turns),
-                    "Codex copied-history boundary was inferred from legacy rollout records",
-                ));
+                let copied = legacy_copied_evidence(source, &known_turns);
+                diagnostics.push(
+                    Diagnostic::new(
+                        DiagnosticCode::CodexCopiedHistoryInferred,
+                        thread_ids.get(&source.file_thread).cloned(),
+                        copied.evidence,
+                        "Codex copied-history boundary was inferred from legacy rollout records",
+                    )
+                    .with_occurrences(copied.occurrences),
+                );
             }
         }
         let mut active_thread = source.file_thread.clone();
@@ -523,10 +647,14 @@ fn normalize(
 fn legacy_copied_evidence(
     source: &ParsedSource,
     known_turns: &BTreeMap<String, BTreeSet<String>>,
-) -> Vec<EvidenceRef> {
+) -> CopiedEvidence {
     let mut active_thread = source.file_thread.clone();
     let mut evidence = Vec::new();
+    let mut occurrences = 0_u64;
     for record in &source.records {
+        if active_thread != source.file_thread {
+            occurrences = occurrences.saturating_add(record.skipped_before.count);
+        }
         match text(&record.value, &["type"]) {
             Some("session_meta") => {
                 if let Some(thread_id) = text(&record.value, &["payload", "id"]) {
@@ -550,10 +678,19 @@ fn legacy_copied_evidence(
             Some(_) | None => {}
         }
         if active_thread != source.file_thread {
+            occurrences = occurrences.saturating_add(1);
             evidence.push(record.evidence.clone());
         }
     }
-    evidence
+    if active_thread != source.file_thread {
+        occurrences = occurrences.saturating_add(source.trailing_skipped.count);
+    }
+    CopiedEvidence { evidence, occurrences }
+}
+
+struct CopiedEvidence {
+    evidence: Vec<EvidenceRef>,
+    occurrences: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -799,11 +936,7 @@ fn record_timestamp(value: &Value) -> Option<jiff::Timestamp> {
 }
 
 fn thread_identity(native: &str) -> Result<StoredIdentity, AdapterError> {
-    Ok(StoredIdentity::derive(IdentityKey::new(
-        IdPrefix::Thread,
-        "agent-thread",
-        vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(native)],
-    ))?)
+    Ok(agent_thread_identity(Agent::Codex, native)?)
 }
 
 struct RolloutName {
@@ -823,4 +956,146 @@ fn rollout_name(locator: &str) -> RolloutName {
     }
     let thread = stem.get(stem.len().saturating_sub(36)..).unwrap_or(stem).to_owned();
     RolloutName { rollout_id: thread.clone(), thread_id: thread }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::Value;
+
+    use super::{
+        SkippedSpan, compact_record, decode_record, ingest_discovery_with_budget, ingest_root,
+    };
+    use crate::adapters::AdapterError;
+    use crate::ledger::diagnostics::DiagnosticCode;
+    use crate::ledger::identity::AnalyticalId;
+    use crate::sources::evidence::EvidenceRef;
+    use crate::sources::reader::{RawRecord, ReadBudget, RecordDisposition, SourceReadError};
+    use crate::sources::roots::discover;
+
+    #[test]
+    fn skipped_record_payloads_are_not_retained() {
+        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
+        let payload = "x".repeat(2 * 1024 * 1024);
+        let bytes = format!(r#"{{"type":"response_item","payload":{{"content":"{payload}"}}}}"#);
+        let evidence =
+            EvidenceRef { source, offset: 0, length: u64::try_from(bytes.len()).unwrap() };
+        let raw = RawRecord { evidence: &evidence, bytes: bytes.as_bytes() };
+        let mut records = Vec::new();
+        let mut skipped = SkippedSpan::default();
+
+        assert_eq!(decode_record(&raw, &mut records, &mut skipped), RecordDisposition::Skipped);
+        assert!(records.is_empty());
+        assert_eq!(skipped.count, 1);
+    }
+
+    #[test]
+    fn legacy_copied_history_counts_skipped_spans_without_retaining_their_evidence() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        let parent = "00000000-0000-7000-8000-000000000001";
+        let child = "00000000-0000-7000-8000-000000000002";
+        let rollout = sessions.join(format!("rollout-2026-09-16T12-00-00-{child}.jsonl"));
+        fs::write(
+            rollout,
+            format!(
+                concat!(
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{child}\",\"parent_thread_id\":\"{parent}\"}}}}\n",
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{parent}\"}}}}\n",
+                    "{{\"type\":\"response_item\",\"payload\":{{\"content\":\"inside copied history\"}}}}\n",
+                    "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\"}}}}\n",
+                    "{{\"type\":\"response_item\",\"payload\":{{\"content\":\"trailing copied history\"}}}}\n"
+                ),
+                child = child,
+                parent = parent,
+            ),
+        )
+        .unwrap();
+
+        let ingested = ingest_root(home.path()).unwrap();
+        let copied = ingested
+            .ledger
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::CodexCopiedHistoryInferred)
+            .expect("legacy copied history emits a diagnostic");
+
+        assert_eq!(copied.occurrences, 4);
+        assert_eq!(copied.evidence.len(), 2, "only relevant copied records retain evidence");
+        assert_eq!(ingested.manifest.entries[0].counters.skipped, 2);
+    }
+
+    #[test]
+    fn codex_home_discovers_only_rollout_directories() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        let thread = "00000000-0000-7000-8000-000000000001";
+        let rollout = sessions.join(format!("rollout-2026-09-16T12-00-00-{thread}.jsonl"));
+        fs::write(rollout, format!(r#"{{"type":"session_meta","payload":{{"id":"{thread}"}}}}"#))
+            .unwrap();
+        fs::write(
+            home.path().join("unrelated.jsonl"),
+            r#"{"type":"response_item","payload":{"content":"not a rollout"}}"#,
+        )
+        .unwrap();
+
+        let ingested = ingest_root(home.path()).unwrap();
+
+        assert_eq!(ingested.manifest.entries.len(), 1);
+    }
+
+    #[test]
+    fn adapter_threads_one_record_budget_across_rollout_files() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        for suffix in ["000000000001", "000000000002"] {
+            let thread = format!("00000000-0000-7000-8000-{suffix}");
+            let rollout = sessions.join(format!("rollout-2026-09-16T12-00-00-{thread}.jsonl"));
+            fs::write(
+                rollout,
+                format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread}\"}}}}\n"),
+            )
+            .unwrap();
+        }
+        let discovery = discover(&[sessions]);
+        let mut budget = ReadBudget::new(u64::MAX, 1);
+
+        let error = ingest_discovery_with_budget(discovery, true, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AdapterError::Read { source: SourceReadError::RecordBudgetExceeded { maximum: 1 }, .. }
+        ));
+    }
+
+    #[test]
+    fn relevant_records_keep_only_accounting_fields() {
+        let payload = "x".repeat(2 * 1024 * 1024);
+        let value = serde_json::json!({
+            "type": "compacted",
+            "timestamp": "2026-09-16T12:00:00Z",
+            "payload": {
+                "latest_token_usage_record": {
+                    "response_id": "response-one",
+                    "usage": {"input_tokens": 3, "output_tokens": 10}
+                },
+                "replacement_history": [{"content": payload}]
+            }
+        });
+
+        let compact = compact_record(value);
+
+        assert_eq!(
+            compact
+                .pointer("/payload/latest_token_usage_record/response_id")
+                .and_then(Value::as_str),
+            Some("response-one")
+        );
+        assert!(compact.pointer("/payload/replacement_history").is_none());
+        assert!(serde_json::to_vec(&compact).unwrap().len() < 1024);
+    }
 }

@@ -5,10 +5,10 @@
 //! a process. stdout carries only requested data (help and version text count as
 //! requested); every diagnostic goes to stderr.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
@@ -20,11 +20,18 @@ use urollup_core::query::{
 };
 use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
+    derive_agent_thread_id,
 };
-use urollup_core::sources::roots;
+use urollup_core::sources::manifest::Representation;
+use urollup_core::sources::reader::{ReadBudget, ReadOptions};
+use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
 
 const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
 const STYLE_ERROR: AnsiStyle = AnsiColor::Red.on_default().bold();
+const MAX_ESTIMATED_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_INGESTED_RECORDS: u64 = 1_000_000;
+const ZSTD_ESTIMATED_EXPANSION: u64 = 64;
+const MAX_CATALOG_HEADER_BYTES: u64 = ReadOptions::DEFAULT_MAX_RECORD_BYTES as u64;
 const CLI_STYLES: Styles = Styles::styled()
     .header(STYLE_HEADING)
     .usage(STYLE_HEADING)
@@ -317,7 +324,7 @@ struct Corpus {
 }
 
 impl Corpus {
-    fn discover(args: &SelectionArgs) -> Result<Self, Failure> {
+    fn discover(args: &SelectionArgs, query: &SelectionQuery) -> Result<Self, Failure> {
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
             (Vec::new(), false)
@@ -341,10 +348,27 @@ impl Corpus {
                 }
             }
         }
-        let claude = claude_project::ingest_roots(&claude_roots, claude_missing_is_error)
-            .map_err(|error| Failure::adapter(&error))?;
-        let codex = codex_rollout::ingest_roots(&codex_roots, codex_missing_is_error)
-            .map_err(|error| Failure::adapter(&error))?;
+        let mut claude_discovery = roots::discover(&claude_roots);
+        let codex_roots = codex_rollout::rollout_roots(&codex_roots);
+        let mut codex_discovery = roots::discover(&codex_roots);
+        narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query)?;
+        ensure_discovery_capacity(
+            [&claude_discovery, &codex_discovery],
+            MAX_ESTIMATED_SOURCE_BYTES,
+        )?;
+        let mut budget = ReadBudget::new(MAX_ESTIMATED_SOURCE_BYTES, MAX_INGESTED_RECORDS);
+        let claude = claude_project::ingest_discovery_with_budget(
+            claude_discovery,
+            claude_missing_is_error,
+            &mut budget,
+        )
+        .map_err(|error| Failure::adapter(&error))?;
+        let codex = codex_rollout::ingest_discovery_with_budget(
+            codex_discovery,
+            codex_missing_is_error,
+            &mut budget,
+        )
+        .map_err(|error| Failure::adapter(&error))?;
         let mut index = SessionIndex::default();
         index.add(Agent::Claude, &claude).map_err(|error| Failure::selection(&error))?;
         index.add(Agent::Codex, &codex).map_err(|error| Failure::selection(&error))?;
@@ -357,6 +381,300 @@ impl Corpus {
             QuerySource { agent: Agent::Codex, ingested: &self.codex },
         ]
     }
+}
+
+#[cfg(test)]
+fn ensure_source_capacity(
+    claude_roots: &[PathBuf],
+    codex_homes: &[PathBuf],
+    maximum: u64,
+) -> Result<(), Failure> {
+    let codex_roots = codex_rollout::rollout_roots(codex_homes);
+    let discoveries = [roots::discover(claude_roots), roots::discover(&codex_roots)];
+    ensure_discovery_capacity([&discoveries[0], &discoveries[1]], maximum)
+}
+
+fn ensure_discovery_capacity(discoveries: [&Discovery; 2], maximum: u64) -> Result<(), Failure> {
+    let mut estimated = 0_u64;
+    for discovery in discoveries {
+        for source in &discovery.sources {
+            let Some((path, representation)) = source.files.primary() else { continue };
+            let bytes = path.metadata().map_err(|error| {
+                Failure::runtime(format!("cannot inspect source size {}: {error}", path.display()))
+            })?;
+            let expansion =
+                if representation == Representation::Zstd { ZSTD_ESTIMATED_EXPANSION } else { 1 };
+            estimated = estimated.saturating_add(bytes.len().saturating_mul(expansion));
+            if estimated > maximum {
+                return Err(Failure::runtime(format!(
+                    "discovered source input exceeds the v0.1 safety limit (more than {} MiB of estimated decoded input); pass a narrower --source root while bounded large-corpus streaming is implemented",
+                    maximum / (1024 * 1024)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SourceFamily {
+    Claude(PathBuf),
+    Codex(String),
+}
+
+#[derive(Clone, Debug)]
+struct CatalogSource {
+    agent: Agent,
+    family: SourceFamily,
+    native_selector: OsString,
+    analytical_selector: String,
+    paths: Vec<PathBuf>,
+}
+
+impl CatalogSource {
+    fn matches(&self, selector: &OsStr, agent: Option<Agent>) -> bool {
+        if agent.is_some_and(|expected| self.agent != expected) {
+            return false;
+        }
+        if selector == self.native_selector
+            || selector.to_str() == Some(self.analytical_selector.as_str())
+        {
+            return true;
+        }
+        let selected_path = Path::new(selector);
+        let canonical = std::fs::canonicalize(selected_path).ok();
+        self.paths.iter().any(|path| {
+            path == selected_path
+                || canonical.as_ref().is_some_and(|selected| {
+                    std::fs::canonicalize(path).is_ok_and(|path| path == *selected)
+                })
+        })
+    }
+}
+
+/// Restrict discovery to session families named by exact native IDs or transcript paths.
+///
+/// Ordinary analytical IDs are derived from catalog native IDs. Analytical IDs for
+/// inline Claude sidechains cannot be recovered without decoding the transcript, so an
+/// unmatched `thr-` selector deliberately falls back to full ingestion under the
+/// capacity guard. Family-level retention keeps the records needed to reconcile copies
+/// and determine the final descendant selection without reading unrelated runs.
+fn narrow_discoveries(
+    claude: &mut Discovery,
+    codex: &mut Discovery,
+    query: &SelectionQuery,
+) -> Result<bool, Failure> {
+    let mut selectors: Vec<(Option<Agent>, &OsStr)> = Vec::new();
+    if let Some(current) = &query.current {
+        selectors.push((Some(current.agent), &current.selector));
+    }
+    selectors.extend(query.sessions.iter().map(|selector| (None, selector.as_os_str())));
+    if selectors.is_empty() {
+        return Ok(false);
+    }
+
+    let needs_claude =
+        selectors.iter().any(|(agent, _)| agent.is_none_or(|agent| agent == Agent::Claude));
+    let needs_codex =
+        selectors.iter().any(|(agent, _)| agent.is_none_or(|agent| agent == Agent::Codex));
+    let claude_catalog: Vec<_> = if needs_claude {
+        claude.sources.iter().map(claude_catalog_source).collect::<Result<_, _>>()?
+    } else {
+        Vec::new()
+    };
+    let codex_catalog: Vec<_> =
+        if needs_codex { codex_catalog_sources(codex)? } else { Vec::new() };
+    let mut selected_families = BTreeSet::new();
+    for (agent, selector) in selectors {
+        let matching: Vec<_> = claude_catalog
+            .iter()
+            .chain(&codex_catalog)
+            .filter(|source| source.matches(selector, agent))
+            .map(|source| source.family.clone())
+            .collect();
+        if matching.is_empty()
+            && selector.to_str().is_some_and(|selector| selector.starts_with("thr-"))
+        {
+            return Ok(false);
+        }
+        selected_families.extend(matching);
+    }
+
+    if needs_claude {
+        retain_catalog_families(claude, claude_catalog, &selected_families);
+    } else {
+        claude.sources.clear();
+    }
+    if needs_codex {
+        retain_catalog_families(codex, codex_catalog, &selected_families);
+    } else {
+        codex.sources.clear();
+    }
+    Ok(true)
+}
+
+fn retain_catalog_families(
+    discovery: &mut Discovery,
+    catalog: Vec<CatalogSource>,
+    selected: &BTreeSet<SourceFamily>,
+) {
+    discovery.sources = std::mem::take(&mut discovery.sources)
+        .into_iter()
+        .zip(catalog)
+        .filter_map(|(source, catalog)| selected.contains(&catalog.family).then_some(source))
+        .collect();
+}
+
+fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Failure> {
+    let locator = PathBuf::from(&source.locator);
+    let components: Vec<_> = locator.components().collect();
+    let subagents =
+        components.iter().position(|component| component.as_os_str() == OsStr::new("subagents"));
+    let (family_relative, native_selector, identity_native) = match subagents {
+        Some(index) if index > 0 => {
+            let family = components[..index].iter().fold(PathBuf::new(), |mut path, component| {
+                path.push(component.as_os_str());
+                path
+            });
+            let native = locator.file_stem().map_or_else(OsString::new, |stem| {
+                let stem = stem.to_string_lossy();
+                OsString::from(stem.strip_prefix("agent-").unwrap_or(&stem))
+            });
+            let session = components[index.saturating_sub(1)].as_os_str().to_string_lossy();
+            let identity_native = format!("{session}/{}", native.to_string_lossy());
+            (family, native, identity_native)
+        }
+        _ => {
+            let native = locator.file_stem().map_or_else(OsString::new, OsString::from);
+            (locator.with_extension(""), native.clone(), native.to_string_lossy().into_owned())
+        }
+    };
+    let analytical_selector = derive_agent_thread_id(Agent::Claude, &identity_native)
+        .map_err(|error| Failure::runtime(error.to_string()))?
+        .to_string();
+    Ok(CatalogSource {
+        agent: Agent::Claude,
+        family: SourceFamily::Claude(source.root.join(family_relative)),
+        native_selector,
+        analytical_selector,
+        paths: source_paths(source),
+    })
+}
+
+fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Failure> {
+    let mut headers = Vec::with_capacity(discovery.sources.len());
+    let mut adjacency: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for source in &discovery.sources {
+        let thread = codex_thread_from_locator(&source.locator);
+        adjacency.entry(thread.clone()).or_default();
+        let links = read_codex_session_links(source)?;
+        for linked in &links {
+            adjacency.entry(thread.clone()).or_default().insert(linked.clone());
+            adjacency.entry(linked.clone()).or_default().insert(thread.clone());
+        }
+        headers.push((thread, source));
+    }
+
+    let mut component_by_thread = BTreeMap::new();
+    let mut remaining: BTreeSet<_> = adjacency.keys().cloned().collect();
+    while let Some(start) = remaining.first().cloned() {
+        let mut members = BTreeSet::new();
+        let mut queue = VecDeque::from([start]);
+        while let Some(thread) = queue.pop_front() {
+            if !members.insert(thread.clone()) {
+                continue;
+            }
+            remaining.remove(&thread);
+            queue.extend(adjacency.get(&thread).into_iter().flatten().cloned());
+        }
+        let family = members.first().expect("a component has its starting thread").clone();
+        component_by_thread.extend(members.into_iter().map(|thread| (thread, family.clone())));
+    }
+
+    headers
+        .into_iter()
+        .map(|(thread, source)| {
+            let analytical_selector = derive_agent_thread_id(Agent::Codex, &thread)
+                .map_err(|error| Failure::runtime(error.to_string()))?
+                .to_string();
+            Ok(CatalogSource {
+                agent: Agent::Codex,
+                family: SourceFamily::Codex(
+                    component_by_thread.get(&thread).cloned().unwrap_or_else(|| thread.clone()),
+                ),
+                native_selector: OsString::from(thread),
+                analytical_selector,
+                paths: source_paths(source),
+            })
+        })
+        .collect()
+}
+
+fn source_paths(source: &DiscoveredSource) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some((path, _)) = source.files.primary() {
+        paths.push(path.to_owned());
+    }
+    if let Some(path) = source.files.twin() {
+        paths.push(path.to_owned());
+    }
+    paths
+}
+
+fn codex_thread_from_locator(locator: &str) -> String {
+    let name = Path::new(locator)
+        .file_name()
+        .map_or_else(|| locator.to_owned(), |name| name.to_string_lossy().into_owned());
+    let stem = name.strip_suffix(".jsonl").unwrap_or(&name);
+    if let Some((base, _rollout)) = stem.rsplit_once('_') {
+        return base.get(base.len().saturating_sub(36)..).unwrap_or(base).to_owned();
+    }
+    stem.get(stem.len().saturating_sub(36)..).unwrap_or(stem).to_owned()
+}
+
+fn read_codex_session_links(source: &DiscoveredSource) -> Result<BTreeSet<String>, Failure> {
+    let Some((path, representation)) = source.files.primary() else {
+        return Ok(BTreeSet::new());
+    };
+    let file = File::open(path).map_err(|error| {
+        Failure::runtime(format!("cannot open source {}: {error}", path.display()))
+    })?;
+    let reader: Box<dyn Read> = if representation == Representation::Zstd {
+        let decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
+            Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
+        })?;
+        Box::new(decoder)
+    } else {
+        Box::new(file)
+    };
+    let mut reader = BufReader::new(reader).take(MAX_CATALOG_HEADER_BYTES.saturating_add(1));
+    let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line).map_err(|error| {
+        Failure::runtime(format!("cannot read source {}: {error}", path.display()))
+    })?;
+    if u64::try_from(line.len()).unwrap_or(u64::MAX) > MAX_CATALOG_HEADER_BYTES {
+        return Err(Failure::runtime(format!(
+            "cannot inspect Codex session header in {}: first record exceeds {} MiB",
+            path.display(),
+            MAX_CATALOG_HEADER_BYTES / (1024 * 1024)
+        )));
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
+        return Ok(BTreeSet::new());
+    };
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+        return Ok(BTreeSet::new());
+    }
+    Ok([
+        "/payload/session_id",
+        "/payload/parent_thread_id",
+        "/payload/forked_from_id",
+        "/payload/source/subagent/thread_spawn/parent_thread_id",
+    ]
+    .into_iter()
+    .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
+    .map(str::to_owned)
+    .collect())
 }
 
 enum ExplicitDialect {
@@ -410,6 +728,10 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
 }
 
 fn classify_jsonl(path: &Path) -> Result<Agent, Failure> {
+    classify_jsonl_with_limit(path, MAX_CATALOG_HEADER_BYTES)
+}
+
+fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Agent, Failure> {
     let file = File::open(path).map_err(|error| {
         Failure::runtime(format!("cannot open source {}: {error}", path.display()))
     })?;
@@ -421,16 +743,27 @@ fn classify_jsonl(path: &Path) -> Result<Agent, Failure> {
     } else {
         Box::new(BufReader::new(file))
     };
-    let mut line = String::new();
+    let mut line = Vec::new();
     for _ in 0..100 {
         line.clear();
-        let read = reader.read_line(&mut line).map_err(|error| {
-            Failure::runtime(format!("cannot read source {}: {error}", path.display()))
-        })?;
+        let read = reader
+            .by_ref()
+            .take(max_line_bytes.saturating_add(1))
+            .read_until(b'\n', &mut line)
+            .map_err(|error| {
+                Failure::runtime(format!("cannot read source {}: {error}", path.display()))
+            })?;
         if read == 0 {
             break;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if u64::try_from(line.len()).unwrap_or(u64::MAX) > max_line_bytes {
+            return Err(Failure::runtime(format!(
+                "cannot inspect source {}: a classification record exceeds {} MiB",
+                path.display(),
+                max_line_bytes / (1024 * 1024)
+            )));
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else { continue };
         let kind = value.get("type").and_then(serde_json::Value::as_str);
         if matches!(
             kind,
@@ -531,7 +864,7 @@ fn execute(command: &Command, color: bool) -> Result<String, Failure> {
         ..SelectionQuery::default()
     };
     let selection_name = selection_name(&query);
-    let corpus = Corpus::discover(args)?;
+    let corpus = Corpus::discover(args, &query)?;
     let selected = corpus.index.select(&query).map_err(|error| Failure::selection(&error))?;
     let all = query.all && query.current.is_none() && query.sessions.is_empty();
     let sources = corpus.sources();
@@ -715,14 +1048,21 @@ fn finish_stdout(result: io::Result<()>, stderr: &mut dyn Write, color: bool) ->
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::io::{self, Write};
     use std::path::PathBuf;
 
     use super::{
-        Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit, ExplicitDialect,
-        OutputFormat, ScopeArg, TerminalContext, classify_explicit_source, run, run_with_context,
+        Agent, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit, ExplicitDialect,
+        OutputFormat, ScopeArg, TerminalContext, ZSTD_ESTIMATED_EXPANSION,
+        classify_explicit_source, classify_jsonl_with_limit, derive_agent_thread_id,
+        ensure_discovery_capacity, ensure_source_capacity, narrow_discoveries, run,
+        run_with_context,
     };
     use clap::Parser;
+    use urollup_core::adapters::{claude_project, codex_rollout};
+    use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
+    use urollup_core::sources::roots;
 
     struct Outcome {
         exit: Exit,
@@ -1036,6 +1376,230 @@ mod tests {
         );
         let codex = classify_explicit_source(&compressed).expect("Codex artifact is detected");
         assert!(matches!(codex.as_slice(), [ExplicitDialect::Codex(path)] if path == &compressed));
+    }
+
+    #[test]
+    fn explicit_artifact_classification_bounds_plain_and_decoded_zstd_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let line = format!(r#"{{"type":"assistant","padding":"{}"}}\n"#, "x".repeat(128));
+        let plain = root.path().join("oversized.jsonl");
+        fs::write(&plain, &line).unwrap();
+        let compressed = root.path().join("oversized.jsonl.zst");
+        fs::write(&compressed, zstd::stream::encode_all(line.as_bytes(), 1).unwrap()).unwrap();
+
+        for path in [plain, compressed] {
+            let error = classify_jsonl_with_limit(&path, 32).unwrap_err();
+            assert!(error.message.contains("classification record exceeds"));
+        }
+    }
+
+    #[test]
+    fn source_capacity_rejects_oversized_plain_and_compressed_inputs() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let claude = fixtures.join("claude-project/nested-null-tool-input");
+        let plain_error = ensure_source_capacity(&[claude], &[], 0).unwrap_err();
+        assert!(plain_error.message.contains("v0.1 safety limit"));
+
+        let compressed = fixtures.join(
+            "codex-rollout/zst-twin/sessions/2026/09/08/\
+             rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
+        );
+        let compressed_bytes = compressed.metadata().unwrap().len();
+        let compressed_error = ensure_source_capacity(
+            &[],
+            &[compressed],
+            compressed_bytes * ZSTD_ESTIMATED_EXPANSION - 1,
+        )
+        .unwrap_err();
+        assert!(compressed_error.message.contains("v0.1 safety limit"));
+    }
+
+    #[test]
+    fn exact_claude_selection_prunes_unrelated_oversized_input_before_capacity_check() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("projects/project");
+        let subagents = project.join("selected-session/subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        fs::write(
+            project.join("selected-session.jsonl"),
+            concat!(
+                r#"{"type":"assistant","uuid":"uuid-main","sessionId":"selected-session","requestId":"request-main","cwd":"/workspace/project","timestamp":"2026-09-16T12:00:00Z","message":{"id":"message-main","model":"claude-test","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            subagents.join("agent-child.jsonl"),
+            concat!(
+                r#"{"type":"assistant","uuid":"uuid-child","sessionId":"selected-session","requestId":"request-child","cwd":"/workspace/project","timestamp":"2026-09-16T12:01:00Z","message":{"id":"message-child","model":"claude-test","usage":{"input_tokens":5,"output_tokens":7},"content":[]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let unrelated = fs::File::create(project.join("unrelated-session.jsonl")).unwrap();
+        unrelated.set_len(super::MAX_ESTIMATED_SOURCE_BYTES + 1).unwrap();
+
+        let original = roots::discover(&[root.path().join("projects")]);
+        let mut analytical_claude = original.clone();
+        let mut analytical_codex = roots::Discovery::default();
+        let analytical_query = SelectionQuery {
+            sessions: vec![OsString::from(
+                derive_agent_thread_id(Agent::Claude, "selected-session").unwrap().to_string(),
+            )],
+            scope: Some(Scope::Descendants),
+            ..SelectionQuery::default()
+        };
+        assert!(
+            narrow_discoveries(&mut analytical_claude, &mut analytical_codex, &analytical_query)
+                .unwrap()
+        );
+        assert_eq!(analytical_claude.sources.len(), 2);
+
+        let mut claude = original;
+        let mut codex = roots::Discovery::default();
+        let query = SelectionQuery {
+            current: Some(CurrentSession {
+                agent: Agent::Claude,
+                selector: OsString::from("selected-session"),
+            }),
+            scope: Some(Scope::Descendants),
+            ..SelectionQuery::default()
+        };
+
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert_eq!(claude.sources.len(), 2);
+        ensure_discovery_capacity([&claude, &codex], super::MAX_ESTIMATED_SOURCE_BYTES).unwrap();
+
+        let ingested = claude_project::ingest_discovery(claude, false).unwrap();
+        let mut index = SessionIndex::default();
+        index.add(Agent::Claude, &ingested).unwrap();
+        let selected = index.select(&query).unwrap();
+        assert_eq!(selected.len(), 2, "the main session brings its child into scope");
+        assert_eq!(ingested.ledger.requests.len(), 2);
+    }
+
+    #[test]
+    fn codex_native_and_path_selection_keep_the_whole_session_family() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let root = fixtures.join("codex-rollout/paginated-subagent");
+        let codex_roots = codex_rollout::rollout_roots(&[root]);
+        let original = roots::discover(&codex_roots);
+        assert_eq!(original.sources.len(), 2);
+        let parent = OsString::from("019f0000-0000-7000-8000-000700000001");
+
+        for selector in [
+            parent.clone(),
+            OsString::from(
+                derive_agent_thread_id(Agent::Codex, parent.to_str().unwrap()).unwrap().to_string(),
+            ),
+            original.sources[0]
+                .files
+                .primary()
+                .expect("fixture has a primary representation")
+                .0
+                .as_os_str()
+                .to_owned(),
+        ] {
+            let mut claude = roots::Discovery::default();
+            let mut codex = original.clone();
+            let query = SelectionQuery {
+                sessions: vec![selector],
+                scope: Some(Scope::Descendants),
+                ..SelectionQuery::default()
+            };
+            assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+            assert_eq!(codex.sources.len(), 2);
+            let ingested = codex_rollout::ingest_discovery(codex, true).unwrap();
+            let mut index = SessionIndex::default();
+            index.add(Agent::Codex, &ingested).unwrap();
+            assert_eq!(index.select(&query).unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn codex_catalog_reads_compressed_session_headers() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let compressed = fixtures.join(
+            "codex-rollout/zst-twin/sessions/2026/09/08/\
+             rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
+        );
+        let mut claude = roots::Discovery::default();
+        let mut codex = roots::discover(std::slice::from_ref(&compressed));
+        let query = SelectionQuery {
+            sessions: vec![OsString::from("019f0000-0000-7000-8000-001000000001")],
+            ..SelectionQuery::default()
+        };
+
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert_eq!(codex.sources.len(), 1);
+        codex_rollout::ingest_discovery(codex, true).unwrap();
+    }
+
+    #[test]
+    fn codex_catalog_connects_parent_and_fork_edges_without_session_id() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        let parent = "019f0000-0000-7000-8000-002000000001";
+        let child = "019f0000-0000-7000-8000-002000000002";
+        let fork = "019f0000-0000-7000-8000-002000000003";
+        let write_meta = |name: &str, payload: serde_json::Value| {
+            fs::write(
+                sessions.join(name),
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "timestamp": "2026-09-16T12:00:00Z",
+                        "type": "session_meta",
+                        "payload": payload,
+                    })
+                ),
+            )
+            .unwrap();
+        };
+        write_meta(
+            &format!("rollout-2026-09-16T12-00-00-{parent}.jsonl"),
+            serde_json::json!({"id": parent, "cwd": "/workspace/project"}),
+        );
+        write_meta(
+            &format!("rollout-2026-09-16T12-01-00-{child}.jsonl"),
+            serde_json::json!({
+                "id": child,
+                "parent_thread_id": parent,
+                "cwd": "/workspace/project",
+            }),
+        );
+        write_meta(
+            &format!("rollout-2026-09-16T12-02-00-{fork}.jsonl"),
+            serde_json::json!({
+                "id": fork,
+                "forked_from_id": child,
+                "cwd": "/workspace/project",
+            }),
+        );
+
+        let mut claude = roots::Discovery::default();
+        let codex_roots = codex_rollout::rollout_roots(&[root.path().to_owned()]);
+        let mut codex = roots::discover(&codex_roots);
+        let query = SelectionQuery {
+            sessions: vec![OsString::from(parent)],
+            scope: Some(Scope::Descendants),
+            ..SelectionQuery::default()
+        };
+
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert_eq!(codex.sources.len(), 3, "spawn and fork links form one support family");
+        let ingested = codex_rollout::ingest_discovery(codex, true).unwrap();
+        let mut index = SessionIndex::default();
+        index.add(Agent::Codex, &ingested).unwrap();
+        assert_eq!(
+            index.select(&query).unwrap().len(),
+            2,
+            "fork support is ingested but fork is not a descendant"
+        );
     }
 
     #[test]

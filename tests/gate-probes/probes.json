@@ -382,8 +382,8 @@
         {
           "path": "Cargo.lock",
           "substitute": {
-            "from": " \"clap\",\n \"serde_json\",\n \"urollup-core\",\n \"zstd\",\n]",
-            "to": " \"clap\",\n \"serde_json\",\n \"tokio\",\n \"urollup-core\",\n \"zstd\",\n]"
+            "from": " \"clap\",\n \"serde_json\",\n \"tempfile\",\n \"urollup-core\",\n \"zstd\",\n]",
+            "to": " \"clap\",\n \"serde_json\",\n \"tempfile\",\n \"tokio\",\n \"urollup-core\",\n \"zstd\",\n]"
           }
         }
       ],
