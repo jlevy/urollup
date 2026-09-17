@@ -1,4 +1,4 @@
-//! Token measures: disjoint categories with native values kept (design §4.1).
+//! Token measures: disjoint categories normalized from native counters (design §4.1).
 //!
 //! Adapters normalize every dialect's usage into disjoint categories: uncached input,
 //! cache reads, cache writes by lifetime, output and provider-only tokens, with reasoning
@@ -7,14 +7,11 @@
 //!
 //! Dialects disagree on what "input" means: Codex and other Responses API clients report
 //! input that includes cache reads, while Claude reports input that excludes cache reads
-//! and writes. [`InputSemantics`] makes that explicit, and the native fields stay verbatim
-//! in [`TokenUsage::native`], so no report has to guess.
+//! and writes. [`InputSemantics`] makes that explicit, so no report has to guess.
 //!
 //! All arithmetic is checked; `clippy::arithmetic_side_effects` is denied in this module.
 
 #![deny(clippy::arithmetic_side_effects)]
-
-use std::collections::BTreeMap;
 
 /// Disjoint token categories. `None` means the source does not report the category.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -186,85 +183,6 @@ pub fn normalize_input(
     })
 }
 
-/// A record's usage: normalized categories plus the native fields they came from.
-#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct TokenUsage {
-    /// The normalized, disjoint categories.
-    pub measures: TokenMeasures,
-    /// Native counters verbatim, keyed by their field path in the record, such as
-    /// `message.usage.cache_creation_input_tokens` or `info.last_token_usage.total_tokens`.
-    pub native: BTreeMap<String, u64>,
-}
-
-/// A consistency problem between normalized categories and native counters, each a
-/// diagnostic rather than usage (design §4.1).
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum UsageCheck {
-    /// Reasoning exceeds the output it is a subset of.
-    ReasoningExceedsOutput {
-        /// Reported reasoning.
-        reasoning: u64,
-        /// Reported output.
-        output: u64,
-    },
-    /// A recorded total differs from the sum of its components.
-    RecordedTotalMismatch {
-        /// The native field holding the total.
-        field: String,
-        /// The recorded value.
-        recorded: u64,
-        /// The recomputed sum, `None` if it overflowed or nothing was reported.
-        computed: Option<u64>,
-    },
-    /// A cache-write breakdown disagrees with the native cache-write total.
-    CacheWriteBreakdownMismatch {
-        /// The native total.
-        native_total: u64,
-        /// The sum of the per-lifetime values.
-        breakdown: Option<u64>,
-    },
-}
-
-impl TokenUsage {
-    /// Checks the categories against each other and against a recorded total and
-    /// cache-write total held in [`TokenUsage::native`].
-    pub fn checks(
-        &self,
-        total_field: Option<&str>,
-        cache_write_field: Option<&str>,
-    ) -> Vec<UsageCheck> {
-        let mut checks = Vec::new();
-        let m = &self.measures;
-        if let (Some(reasoning), Some(output)) = (m.reasoning, m.output) {
-            if reasoning > output {
-                checks.push(UsageCheck::ReasoningExceedsOutput { reasoning, output });
-            }
-        }
-        if let Some((field, recorded)) =
-            total_field.and_then(|f| self.native.get(f).map(|v| (f, *v)))
-        {
-            let computed = m.total().ok().flatten();
-            if computed != Some(recorded) {
-                checks.push(UsageCheck::RecordedTotalMismatch {
-                    field: field.to_owned(),
-                    recorded,
-                    computed,
-                });
-            }
-        }
-        if let Some(native_total) = cache_write_field.and_then(|f| self.native.get(f).copied()) {
-            let breakdown =
-                sum_known("cache_write_breakdown", [m.cache_write_5m, m.cache_write_1h])
-                    .ok()
-                    .flatten();
-            if breakdown.is_some() && breakdown != Some(native_total) {
-                checks.push(UsageCheck::CacheWriteBreakdownMismatch { native_total, breakdown });
-            }
-        }
-        checks
-    }
-}
-
 fn sum_known<const N: usize>(
     category: &'static str,
     values: [Option<u64>; N],
@@ -279,8 +197,8 @@ fn sum_known<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        InputBelowCacheRead, InputSemantics, NativeInput, TokenMeasures, TokenOverflow, TokenUsage,
-        UsageCheck, normalize_input,
+        InputBelowCacheRead, InputSemantics, NativeInput, TokenMeasures, TokenOverflow,
+        normalize_input,
     };
 
     #[test]
@@ -352,35 +270,5 @@ mod tests {
             ..TokenMeasures::default()
         };
         assert_eq!(totals.total(), Err(TokenOverflow { category: "total" }));
-    }
-
-    #[test]
-    fn checks_report_inconsistencies_as_diagnostics() {
-        let usage = TokenUsage {
-            measures: TokenMeasures {
-                uncached_input: Some(10),
-                cache_write_5m: Some(4),
-                cache_write_1h: Some(1),
-                output: Some(3),
-                reasoning: Some(5),
-                ..TokenMeasures::default()
-            },
-            native: [("total_tokens".to_owned(), 0), ("cache_creation_input_tokens".to_owned(), 6)]
-                .into_iter()
-                .collect(),
-        };
-        assert_eq!(
-            usage.checks(Some("total_tokens"), Some("cache_creation_input_tokens")),
-            vec![
-                UsageCheck::ReasoningExceedsOutput { reasoning: 5, output: 3 },
-                UsageCheck::RecordedTotalMismatch {
-                    field: "total_tokens".to_owned(),
-                    recorded: 0,
-                    computed: Some(18)
-                },
-                UsageCheck::CacheWriteBreakdownMismatch { native_total: 6, breakdown: Some(5) },
-            ]
-        );
-        assert_eq!(usage.checks(None, None).len(), 1);
     }
 }

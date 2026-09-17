@@ -39,78 +39,13 @@ ledger:
       native_response_id: ~
       ownership:
         owned: thr-v1-7zrcw4qg6ds2yawtfa2ajb4v09
-      revisions:
-        - evidence:
-            length: 797
-            offset: 1926
-            source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
-          model_usage:
-            - model:
-                basis: Requested
-                name: gpt-5.2-codex
-              source: token_count.last_token_usage
-              usage:
-                measures:
-                  cache_read: 6000
-                  cache_write_1h: ~
-                  cache_write_5m: ~
-                  cache_write_unspecified: 0
-                  output: 3000
-                  provider_only: ~
-                  reasoning: 1000
-                  uncached_input: 6000
-                native:
-                  cache_write_input_tokens: 0
-                  cached_input_tokens: 6000
-                  input_tokens: 12000
-                  output_tokens: 3000
-                  reasoning_output_tokens: 1000
-                  total_tokens: 15000
-          usage:
-            measures:
-              cache_read: 6000
-              cache_write_1h: ~
-              cache_write_5m: ~
-              cache_write_unspecified: 0
-              output: 3000
-              provider_only: ~
-              reasoning: 1000
-              uncached_input: 6000
-            native:
-              cache_write_input_tokens: 0
-              cached_input_tokens: 6000
-              input_tokens: 12000
-              output_tokens: 3000
-              reasoning_output_tokens: 1000
-              total_tokens: 15000
       selected_usage:
         revision:
           evidence:
             length: 797
             offset: 1926
             source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
-          model_usage:
-            - model:
-                basis: Requested
-                name: gpt-5.2-codex
-              source: token_count.last_token_usage
-              usage:
-                measures:
-                  cache_read: 6000
-                  cache_write_1h: ~
-                  cache_write_5m: ~
-                  cache_write_unspecified: 0
-                  output: 3000
-                  provider_only: ~
-                  reasoning: 1000
-                  uncached_input: 6000
-                native:
-                  cache_write_input_tokens: 0
-                  cached_input_tokens: 6000
-                  input_tokens: 12000
-                  output_tokens: 3000
-                  reasoning_output_tokens: 1000
-                  total_tokens: 15000
+          model_usage: []
           usage:
             measures:
               cache_read: 6000
@@ -121,13 +56,6 @@ ledger:
               provider_only: ~
               reasoning: 1000
               uncached_input: 6000
-            native:
-              cache_write_input_tokens: 0
-              cached_input_tokens: 6000
-              input_tokens: 12000
-              output_tokens: 3000
-              reasoning_output_tokens: 1000
-              total_tokens: 15000
         rule: latest-revision
         status: Final
     - account: unknown
@@ -151,78 +79,13 @@ ledger:
       native_response_id: ~
       ownership:
         owned: thr-v1-7zrcw4qg6ds2yawtfa2ajb4v09
-      revisions:
-        - evidence:
-            length: 791
-            offset: 1134
-            source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
-          model_usage:
-            - model:
-                basis: Requested
-                name: gpt-5.2-codex
-              source: token_count.last_token_usage
-              usage:
-                measures:
-                  cache_read: 2000
-                  cache_write_1h: ~
-                  cache_write_5m: ~
-                  cache_write_unspecified: 0
-                  output: 2000
-                  provider_only: ~
-                  reasoning: 500
-                  uncached_input: 6000
-                native:
-                  cache_write_input_tokens: 0
-                  cached_input_tokens: 2000
-                  input_tokens: 8000
-                  output_tokens: 2000
-                  reasoning_output_tokens: 500
-                  total_tokens: 10000
-          usage:
-            measures:
-              cache_read: 2000
-              cache_write_1h: ~
-              cache_write_5m: ~
-              cache_write_unspecified: 0
-              output: 2000
-              provider_only: ~
-              reasoning: 500
-              uncached_input: 6000
-            native:
-              cache_write_input_tokens: 0
-              cached_input_tokens: 2000
-              input_tokens: 8000
-              output_tokens: 2000
-              reasoning_output_tokens: 500
-              total_tokens: 10000
       selected_usage:
         revision:
           evidence:
             length: 791
             offset: 1134
             source: src-v1-3st8f6s6hqbe8g7g7gq5fcd1e5
-          model_usage:
-            - model:
-                basis: Requested
-                name: gpt-5.2-codex
-              source: token_count.last_token_usage
-              usage:
-                measures:
-                  cache_read: 2000
-                  cache_write_1h: ~
-                  cache_write_5m: ~
-                  cache_write_unspecified: 0
-                  output: 2000
-                  provider_only: ~
-                  reasoning: 500
-                  uncached_input: 6000
-                native:
-                  cache_write_input_tokens: 0
-                  cached_input_tokens: 2000
-                  input_tokens: 8000
-                  output_tokens: 2000
-                  reasoning_output_tokens: 500
-                  total_tokens: 10000
+          model_usage: []
           usage:
             measures:
               cache_read: 2000
@@ -233,13 +96,6 @@ ledger:
               provider_only: ~
               reasoning: 500
               uncached_input: 6000
-            native:
-              cache_write_input_tokens: 0
-              cached_input_tokens: 2000
-              input_tokens: 8000
-              output_tokens: 2000
-              reasoning_output_tokens: 500
-              total_tokens: 10000
         rule: latest-revision
         status: Final
 manifest:

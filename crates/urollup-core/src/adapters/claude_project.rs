@@ -20,7 +20,7 @@ use crate::ledger::reconcile::{
     RevisionSelector, reconcile,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
-use crate::ledger::tokens::{TokenMeasures, TokenUsage};
+use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
@@ -118,7 +118,6 @@ struct ParsedUsage {
 
 #[derive(Clone, Debug)]
 struct AdvisorUsage {
-    iteration_index: usize,
     model: Option<String>,
     input: Option<u64>,
     cache_read: Option<u64>,
@@ -419,12 +418,11 @@ fn decode_record(
 fn parsed_usage(value: &Value) -> ParsedUsage {
     let mut advisors = Vec::new();
     if let Some(iterations) = value.pointer("/message/usage/iterations").and_then(Value::as_array) {
-        for (iteration_index, iteration) in iterations.iter().enumerate() {
+        for iteration in iterations {
             if text(iteration, &["type"]) != Some("advisor_message") {
                 continue;
             }
             advisors.push(AdvisorUsage {
-                iteration_index,
                 model: text(iteration, &["model"]).map(str::to_owned),
                 input: unsigned(iteration, &["input_tokens"]),
                 cache_read: unsigned(iteration, &["cache_read_input_tokens"]),
@@ -797,7 +795,7 @@ fn normalize(
             observation.effort.clone_from(&record.effort);
             observation.timestamp = record.timestamp;
             if let Some(model) = observation.model.as_ref() {
-                observation.invariants.insert("model".to_owned(), model.name.clone());
+                observation.invariants.push(("model", model.name.clone()));
             }
         }
         observations.push(observation);
@@ -982,7 +980,9 @@ fn is_replayed_record(
     message_replayed || uuid_replayed
 }
 
-fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), AdapterError> {
+/// A record's total usage and, when advisor iterations add other models, its per-model
+/// components. A single-model record has no components: its usage belongs to its model.
+fn claude_usage(record: &ParsedRecord) -> Result<(TokenMeasures, Vec<ModelUsage>), AdapterError> {
     let input = record.usage.input;
     let cache_read = record.usage.cache_read;
     let flat_write = record.usage.cache_write;
@@ -990,17 +990,6 @@ fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), 
     let one_hour_write = record.usage.cache_write_1h;
     let output = record.usage.output;
     let reasoning = record.usage.reasoning;
-    let mut native = BTreeMap::new();
-    for (name, count) in [
-        ("message.usage.input_tokens", input),
-        ("message.usage.cache_read_input_tokens", cache_read),
-        ("message.usage.cache_creation_input_tokens", flat_write),
-        ("message.usage.output_tokens", output),
-    ] {
-        if let Some(count) = count {
-            native.insert(name.to_owned(), count);
-        }
-    }
     let has_breakdown = five_minute_write.is_some() || one_hour_write.is_some();
     let breakdown_total = five_minute_write.unwrap_or(0).checked_add(one_hour_write.unwrap_or(0));
     let breakdown_matches = match (flat_write, breakdown_total) {
@@ -1008,7 +997,7 @@ fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), 
         (None, Some(_)) => true,
         (Some(_) | None, None) => false,
     };
-    let measures = TokenMeasures {
+    let primary = TokenMeasures {
         uncached_input: input,
         cache_read,
         cache_write_5m: (has_breakdown && breakdown_matches).then_some(five_minute_write).flatten(),
@@ -1020,8 +1009,10 @@ fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), 
         reasoning,
         provider_only: None,
     };
-    let primary = TokenUsage { measures, native };
-    let mut usage = primary.clone();
+    if record.usage.advisors.is_empty() {
+        return Ok((primary, Vec::new()));
+    }
+    let mut usage = primary;
     let mut model_usage = vec![ModelUsage {
         model: record
             .model
@@ -1031,37 +1022,21 @@ fn claude_usage(record: &ParsedRecord) -> Result<(TokenUsage, Vec<ModelUsage>), 
         source: "message.usage",
     }];
     for iteration in &record.usage.advisors {
-        let cache_write = iteration.cache_write;
         let advisor = TokenMeasures {
             uncached_input: iteration.input,
             cache_read: iteration.cache_read,
-            cache_write_unspecified: cache_write,
+            cache_write_unspecified: iteration.cache_write,
             output: iteration.output,
             reasoning: iteration.reasoning,
             ..TokenMeasures::default()
         };
-        usage.measures = usage.measures.checked_add(&advisor)?;
-        let mut advisor_native = BTreeMap::new();
-        for (field, count) in [
-            ("input_tokens", advisor.uncached_input),
-            ("cache_read_input_tokens", advisor.cache_read),
-            ("cache_creation_input_tokens", advisor.cache_write_unspecified),
-            ("output_tokens", advisor.output),
-            ("reasoning", advisor.reasoning),
-        ] {
-            if let Some(count) = count {
-                let path =
-                    format!("message.usage.iterations[{}].{field}", iteration.iteration_index);
-                usage.native.insert(path.clone(), count);
-                advisor_native.insert(path, count);
-            }
-        }
+        usage = usage.checked_add(&advisor)?;
         model_usage.push(ModelUsage {
             model: iteration
                 .model
                 .as_ref()
                 .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served }),
-            usage: TokenUsage { measures: advisor, native: advisor_native },
+            usage: advisor,
             source: "advisor_message",
         });
     }
@@ -1081,12 +1056,12 @@ impl RevisionSelector for ClaudeBlockSelector {
             .enumerate()
             .max_by(|(_, left), (_, right)| compare_claude_revision(left, right))
             .map_or(0, |(index, _)| index);
-        let selected_usage = revisions[selected].usage.as_ref().map(|usage| usage.measures);
+        let selected_usage = revisions[selected].usage;
         let disagreements = selected_usage.map_or_else(Vec::new, |selected| {
             revisions
                 .iter()
                 .filter_map(|revision| revision.usage.as_ref())
-                .any(|usage| input_measures(&usage.measures) != input_measures(&selected))
+                .any(|usage| input_measures(usage) != input_measures(&selected))
                 .then(|| "input or cache fields differ across Claude block records".to_owned())
                 .into_iter()
                 .collect()
@@ -1112,7 +1087,7 @@ fn input_measures(measures: &TokenMeasures) -> [Option<u64>; 6] {
 
 fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation) -> Ordering {
     let output = |observation: &RequestObservation| {
-        observation.usage.as_ref().and_then(|usage| usage.measures.output).unwrap_or(0)
+        observation.usage.and_then(|usage| usage.output).unwrap_or(0)
     };
     output(left)
         .cmp(&output(right))
@@ -1199,10 +1174,7 @@ mod tests {
         let mut observation =
             RequestObservation::new(EvidenceRef { source, offset, length: 1 }, "claude-project");
         observation.sequence = Some(block);
-        observation.usage = Some(crate::ledger::tokens::TokenUsage {
-            measures: TokenMeasures { output: Some(10), ..TokenMeasures::default() },
-            native: std::collections::BTreeMap::new(),
-        });
+        observation.usage = Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() });
         observation
     }
 
@@ -1258,13 +1230,13 @@ mod tests {
         });
         let record = parsed_record(&value);
         let (usage, model_usage) = claude_usage(&record).unwrap();
-        assert_eq!(usage.measures.uncached_input, Some(3));
-        assert_eq!(usage.measures.output, Some(10));
-        assert_eq!(model_usage.len(), 1);
+        assert_eq!(usage.uncached_input, Some(3));
+        assert_eq!(usage.output, Some(10));
+        assert!(model_usage.is_empty());
     }
 
     #[test]
-    fn advisor_native_paths_keep_the_original_iteration_index() {
+    fn advisor_iterations_add_usage_and_split_it_by_model() {
         let value = serde_json::json!({
             "message": {
                 "model": "claude-test",
@@ -1290,10 +1262,13 @@ mod tests {
         let record = parsed_record(&value);
         let (usage, model_usage) = claude_usage(&record).unwrap();
 
-        let advisor_input = "message.usage.iterations[1].input_tokens";
-        assert_eq!(usage.native.get(advisor_input), Some(&5));
-        assert_eq!(model_usage[1].usage.native.get(advisor_input), Some(&5));
-        assert!(!usage.native.contains_key("message.usage.iterations[0].input_tokens"));
+        assert_eq!(usage.uncached_input, Some(8));
+        assert_eq!(usage.output, Some(17));
+        assert_eq!(model_usage.len(), 2);
+        assert_eq!(model_usage[0].usage.uncached_input, Some(3));
+        assert_eq!(model_usage[1].model.as_ref().unwrap().name, "claude-advisor");
+        assert_eq!(model_usage[1].usage.uncached_input, Some(5));
+        assert_eq!(model_usage[1].usage.output, Some(7));
     }
 
     #[test]
