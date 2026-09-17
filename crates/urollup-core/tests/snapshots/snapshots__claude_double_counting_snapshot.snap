@@ -49,150 +49,13 @@ ledger:
       native_response_id: msg_01Synthetic01A
       ownership:
         owned: thr-v1-651kv0qwp91s22cgbfhfyj1818
-      revisions:
-        - evidence:
-            length: 804
-            offset: 338
-            source: src-v1-1fwxcqgfzgdpyqwz4h5vz25vjd
-          model_usage:
-            - model:
-                basis: Served
-                name: claude-sonnet-4-5
-              source: message.usage
-              usage:
-                measures:
-                  cache_read: 40000
-                  cache_write_1h: 0
-                  cache_write_5m: 0
-                  cache_write_unspecified: ~
-                  output: 12
-                  provider_only: ~
-                  reasoning: ~
-                  uncached_input: 3
-                native:
-                  message.usage.cache_creation_input_tokens: 0
-                  message.usage.cache_read_input_tokens: 40000
-                  message.usage.input_tokens: 3
-                  message.usage.output_tokens: 12
-          usage:
-            measures:
-              cache_read: 40000
-              cache_write_1h: 0
-              cache_write_5m: 0
-              cache_write_unspecified: ~
-              output: 12
-              provider_only: ~
-              reasoning: ~
-              uncached_input: 3
-            native:
-              message.usage.cache_creation_input_tokens: 0
-              message.usage.cache_read_input_tokens: 40000
-              message.usage.input_tokens: 3
-              message.usage.output_tokens: 12
-        - evidence:
-            length: 765
-            offset: 1143
-            source: src-v1-1fwxcqgfzgdpyqwz4h5vz25vjd
-          model_usage:
-            - model:
-                basis: Served
-                name: claude-sonnet-4-5
-              source: message.usage
-              usage:
-                measures:
-                  cache_read: 40000
-                  cache_write_1h: 0
-                  cache_write_5m: 0
-                  cache_write_unspecified: ~
-                  output: 12
-                  provider_only: ~
-                  reasoning: ~
-                  uncached_input: 3
-                native:
-                  message.usage.cache_creation_input_tokens: 0
-                  message.usage.cache_read_input_tokens: 40000
-                  message.usage.input_tokens: 3
-                  message.usage.output_tokens: 12
-          usage:
-            measures:
-              cache_read: 40000
-              cache_write_1h: 0
-              cache_write_5m: 0
-              cache_write_unspecified: ~
-              output: 12
-              provider_only: ~
-              reasoning: ~
-              uncached_input: 3
-            native:
-              message.usage.cache_creation_input_tokens: 0
-              message.usage.cache_read_input_tokens: 40000
-              message.usage.input_tokens: 3
-              message.usage.output_tokens: 12
-        - evidence:
-            length: 854
-            offset: 1909
-            source: src-v1-1fwxcqgfzgdpyqwz4h5vz25vjd
-          model_usage:
-            - model:
-                basis: Served
-                name: claude-sonnet-4-5
-              source: message.usage
-              usage:
-                measures:
-                  cache_read: 40000
-                  cache_write_1h: 0
-                  cache_write_5m: 0
-                  cache_write_unspecified: ~
-                  output: 600
-                  provider_only: ~
-                  reasoning: ~
-                  uncached_input: 3
-                native:
-                  message.usage.cache_creation_input_tokens: 0
-                  message.usage.cache_read_input_tokens: 40000
-                  message.usage.input_tokens: 3
-                  message.usage.output_tokens: 600
-          usage:
-            measures:
-              cache_read: 40000
-              cache_write_1h: 0
-              cache_write_5m: 0
-              cache_write_unspecified: ~
-              output: 600
-              provider_only: ~
-              reasoning: ~
-              uncached_input: 3
-            native:
-              message.usage.cache_creation_input_tokens: 0
-              message.usage.cache_read_input_tokens: 40000
-              message.usage.input_tokens: 3
-              message.usage.output_tokens: 600
       selected_usage:
         revision:
           evidence:
             length: 854
             offset: 1909
             source: src-v1-1fwxcqgfzgdpyqwz4h5vz25vjd
-          model_usage:
-            - model:
-                basis: Served
-                name: claude-sonnet-4-5
-              source: message.usage
-              usage:
-                measures:
-                  cache_read: 40000
-                  cache_write_1h: 0
-                  cache_write_5m: 0
-                  cache_write_unspecified: ~
-                  output: 600
-                  provider_only: ~
-                  reasoning: ~
-                  uncached_input: 3
-                native:
-                  message.usage.cache_creation_input_tokens: 0
-                  message.usage.cache_read_input_tokens: 40000
-                  message.usage.input_tokens: 3
-                  message.usage.output_tokens: 600
+          model_usage: []
           usage:
             measures:
               cache_read: 40000
@@ -203,11 +66,6 @@ ledger:
               provider_only: ~
               reasoning: ~
               uncached_input: 3
-            native:
-              message.usage.cache_creation_input_tokens: 0
-              message.usage.cache_read_input_tokens: 40000
-              message.usage.input_tokens: 3
-              message.usage.output_tokens: 600
         rule: claude-largest-output
         status: Selected
 manifest:

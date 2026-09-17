@@ -9,7 +9,7 @@ use super::{AdapterError, Ingested};
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
+    Basis, Confidence, ModelBasis, ModelName, ProviderLimitObservation, Relationship,
     RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity};
@@ -17,7 +17,7 @@ use crate::ledger::reconcile::{
     LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, reconcile,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
-use crate::ledger::tokens::{InputSemantics, NativeInput, TokenUsage, normalize_input};
+use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
@@ -525,7 +525,6 @@ fn normalize(
                         {
                             apply_context(&mut observation, context);
                         }
-                        set_model_usage(&mut observation, "token_count.last_token_usage");
                         observations.push(observation);
                     }
                 }
@@ -540,7 +539,7 @@ fn normalize(
                     let total_usage = codex_usage(total)?;
                     let last = record.value.pointer("/payload/info/last_token_usage");
                     if active_thread != source.file_thread {
-                        inherited_total = Some(total_usage.measures);
+                        inherited_total = Some(total_usage);
                         if let Some(last) = last {
                             observations.push(counter_observation(
                                 record,
@@ -561,7 +560,7 @@ fn normalize(
                     let tracker = counter.get_or_insert_with(|| {
                         inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
                     });
-                    let step = tracker.observe(&total_usage.measures, None)?;
+                    let step = tracker.observe(&total_usage, None)?;
                     if step.event == CounterEvent::Reset {
                         diagnostics.push(Diagnostic::new(
                             DiagnosticCode::CodexCounterEpochReset,
@@ -723,14 +722,13 @@ fn counter_observation(
     }
     let mut usage = codex_usage(last)?;
     if let Some(delta) = counter.delta {
-        usage.measures = delta;
+        usage = delta;
     }
     observation.usage = Some(usage);
     observation.timestamp = record_timestamp(&record.value);
     if let Some(context) = counter.context {
         apply_context(&mut observation, context);
     }
-    set_model_usage(&mut observation, "token_count.last_token_usage");
     Ok(observation)
 }
 
@@ -883,7 +881,6 @@ fn usage_observation(
     if let Some(context) = text(payload, &["root_turn_id"]).and_then(|turn| turns.get(turn)) {
         apply_context(&mut observation, context);
     }
-    set_model_usage(&mut observation, "token_usage_record.usage");
     Ok(observation)
 }
 
@@ -895,17 +892,7 @@ fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
     observation.effort.clone_from(&context.effort);
 }
 
-fn set_model_usage(observation: &mut RequestObservation, source: &'static str) {
-    if let Some(usage) = observation.usage.clone() {
-        observation.model_usage.push(ModelUsage {
-            model: observation.model.clone(),
-            usage,
-            source,
-        });
-    }
-}
-
-fn codex_usage(value: &Value) -> Result<TokenUsage, AdapterError> {
+fn codex_usage(value: &Value) -> Result<TokenMeasures, AdapterError> {
     let input = unsigned(value, &["input_tokens"]);
     let cache_read = unsigned(value, &["cached_input_tokens"]);
     let cache_write = unsigned(value, &["cache_write_input_tokens"]);
@@ -915,20 +902,7 @@ fn codex_usage(value: &Value) -> Result<TokenUsage, AdapterError> {
     )?;
     measures.output = unsigned(value, &["output_tokens"]);
     measures.reasoning = unsigned(value, &["reasoning_output_tokens"]);
-    let mut native = BTreeMap::new();
-    for field in [
-        "input_tokens",
-        "cached_input_tokens",
-        "cache_write_input_tokens",
-        "output_tokens",
-        "reasoning_output_tokens",
-        "total_tokens",
-    ] {
-        if let Some(count) = unsigned(value, &[field]) {
-            native.insert(field.to_owned(), count);
-        }
-    }
-    Ok(TokenUsage { measures, native })
+    Ok(measures)
 }
 
 fn record_timestamp(value: &Value) -> Option<jiff::Timestamp> {

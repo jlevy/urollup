@@ -16,7 +16,7 @@ use crate::ledger::entities::{
 use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
 use crate::ledger::scope::{IdentityBasis, ScopedKey};
-use crate::ledger::tokens::{TokenMeasures, TokenUsage};
+use crate::ledger::tokens::TokenMeasures;
 use crate::sources::evidence::EvidenceRef;
 use crate::test_support::shuffle;
 
@@ -46,15 +46,8 @@ fn digest_key(owner: &str, digest: &str) -> ScopedKey {
         .unwrap()
 }
 
-fn usage(input: u64, output: u64) -> TokenUsage {
-    TokenUsage {
-        measures: TokenMeasures {
-            uncached_input: Some(input),
-            output: Some(output),
-            ..TokenMeasures::default()
-        },
-        native: std::collections::BTreeMap::new(),
-    }
+fn usage(input: u64, output: u64) -> TokenMeasures {
+    TokenMeasures { uncached_input: Some(input), output: Some(output), ..TokenMeasures::default() }
 }
 
 /// An original observation of `response` in `src` at `offset`, owned by thread `t1`.
@@ -154,9 +147,10 @@ fn streamed_usage_updates_collapse_into_one_request_with_revisions() {
     assert_eq!(ledger.requests.len(), 1);
     let request = ledger.requests.values().next().unwrap();
     let selected = request.usage.as_ref().unwrap();
-    assert_eq!(selected.revision.usage.measures.output, Some(30));
+    assert_eq!(selected.revision.usage.output, Some(30));
     assert_eq!(selected.status, RevisionStatus::Final);
-    assert_eq!(request.revisions.len(), 3);
+    // Every usage-bearing original is evidence; the selected one is counted.
+    assert_eq!(request.evidence.len(), 3);
     assert_eq!(request.basis, IdentityBasis::Native);
     assert_eq!(request.ownership, Ownership::Owned { thread: thread("t1") });
     assert_eq!(*request.id(), response_key("msg_1").key.derive_id().unwrap());
@@ -182,9 +176,9 @@ fn copies_are_evidence_and_never_counted() {
     copy.owner = OwnerEvidence::Candidates(BTreeSet::from([thread("child")]));
     let ledger = run(vec![copy, original]);
     let request = ledger.requests.values().next().unwrap();
-    assert_eq!(request.usage.as_ref().unwrap().revision.usage.measures.output, Some(10));
+    assert_eq!(request.usage.as_ref().unwrap().revision.usage.output, Some(10));
     assert_eq!(request.copies, vec![evidence(1, 400)]);
-    assert_eq!(request.revisions.len(), 1);
+    assert_eq!(request.evidence.len(), 1);
     // Proven ownership wins over the copy's candidate.
     assert_eq!(request.ownership, Ownership::Owned { thread: thread("t1") });
     let totals = ledger_totals(&ledger).unwrap();
@@ -218,16 +212,16 @@ fn a_record_location_with_changed_content_is_diagnosed() {
     let ledger = run(vec![observed(0, 0, "msg_1", 10), observed(0, 0, "msg_1", 11)]);
     assert_eq!(codes(&ledger), vec![DiagnosticCode::ConflictingReread]);
     assert_eq!(ledger.coverage.conflicting_rereads, 1);
-    assert_eq!(ledger.requests.values().next().unwrap().revisions.len(), 1);
+    assert_eq!(ledger.requests.values().next().unwrap().evidence.len(), 1);
 }
 
 #[test]
 fn a_shared_key_with_disagreeing_invariants_is_ambiguous_not_merged() {
     // A gateway reusing one message ID in two sessions.
     let mut a = observed(0, 0, "msg_1", 10);
-    a.invariants.insert("session".to_owned(), "s-a".to_owned());
+    a.invariants.push(("session", "s-a".to_owned()));
     let mut b = observed(1, 0, "msg_1", 20);
-    b.invariants.insert("session".to_owned(), "s-b".to_owned());
+    b.invariants.push(("session", "s-b".to_owned()));
     let ledger = run(vec![a, b]);
 
     assert_eq!(ledger.requests.len(), 2);
@@ -400,16 +394,14 @@ impl RevisionSelector for LargestOutput {
     }
 
     fn select(&self, revisions: &[&RequestObservation]) -> RevisionChoice {
-        let output = |r: &RequestObservation| r.usage.as_ref().and_then(|u| u.measures.output);
+        let output = |r: &RequestObservation| r.usage.as_ref().and_then(|u| u.output);
         let selected = revisions
             .iter()
             .enumerate()
             .max_by_key(|(_, r)| output(r))
             .map_or(0, |(index, _)| index);
-        let inputs: BTreeSet<_> = revisions
-            .iter()
-            .map(|r| r.usage.as_ref().and_then(|u| u.measures.uncached_input))
-            .collect();
+        let inputs: BTreeSet<_> =
+            revisions.iter().map(|r| r.usage.as_ref().and_then(|u| u.uncached_input)).collect();
         let disagreements =
             if inputs.len() > 1 { vec!["uncached_input differs".to_owned()] } else { Vec::new() };
         RevisionChoice { selected, status: RevisionStatus::Selected, disagreements }
@@ -618,7 +610,7 @@ fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
                 observation.usage = used.map(|(input, output)| usage(input, output));
                 observation.sequence = sequence;
                 if let Some(session) = session {
-                    observation.invariants.insert("session".to_owned(), format!("s{session}"));
+                    observation.invariants.push(("session", format!("s{session}")));
                 }
                 if let Some(token) = token {
                     observation.candidate_tokens.insert(format!("c{token}"));

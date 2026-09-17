@@ -279,7 +279,7 @@ impl SelectedRequest<'_> {
         self.request
             .usage
             .as_ref()
-            .map_or_else(TokenMeasures::default, |usage| usage.revision.usage.measures)
+            .map_or_else(TokenMeasures::default, |usage| usage.revision.usage)
     }
 }
 
@@ -339,9 +339,7 @@ fn breakdowns(
                                 .as_ref()
                                 .map_or("unknown", |model| model.name.as_str())
                                 .to_owned();
-                            rows.entry(value)
-                                .or_default()
-                                .add(ownership, component.usage.measures)?;
+                            rows.entry(value).or_default().add(ownership, component.usage)?;
                         }
                         continue;
                     }
@@ -397,15 +395,16 @@ fn project_for_owners(request: &Request, index: &SessionIndex) -> String {
 }
 
 fn size_summary(requests: &[SelectedRequest<'_>]) -> Result<SizeSummary, QueryError> {
-    let mut values: Vec<_> =
-        requests
-            .iter()
-            .filter_map(|request| {
-                request.request.usage.as_ref().and_then(|usage| {
-                    usage.revision.usage.measures.inclusive_input().ok().flatten()
-                })
-            })
-            .collect();
+    let mut values: Vec<_> = requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .request
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.revision.usage.inclusive_input().ok().flatten())
+        })
+        .collect();
     values.sort_unstable();
     Ok(SizeSummary {
         count: usize_count(values.len(), "request sizes")?,

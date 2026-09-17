@@ -13,7 +13,7 @@ use jiff::Timestamp;
 
 use super::identity::{AnalyticalId, StoredIdentity};
 use super::scope::IdentityBasis;
-use super::tokens::TokenUsage;
+use super::tokens::TokenMeasures;
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::ManifestEntry;
 
@@ -202,7 +202,7 @@ pub struct ModelUsage {
     /// The model, when the source identifies it.
     pub model: Option<ModelName>,
     /// The usage attributed to this model.
-    pub usage: TokenUsage,
+    pub usage: TokenMeasures,
     /// The stable dialect field or record kind that carried this component.
     pub source: &'static str,
 }
@@ -222,8 +222,9 @@ pub struct UsageRevision {
     /// The record.
     pub evidence: EvidenceRef,
     /// Its usage.
-    pub usage: TokenUsage,
-    /// The usage split by model when one request invokes more than one model.
+    pub usage: TokenMeasures,
+    /// The usage split by model, recorded only when one request invokes more than one
+    /// model; a single-model request's usage belongs to its own model.
     pub model_usage: Vec<ModelUsage>,
 }
 
@@ -290,8 +291,6 @@ pub struct Request {
     pub account: AccountAttribution,
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
-    /// Every usage-bearing original record, in canonical order.
-    pub revisions: Vec<UsageRevision>,
     /// Every original record, in canonical order.
     pub evidence: Vec<EvidenceRef>,
     /// Copies of this request, recorded as evidence and never counted.

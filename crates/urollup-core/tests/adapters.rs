@@ -190,9 +190,9 @@ fn claude_advisor_usage_keeps_its_model_breakdown() {
     let model_usage = &request.usage.as_ref().unwrap().revision.model_usage;
 
     assert_eq!(model_usage[0].model.as_ref().unwrap().name, "claude-sonnet-4-5");
-    assert_eq!(model_usage[0].usage.measures.output, Some(530));
+    assert_eq!(model_usage[0].usage.output, Some(530));
     assert_eq!(model_usage[1].model.as_ref().unwrap().name, "claude-opus-4-5");
-    assert_eq!(model_usage[1].usage.measures.output, Some(7_200));
+    assert_eq!(model_usage[1].usage.output, Some(7_200));
 }
 
 #[test]

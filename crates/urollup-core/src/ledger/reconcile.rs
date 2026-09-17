@@ -44,7 +44,7 @@ use super::entities::{
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry, StoredIdentity};
 use super::linking::{LinkGraph, LinkedIdentity};
 use super::scope::{IdentityBasis, ScopedKey, artifact_local_key};
-use super::tokens::TokenUsage;
+use super::tokens::TokenMeasures;
 use crate::sources::evidence::EvidenceRef;
 
 /// Whether an observation is the request's own record or a copy of it.
@@ -76,7 +76,7 @@ pub struct RequestObservation {
     /// Where the record is.
     pub evidence: EvidenceRef,
     /// The dialect registry token.
-    pub dialect: String,
+    pub dialect: &'static str,
     /// Every `req-` key the adapter could build for the record, in any order.
     pub keys: Vec<ScopedKey>,
     /// Original or copy.
@@ -84,14 +84,14 @@ pub struct RequestObservation {
     /// Owner evidence.
     pub owner: OwnerEvidence,
     /// The record's usage, when it carries any.
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<TokenMeasures>,
     /// This record's usage split by model.
     pub model_usage: Vec<ModelUsage>,
     /// A native revision sequence, when the dialect orders revisions.
     pub sequence: Option<u64>,
     /// Revision-invariant fields; observations sharing a key must agree on every field
     /// both carry.
-    pub invariants: BTreeMap<String, String>,
+    pub invariants: Vec<(&'static str, String)>,
     /// Tokens naming candidate sets: observations that may be one request but share no
     /// key, such as a digest of copy-invariant content.
     pub candidate_tokens: BTreeSet<String>,
@@ -111,17 +111,17 @@ pub struct RequestObservation {
 
 impl RequestObservation {
     /// An original observation with no keys, owner, usage or properties yet.
-    pub fn new(evidence: EvidenceRef, dialect: impl Into<String>) -> Self {
+    pub fn new(evidence: EvidenceRef, dialect: &'static str) -> Self {
         Self {
             evidence,
-            dialect: dialect.into(),
+            dialect,
             keys: Vec::new(),
             role: ObservationRole::Original,
             owner: OwnerEvidence::None,
             usage: None,
             model_usage: Vec::new(),
             sequence: None,
-            invariants: BTreeMap::new(),
+            invariants: Vec::new(),
             candidate_tokens: BTreeSet::new(),
             native_request_id: None,
             native_response_id: None,
@@ -929,7 +929,7 @@ fn conflicting_fields(members: &[&Resolved]) -> BTreeSet<String> {
     let mut values: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for member in members {
         for (field, value) in &member.observation.invariants {
-            values.entry(field).or_default().insert(value);
+            values.entry(field).or_default().insert(value.as_str());
         }
     }
     values
@@ -1001,7 +1001,7 @@ fn build_request(
                 format!("{}: {}", selector.rule(), join(disagreements.iter())),
             ));
         }
-        chosen.usage.clone().map(|usage| SelectedUsage {
+        chosen.usage.map(|usage| SelectedUsage {
             revision: UsageRevision {
                 evidence: chosen.evidence.clone(),
                 usage,
@@ -1039,16 +1039,6 @@ fn build_request(
             .and_then(|s| s.effort.clone())
             .or_else(|| originals.iter().filter_map(|o| o.effort.clone()).min()),
         account: account(&observations, &id, diagnostics),
-        revisions: revisions
-            .iter()
-            .filter_map(|r| {
-                r.usage.clone().map(|usage| UsageRevision {
-                    evidence: r.evidence.clone(),
-                    usage,
-                    model_usage: r.model_usage.clone(),
-                })
-            })
-            .collect(),
         evidence: originals.iter().map(|o| o.evidence.clone()).collect(),
         copies: observations
             .iter()

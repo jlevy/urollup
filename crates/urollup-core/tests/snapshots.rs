@@ -10,7 +10,7 @@ use urollup_core::ledger::entities::{
     AccountAttribution, Counting, ModelUsage, Ownership, Request, UsageRevision,
 };
 use urollup_core::ledger::identity::AnalyticalId;
-use urollup_core::ledger::tokens::TokenUsage;
+use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::sources::evidence::EvidenceRef;
 use urollup_core::sources::manifest::{CoverageFailure, ManifestEntry, SourceChange};
 
@@ -26,17 +26,13 @@ fn evidence(reference: &EvidenceRef) -> Value {
     })
 }
 
-fn usage(usage: &TokenUsage) -> Value {
+fn usage(usage: &TokenMeasures) -> Value {
     let measures: serde_json::Map<String, Value> = usage
-        .measures
         .categories()
         .into_iter()
         .map(|(category, value)| (category.to_owned(), json!(value)))
         .collect();
-    json!({
-        "measures": measures,
-        "native": usage.native,
-    })
+    json!({ "measures": measures })
 }
 
 fn model_usage(component: &ModelUsage) -> Value {
@@ -106,7 +102,6 @@ fn request(request: &Request) -> Value {
         "native_request_id": request.native_request_id,
         "native_response_id": request.native_response_id,
         "ownership": ownership(&request.ownership),
-        "revisions": request.revisions.iter().map(revision).collect::<Vec<_>>(),
         "selected_usage": request.usage.as_ref().map(|selected| json!({
             "revision": revision(&selected.revision),
             "rule": selected.rule,
