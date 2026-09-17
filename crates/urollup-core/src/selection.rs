@@ -1,11 +1,11 @@
 //! Session discovery, exact current-session detection and hierarchy selection.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use super::adapters::Ingested;
-use super::ledger::entities::{Relationship, Thread};
+use super::ledger::entities::{Relationship, SourceArtifact, Thread};
 use super::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityError, IdentityKey, KeyComponent, StoredIdentity,
 };
@@ -108,25 +108,36 @@ pub struct SessionIndex {
 impl SessionIndex {
     /// Adds one adapter result to the index.
     pub fn add(&mut self, agent: Agent, ingested: &Ingested) -> Result<(), SelectionError> {
+        // Index sources once, so each thread looks up its own sources instead of scanning
+        // every source: a whole history has thousands of threads and sources.
+        let mut by_identity: HashMap<&AnalyticalId, Vec<&SourceArtifact>> = HashMap::new();
+        let mut by_locator_thread: HashMap<&str, Vec<&SourceArtifact>> = HashMap::new();
+        for source in &ingested.sources {
+            if let Some(identity) = &source.snapshot.source {
+                by_identity.entry(&identity.id).or_default().push(source);
+            }
+            if let Some((thread_id, _)) = source.snapshot.locator.split_once('/') {
+                by_locator_thread.entry(thread_id).or_default().push(source);
+            }
+        }
         for (id, thread) in &ingested.threads {
-            let evidence_sources: BTreeSet<_> =
-                thread.evidence.iter().map(|evidence| &evidence.source).collect();
-            let mut paths = Vec::new();
-            for source in &ingested.sources {
-                let establishes_thread = source
-                    .snapshot
-                    .source
-                    .as_ref()
-                    .is_some_and(|identity| evidence_sources.contains(&identity.id))
-                    // Inline children share the main transcript, so its path selects
-                    // the native main session; their analytical IDs select the children.
-                    && thread.source.value().map(String::as_str) != Some("inline-sidechain");
-                if establishes_thread
-                    || source_locator_belongs_to_thread(agent, thread, &source.snapshot.locator)
-                {
-                    paths.push(source.snapshot.file.path.clone());
-                    paths.extend(source.snapshot.twin.iter().map(|twin| twin.path.clone()));
+            let mut matched: Vec<&SourceArtifact> = Vec::new();
+            // Inline children share the main transcript, so its path selects the native
+            // main session; their analytical IDs select the children.
+            if thread.source.value().map(String::as_str) != Some("inline-sidechain") {
+                let evidence_sources: BTreeSet<_> =
+                    thread.evidence.iter().map(|evidence| &evidence.source).collect();
+                for source in evidence_sources {
+                    matched.extend(by_identity.get(source).into_iter().flatten());
                 }
+            }
+            if let Some(thread_id) = codex_locator_thread(agent, thread) {
+                matched.extend(by_locator_thread.get(thread_id).into_iter().flatten());
+            }
+            let mut paths = Vec::new();
+            for source in matched {
+                paths.push(source.snapshot.file.path.clone());
+                paths.extend(source.snapshot.twin.iter().map(|twin| twin.path.clone()));
             }
             paths.sort();
             paths.dedup();
@@ -308,13 +319,12 @@ impl SessionIndex {
     }
 }
 
-fn source_locator_belongs_to_thread(agent: Agent, thread: &Thread, locator: &str) -> bool {
+/// The native thread ID whose rollouts a Codex thread owns: a Codex source locator starts
+/// with its thread ID and a `/`.
+fn codex_locator_thread(agent: Agent, thread: &Thread) -> Option<&str> {
     match agent {
-        Agent::Codex => thread
-            .native_key
-            .get("thread_id")
-            .is_some_and(|id| locator.strip_prefix(id).is_some_and(|tail| tail.starts_with('/'))),
-        Agent::Claude | Agent::Pi => false,
+        Agent::Codex => thread.native_key.get("thread_id").map(String::as_str),
+        Agent::Claude | Agent::Pi => None,
     }
 }
 
@@ -702,6 +712,79 @@ mod tests {
             .collect();
         assert!(!without.is_empty(), "fixture has inline sidechains");
         assert!(without.iter().all(Option::is_none), "inline sidechains have no native ID");
+    }
+
+    /// The scan the source index replaced: every source checked against every thread.
+    fn scanned_paths(agent: Agent, ingested: &crate::adapters::Ingested) -> Vec<Vec<PathBuf>> {
+        ingested
+            .threads
+            .values()
+            .map(|thread| {
+                let evidence: BTreeSet<_> =
+                    thread.evidence.iter().map(|evidence| &evidence.source).collect();
+                let mut paths: Vec<PathBuf> = ingested
+                    .sources
+                    .iter()
+                    .filter(|source| {
+                        let establishes = source
+                            .snapshot
+                            .source
+                            .as_ref()
+                            .is_some_and(|identity| evidence.contains(&identity.id))
+                            && thread.source.value().map(String::as_str)
+                                != Some("inline-sidechain");
+                        let located = agent == Agent::Codex
+                            && thread.native_key.get("thread_id").is_some_and(|id| {
+                                source
+                                    .snapshot
+                                    .locator
+                                    .strip_prefix(id.as_str())
+                                    .is_some_and(|tail| tail.starts_with('/'))
+                            });
+                        establishes || located
+                    })
+                    .flat_map(|source| {
+                        std::iter::once(source.snapshot.file.path.clone())
+                            .chain(source.snapshot.twin.iter().map(|twin| twin.path.clone()))
+                    })
+                    .collect();
+                paths.sort();
+                paths.dedup();
+                paths
+            })
+            .collect()
+    }
+
+    #[test]
+    fn indexed_source_paths_match_scanning_every_source() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut compared = 0;
+        for (agent, dialect) in [(Agent::Claude, "claude-project"), (Agent::Codex, "codex-rollout")]
+        {
+            let mut cases: Vec<PathBuf> = std::fs::read_dir(root.join(dialect))
+                .expect("fixture directory reads")
+                .map(|entry| entry.expect("fixture entry reads").path())
+                .filter(|path| path.is_dir())
+                .collect();
+            cases.sort();
+            for case in cases {
+                let ingested = match agent {
+                    Agent::Claude => claude_project::ingest_root(&case),
+                    Agent::Codex | Agent::Pi => codex_rollout::ingest_root(&case),
+                };
+                let Ok(ingested) = ingested else { continue };
+                let mut index = SessionIndex::default();
+                index.add(agent, &ingested).expect("sessions index");
+                let indexed: Vec<Vec<PathBuf>> = ingested
+                    .threads
+                    .keys()
+                    .map(|id| index.get(id).expect("thread is indexed").source_paths.clone())
+                    .collect();
+                assert_eq!(indexed, scanned_paths(agent, &ingested), "{}", case.display());
+                compared += indexed.len();
+            }
+        }
+        assert!(compared > 20, "only {compared} threads compared");
     }
 
     #[test]
