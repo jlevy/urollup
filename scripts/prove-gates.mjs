@@ -265,6 +265,9 @@ function main() {
     ...process.env,
     // Reuse compiled dependencies across probes; only the probed crates rebuild.
     CARGO_TARGET_DIR: path.join(ROOT, "target", "gate-proofs"),
+    // Each probe builds a copy at a new path, so incremental caches never get reused
+    // and would otherwise accumulate gigabytes per run.
+    CARGO_INCREMENTAL: "0",
     UV_PROJECT_ENVIRONMENT: path.join(ROOT, ".venv"),
   };
   delete env.MAKEFLAGS;
