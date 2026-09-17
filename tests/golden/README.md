@@ -166,6 +166,8 @@ every field; this section names the ones the results check reads.
   That still asserts something: the output must leave the category out or print zero.
 - Diagnostics compare as a set of codes: a missing one and an unexpected one both fail,
   and the count compares as how many places the case says the diagnostic fired.
+  Both sides sum occurrences per code before comparing, because reports print one row
+  per code while a case lists each place separately.
 - `naive` is context, never an assertion.
   Every case prints the naive-sum rule that goes furthest wrong beside the reconciled
   truth, which is the double counting urollup exists to avoid.

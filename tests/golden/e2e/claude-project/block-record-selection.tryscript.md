@@ -59,8 +59,7 @@ VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 project | 3 | 94,517 | 470 | 94,987
 
 DIAGNOSTICS
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+claude-block-usage-conflict x4: claude-largest-output: input or cache fields differ across Claude block records
 ? 0
 ```
 
@@ -85,12 +84,7 @@ $ urollup report --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "claude-block-usage-conflict",
-      "count": 2,
-      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
-    },
-    {
-      "code": "claude-block-usage-conflict",
-      "count": 2,
+      "count": 4,
       "detail": "claude-largest-output: input or cache fields differ across Claude block records"
     }
   ],
@@ -222,8 +216,7 @@ DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
 2026-09-01 | 3 | 7 | 93,300 | 1,210 | 470 | 94,987
 
 DIAGNOSTICS
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+claude-block-usage-conflict x4: claude-largest-output: input or cache fields differ across Claude block records
 ? 0
 ```
 
@@ -261,12 +254,7 @@ $ urollup daily --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "claude-block-usage-conflict",
-      "count": 2,
-      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
-    },
-    {
-      "code": "claude-block-usage-conflict",
-      "count": 2,
+      "count": 4,
       "detail": "claude-largest-output: input or cache fields differ across Claude block records"
     }
   ]
@@ -285,8 +273,7 @@ THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
 thr-v1-0576b28q452kd5px45f9pmm8f0 | claude | project | 3 | 94,517 | 470 | 94,987
 
 DIAGNOSTICS
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+claude-block-usage-conflict x4: claude-largest-output: input or cache fields differ across Claude block records
 ? 0
 ```
 
@@ -326,12 +313,7 @@ $ urollup sessions --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "claude-block-usage-conflict",
-      "count": 2,
-      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
-    },
-    {
-      "code": "claude-block-usage-conflict",
-      "count": 2,
+      "count": 4,
       "detail": "claude-largest-output: input or cache fields differ across Claude block records"
     }
   ]
@@ -350,8 +332,7 @@ THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
 thr-v1-0576b28q452kd5px45f9pmm8f0 | claude | project | 3 | 94,517 | 470 | 94,987
 
 DIAGNOSTICS
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
-claude-block-usage-conflict x2: claude-largest-output: input or cache fields differ across Claude block records
+claude-block-usage-conflict x4: claude-largest-output: input or cache fields differ across Claude block records
 ? 0
 ```
 
@@ -391,12 +372,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "diagnostics": [
     {
       "code": "claude-block-usage-conflict",
-      "count": 2,
-      "detail": "claude-largest-output: input or cache fields differ across Claude block records"
-    },
-    {
-      "code": "claude-block-usage-conflict",
-      "count": 2,
+      "count": 4,
       "detail": "claude-largest-output: input or cache fields differ across Claude block records"
     }
   ]

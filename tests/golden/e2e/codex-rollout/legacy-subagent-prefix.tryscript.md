@@ -58,11 +58,8 @@ VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 project | 8 | 40,500 | 2,500 | 43,000
 
 DIAGNOSTICS
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x5: Codex copied-history boundary was inferred from legacy rollout records
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+codex-copied-history-inferred x17: Codex copied-history boundary was inferred from legacy rollout records
+thread-orphan x2: Codex thread names a parent whose rollout was not discovered
 ? 0
 ```
 
@@ -87,27 +84,12 @@ $ urollup report --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 5,
+      "count": 17,
       "detail": "Codex copied-history boundary was inferred from legacy rollout records"
     },
     {
       "code": "thread-orphan",
-      "count": 1,
-      "detail": "Codex thread names a parent whose rollout was not discovered"
-    },
-    {
-      "code": "thread-orphan",
-      "count": 1,
+      "count": 2,
       "detail": "Codex thread names a parent whose rollout was not discovered"
     }
   ],
@@ -239,11 +221,8 @@ DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
 2026-09-05 | 8 | 12,000 | 28,500 | 0 | 2,500 | 43,000
 
 DIAGNOSTICS
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x5: Codex copied-history boundary was inferred from legacy rollout records
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+codex-copied-history-inferred x17: Codex copied-history boundary was inferred from legacy rollout records
+thread-orphan x2: Codex thread names a parent whose rollout was not discovered
 ? 0
 ```
 
@@ -281,27 +260,12 @@ $ urollup daily --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 5,
+      "count": 17,
       "detail": "Codex copied-history boundary was inferred from legacy rollout records"
     },
     {
       "code": "thread-orphan",
-      "count": 1,
-      "detail": "Codex thread names a parent whose rollout was not discovered"
-    },
-    {
-      "code": "thread-orphan",
-      "count": 1,
+      "count": 2,
       "detail": "Codex thread names a parent whose rollout was not discovered"
     }
   ]
@@ -323,11 +287,8 @@ thr-v1-52wfqca3118hs6n8v43yabkqmp | codex | project | 2 | 4,500 | 200 | 4,700
 thr-v1-7q3rw8a20ffnp0hn5738jdpmnm | codex | project | 2 | 15,000 | 1,500 | 16,500
 
 DIAGNOSTICS
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x5: Codex copied-history boundary was inferred from legacy rollout records
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+codex-copied-history-inferred x17: Codex copied-history boundary was inferred from legacy rollout records
+thread-orphan x2: Codex thread names a parent whose rollout was not discovered
 ? 0
 ```
 
@@ -424,27 +385,12 @@ $ urollup sessions --all --format json --timezone UTC
   "diagnostics": [
     {
       "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 5,
+      "count": 17,
       "detail": "Codex copied-history boundary was inferred from legacy rollout records"
     },
     {
       "code": "thread-orphan",
-      "count": 1,
-      "detail": "Codex thread names a parent whose rollout was not discovered"
-    },
-    {
-      "code": "thread-orphan",
-      "count": 1,
+      "count": 2,
       "detail": "Codex thread names a parent whose rollout was not discovered"
     }
   ]
@@ -466,11 +412,8 @@ thr-v1-52wfqca3118hs6n8v43yabkqmp | codex | project | 2 | 4,500 | 200 | 4,700
 thr-v1-7q3rw8a20ffnp0hn5738jdpmnm | codex | project | 2 | 15,000 | 1,500 | 16,500
 
 DIAGNOSTICS
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x6: Codex copied-history boundary was inferred from legacy rollout records
-codex-copied-history-inferred x5: Codex copied-history boundary was inferred from legacy rollout records
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
-thread-orphan x1: Codex thread names a parent whose rollout was not discovered
+codex-copied-history-inferred x17: Codex copied-history boundary was inferred from legacy rollout records
+thread-orphan x2: Codex thread names a parent whose rollout was not discovered
 ? 0
 ```
 
@@ -567,27 +510,12 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   "diagnostics": [
     {
       "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 6,
-      "detail": "Codex copied-history boundary was inferred from legacy rollout records"
-    },
-    {
-      "code": "codex-copied-history-inferred",
-      "count": 5,
+      "count": 17,
       "detail": "Codex copied-history boundary was inferred from legacy rollout records"
     },
     {
       "code": "thread-orphan",
-      "count": 1,
-      "detail": "Codex thread names a parent whose rollout was not discovered"
-    },
-    {
-      "code": "thread-orphan",
-      "count": 1,
+      "count": 2,
       "detail": "Codex thread names a parent whose rollout was not discovered"
     }
   ]

@@ -1,8 +1,10 @@
 //! Aggregation implementation for the public query records.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
+use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{AccountAttribution, Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::tokens::TokenMeasures;
@@ -60,7 +62,7 @@ pub fn report(
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
         coverage: coverage_summary(sources, &requests, aggregate.complete)?,
-        diagnostics: diagnostic_summaries(sources, selected, all),
+        diagnostics: diagnostic_summaries(sources, selected, all)?,
         breakdowns: breakdowns(&requests, index, groups)?,
         sizes: size_summary(&requests)?,
         totals: aggregate.totals,
@@ -108,7 +110,7 @@ pub fn daily(
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
         rows,
-        diagnostics: diagnostic_summaries(sources, selected, all),
+        diagnostics: diagnostic_summaries(sources, selected, all)?,
     })
 }
 
@@ -150,7 +152,7 @@ pub fn sessions(
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
         rows,
-        diagnostics: diagnostic_summaries(sources, selected, all),
+        diagnostics: diagnostic_summaries(sources, selected, all)?,
     })
 }
 
@@ -251,23 +253,44 @@ fn coverage_summary(
     Ok(summary)
 }
 
+/// One row per diagnostic code over the selected subjects, in code order.
+///
+/// Diagnostics are filtered by subject first and then aggregated: `count` sums their
+/// occurrences and `detail` is the detail of the code's first diagnostic in canonical
+/// order, so neither depends on how many sources or ledger rows reported the code.
 fn diagnostic_summaries(
     sources: &[QuerySource<'_>],
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
-) -> Vec<DiagnosticSummary> {
-    sources
-        .iter()
-        .flat_map(|source| &source.ingested.ledger.diagnostics)
-        .filter(|diagnostic| {
+) -> Result<Vec<DiagnosticSummary>, QueryError> {
+    let mut by_code: BTreeMap<DiagnosticCode, (u64, &Diagnostic)> = BTreeMap::new();
+    let relevant = sources.iter().flat_map(|source| &source.ingested.ledger.diagnostics).filter(
+        |diagnostic| {
             all || diagnostic.subject.as_ref().is_none_or(|subject| selected.contains(subject))
+        },
+    );
+    for diagnostic in relevant {
+        match by_code.entry(diagnostic.code) {
+            Entry::Vacant(entry) => {
+                entry.insert((diagnostic.occurrences, diagnostic));
+            }
+            Entry::Occupied(mut entry) => {
+                let (count, first) = entry.get_mut();
+                *count = checked_count(*count, diagnostic.occurrences, "diagnostic occurrences")?;
+                if diagnostic < *first {
+                    *first = diagnostic;
+                }
+            }
+        }
+    }
+    Ok(by_code
+        .into_values()
+        .map(|(count, first)| DiagnosticSummary {
+            code: first.code.token().to_owned(),
+            count,
+            detail: first.detail.clone(),
         })
-        .map(|diagnostic| DiagnosticSummary {
-            code: diagnostic.code.token().to_owned(),
-            count: diagnostic.occurrences,
-            detail: diagnostic.detail.clone(),
-        })
-        .collect()
+        .collect())
 }
 
 struct SelectedRequest<'a> {
@@ -461,7 +484,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{daily, report, sessions};
-    use crate::adapters::claude_project;
+    use crate::adapters::{claude_project, codex_rollout};
+    use crate::ledger::diagnostics::DiagnosticCode;
     use crate::query::{GroupBy, QueryMetadata, QuerySource, RequestCounts, ResolvedTimeZone};
     use crate::selection::{Agent, Scope, SelectionQuery, SessionIndex};
 
@@ -644,5 +668,62 @@ mod tests {
         assert_eq!(sessions.rows[0].requests, report.totals.requests);
         assert_eq!(report.breakdowns.len(), 4);
         assert!(report.breakdowns.contains_key(GroupBy::Model.token()));
+    }
+
+    #[test]
+    fn diagnostics_filter_by_selected_subject_then_aggregate_per_code() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/codex-rollout/legacy-subagent-prefix");
+        let ingested = codex_rollout::ingest_root(&root).expect("fixture ingests");
+        let mut index = SessionIndex::default();
+        index.add(Agent::Codex, &ingested).expect("fixture indexes");
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).expect("UTC resolves");
+        let source = [QuerySource { agent: Agent::Codex, ingested: &ingested }];
+        let summaries = |selected: &BTreeSet<_>, all| {
+            sessions(
+                &source,
+                &index,
+                selected,
+                all,
+                QueryMetadata::new("sessions", "test", Scope::SelfOnly, &timezone),
+            )
+            .expect("sessions build")
+            .diagnostics
+            .into_iter()
+            .map(|row| (row.code, row.count))
+            .collect::<Vec<_>>()
+        };
+
+        let everything = summaries(&BTreeSet::new(), true);
+        assert_eq!(
+            everything,
+            [("codex-copied-history-inferred".to_owned(), 17), ("thread-orphan".to_owned(), 2)],
+            "one row per code, with occurrences summed across ledger rows"
+        );
+
+        let subject = ingested
+            .ledger
+            .diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::ThreadOrphan)
+            .and_then(|d| d.subject.clone())
+            .expect("an orphan names its thread");
+        let selected = BTreeSet::from([subject.clone()]);
+        let expected: u64 = ingested
+            .ledger
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::CodexCopiedHistoryInferred)
+            .filter(|d| d.subject.as_ref().is_none_or(|s| *s == subject))
+            .map(|d| d.occurrences)
+            .sum();
+        assert!(expected < 17, "the selection excludes other threads' diagnostics");
+        assert_eq!(
+            summaries(&selected, false),
+            [
+                ("codex-copied-history-inferred".to_owned(), expected),
+                ("thread-orphan".to_owned(), 1)
+            ]
+        );
     }
 }
