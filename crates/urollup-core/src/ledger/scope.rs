@@ -147,12 +147,20 @@ impl ScopedKey {
     /// Reduces the key to its digest form, which is all reconciliation needs.
     pub fn derive(&self) -> Result<DerivedKey, IdentityError> {
         let (id, check) = self.key.derive_digest()?;
-        Ok(DerivedKey { precedence: self.precedence, basis: self.basis, id, check })
+        Ok(DerivedKey {
+            precedence: self.precedence,
+            basis: self.basis,
+            id,
+            check: check.to_be_bytes(),
+        })
     }
 }
 
 /// A key reduced to its derived ID, the rank its linked set resolves by, and 64 further
 /// digest bits that detect two different keys deriving one ID.
+///
+/// Every field is byte-aligned, so an observation's two inline keys take 54 bytes rather
+/// than 64.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DerivedKey {
     /// Precedence of the key's kind; 0 is the highest.
@@ -161,9 +169,12 @@ pub struct DerivedKey {
     pub basis: IdentityBasis,
     /// The derived ID.
     pub id: AnalyticalId,
-    /// SHA-256 digest bits 128 through 191 of the key.
-    pub check: u64,
+    /// SHA-256 digest bits 128 through 191 of the key, as big-endian bytes so they order
+    /// as the number they spell.
+    pub check: [u8; 8],
 }
+
+const _: () = assert!(std::mem::size_of::<Option<DerivedKey>>() == 27);
 
 /// A key spec or key value that breaks the scope rules.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

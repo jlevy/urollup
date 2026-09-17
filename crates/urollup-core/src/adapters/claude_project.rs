@@ -1266,7 +1266,7 @@ fn observe(
     ambiguous: &HashSet<Digest>,
     ids: &HashMap<NativeThread, AnalyticalId>,
 ) -> Result<RequestObservation, AdapterError> {
-    let mut observation = RequestObservation::new(evidence, DIALECT);
+    let mut observation = RequestObservation::new(evidence);
     let recorded_session = record.recorded_session();
     if let Some(message) = &record.message {
         observation
@@ -1309,17 +1309,17 @@ fn observe(
         };
     if observation.role == ObservationRole::Original {
         let (usage, model_usage) = claude_usage(record, strings)?;
-        observation.usage = Some(usage);
-        observation.model_usage = model_usage;
+        observation.usage = Some(usage.into());
+        observation.model_usage = model_usage.into();
         observation.sequence = record.count(Count::BlockIndex);
         observation.model = record.model.map(|model| ModelName {
-            name: strings.resolve(model).to_owned(),
+            name: strings.resolve(model).into(),
             basis: ModelBasis::Served,
         });
-        observation.effort = record.effort.map(|effort| strings.resolve(effort).to_owned());
-        observation.timestamp = record.timestamp.map(RecordTime::get);
+        observation.effort = record.effort.map(|effort| strings.resolve(effort).into());
+        observation.timestamp = record.timestamp.map(|time| time.get().into());
         if let Some(model) = observation.model.as_ref() {
-            observation.invariants.push(("model", model.name.clone()));
+            observation.invariants.push(("model", model.name));
         }
     }
     Ok(observation)
@@ -1440,10 +1440,10 @@ fn claude_usage(
     let mut usage = primary;
     let mut model_usage = vec![ModelUsage {
         model: record.model.map(|model| ModelName {
-            name: strings.resolve(model).to_owned(),
+            name: strings.resolve(model).into(),
             basis: ModelBasis::Served,
         }),
-        usage: primary,
+        usage: primary.into(),
         source: "message.usage",
     }];
     for iteration in advisors {
@@ -1460,8 +1460,8 @@ fn claude_usage(
             model: iteration
                 .model
                 .as_ref()
-                .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served }),
-            usage: advisor,
+                .map(|name| ModelName { name: name.as_str().into(), basis: ModelBasis::Served }),
+            usage: advisor.into(),
             source: "advisor_message",
         });
     }
@@ -1481,12 +1481,12 @@ impl RevisionSelector for ClaudeBlockSelector {
             .enumerate()
             .max_by(|(_, left), (_, right)| compare_claude_revision(left, right))
             .map_or(0, |(index, _)| index);
-        let selected_usage = revisions[selected].usage;
+        let selected_usage = revisions[selected].usage.map(TokenMeasures::from);
         let disagreements = selected_usage.map_or_else(Vec::new, |selected| {
             revisions
                 .iter()
-                .filter_map(|revision| revision.usage.as_ref())
-                .any(|usage| input_measures(usage) != input_measures(&selected))
+                .filter_map(|revision| revision.usage.map(TokenMeasures::from))
+                .any(|usage| input_measures(&usage) != input_measures(&selected))
                 .then(|| "input or cache fields differ across Claude block records".to_owned())
                 .into_iter()
                 .collect()
@@ -1512,7 +1512,7 @@ fn input_measures(measures: &TokenMeasures) -> [Option<u64>; 6] {
 
 fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation) -> Ordering {
     let output = |observation: &RequestObservation| {
-        observation.usage.and_then(|usage| usage.output).unwrap_or(0)
+        observation.usage.and_then(|usage| TokenMeasures::from(usage).output).unwrap_or(0)
     };
     output(left)
         .cmp(&output(right))
@@ -1579,9 +1579,10 @@ mod tests {
     }
 
     fn observation(offset: u64, block: u64) -> RequestObservation {
-        let mut observation = RequestObservation::new(source_evidence(offset), "claude-project");
+        let mut observation = RequestObservation::new(source_evidence(offset));
         observation.sequence = Some(block);
-        observation.usage = Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() });
+        observation.usage =
+            Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() }.into());
         observation
     }
 
@@ -1671,10 +1672,10 @@ mod tests {
         assert_eq!(usage.output, Some(17));
         assert_eq!(model_usage.len(), 2);
         assert_eq!(model_usage[0].model.as_ref().unwrap().name, "claude-test");
-        assert_eq!(model_usage[0].usage.uncached_input, Some(3));
+        assert_eq!(TokenMeasures::from(model_usage[0].usage).uncached_input, Some(3));
         assert_eq!(model_usage[1].model.as_ref().unwrap().name, "claude-advisor");
-        assert_eq!(model_usage[1].usage.uncached_input, Some(5));
-        assert_eq!(model_usage[1].usage.output, Some(7));
+        assert_eq!(TokenMeasures::from(model_usage[1].usage).uncached_input, Some(5));
+        assert_eq!(TokenMeasures::from(model_usage[1].usage).output, Some(7));
     }
 
     #[test]

@@ -13,6 +13,11 @@
 
 #![deny(clippy::arithmetic_side_effects)]
 
+use std::cmp::Ordering;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroU16;
+
 /// Disjoint token categories. `None` means the source does not report the category.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TokenMeasures {
@@ -34,6 +39,123 @@ pub struct TokenMeasures {
     pub reasoning: Option<u64>,
     /// Tokens a provider bills in a category no other provider has.
     pub provider_only: Option<u64>,
+}
+
+impl TokenMeasures {
+    /// Every field's value, in declaration order.
+    const fn fields(&self) -> [Option<u64>; 8] {
+        [
+            self.uncached_input,
+            self.cache_read,
+            self.cache_write_5m,
+            self.cache_write_1h,
+            self.cache_write_unspecified,
+            self.output,
+            self.reasoning,
+            self.provider_only,
+        ]
+    }
+
+    /// Measures from every field's value, in declaration order.
+    const fn from_fields(fields: [Option<u64>; 8]) -> Self {
+        Self {
+            uncached_input: fields[0],
+            cache_read: fields[1],
+            cache_write_5m: fields[2],
+            cache_write_1h: fields[3],
+            cache_write_unspecified: fields[4],
+            output: fields[5],
+            reasoning: fields[6],
+            provider_only: fields[7],
+        }
+    }
+}
+
+/// [`TokenMeasures`] as ledger rows store them: eight counters and a presence mask.
+///
+/// Each `Option<u64>` of a `TokenMeasures` spends 8 bytes on its tag, so the public type
+/// takes 128 bytes; this form takes 72, and so does `Option<Measures>`, because the mask
+/// has a niche. Rows store `Measures`, and arithmetic converts to `TokenMeasures`.
+///
+/// An absent counter is stored as zero, so equality is value equality. Ordering and
+/// hashing are those of the equivalent `TokenMeasures`: its derived order compares fields
+/// in declaration order with an absent value first, and it is part of the canonical
+/// observation order.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct Measures {
+    /// Counter values in [`TokenMeasures`] field order; zero when absent.
+    values: [u64; 8],
+    /// Bit 0 is always set, which gives the niche; bit `n + 1` marks counter `n` present.
+    present: NonZeroU16,
+}
+
+const _: () = assert!(std::mem::size_of::<Measures>() == 72);
+const _: () = assert!(std::mem::size_of::<Option<Measures>>() == 72);
+
+/// The presence bit of each counter, in field order.
+const PRESENCE_BITS: [u16; 8] = [0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100];
+
+impl Measures {
+    fn fields(&self) -> [Option<u64>; 8] {
+        let mut fields = [None; 8];
+        for ((field, value), bit) in fields.iter_mut().zip(self.values).zip(PRESENCE_BITS) {
+            if self.present.get() & bit != 0 {
+                *field = Some(value);
+            }
+        }
+        fields
+    }
+}
+
+impl Default for Measures {
+    fn default() -> Self {
+        Self { values: [0; 8], present: NonZeroU16::MIN }
+    }
+}
+
+impl From<TokenMeasures> for Measures {
+    fn from(measures: TokenMeasures) -> Self {
+        let mut compact = Self::default();
+        for ((field, value), bit) in
+            measures.fields().into_iter().zip(&mut compact.values).zip(PRESENCE_BITS)
+        {
+            if let Some(field) = field {
+                *value = field;
+                compact.present |= bit;
+            }
+        }
+        compact
+    }
+}
+
+impl From<Measures> for TokenMeasures {
+    fn from(measures: Measures) -> Self {
+        Self::from_fields(measures.fields())
+    }
+}
+
+impl Ord for Measures {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.fields().cmp(&other.fields())
+    }
+}
+
+impl PartialOrd for Measures {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for Measures {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        TokenMeasures::from(*self).hash(state);
+    }
+}
+
+impl fmt::Debug for Measures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TokenMeasures::from(*self).fmt(f)
+    }
 }
 
 /// A token counter overflowed.
@@ -196,10 +318,52 @@ fn sum_known<const N: usize>(
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+
+    use proptest::prelude::*;
+
     use super::{
-        InputBelowCacheRead, InputSemantics, NativeInput, TokenMeasures, TokenOverflow,
+        InputBelowCacheRead, InputSemantics, Measures, NativeInput, TokenMeasures, TokenOverflow,
         normalize_input,
     };
+
+    /// Measures from a small universe, so equal and adjacent values are common, with the
+    /// extremes of the counter range.
+    fn arbitrary_measures() -> impl Strategy<Value = TokenMeasures> {
+        let counter = prop::option::of(prop_oneof![0u64..3, Just(u64::MAX), any::<u64>()]);
+        prop::array::uniform8(counter).prop_map(TokenMeasures::from_fields)
+    }
+
+    proptest! {
+        #[test]
+        fn compact_measures_order_compare_and_hash_like_token_measures(
+            left in arbitrary_measures(),
+            other in arbitrary_measures(),
+            shared in prop::array::uniform8(any::<bool>()),
+        ) {
+            // Fields `right` shares with `left` make equal and nearly equal pairs common.
+            let mut fields = other.fields();
+            for ((field, left_field), shared) in fields.iter_mut().zip(left.fields()).zip(shared) {
+                if shared {
+                    *field = left_field;
+                }
+            }
+            let right = TokenMeasures::from_fields(fields);
+            let (compact_left, compact_right) = (Measures::from(left), Measures::from(right));
+            prop_assert_eq!(TokenMeasures::from(compact_left), left);
+            prop_assert_eq!(compact_left.cmp(&compact_right), left.cmp(&right));
+            prop_assert_eq!(compact_left == compact_right, left == right);
+            let hasher = BuildHasherDefault::<DefaultHasher>::default();
+            prop_assert_eq!(hasher.hash_one(compact_left), hasher.hash_one(left));
+            prop_assert_eq!(format!("{compact_left:?}"), format!("{left:?}"));
+        }
+    }
+
+    #[test]
+    fn compact_measures_default_to_unreported() {
+        assert_eq!(TokenMeasures::from(Measures::default()), TokenMeasures::default());
+        assert_eq!(Measures::from(TokenMeasures::default()), Measures::default());
+    }
 
     #[test]
     fn codex_input_includes_cache_reads_and_claude_input_does_not() {

@@ -4,8 +4,9 @@
 ///
 /// Observations carry one or two keys and at most one invariant. A `Vec` allocates a
 /// minimum capacity of four for each, which on a whole-history run is hundreds of thousands
-/// of small allocations. Items fill the inline slots in order, so the derived comparison,
-/// equality and hashing agree with comparing the item sequences.
+/// of small allocations. With `N` of zero, a list that is almost always empty takes one
+/// pointer instead of a `Vec`'s three words. Items fill the inline slots in order, so the
+/// derived comparison, equality and hashing agree with comparing the item sequences.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InlineList<T, const N: usize> {
     inline: [Option<T>; N],
@@ -149,11 +150,18 @@ mod tests {
 
             let mut sorted = list;
             sorted.sort_dedup();
-            let mut expected = left;
+            let mut expected = left.clone();
             expected.sort_unstable();
             expected.dedup();
             prop_assert_eq!(sorted.iter().copied().collect::<Vec<_>>(), expected.clone());
             prop_assert_eq!(sorted, InlineList::<u8, 2>::from(expected));
+
+            let spilled: InlineList<u8, 0> = left.clone().into();
+            let other_spilled: InlineList<u8, 0> = right.clone().into();
+            prop_assert_eq!(spilled.iter().copied().collect::<Vec<_>>(), left.clone());
+            prop_assert_eq!(spilled.cmp(&other_spilled), left.cmp(&right));
+            prop_assert_eq!(spilled == other_spilled, left == right);
+            prop_assert_eq!(spilled.is_empty(), left.is_empty());
         }
     }
 }

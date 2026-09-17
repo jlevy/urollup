@@ -6,8 +6,10 @@ use serde_json::{Value, json};
 use urollup_core::adapters::Ingested;
 use urollup_core::adapters::claude_project;
 use urollup_core::adapters::codex_rollout;
-use urollup_core::ledger::entities::{Counting, ModelUsage, Ownership, Request, UsageRevision};
+use urollup_core::ledger::entities::{Counting, ModelUsage, Ownership, Request, SelectedUsage};
 use urollup_core::ledger::identity::AnalyticalId;
+use urollup_core::ledger::names::Name;
+use urollup_core::ledger::reconcile::Ledger;
 use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::sources::evidence::EvidenceRef;
 use urollup_core::sources::manifest::{CoverageFailure, ManifestEntry, SourceChange};
@@ -37,18 +39,20 @@ fn model_usage(component: &ModelUsage) -> Value {
     json!({
         "model": component.model.as_ref().map(|model| json!({
             "basis": format!("{:?}", model.basis),
-            "name": model.name,
+            "name": model.name.as_str(),
         })),
         "source": component.source,
-        "usage": usage(&component.usage),
+        "usage": usage(&component.usage.into()),
     })
 }
 
-fn revision(revision: &UsageRevision) -> Value {
+/// The selected revision, whose evidence the request stores as a position in its evidence
+/// list and whose rule the ledger stores once.
+fn revision(request: &Request, selected: &SelectedUsage) -> Value {
     json!({
-        "evidence": evidence(&revision.evidence),
-        "model_usage": revision.model_usage.iter().map(model_usage).collect::<Vec<_>>(),
-        "usage": usage(&revision.usage),
+        "evidence": evidence(request.selected_evidence().expect("selected usage has evidence")),
+        "model_usage": selected.revision.model_usage.iter().map(model_usage).collect::<Vec<_>>(),
+        "usage": usage(&selected.revision.usage.into()),
     })
 }
 
@@ -70,25 +74,25 @@ fn counting(counting: &Counting) -> Value {
     }
 }
 
-fn request(request: &Request) -> Value {
+fn request(ledger: &Ledger, request: &Request) -> Value {
     json!({
         "aliases": request.aliases.iter().map(AnalyticalId::to_string).collect::<Vec<_>>(),
         "basis": request.basis.token(),
-        "copies": request.copies.iter().map(evidence).collect::<Vec<_>>(),
+        "copies": request.copies().iter().map(evidence).collect::<Vec<_>>(),
         "counting": counting(&request.counting),
-        "effort": request.effort,
-        "evidence": request.evidence.iter().map(evidence).collect::<Vec<_>>(),
-        "first_seen": request.first_seen.map(|timestamp| timestamp.to_string()),
+        "effort": request.effort.map(Name::as_str),
+        "evidence": request.evidence().iter().map(evidence).collect::<Vec<_>>(),
+        "first_seen": request.first_seen.map(|timestamp| timestamp.get().to_string()),
         "id": request.id().to_string(),
-        "last_seen": request.last_seen.map(|timestamp| timestamp.to_string()),
+        "last_seen": request.last_seen.map(|timestamp| timestamp.get().to_string()),
         "model": request.model.as_ref().map(|model| json!({
             "basis": format!("{:?}", model.basis),
-            "name": model.name,
+            "name": model.name.as_str(),
         })),
         "ownership": ownership(&request.ownership),
         "selected_usage": request.usage.as_ref().map(|selected| json!({
-            "revision": revision(&selected.revision),
-            "rule": selected.rule,
+            "revision": revision(request, selected),
+            "rule": ledger.revision_rule,
             "status": format!("{:?}", selected.status),
         })),
     })
@@ -199,7 +203,12 @@ fn snapshot(ingested: &Ingested) -> Value {
                 "reason": format!("{:?}", gap.reason),
                 "thread": gap.thread.as_ref().map(AnalyticalId::to_string),
             })).collect::<Vec<_>>(),
-            "requests": ingested.ledger.requests.values().map(request).collect::<Vec<_>>(),
+            "requests": ingested
+                .ledger
+                .requests
+                .values()
+                .map(|row| request(&ingested.ledger, row))
+                .collect::<Vec<_>>(),
         },
         "manifest": {
             "entries": ingested.manifest.entries.iter().map(manifest_entry).collect::<Vec<_>>(),
