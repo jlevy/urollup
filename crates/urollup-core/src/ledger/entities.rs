@@ -333,8 +333,9 @@ pub struct ProviderLimitObservation {
     /// The owning request, when proven.
     pub owner_request: Option<AnalyticalId>,
     /// Native field names and values verbatim, including window length, reset time,
-    /// utilization in its native unit, plan, credit and overage fields.
-    pub native: BTreeMap<String, serde_json::Value>,
+    /// utilization in its native unit, plan, credit and overage fields, as one compact
+    /// JSON object with sorted keys.
+    pub native: Box<str>,
     /// The record.
     pub evidence: EvidenceRef,
 }

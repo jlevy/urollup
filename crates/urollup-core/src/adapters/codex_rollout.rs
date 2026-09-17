@@ -746,9 +746,9 @@ fn normalize(
     )?;
     ledger.coverage.copies = ledger.coverage.copies.saturating_add(copied_regions);
     ledger.diagnostics.retain(|diagnostic| diagnostic.code != DiagnosticCode::CopyWithoutOriginal);
-    let threads = ledger.threads.clone();
-    let relationships = ledger.relationships.clone();
-    let limit_observations = ledger.limit_observations.clone();
+    let threads = std::mem::take(&mut ledger.threads);
+    let relationships = std::mem::take(&mut ledger.relationships);
+    let limit_observations = std::mem::take(&mut ledger.limit_observations);
     let sources = manifest
         .entries
         .iter()
@@ -887,7 +887,7 @@ fn append_limits(
             observed_at: record.timestamp.map_or(Basis::Unknown, Basis::Observed),
             owner_thread: owner_thread.clone(),
             owner_request: None,
-            native: serde_json::from_str(&limits.native).unwrap_or_default(),
+            native: limits.native.as_str().into(),
             evidence: record.evidence.clone(),
         });
     }

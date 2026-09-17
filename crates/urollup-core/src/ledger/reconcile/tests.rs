@@ -117,7 +117,7 @@ fn limit_observation(stream: u8, src: u8, offset: u64, value: u8) -> ProviderLim
         observed_at: Basis::Unknown,
         owner_thread: Some(thread(&format!("t{stream}"))),
         owner_request: None,
-        native: BTreeMap::from([("used_percent".to_owned(), serde_json::json!(value))]),
+        native: serde_json::json!({ "used_percent": value }).to_string().into_boxed_str(),
         evidence: evidence(src, offset),
     }
 }

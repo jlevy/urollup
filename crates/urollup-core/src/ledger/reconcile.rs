@@ -670,10 +670,10 @@ fn reconcile_limit_observations(
     observations.sort_by_cached_key(limit_sort_key);
     observations.dedup();
     let mut reconciled: Vec<ProviderLimitObservation> = Vec::with_capacity(observations.len());
-    let mut previous: BTreeMap<LimitStreamKey, String> = BTreeMap::new();
+    let mut previous: BTreeMap<LimitStreamKey, Box<str>> = BTreeMap::new();
     for observation in observations {
         let stream = limit_stream_key(&observation);
-        let signature = serde_json::to_string(&observation.native).unwrap_or_default();
+        let signature = observation.native.clone();
         let repeated = previous.get(&stream) == Some(&signature);
         if !repeated {
             reconciled.push(observation);
@@ -832,7 +832,7 @@ type LimitSortKey = (
     Option<String>,
     Option<String>,
     Basis<Timestamp>,
-    String,
+    Box<str>,
 );
 
 fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
@@ -853,7 +853,7 @@ fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey {
         observation.limit_name.clone(),
         observation.window.clone(),
         observation.observed_at.clone(),
-        serde_json::to_string(&observation.native).unwrap_or_default(),
+        observation.native.clone(),
     )
 }
 
