@@ -13,9 +13,9 @@ urollup must report on the whole local history by default.
 On the maintainer’s machine that history is about 2.7 GB of Claude Code logs in 2,920
 files and 12 GB of Codex rollouts in 8,900 files, and Codex grows by up to about 1 GB a
 day. The milestone 0.1 engine cannot read it: two unguarded runs grew a single process
-past 20 GB and stalled the machine, and the temporary 512 MiB input guard now makes
-`urollup sessions`, `daily` and `report --all` refuse the default corpus.
-The guard prevents a crash; it does not make urollup usable.
+past 20 GB and stalled the machine, and the temporary 512 MiB input guard that followed
+made `urollup sessions`, `daily` and `report --all` refuse the default corpus.
+The guard prevented a crash; it did not make urollup usable.
 
 This plan replaces the ingestion and reconciliation data model rather than tuning it.
 Families of related sources decode in parallel into compact typed rows, one global pass
@@ -225,7 +225,12 @@ Raw bytes never accumulate: skipped lines allocate nothing, the reader buffer is
 source, and limits collapse while streaming.
 An internal ceiling of 2 GiB of compact rows exits 1 with a capacity diagnostic that
 names the row count and suggests `--source`; it is a safety net, not a budget users
-tune.
+tune. `reconcile` checks it before building any request: `MAX_OBSERVATIONS` is 2 GiB
+divided by the size of one request observation row, so the ceiling follows the row type
+as it shrinks, and each agent’s reconciliation is checked on its own.
+At a 448 B row the ceiling is 4,793,490 observations; whole history has about 680,000.
+The CLI reports `N request observations exceed the reconciliation capacity of M compact
+rows (2 GiB); pass narrower --source roots with --no-default-sources`.
 
 ### Parallelism and Determinism
 
@@ -272,6 +277,29 @@ Report JSON keeps its schema version; `sessions` rows gain an additive `session`
 with the native session ID, and diagnostic rows change where fixtures emit repeated
 codes.
 
+`UROLLUP_STATS` parses like `UROLLUP_JOBS`: unset, empty or `0` disables it, `1` enables
+it, and any other value is a usage error.
+Each measurement is one `stats:` line of `key=value` pairs, written to stderr after the
+command runs and before its output or error.
+This is a whole-history `sessions --all` run on 2026-09-17 (`UROLLUP_JOBS` unset, on a
+loaded machine):
+
+```text
+stats: workers=8
+stats: phase=discovery seconds=5.485
+stats: phase=claude_ingest seconds=3.825
+stats: phase=codex_ingest seconds=7.466
+stats: phase=session_index seconds=1.046
+stats: phase=query_render seconds=0.096
+stats: agent=claude sources=1686 observations=393175 requests=181231 limit_observations=332 diagnostics=96
+stats: agent=codex sources=8831 observations=288086 requests=287038 limit_observations=82397 diagnostics=818
+stats: total seconds=17.986
+```
+
+A failed command prints only the phases it finished.
+The lines hold phase names, wall times and counts, never paths, IDs or model names, so
+QA reports may quote them.
+
 ## Implementation Plan
 
 ### Phase 1: Whole History Works
@@ -293,7 +321,7 @@ codes.
 - [ ] Port `accounting::totals`, `query` and `SessionIndex` to the compact ledger.
 - [x] Add the bounded family worker pool and `UROLLUP_JOBS`, with worker-count and
   file-rename invariance tests.
-- [ ] Remove the 512 MiB guard and the read budgets it required; add the 2 GiB
+- [x] Remove the 512 MiB guard and the read budgets it required; add the 2 GiB
   compact-row ceiling and `UROLLUP_STATS`.
 - [x] Add the native session ID as an additive `session` field on `sessions` rows, so
   whole-history results join to ccusage in one pass.
@@ -354,6 +382,8 @@ The steps so far:
   pass.
 - Keep observation keys and invariants inline, and remove candidate tokens, candidate
   owners and account attribution.
+- Remove the input guard and the read budgets, add the reconciliation capacity ceiling,
+  and add `UROLLUP_STATS`.
 
 Whole-history measurements on 2026-09-16 used a local build with the input guard raised,
 under the RSS watchdog, on the maintainer’s corpus:
@@ -368,6 +398,12 @@ under the RSS watchdog, on the maintainer’s corpus:
 Whole history now completes within the Phase 1 time target.
 Peak footprint is still about twice the 512 MiB goal; the Claude adapter’s decoded
 records and owner maps set the peak, and compacting them is the next step.
+
+After the guard was removed, a release build ran whole-history `sessions --all` on
+2026-09-17 under a 2 GiB watchdog on a loaded machine: it exited 0 at 878 MiB peak RSS
+in 18.6 s over 468,269 requests.
+The `UROLLUP_STATS` example under [CLI and Output Changes](#cli-and-output-changes) is
+that run.
 
 ## Testing Strategy
 

@@ -52,9 +52,9 @@ urollup report --all --source <log-root-or-file> --no-default-sources
 
 The CLI discovers the standard Claude Code and Codex log locations unless
 `--no-default-sources` is set.
-In version 0.1, a selection with more than 512 MiB of estimated log input stops with a
-safety error rather than risking unbounded memory; narrow it with `--source` until
-large-corpus streaming lands.
+Whole-history reports have no input-size limit.
+`UROLLUP_JOBS` sets how many threads decode logs, and `UROLLUP_STATS=1` prints phase
+timings, the worker count and row counts to stderr.
 Run `urollup <command> --help` for exact-session selection, descendant scope, timezone,
 grouping and output options.
 
@@ -75,11 +75,11 @@ Milestone 0.1’s accounting and report implementation and fixture-backed ccusag
 reconciliation are complete, as are terminal-aware color, interactive progress and the
 privacy-tested local acceptance tools.
 A bounded, consented real-log corpus passed the command and memory-watchdog checks.
-A reader-enforced 512 MiB decoded-data and one-million-record budget now fails safely
-during an oversized selection, including compressed input, while a metadata preflight
-rejects obviously oversized selections earlier.
-The roughly 15 GB default corpus still requires bounded streaming or spill before its
-`--all` case can be accepted.
+Compact parallel ingestion now reads the roughly 15 GB default corpus in under 25
+seconds, so the temporary 512 MiB input guard and its read budgets are removed; an
+internal 2 GiB compact-row ceiling fails with a capacity error instead of growing
+without bound. The whole-history `--all` case still needs acceptance under the
+[full-history QA playbook](tests/qa/full-history-rollup.qa.md).
 Recorded maintainer decisions and independent implementation review also remain before
 the milestone is accepted, after which packaging implementation and rehearsal can begin.
 

@@ -14,9 +14,8 @@ size"). Each measured run is additionally wrapped in `scripts/run-rss-watchdog.p
 kill switch, so a regression that grows without bound is terminated instead of
 exhausting the machine.
 
-The current engine refuses any discovered input estimated over 512 MiB (see
-`crates/urollup/src/cli.rs`); sizes above that are reported as a clean refusal rather
-than treated as a crash. Default sizes (32/64/128/256 MiB) stay under that limit.
+The engine has no input-size limit. A corpus large enough to hit its internal 2 GiB
+compact-row ceiling is reported as a clean refusal rather than treated as a crash.
 
 A final section runs the raw-bytes-independence check: two small corpora with
 identical usage records (same seed, same session/rollout counts) but very different
@@ -46,11 +45,10 @@ DEFAULT_BINARY = REPO_ROOT / "target" / "release" / "urollup"
 
 MIB = 1024 * 1024
 DEFAULT_SIZES_MIB = [32, 64, 128, 256]
-# The engine's own input-size refusal threshold (crates/urollup/src/cli.rs,
-# MAX_ESTIMATED_SOURCE_BYTES); measuring above it is expected to be refused, not crash.
-ENGINE_SAFETY_LIMIT_MIB = 512
 COMMANDS = ["sessions", "daily", "report"]
-REFUSAL_MARKER = "v0.1 safety limit"
+# The engine's capacity error (ReconcileError::CapacityExceeded in
+# crates/urollup-core/src/ledger/reconcile.rs); a run that hits it is refused, not a crash.
+REFUSAL_MARKER = "reconciliation capacity"
 
 
 @dataclass
@@ -392,14 +390,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-
-    for size_mib in args.sizes_mib_list:
-        if size_mib > ENGINE_SAFETY_LIMIT_MIB:
-            print(
-                f"note: {size_mib} MiB exceeds the engine's {ENGINE_SAFETY_LIMIT_MIB} MiB "
-                "input-size safety limit; expect a clean refusal, not a crash",
-                file=sys.stderr,
-            )
 
     rows = []
     for size_mib in args.sizes_mib_list:

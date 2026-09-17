@@ -20,8 +20,8 @@ The dated
 is one completed record produced from this procedure.
 
 **Estimated duration:** 30–60 minutes after the pinned toolchains and dependencies are
-installed. A full-corpus parity run is excluded until the large-corpus prerequisite is
-met.
+installed. A full-corpus parity run is excluded; whole-history validation follows the
+[full-history QA playbook](full-history-rollup.qa.md).
 
 ## Safety Boundaries
 
@@ -37,17 +37,19 @@ met.
   the limit and records peak RSS and elapsed milliseconds without retaining its command
   or environment. A process can briefly exceed the limit between 50 ms samples, so this
   is an enforcing watchdog, not an operating-system memory limit.
-- Do not bypass the shared 512 MiB decoded-data and one-million-record ingestion budgets
-  or run the roughly 15 GB default corpus until bounded streaming or spill is available.
-  Two unbounded runs caused severe memory pressure, one of them started accidentally by
-  shell command substitution; these budgets prevent an unbounded repeat but do not make
-  the `--all` case usable.
+- urollup no longer limits input size: the temporary 512 MiB input guard and its read
+  budgets were removed once compact ingestion read the whole default corpus in under 1
+  GiB. Two runs of the earlier unbounded engine caused severe memory pressure, one of
+  them started accidentally by shell command substitution, so keep every real-log run
+  under the watchdog and validate the whole default corpus with the
+  [full-history QA playbook](full-history-rollup.qa.md), not this bounded one.
 - Never place backticks inside double-quoted shell arguments, such as a bead description
   that mentions a command.
   The shell executes the quoted command; pass such text through `--file`, stdin or
   single quotes.
 - Before a real-log session, reinstall the global developer binary from the current
-  checkout so any `urollup` on `PATH` has the ingestion budgets.
+  checkout so any `urollup` on `PATH`, including one started by accident, runs the
+  compact engine rather than an older unbounded build.
 - Point `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` at the consented, bounded QA corpus.
   Confirm that choice without printing either value in logs or reports.
 - Set `$UROLLUP_QA_SESSION_SELECTOR` to one consented session in that corpus for the
@@ -281,8 +283,8 @@ Do not capture table rows in the QA report.
   coverage is expected.
 - Diagnostics require investigation, but their raw text may contain private context.
   Record only the count until the content is sanitized.
-- If the full default corpus is needed, stop at this phase until the streaming or spill
-  prerequisite in Safety boundaries is satisfied.
+- If the full default corpus is needed, use the full-history QA playbook rather than
+  widening this bounded run.
 
 ### Phase 3 Verification
 
@@ -328,7 +330,7 @@ Do not capture table rows in the QA report.
 
 - The local parity helper performs two uncached whole-history urollup scans.
   On a large history this can be slow and memory-intensive; do not bypass the watchdog
-  or ingestion boundaries to finish it.
+  to finish it.
 - A tool failure may be reported without its raw diagnostic by design.
   Reproduce it locally, sanitize the finding and record only privacy-safe evidence.
 - If aggregate deltas are unexplained, preserve the ignored output for local inspection

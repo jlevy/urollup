@@ -37,11 +37,10 @@ unbounded run over the real default corpus reached 23–40 GB and stalled a mach
   do this by default) and delete them after use.
   `measure-scale.py` deletes each corpus itself as soon as it finishes measuring that
   size.
-- Never generate more than 512 MiB in one corpus.
-  The current engine refuses any discovered input it estimates at more than 512 MiB
-  (`crates/urollup/src/cli.rs`), so there is nothing to measure above that, and disk
-  space on a typical development machine is limited.
-  The default sweep (32/64/128/256 MiB) stays comfortably under the limit.
+- Never generate more than 512 MiB in one corpus without checking free disk space first.
+  The engine no longer limits input size, but disk space on a typical development
+  machine is limited, and the default sweep (32/64/128/256 MiB) already shows the
+  scaling slope.
 
 ## Generating a corpus
 
@@ -96,16 +95,6 @@ Records are modeled on the shapes in
 Run `--help` for the full list, including `--claude-projects` (how many distinct project
 directories to rotate through).
 
-### A note on the 64x zstd multiplier
-
-The 512 MiB engine safety check estimates a `.zst` source’s decoded size as 64 times its
-compressed size on disk (a deliberately conservative bound).
-A corpus that is mostly zstd-compressed can therefore trip the safety refusal well
-before its logical `--max-bytes` content would, even though very little real disk space
-was used. This is occasionally useful for exercising the refusal path cheaply (see
-`tests/qa/test_synthetic_corpus.py` and the harness’s own handling of a refusal), but it
-means `--zstd-fraction` should stay modest for a corpus meant to actually be ingested.
-
 ## Measuring scale
 
 ```bash
@@ -125,8 +114,9 @@ Useful flags:
   release binary, and so on).
   Defaults to `target/release/urollup`.
 - `--sizes-mib 32,64,128` — a custom size list.
-  Sizes above 512 MiB are reported as a clean refusal (the row’s status column reads
-  `refused`), not treated as a crash.
+  A corpus above the engine’s 2 GiB compact-row ceiling is reported as a clean refusal
+  (the row’s status column reads `refused`), not treated as a crash; synthetic corpora
+  of a few GB are far below it.
 - `--watchdog-limit-mib` — the kill-switch limit (default 2048 MiB); lower it if you
   want to catch a regression sooner rather than let it run to the OS limit.
 - `--skip-independence` — skip the raw-bytes independence check, e.g. for a quick
@@ -147,8 +137,8 @@ raw bytes rather than with decoded records.
 
 Each row reports the corpus’s usage-record count (not just its nominal size, since
 record density varies with the shape controls) alongside wall time, peak memory and a
-status of `ok`, `refused` (hit the 512 MiB engine safety limit) or `killed` (hit the
-watchdog’s kill-switch limit — treat this as a real regression, not noise).
+status of `ok`, `refused` (hit the engine’s compact-row capacity ceiling) or `killed`
+(hit the watchdog’s kill-switch limit — treat this as a real regression, not noise).
 The fitted slope is peak memory bytes per input MiB; the intercept is a fixed baseline
 overhead. Compare slopes across urollup builds (`--binary`) to see whether a change to
 the data model actually reduced the bytes-per-input-MiB ratio the
