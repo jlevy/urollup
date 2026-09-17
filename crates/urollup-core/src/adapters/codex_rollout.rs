@@ -457,7 +457,9 @@ fn normalize(
         }
     }
     let mut native_threads: BTreeSet<String> = BTreeSet::new();
-    let mut meta_by_thread: BTreeMap<String, (&SessionMeta, EvidenceRef)> = BTreeMap::new();
+    // Session metadata is copied out, one per thread, so each rollout's records can be
+    // freed as soon as its observations are built.
+    let mut meta_by_thread: BTreeMap<String, (SessionMeta, EvidenceRef)> = BTreeMap::new();
     for source in &sources {
         native_threads.insert(source.file_thread.clone());
         for record in &source.records {
@@ -466,7 +468,7 @@ fn normalize(
                 if *thread_id == source.file_thread {
                     meta_by_thread
                         .entry(thread_id.clone())
-                        .or_insert((meta, record.evidence.clone()));
+                        .or_insert_with(|| (meta.clone(), record.evidence.clone()));
                 }
             }
         }
@@ -477,7 +479,7 @@ fn normalize(
     for native in native_threads {
         let identity = thread_identity(&native)?;
         thread_ids.insert(native.clone(), identity.id.clone());
-        let meta = meta_by_thread.get(&native).map(|(meta, _)| *meta);
+        let meta = meta_by_thread.get(&native).map(|(meta, _)| meta);
         let mut native_key = BTreeMap::new();
         native_key.insert("thread_id".to_owned(), native.clone());
         threads.insert(
@@ -564,7 +566,7 @@ fn normalize(
             }));
         }
     }
-    for source in &sources {
+    for source in sources {
         let has_direct =
             source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)));
         let own_meta = source
@@ -583,7 +585,7 @@ fn normalize(
         {
             copied_regions = copied_regions.saturating_add(1);
             if !has_direct && native_boundary.is_none() {
-                let copied = legacy_copied_evidence(source, &known_turns);
+                let copied = legacy_copied_evidence(&source, &known_turns);
                 diagnostics.push(
                     Diagnostic::new(
                         DiagnosticCode::CodexCopiedHistoryInferred,
@@ -775,9 +777,6 @@ fn normalize(
         }
     }
 
-    // Decoded records are not needed once observations exist; free them before the
-    // reconciliation peak.
-    drop(sources);
     let mut ledger = reconcile(
         ReconcileInput {
             threads: threads.into_values().collect(),
