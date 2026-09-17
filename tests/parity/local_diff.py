@@ -7,9 +7,11 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,11 @@ import local_aggregate
 
 METRICS = compare.CODEX_METRICS
 HISTOGRAM_KEYS = ("exact", "within_1_percent", "within_5_percent", "over_5_percent")
+AGENTS = ("claude", "codex")
+CODEX_THREAD_ID = re.compile(
+    r"([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"
+    r"(?:\.jsonl(?:\.zst)?)?$"
+)
 
 
 class LocalDiffError(RuntimeError):
@@ -44,7 +51,7 @@ def subtract_metrics(left: dict[str, int], right: dict[str, int]) -> dict[str, i
     return {metric: left.get(metric, 0) - right.get(metric, 0) for metric in METRICS}
 
 
-def safe_run(command: list[str], *, cwd: Path, allow_failure: bool = False) -> dict[str, Any] | None:
+def safe_run(command: list[str], *, cwd: Path) -> dict[str, Any]:
     """Run a tool without a shell, returning no private diagnostics on failure."""
 
     environment = dict(os.environ)
@@ -59,8 +66,6 @@ def safe_run(command: list[str], *, cwd: Path, allow_failure: bool = False) -> d
         encoding="utf-8",
     )
     if completed.returncode != 0:
-        if allow_failure:
-            return None
         raise LocalDiffError("a comparison command failed")
     try:
         payload = json.loads(completed.stdout)
@@ -71,13 +76,13 @@ def safe_run(command: list[str], *, cwd: Path, allow_failure: bool = False) -> d
     return payload
 
 
-def urollup_command(binary: Path, command: str, timezone: str, extra: list[str] | None = None) -> list[str]:
-    """Build one noninteractive urollup invocation over default roots."""
+def urollup_command(binary: Path, command: str, timezone: str) -> list[str]:
+    """Build one noninteractive whole-history urollup invocation over default roots."""
 
     return [
         str(binary),
         command,
-        *(extra or ["--all"]),
+        "--all",
         "--scope",
         "self",
         "--format",
@@ -91,11 +96,12 @@ def urollup_command(binary: Path, command: str, timezone: str, extra: list[str] 
 
 
 def ccusage_payload(
-    binary: Path, *, agent: str, view: str, timezone: str, until: date, cwd: Path
+    binary: Path, *, agent: str, view: str, timezone: str, until: date | None, cwd: Path
 ) -> dict[str, Any]:
-    """Run one pinned ccusage path through the stable half-open interval."""
+    """Run one pinned ccusage path, through the inclusive `until` date when one is given."""
 
-    payload = safe_run(
+    interval = ["--until", until.strftime("%Y%m%d")] if until is not None else []
+    return safe_run(
         [
             str(binary),
             agent,
@@ -104,15 +110,11 @@ def ccusage_payload(
             "--json",
             "--timezone",
             timezone,
-            "--until",
-            until.strftime("%Y%m%d"),
+            *interval,
             "--no-color",
         ],
         cwd=cwd,
     )
-    if payload is None:
-        raise LocalDiffError("ccusage produced no comparison payload")
-    return payload
 
 
 def daily_rows(payload: dict[str, Any], *, urollup: bool, cutoff: str) -> dict[str, dict[str, int]]:
@@ -178,36 +180,135 @@ def histogram_bucket(left: dict[str, int], right: dict[str, int]) -> str:
     return "over_5_percent"
 
 
-def stable_urollup_threads(
-    binary: Path,
-    sessions: dict[str, Any],
-    *,
-    timezone: str,
-    cutoff: str,
-    cwd: Path,
-) -> set[str]:
-    """Identify stable analytical threads without returning them in the report."""
+@dataclass
+class CcusageSession:
+    """One ccusage session's whole-session metrics, keyed by native ID in memory only."""
 
-    rows = sessions.get("rows")
+    metrics: dict[str, int]
+    stable: bool
+
+
+def native_session_key(agent: str, value: Any) -> str | None:
+    """Map a ccusage session ID to the native ID urollup reports in `session`.
+
+    Claude session IDs are native. ccusage keys a Codex session by its rollout path, such
+    as `2026/09/09/rollout-2026-09-09T08-00-00-<thread>`, so the trailing thread ID is
+    the native key; a path without one stays as it is and joins nothing.
+    """
+
+    if not isinstance(value, str) or not value:
+        return None
+    if agent == "codex":
+        match = CODEX_THREAD_ID.search(value.rsplit("/", 1)[-1])
+        if match is not None:
+            return match.group(1)
+    return value
+
+
+def last_activity_date(value: Any, zone: ZoneInfo) -> str | None:
+    """Return a ccusage last-activity instant's calendar date in the report timezone."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return moment.astimezone(zone).date().isoformat()
+
+
+def ccusage_sessions(
+    payload: dict[str, Any], *, agent: str, zone: ZoneInfo, cutoff: str
+) -> dict[str, CcusageSession]:
+    """Read whole-session ccusage rows by native ID, with their stability at the cutoff.
+
+    A session is stable when its last activity falls on a local day before the cutoff, so
+    its whole-session total is complete. Rows for one native ID, such as one Codex rollout
+    found at two locations, sum as `compare.parse_ccusage_rows` sums them, and are stable
+    only when every row is.
+    """
+
+    rows = payload.get("sessions")
+    if not isinstance(rows, list):
+        raise LocalDiffError("ccusage session output has no sessions")
+    sessions: dict[str, CcusageSession] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise LocalDiffError("ccusage returned an invalid session row")
+        key = native_session_key(agent, row.get("sessionId"))
+        if key is None:
+            raise LocalDiffError("ccusage returned a session row without a session ID")
+        try:
+            metrics = compare.metrics_from_ccusage(row, reasoning=agent == "codex")
+        except compare.ParityError as error:
+            raise LocalDiffError("ccusage returned an invalid session row") from error
+        day = last_activity_date(row.get("lastActivity"), zone)
+        stable = day is not None and day < cutoff
+        existing = sessions.get(key)
+        if existing is None:
+            sessions[key] = CcusageSession(metrics, stable)
+        else:
+            sessions[key] = CcusageSession(
+                add_metrics(existing.metrics, metrics), existing.stable and stable
+            )
+    return sessions
+
+
+def join_sessions(
+    urollup_sessions: dict[str, Any], ccusage_by_agent: dict[str, dict[str, CcusageSession]]
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Join whole-history session rows on native IDs and return only counts and a histogram.
+
+    urollup's `sessions` rows are whole-session totals without dates, so ccusage's last
+    activity decides which sessions ended before the cutoff; active sessions are left out
+    of every count. A urollup row that joins no ccusage session counts as urollup-only
+    when it has requests, unless it is a Claude subagent whose parent session is active,
+    since ccusage folds subagents into the parent row. Other rows without a join, such as
+    inline sidechains, carry no activity date of their own and still count.
+    """
+
+    rows = urollup_sessions.get("rows")
     if not isinstance(rows, list):
         raise LocalDiffError("urollup sessions output has no rows")
-    stable = set()
+    counts = {"matched": 0, "urollup_only": 0, "ccusage_only": 0}
+    histogram = {key: 0 for key in HISTOGRAM_KEYS}
+    joined: dict[str, set[str]] = {agent: set() for agent in ccusage_by_agent}
     for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("thread"), str):
+        if not isinstance(row, dict):
+            raise LocalDiffError("urollup returned an invalid session row")
+        if not isinstance(row.get("thread"), str):
+            continue  # The unowned group is no session.
+        agent = row.get("agent")
+        native = row.get("session")
+        sessions = ccusage_by_agent.get(agent, {}) if isinstance(agent, str) else {}
+        match = sessions.get(native) if isinstance(native, str) else None
+        if match is not None:
+            joined[agent].add(native)
+            if not match.stable:
+                continue
+            try:
+                left = compare.metrics_from_urollup(row, reasoning=agent == "codex")
+            except compare.ParityError as error:
+                raise LocalDiffError("urollup returned an invalid session row") from error
+            counts["matched"] += 1
+            histogram[histogram_bucket(left, match.metrics)] += 1
             continue
-        thread = row["thread"]
-        daily = safe_run(
-            urollup_command(binary, "daily", timezone, ["--session", thread]), cwd=cwd
+        if sum(local_aggregate.request_counts(row).values()) == 0:
+            continue  # No dated usage, and ccusage drops zero-token sessions.
+        if agent == "claude" and isinstance(native, str) and "/" in native:
+            parent = sessions.get(native.split("/", 1)[0])
+            if parent is not None and not parent.stable:
+                continue
+        counts["urollup_only"] += 1
+    for agent, sessions in ccusage_by_agent.items():
+        counts["ccusage_only"] += sum(
+            1
+            for key, session in sessions.items()
+            if session.stable and key not in joined[agent]
         )
-        if daily is None:
-            continue
-        days = daily.get("rows")
-        if not isinstance(days, list):
-            raise LocalDiffError("urollup per-session output has no rows")
-        dates = [item.get("date") for item in days if isinstance(item, dict)]
-        if dates and all(isinstance(day, str) and day < cutoff for day in dates):
-            stable.add(thread)
-    return stable
+    return counts, histogram
 
 
 def compare_sessions(
@@ -215,61 +316,25 @@ def compare_sessions(
     urollup: Path,
     ccusage: Path,
     timezone: str,
-    until: date,
     cutoff: str,
     cwd: Path,
 ) -> tuple[dict[str, int], dict[str, int]]:
-    """Match sessions in memory and return only counts plus a delta histogram."""
+    """Run whole-history sessions once per tool and join them in memory."""
 
     all_sessions = safe_run(urollup_command(urollup, "sessions", timezone), cwd=cwd)
-    if all_sessions is None:
-        raise LocalDiffError("urollup produced no sessions payload")
-    stable_threads = stable_urollup_threads(
-        urollup, all_sessions, timezone=timezone, cutoff=cutoff, cwd=cwd
-    )
-    matched_threads: set[str] = set()
-    counts = {"matched": 0, "urollup_only": 0, "ccusage_only": 0}
-    histogram = {key: 0 for key in HISTOGRAM_KEYS}
-    for agent in ("claude", "codex"):
-        payload = ccusage_payload(
-            ccusage, agent=agent, view="session", timezone=timezone, until=until, cwd=cwd
+    zone = ZoneInfo(timezone)
+    ccusage_by_agent = {
+        agent: ccusage_sessions(
+            ccusage_payload(
+                ccusage, agent=agent, view="session", timezone=timezone, until=None, cwd=cwd
+            ),
+            agent=agent,
+            zone=zone,
+            cutoff=cutoff,
         )
-        rows = compare.parse_ccusage_rows(
-            payload, view="session", reasoning=agent == "codex", expected_threads=[]
-        )
-        for native_id, right in rows.items():
-            result = safe_run(
-                urollup_command(urollup, "sessions", timezone, ["--session", native_id]),
-                cwd=cwd,
-                allow_failure=True,
-            )
-            if result is None:
-                counts["ccusage_only"] += 1
-                continue
-            result_rows = result.get("rows")
-            if not isinstance(result_rows, list) or not result_rows:
-                counts["ccusage_only"] += 1
-                continue
-            left = zero_metrics()
-            returned_threads = set()
-            for row in result_rows:
-                if not isinstance(row, dict):
-                    raise LocalDiffError("urollup returned an invalid session row")
-                left = add_metrics(
-                    left, compare.metrics_from_urollup(row, reasoning=agent == "codex")
-                )
-                if isinstance(row.get("thread"), str):
-                    returned_threads.add(row["thread"])
-            # `sessions` reports whole-session totals and has no interval flag in 0.1.
-            # Exclude a match unless every returned thread is known to end before the
-            # cutoff; otherwise it would be compared with ccusage's cutoff total.
-            if not returned_threads or not returned_threads.issubset(stable_threads):
-                continue
-            matched_threads.update(returned_threads)
-            counts["matched"] += 1
-            histogram[histogram_bucket(left, right)] += 1
-    counts["urollup_only"] = len(stable_threads - matched_threads)
-    return counts, histogram
+        for agent in AGENTS
+    }
+    return join_sessions(all_sessions, ccusage_by_agent)
 
 
 def build_diff(
@@ -345,8 +410,6 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="urollup-local-parity-") as temporary:
         cwd = Path(temporary)
         urollup_daily = safe_run(urollup_command(urollup, "daily", timezone), cwd=cwd)
-        if urollup_daily is None:
-            raise LocalDiffError("urollup produced no daily payload")
         urollup_days = daily_rows(urollup_daily, urollup=True, cutoff=cutoff)
         ccusage_days = combine_rows(
             *(
@@ -362,14 +425,13 @@ def main(argv: list[str] | None = None) -> int:
                     urollup=False,
                     cutoff=cutoff,
                 )
-                for agent in ("claude", "codex")
+                for agent in AGENTS
             )
         )
         session_counts, histogram = compare_sessions(
             urollup=urollup,
             ccusage=ccusage,
             timezone=timezone,
-            until=until,
             cutoff=cutoff,
             cwd=cwd,
         )
