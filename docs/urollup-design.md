@@ -2228,9 +2228,9 @@ The choices that shape the design:
   `main` returns `ExitCode` from a `run` function with injected stdout and stderr
   writers, automatic color appears only for human-facing output on an interactive
   terminal, redirected and machine-readable output stays plain, either documented
-  color-disable mechanism wins unconditionally, noticeably long interactive operations
-  may render progress on stderr with guaranteed cleanup, `--no-progress` always wins,
-  and nothing prompts.
+  color-disable mechanism wins unconditionally, interactive human-facing table commands
+  render a transient scan indicator on stderr with guaranteed cleanup, `--no-progress`
+  always wins, and nothing prompts.
 - **Tests and gates:** `insta` snapshots, `proptest` laws and tryscript CLI goldens in
   `tests/golden/`. `make check`, not a justfile, is the local gate and runs what CI
   runs; `make fix` formats with rustfmt, taplo and flowmark.
@@ -3253,7 +3253,7 @@ tested accordingly.
 
 #### Decision 30: Interactive Progress
 
-**Choice:** Noticeably long milestone 0.1 operations show progress by default only
+**Choice:** Milestone 0.1 table commands show a transient scan indicator by default only
 during interactive human use.
 Progress renders on stderr, never stdout, and clears on both success and error.
 Noninteractive, redirected, piped and machine-readable workflows suppress it
