@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 
 use super::{
-    DigestRegistry, LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError,
+    KeyGraph, LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError,
     ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector, reconcile,
 };
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
@@ -183,7 +183,7 @@ fn copies_are_evidence_and_never_counted() {
     let ledger = run(vec![copy, original]);
     let request = ledger.requests.values().next().unwrap();
     assert_eq!(request.usage.as_ref().unwrap().revision.usage.output, Some(10));
-    assert_eq!(request.copies, vec![evidence(1, 400)]);
+    assert_eq!(*request.copies, [evidence(1, 400)]);
     assert_eq!(request.evidence.len(), 1);
     // Proven ownership wins over the copy's candidate.
     assert_eq!(request.ownership, Ownership::Owned { thread: thread("t1") });
@@ -361,8 +361,8 @@ fn lineage_links_merge_keys_and_keep_aliases() {
     let ledger = reconcile(input, &LatestRevision).unwrap();
     assert_eq!(ledger.requests.len(), 1);
     let request = &ledger.requests[&native_id];
-    assert_eq!(request.aliases.clone(), vec![fallback_id]);
-    assert_eq!(request.copies, vec![evidence(1, 0)]);
+    assert_eq!(*request.aliases, [fallback_id]);
+    assert_eq!(*request.copies, [evidence(1, 0)]);
 }
 
 #[test]
@@ -724,7 +724,7 @@ proptest! {
         observations in prop::collection::vec(arbitrary_observation(), 0..24),
     ) {
         let ledger = run(observations);
-        for (id, request) in &ledger.requests {
+        for (id, request) in ledger.requests.iter() {
             prop_assert_eq!(id, &request.id);
             for alias in &request.aliases {
                 prop_assert_eq!(alias.prefix(), IdPrefix::Request);
@@ -759,12 +759,32 @@ proptest! {
 #[test]
 fn different_keys_deriving_one_id_are_a_collision() {
     let key = response_key("msg_1");
-    let mut digests = DigestRegistry::default();
-    digests.register(&key).unwrap();
-    digests.register(&key).unwrap();
+    let mut graph = KeyGraph::default();
+    let node = graph.register(&key).unwrap();
+    assert_eq!(graph.register(&key).unwrap(), node);
     let forged = DerivedKey { check: key.check.wrapping_add(1), ..key };
     assert!(matches!(
-        digests.register(&forged),
+        graph.register(&forged),
         Err(crate::ledger::identity::IdentityError::DigestCollision { .. })
     ));
+}
+
+#[test]
+fn key_graph_roots_are_the_lowest_id_in_any_link_order() {
+    let keys: Vec<DerivedKey> = (0..6).map(|n| response_key(&format!("msg_{n}"))).collect();
+    let lowest = keys.iter().map(|key| key.id.clone()).min().unwrap();
+    for reversed in [false, true] {
+        let mut graph = KeyGraph::default();
+        let mut nodes: Vec<u32> = keys.iter().map(|key| graph.register(key).unwrap()).collect();
+        if reversed {
+            nodes.reverse();
+        }
+        for pair in nodes.windows(2) {
+            graph.link(pair[0], pair[1]);
+        }
+        for node in nodes {
+            let root = graph.find(node);
+            assert_eq!(graph.id(root), &lowest);
+        }
+    }
 }

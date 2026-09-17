@@ -272,7 +272,7 @@ pub struct Request {
     /// The identity basis.
     pub basis: IdentityBasis,
     /// Other IDs linked to this request.
-    pub aliases: Vec<AnalyticalId>,
+    pub aliases: Box<[AnalyticalId]>,
     /// Owner or candidates.
     pub ownership: Ownership,
     /// Earliest timestamp among original records.
@@ -288,9 +288,9 @@ pub struct Request {
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
     /// Every original record, in canonical order.
-    pub evidence: Vec<EvidenceRef>,
+    pub evidence: Box<[EvidenceRef]>,
     /// Copies of this request, recorded as evidence and never counted.
-    pub copies: Vec<EvidenceRef>,
+    pub copies: Box<[EvidenceRef]>,
     /// Whether the request counts in totals.
     pub counting: Counting,
 }
@@ -299,6 +299,79 @@ impl Request {
     /// The canonical ID.
     pub fn id(&self) -> &AnalyticalId {
         &self.id
+    }
+}
+
+/// Logical requests sorted by canonical ID.
+///
+/// A sorted vector rather than a map: a whole-history ledger holds hundreds of thousands
+/// of requests, and tree nodes would more than double their footprint.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Requests {
+    rows: Vec<Request>,
+}
+
+impl Requests {
+    /// Sorts requests by ID. IDs must be distinct; for a repeated ID the last request
+    /// given wins, as inserting into a map would.
+    pub fn from_unsorted(mut rows: Vec<Request>) -> Self {
+        rows.reverse();
+        rows.sort_by(|left, right| left.id.cmp(&right.id));
+        rows.dedup_by(|later, earlier| later.id == earlier.id);
+        rows.shrink_to_fit();
+        Self { rows }
+    }
+
+    fn position(&self, id: &AnalyticalId) -> Option<usize> {
+        self.rows.binary_search_by(|request| request.id.cmp(id)).ok()
+    }
+
+    /// The request with this canonical ID.
+    pub fn get(&self, id: &AnalyticalId) -> Option<&Request> {
+        self.position(id).and_then(|index| self.rows.get(index))
+    }
+
+    /// The request with this canonical ID, mutably.
+    pub fn get_mut(&mut self, id: &AnalyticalId) -> Option<&mut Request> {
+        self.position(id).and_then(|index| self.rows.get_mut(index))
+    }
+
+    /// Whether a request has this canonical ID.
+    pub fn contains_key(&self, id: &AnalyticalId) -> bool {
+        self.position(id).is_some()
+    }
+
+    /// The number of requests.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether there are no requests.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Requests in ID order.
+    pub fn values(&self) -> std::slice::Iter<'_, Request> {
+        self.rows.iter()
+    }
+
+    /// Canonical IDs in order.
+    pub fn keys(&self) -> impl Iterator<Item = &AnalyticalId> {
+        self.rows.iter().map(|request| &request.id)
+    }
+
+    /// Requests with their IDs, in ID order.
+    pub fn iter(&self) -> impl Iterator<Item = (&AnalyticalId, &Request)> {
+        self.rows.iter().map(|request| (&request.id, request))
+    }
+}
+
+impl std::ops::Index<&AnalyticalId> for Requests {
+    type Output = Request;
+
+    fn index(&self, id: &AnalyticalId) -> &Request {
+        self.get(id).expect("no request has this ID")
     }
 }
 

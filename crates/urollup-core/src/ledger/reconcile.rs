@@ -30,7 +30,7 @@
 //!    strongest identity basis, then the lowest ID, and marks the others
 //!    [`Counting::Unresolved`], which totals never add.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use jiff::Timestamp;
 
@@ -38,7 +38,7 @@ use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
     AccountAttribution, Basis, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
-    ProviderLimitObservation, Relationship, RelationshipKind, Request, RevisionStatus,
+    ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests, RevisionStatus,
     SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
@@ -233,7 +233,7 @@ pub struct Ledger {
     /// Native relationships in canonical order.
     pub relationships: Vec<Relationship>,
     /// Logical requests by canonical ID.
-    pub requests: BTreeMap<AnalyticalId, Request>,
+    pub requests: Requests,
     /// Logical tool actions by canonical ID.
     pub tool_actions: BTreeMap<AnalyticalId, ToolAction>,
     /// Provider limit observations in canonical order.
@@ -285,37 +285,73 @@ pub enum ReconcileError {
     },
 }
 
-/// One observation's keys, or its artifact-local key when it has none.
-struct ObservationKeys {
-    keys: Vec<DerivedKey>,
-    local: Option<DerivedKey>,
-}
-
-/// One observation with its keys, borrowed so reconciliation never copies observations.
-struct Resolved<'a> {
-    observation: &'a RequestObservation,
-    keys: &'a [DerivedKey],
-    local: Option<&'a DerivedKey>,
-}
-
-/// Request IDs seen in one run with their further digest bits, so two different keys
-/// deriving one ID are caught without storing either key.
+/// Request key IDs as union-find nodes, with the further digest bits that catch two
+/// different keys deriving one ID without storing either key.
+///
+/// Nodes are indices, so linking hundreds of thousands of observations allocates a few
+/// flat vectors rather than tree nodes per ID. A set's root is always its lowest ID, so
+/// roots do not depend on link order.
 #[derive(Default)]
-struct DigestRegistry {
-    checks: BTreeMap<AnalyticalId, u64>,
+struct KeyGraph {
+    nodes: HashMap<AnalyticalId, u32>,
+    ids: Vec<AnalyticalId>,
+    checks: Vec<Option<u64>>,
+    parent: Vec<u32>,
 }
 
-impl DigestRegistry {
-    fn register(&mut self, key: &DerivedKey) -> Result<(), IdentityError> {
-        match self.checks.get(&key.id) {
+impl KeyGraph {
+    /// The node for `id`, added unregistered and alone when new.
+    fn node(&mut self, id: &AnalyticalId) -> u32 {
+        if let Some(node) = self.nodes.get(id) {
+            return *node;
+        }
+        let node = index_u32(self.ids.len());
+        self.nodes.insert(id.clone(), node);
+        self.ids.push(id.clone());
+        self.checks.push(None);
+        self.parent.push(node);
+        node
+    }
+
+    /// Registers a derived key's check bits, failing when another key derived its ID.
+    fn register(&mut self, key: &DerivedKey) -> Result<u32, IdentityError> {
+        let node = self.node(&key.id);
+        match &mut self.checks[node as usize] {
             Some(check) if *check != key.check => {
                 Err(IdentityError::DigestCollision { id: key.id.clone() })
             }
-            Some(_) => Ok(()),
-            None => {
-                self.checks.insert(key.id.clone(), key.check);
-                Ok(())
+            Some(_) => Ok(node),
+            slot @ None => {
+                *slot = Some(key.check);
+                Ok(node)
             }
+        }
+    }
+
+    fn id(&self, node: u32) -> &AnalyticalId {
+        &self.ids[node as usize]
+    }
+
+    fn find(&mut self, node: u32) -> u32 {
+        let mut root = node;
+        while self.parent[root as usize] != root {
+            root = self.parent[root as usize];
+        }
+        let mut current = node;
+        while current != root {
+            let next = self.parent[current as usize];
+            self.parent[current as usize] = root;
+            current = next;
+        }
+        root
+    }
+
+    fn link(&mut self, a: u32, b: u32) {
+        let (root_a, root_b) = (self.find(a), self.find(b));
+        match self.id(root_a).cmp(self.id(root_b)) {
+            std::cmp::Ordering::Less => self.parent[root_b as usize] = root_a,
+            std::cmp::Ordering::Greater => self.parent[root_a as usize] = root_b,
+            std::cmp::Ordering::Equal => {}
         }
     }
 }
@@ -324,7 +360,7 @@ impl DigestRegistry {
 struct LinkedRequest {
     id: AnalyticalId,
     basis: IdentityBasis,
-    aliases: Vec<AnalyticalId>,
+    aliases: Box<[AnalyticalId]>,
 }
 
 /// Reconciles normalized observations into a ledger; see the module documentation.
@@ -349,91 +385,100 @@ pub fn reconcile(
     let threads = reconcile_threads(threads, &mut registry, &mut diagnostics)?;
     let thread_ids = canonical_thread_ids(&threads);
     let relationships = reconcile_relationships(relationships, &thread_ids)?;
-    let requests = canonicalize_request_owners(requests, &thread_ids);
-
-    let mut observations = requests;
+    let mut observations = canonicalize_request_owners(requests, &thread_ids);
     dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
-    let mut digests = DigestRegistry::default();
-    let key_sets = resolve_identities(&mut observations, &mut digests)?;
-    let resolved: Vec<Resolved<'_>> = observations
-        .iter()
-        .zip(&key_sets)
-        .map(|(observation, keys)| Resolved {
-            observation,
-            keys: &keys.keys,
-            local: keys.local.as_ref(),
-        })
-        .collect();
 
-    // Link observations sharing a key ID, and IDs joined by lineage evidence.
-    let mut graph = LinkGraph::new();
-    for item in &resolved {
-        let first = item
-            .keys
-            .first()
-            .or(item.local)
-            .expect("a resolved observation has a native or artifact-local key")
-            .id
-            .clone();
-        graph.insert(&first);
-        for key in item.keys {
-            graph.link(&first, &key.id);
-        }
+    // Register every key, linking keys that share an observation, then lineage links.
+    let mut graph = KeyGraph::default();
+    let mut first_keys = Vec::with_capacity(observations.len());
+    for observation in &mut observations {
+        first_keys.push(resolve_identities(observation, &mut graph)?);
     }
     links.sort();
     for link in &links {
-        graph.link(&link.a, &link.b);
-    }
-    let mut groups: BTreeMap<AnalyticalId, Vec<&Resolved<'_>>> = BTreeMap::new();
-    for item in &resolved {
-        let first = item
-            .keys
-            .first()
-            .or(item.local)
-            .expect("a resolved observation has a native or artifact-local key");
-        groups.entry(graph.find(&first.id)).or_default().push(item);
+        let (a, b) = (graph.node(&link.a), graph.node(&link.b));
+        graph.link(a, b);
     }
 
-    let mut requests = BTreeMap::new();
+    // Group observations by linked set: sets in order of their lowest ID, members in
+    // canonical order.
+    let mut order: Vec<(u32, u32)> = Vec::with_capacity(observations.len());
+    for (index, first) in first_keys.into_iter().enumerate() {
+        order.push((graph.find(first), index_u32(index)));
+    }
+    order.sort_unstable_by(|(left_root, left), (right_root, right)| {
+        graph.id(*left_root).cmp(graph.id(*right_root)).then(left.cmp(right))
+    });
+
+    let mut requests = Vec::new();
     let mut candidates = LinkGraph::new();
-    let mut tokens: BTreeMap<&str, BTreeSet<AnalyticalId>> = BTreeMap::new();
-    for members in groups.values() {
-        let split = conflicting_fields(members);
-        let parts: Vec<Vec<&Resolved>> = if split.is_empty() {
-            vec![members.clone()]
-        } else {
-            coverage.conflicting_keys = coverage.conflicting_keys.saturating_add(1);
-            members.iter().map(|member| vec![*member]).collect()
-        };
-        let mut split_ids = Vec::new();
-        for part in parts {
-            let Some(request) =
-                build_request(&part, !split.is_empty(), selector, &mut digests, &mut diagnostics)?
-            else {
-                continue;
+    let mut tokens: BTreeMap<String, BTreeSet<AnalyticalId>> = BTreeMap::new();
+    let mut start = 0;
+    while let Some(&(root, _)) = order.get(start) {
+        let end = order[start..]
+            .iter()
+            .position(|(other, _)| *other != root)
+            .map_or(order.len(), |offset| start + offset);
+        let group = &order[start..end];
+        {
+            let members: Vec<&RequestObservation> =
+                group.iter().map(|(_, index)| &observations[*index as usize]).collect();
+            let split = conflicting_fields(&members);
+            let split_evidence: Vec<EvidenceRef> = if split.is_empty() {
+                Vec::new()
+            } else {
+                coverage.conflicting_keys = coverage.conflicting_keys.saturating_add(1);
+                members.iter().map(|member| member.evidence.clone()).collect()
             };
-            let id = request.id().clone();
-            candidates.insert(&id);
-            for member in &part {
-                for token in &member.observation.candidate_tokens {
-                    tokens.entry(token).or_default().insert(id.clone());
+            let parts: Vec<Vec<&RequestObservation>> = if split.is_empty() {
+                vec![members]
+            } else {
+                members.into_iter().map(|member| vec![member]).collect()
+            };
+            let mut split_ids = Vec::new();
+            for part in parts {
+                let Some(request) = build_request(
+                    &part,
+                    !split.is_empty(),
+                    selector,
+                    &mut graph,
+                    &mut diagnostics,
+                )?
+                else {
+                    continue;
+                };
+                let id = request.id().clone();
+                for member in &part {
+                    for token in &member.candidate_tokens {
+                        tokens.entry(token.clone()).or_default().insert(id.clone());
+                    }
+                }
+                split_ids.push(id);
+                requests.push(request);
+            }
+            if !split.is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::ConflictingSharedKey,
+                    None,
+                    split_evidence,
+                    format!("observations sharing a key disagree on {}", join(split.iter())),
+                ));
+                for pair in split_ids.windows(2) {
+                    candidates.link(&pair[0], &pair[1]);
                 }
             }
-            split_ids.push(id.clone());
-            requests.insert(id, request);
         }
-        if !split.is_empty() {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::ConflictingSharedKey,
-                None,
-                members.iter().map(|member| member.observation.evidence.clone()),
-                format!("observations sharing a key disagree on {}", join(split.iter())),
-            ));
-            for pair in split_ids.windows(2) {
-                candidates.link(&pair[0], &pair[1]);
+        // The group's request is built; free what its observations own before the next.
+        for (_, index) in group {
+            if let Some(observation) = observations.get_mut(*index as usize) {
+                release_payload(observation);
             }
         }
+        start = end;
     }
+    drop(order);
+    drop(observations);
+    drop(graph);
     for ids in tokens.values() {
         let mut ids = ids.iter();
         if let Some(first) = ids.next() {
@@ -443,6 +488,7 @@ pub fn reconcile(
         }
     }
 
+    let mut requests = Requests::from_unsorted(requests);
     let candidate_sets = resolve_candidate_sets(&candidates, &mut requests, &mut diagnostics);
     coverage.candidate_sets = count(candidate_sets.len());
     coverage.requests = count(requests.len());
@@ -694,15 +740,12 @@ fn canonical_thread_ids(
         .collect()
 }
 
-fn canonical_request_ids(
-    requests: &BTreeMap<AnalyticalId, Request>,
-) -> BTreeMap<AnalyticalId, AnalyticalId> {
+/// Maps each request alias to its canonical ID. A canonical ID maps to itself through
+/// [`canonical_id`]'s fallback, so only aliases need entries.
+fn canonical_request_ids(requests: &Requests) -> BTreeMap<AnalyticalId, AnalyticalId> {
     requests
         .iter()
-        .flat_map(|(id, request)| {
-            std::iter::once((id.clone(), id.clone()))
-                .chain(request.aliases.iter().map(|alias| (alias.clone(), id.clone())))
-        })
+        .flat_map(|(id, request)| request.aliases.iter().map(|alias| (alias.clone(), id.clone())))
         .collect()
 }
 
@@ -893,40 +936,54 @@ fn dedupe_rereads(
     });
 }
 
+/// Registers an observation's canonical keys, linking them to each other, and gives an
+/// observation without keys its artifact-local key. Returns the node of its first key.
 fn resolve_identities(
-    observations: &mut [RequestObservation],
-    digests: &mut DigestRegistry,
-) -> Result<Vec<ObservationKeys>, ReconcileError> {
-    let mut resolved = Vec::with_capacity(observations.len());
-    for observation in observations {
-        let keys = std::mem::take(&mut observation.keys);
-        for key in &keys {
-            if key.id.prefix() != IdPrefix::Request {
-                return Err(ReconcileError::WrongPrefix {
-                    evidence: observation.evidence.clone(),
-                    prefix: key.id.prefix(),
-                });
-            }
-            digests.register(key)?;
+    observation: &mut RequestObservation,
+    graph: &mut KeyGraph,
+) -> Result<u32, ReconcileError> {
+    let mut first = None;
+    for key in &observation.keys {
+        if key.id.prefix() != IdPrefix::Request {
+            return Err(ReconcileError::WrongPrefix {
+                evidence: observation.evidence.clone(),
+                prefix: key.id.prefix(),
+            });
         }
-        let local = keys
-            .is_empty()
-            .then(|| resolve_artifact_local(&observation.evidence, digests))
-            .transpose()?;
-        resolved.push(ObservationKeys { keys, local });
+        let node = graph.register(key)?;
+        match first {
+            None => first = Some(node),
+            Some(first) => graph.link(first, node),
+        }
     }
-    Ok(resolved)
+    if let Some(first) = first {
+        return Ok(first);
+    }
+    let local = artifact_local(&observation.evidence)?;
+    let node = graph.register(&local)?;
+    observation.keys.push(local);
+    Ok(node)
 }
 
-fn resolve_artifact_local(
-    evidence: &EvidenceRef,
-    digests: &mut DigestRegistry,
-) -> Result<DerivedKey, ReconcileError> {
-    let key = artifact_local_key(IdPrefix::Request, &evidence.source, evidence.offset)
+fn artifact_local(evidence: &EvidenceRef) -> Result<DerivedKey, ReconcileError> {
+    Ok(artifact_local_key(IdPrefix::Request, &evidence.source, evidence.offset)
         .ok_or_else(|| ReconcileError::OffsetOutOfRange(evidence.clone()))?
-        .derive()?;
-    digests.register(&key)?;
-    Ok(key)
+        .derive()?)
+}
+
+/// Frees what an observation owns once its request is built; its inline fields stay.
+fn release_payload(observation: &mut RequestObservation) {
+    observation.keys = Vec::new();
+    observation.model_usage = Vec::new();
+    observation.invariants = Vec::new();
+    observation.candidate_tokens = BTreeSet::new();
+    observation.model = None;
+    observation.effort = None;
+    observation.account = None;
+}
+
+fn index_u32(index: usize) -> u32 {
+    u32::try_from(index).expect("fewer than 2^32 request observations and keys")
 }
 
 /// The highest-precedence key's ID, then the lowest ID; every other distinct ID is an
@@ -942,14 +999,14 @@ fn resolve_compact_set<'a>(
         ranked.filter(|(_, _, id)| *id != canonical).map(|(_, _, id)| id.clone()).collect();
     aliases.sort();
     aliases.dedup();
-    Some(LinkedRequest { id: canonical.clone(), basis, aliases })
+    Some(LinkedRequest { id: canonical.clone(), basis, aliases: aliases.into_boxed_slice() })
 }
 
 /// Revision-invariant fields on which the group's observations disagree.
-fn conflicting_fields(members: &[&Resolved<'_>]) -> BTreeSet<String> {
+fn conflicting_fields(members: &[&RequestObservation]) -> BTreeSet<String> {
     let mut values: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for member in members {
-        for (field, value) in &member.observation.invariants {
+        for (field, value) in &member.invariants {
             values.entry(field).or_default().insert(value.as_str());
         }
     }
@@ -961,40 +1018,29 @@ fn conflicting_fields(members: &[&Resolved<'_>]) -> BTreeSet<String> {
 }
 
 fn build_request(
-    members: &[&Resolved<'_>],
+    observations: &[&RequestObservation],
     split: bool,
     selector: &dyn RevisionSelector,
-    digests: &mut DigestRegistry,
+    graph: &mut KeyGraph,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<Request>, ReconcileError> {
     // A split part has only its artifact-local ID; otherwise every key of every member
-    // counts, with the artifact-local ID standing in for a member that has no key.
-    let local_keys = if split {
-        members
-            .iter()
-            .map(|member| resolve_artifact_local(&member.observation.evidence, digests))
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
-    let mut identities = Vec::new();
-    if split {
-        identities.extend(local_keys.iter());
-    } else {
-        for member in members {
-            if member.keys.is_empty() {
-                identities.extend(member.local.iter());
-            } else {
-                identities.extend(member.keys.iter());
-            }
+    // counts, and a member without keys already carries its artifact-local key.
+    let linked = if split {
+        let mut local_keys = Vec::with_capacity(observations.len());
+        for observation in observations {
+            let key = artifact_local(&observation.evidence)?;
+            graph.register(&key)?;
+            local_keys.push(key);
         }
-    }
-    let Some(linked) = resolve_compact_set(identities) else {
+        resolve_compact_set(&local_keys)
+    } else {
+        resolve_compact_set(observations.iter().flat_map(|observation| observation.keys.iter()))
+    };
+    let Some(linked) = linked else {
         return Ok(None);
     };
     let id = linked.id.clone();
-    let observations: Vec<&RequestObservation> =
-        members.iter().map(|member| member.observation).collect();
     let originals: Vec<&RequestObservation> =
         observations.iter().copied().filter(|o| o.role == ObservationRole::Original).collect();
     let revisions: Vec<&RequestObservation> =
@@ -1050,14 +1096,14 @@ fn build_request(
     Ok(Some(Request {
         basis: linked.basis,
         aliases: linked.aliases,
-        ownership: ownership(&observations, &id, diagnostics),
+        ownership: ownership(observations, &id, diagnostics),
         first_seen: originals.iter().filter_map(|o| o.timestamp).min(),
         last_seen: originals.iter().filter_map(|o| o.timestamp).max(),
         model: model(&originals, selected.copied(), &id, diagnostics),
         effort: selected
             .and_then(|s| s.effort.clone())
             .or_else(|| originals.iter().filter_map(|o| o.effort.clone()).min()),
-        account: account(&observations, &id, diagnostics),
+        account: account(observations, &id, diagnostics),
         evidence: originals.iter().map(|o| o.evidence.clone()).collect(),
         copies: observations
             .iter()
@@ -1153,7 +1199,7 @@ fn model(
 
 fn resolve_candidate_sets(
     candidates: &LinkGraph,
-    requests: &mut BTreeMap<AnalyticalId, Request>,
+    requests: &mut Requests,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<BTreeSet<AnalyticalId>> {
     let mut sets = Vec::new();
