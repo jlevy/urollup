@@ -1,7 +1,7 @@
 # urollup
 
-urollup (usage rollup) is a Rust CLI for trustworthy token, cost, request-size and tool
-activity reports from coding-agent session logs.
+urollup (usage rollup) is a Rust CLI for trustworthy token, request-size and usage
+reports from coding-agent session logs.
 Its accounting model reconciles copied, resumed and overlapping history before producing
 per-session or aggregate results.
 
@@ -24,23 +24,48 @@ version 0.1.0. The
 defines the target matrix and release gates; those public packages are not published
 yet.
 
-## Use
+## Common Workflows
+
+Inside a recognized agent session, report the current session:
 
 ```bash
-urollup report --current       # report the calling agent session
-urollup sessions               # list every discovered session
-urollup daily --format json    # aggregate discovered usage by day as JSON
+urollup report --current
 ```
 
-The CLI discovers the standard Claude Code and Codex log locations.
-Use `--source` to add another root or artifact, and `--no-default-sources` to read only
-explicitly named sources.
-Run `urollup <command> --help` for selection, scope, grouping and output options.
+List every discovered session, roll usage up by local calendar day, or break the full
+corpus down by project and model:
+
+```bash
+urollup sessions --all
+urollup daily --all
+urollup report --all --group-by project,model
+```
+
+Select one exact session and its descendants, emit JSON in a fixed timezone for a script
+or agent, or read only explicitly named inputs:
+
+```bash
+urollup report --session <session-id-or-log-path> --scope descendants
+urollup daily --all --timezone UTC --format json
+urollup report --all --source <log-root-or-file> --no-default-sources
+```
+
+The CLI discovers the standard Claude Code and Codex log locations unless
+`--no-default-sources` is set.
+In version 0.1, a selection with more than 512 MiB of estimated log input stops with a
+safety error rather than risking unbounded memory; narrow it with `--source` until
+large-corpus streaming lands.
+Run `urollup <command> --help` for exact-session selection, descendant scope, timezone,
+grouping and output options.
+
+Version 0.1 does not yet provide date-range filters, weekly or monthly commands, price
+and cost calculation, compact or responsive tables, or status-line and block views.
+Those ccusage-style workflows remain planned rather than implied by the current CLI.
 
 For the 0.1.0 terminal contract, automatic color is limited to interactive human-facing
 output and can always be disabled with `--color never` or `NO_COLOR`; `--color always`
 and `FORCE_COLOR` support an explicitly forced human presentation.
-Noticeably long operations show progress by default only during interactive human use;
+Interactive human-facing table commands show a transient scan indicator by default;
 progress is written to stderr and `--no-progress` always disables it.
 Redirected, piped and machine-readable workflows stay plain and noninteractive.
 
@@ -49,9 +74,14 @@ Redirected, piped and machine-readable workflows stay plain and noninteractive.
 Milestone 0.1’s accounting and report implementation and fixture-backed ccusage
 reconciliation are complete, as are terminal-aware color, interactive progress and the
 privacy-tested local acceptance tools.
-The consented real-log run, recorded maintainer decisions and independent implementation
-review remain before the milestone is accepted.
-Packaging implementation and rehearsal follow that acceptance gate.
+A bounded, consented real-log corpus passed the command and memory-watchdog checks.
+A reader-enforced 512 MiB decoded-data and one-million-record budget now fails safely
+during an oversized selection, including compressed input, while a metadata preflight
+rejects obviously oversized selections earlier.
+The roughly 15 GB default corpus still requires bounded streaming or spill before its
+`--all` case can be accepted.
+Recorded maintainer decisions and independent implementation review also remain before
+the milestone is accepted, after which packaging implementation and rehearsal can begin.
 
 ## Documentation
 
@@ -66,6 +96,8 @@ Packaging implementation and rehearsal follow that acceptance gate.
 | [squares code review](docs/project/research/research-2026-09-14-squares-code-review.md) | Reusable parsing, time measures and tests from squares |
 | [metaproc and qm review](docs/project/research/research-2026-09-14-metaproc-code-review.md) | Captured streams, harness pitfalls, accounts and quotas |
 | [Golden testing audit](docs/project/research/research-2026-09-15-golden-testing-audit.md) | Golden-harness risks, fixes and the end-to-end fixture strategy |
+| [Milestone 0.1 local QA playbook](tests/qa/milestone-0.1-local-acceptance.qa.md) | Consent, terminal, bounded-corpus, privacy and cleanup checks for manual acceptance |
+| [2026-09-16 milestone 0.1 QA report](docs/project/qa/qa-report-2026-09-16-milestone-0.1.md) | Privacy-safe evidence, aggregate results and the unresolved large-corpus limitation |
 
 The portable research brief also records a throughput spike on real local logs; its
 prototype is kept in

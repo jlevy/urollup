@@ -23,13 +23,14 @@ UV_RUN = $(UV) --config-file uv.toml run --frozen
 FLOWMARK = $(UV_RUN) flowmark
 TAPLO := node_modules/.bin/taplo
 
-.PHONY: help build test rust-test golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
+.PHONY: help build test rust-test qa-tool-tests golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
 	clippy docs dependency-guard msrv audit npm-audit gate-proofs fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
-	@echo "make test               Rust tests, CLI goldens and end-to-end result checks"
+	@echo "make test               Rust and QA-tool tests, CLI goldens and result checks"
+	@echo "make qa-tool-tests      Test the manual-QA support tools"
 	@echo "make golden             Build and compare the tryscript CLI goldens, hermetically"
 	@echo "make golden-update      Regenerate intentional golden changes, then compare"
 	@echo "                        (GOLDEN=<session> limits the update to named sessions)"
@@ -49,11 +50,14 @@ help:
 build:
 	$(CARGO) build --locked --workspace
 
-test: rust-test golden e2e-results parity
+test: rust-test qa-tool-tests golden e2e-results parity
 
 rust-test:
 	$(CARGO) test --locked --workspace
 	$(CARGO) test --locked --workspace --no-default-features
+
+qa-tool-tests:
+	$(UV_RUN) python -m unittest discover -s tests/qa -p 'test_*.py'
 
 $(NODE_INSTALL_STAMP): package.json package-lock.json .npmrc
 	$(NPM) ci --ignore-scripts
@@ -182,7 +186,7 @@ uv-version:
 # Standalone entry points must fail before any recipe asks uv to parse repository
 # configuration. Keep this list aligned with the recipe-coverage test in
 # scripts/check-uv-version.test.mjs.
-UV_BACKED_TARGETS := docs-format-check uv-lock-check e2e-local parity parity-local fix
+UV_BACKED_TARGETS := docs-format-check uv-lock-check qa-tool-tests e2e-local parity parity-local fix
 
 $(UV_BACKED_TARGETS): uv-version
 

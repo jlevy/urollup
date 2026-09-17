@@ -69,7 +69,7 @@ spec.
 
 ```bash
 make build   # debug build of the workspace
-make test    # Rust tests (default and no-default features), CLI goldens and result checks
+make test    # Rust and QA-tool tests, CLI goldens and result checks
 make check   # handoff gate: everything CI enforces, fastest first
 make fix     # format Rust (rustfmt), TOML (taplo) and Markdown (flowmark)
 ```
