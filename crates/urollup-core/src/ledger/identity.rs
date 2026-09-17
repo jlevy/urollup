@@ -101,12 +101,19 @@ impl IdentityVersion {
 /// The ID stores its prefix, version and 128-bit digest rather than its text, so IDs and
 /// the evidence references that carry them never allocate. Ordering equals the order of
 /// the ID text, which the design's "lowest ID" tie-breaks use.
+///
+/// The digest is kept as big-endian bytes rather than a `u128`, whose 16-byte alignment
+/// would pad every ID, and every row that embeds one, to twice its data size.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnalyticalId {
     prefix: IdPrefix,
     version: IdentityVersion,
-    digest: u128,
+    digest: [u8; 16],
 }
+
+const _: () = assert!(std::mem::size_of::<AnalyticalId>() == 17);
+const _: () = assert!(std::mem::size_of::<Option<AnalyticalId>>() == 17);
+
 
 impl Ord for AnalyticalId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -158,7 +165,7 @@ impl AnalyticalId {
             let index = CROCKFORD_LOWER.iter().position(|b| b == digit).ok_or_else(invalid)?;
             value = (value << 5) | u128::try_from(index).map_err(|_| invalid())?;
         }
-        Ok(Self { prefix, version, digest: value })
+        Ok(Self { prefix, version, digest: value.to_be_bytes() })
     }
 
     /// The entity kind this ID names.
@@ -169,7 +176,7 @@ impl AnalyticalId {
 
 impl fmt::Display for AnalyticalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let digits = crockford_digits(self.digest);
+        let digits = crockford_digits(u128::from_be_bytes(self.digest));
         let digits = std::str::from_utf8(&digits).map_err(|_| fmt::Error)?;
         write!(f, "{}-v{}-{digits}", self.prefix.token(), self.version.number())
     }
@@ -439,7 +446,7 @@ pub(crate) fn crockford_base32_128(bits: &[u8; 16]) -> String {
 }
 
 fn id_from_digest(prefix: IdPrefix, version: IdentityVersion, digest: &[u8; 16]) -> AnalyticalId {
-    AnalyticalId { prefix, version, digest: u128::from_be_bytes(*digest) }
+    AnalyticalId { prefix, version, digest: *digest }
 }
 
 #[cfg(test)]
