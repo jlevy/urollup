@@ -287,6 +287,106 @@ fn every_claude_fixture_matches_metadata_counts() {
     }
 }
 
+/// Copies a Claude fixture with its main session names permuted into reverse order.
+///
+/// Every occurrence of a session ID, in paths and in record contents, is renamed
+/// consistently, so the copy describes the same history under different file names.
+/// The permutation reuses the fixture's own names, which keeps record lengths and offsets.
+fn copy_with_reversed_session_names(case: &std::path::Path, destination: &std::path::Path) {
+    let projects = case.join("projects");
+    let mut sessions = Vec::new();
+    for project in std::fs::read_dir(&projects).expect("fixture projects are readable") {
+        for entry in
+            std::fs::read_dir(project.expect("project entry").path()).expect("project is readable")
+        {
+            let path = entry.expect("session entry").path();
+            if path.extension().is_some_and(|extension| extension == "jsonl") {
+                sessions.push(
+                    path.file_stem()
+                        .expect("session file has a stem")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    sessions.sort();
+    sessions.dedup();
+    let renamed: BTreeMap<_, _> =
+        sessions.iter().cloned().zip(sessions.iter().rev().cloned()).collect();
+    let rename = |text: &str| {
+        let mut text = text.to_owned();
+        for (index, session) in sessions.iter().enumerate() {
+            text = text.replace(session, &format!("\u{0}{index}\u{0}"));
+        }
+        for (index, session) in sessions.iter().enumerate() {
+            text = text.replace(&format!("\u{0}{index}\u{0}"), &renamed[session]);
+        }
+        text
+    };
+
+    let mut pending = vec![projects.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("fixture directory is readable") {
+            let path = entry.expect("fixture entry").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(case)
+                .expect("fixture file is under its case")
+                .to_string_lossy()
+                .into_owned();
+            let target = destination.join(rename(&relative));
+            std::fs::create_dir_all(target.parent().expect("target has a parent"))
+                .expect("target directory is writable");
+            let contents = std::fs::read_to_string(&path).expect("fixture file is UTF-8 text");
+            std::fs::write(target, rename(&contents)).expect("renamed fixture is writable");
+        }
+    }
+}
+
+#[test]
+fn claude_results_do_not_depend_on_session_file_names() {
+    let mut cases: Vec<_> = std::fs::read_dir(fixture(""))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("expected.json").is_file())
+        .collect();
+    cases.sort();
+
+    for case in cases {
+        let name = case.file_name().unwrap().to_string_lossy().into_owned();
+        let reversed = tempfile::tempdir().unwrap();
+        copy_with_reversed_session_names(&case, reversed.path());
+
+        let original = ingest_root(&case).unwrap();
+        let permuted = ingest_root(reversed.path()).unwrap();
+        assert_eq!(
+            ledger_totals(&permuted.ledger).unwrap(),
+            ledger_totals(&original.ledger).unwrap(),
+            "{name}: totals under reversed session names"
+        );
+        assert_eq!(
+            permuted.ledger.coverage.copies, original.ledger.coverage.copies,
+            "{name}: copies under reversed session names"
+        );
+        let occurrences = |ingested: &urollup_core::adapters::Ingested| {
+            let mut counts = BTreeMap::new();
+            for diagnostic in &ingested.ledger.diagnostics {
+                *counts.entry(diagnostic.code.token()).or_insert(0_u64) += diagnostic.occurrences;
+            }
+            counts
+        };
+        assert_eq!(
+            occurrences(&permuted),
+            occurrences(&original),
+            "{name}: diagnostics under reversed session names"
+        );
+    }
+}
+
 #[test]
 fn codex_response_usage_is_normalized_and_copied_history_is_excluded() {
     let ingested = ingest_codex(&codex_fixture("token-usage-records")).unwrap();
