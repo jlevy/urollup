@@ -23,7 +23,7 @@ use std::fmt;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
-use crate::sources::decode::unsigned;
+use crate::sources::decode::{Skip, unsigned};
 
 /// The path, below a record's `message`, of the output count every usage record has.
 const MESSAGE_OUTPUT_TOKENS: &[&str] = &["usage", "output_tokens"];
@@ -83,60 +83,6 @@ impl<'a> LineHead<'a> {
             LineType::Progress => self.nested_usage,
             LineType::Other => false,
         }
-    }
-}
-
-/// Consumes any JSON value with the checks a document gets, keeping nothing.
-#[derive(Clone, Copy)]
-struct Skip;
-
-impl<'de> DeserializeSeed<'de> for Skip {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for Skip {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("any JSON value")
-    }
-
-    fn visit_bool<E: Error>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_i64<E: Error>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_u64<E: Error>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_f64<E: Error>(self, _: f64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_str<E: Error>(self, _: &str) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_unit<E: Error>(self) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        while seq.next_element_seed(self)?.is_some() {}
-        Ok(())
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        while map.next_entry_seed(self, self)?.is_some() {}
-        Ok(())
     }
 }
 

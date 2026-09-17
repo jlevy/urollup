@@ -18,6 +18,9 @@
 //! turns into an unparsable record with counters rather than a panic or a zero.
 
 use jiff::Timestamp;
+use std::fmt;
+
+use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
@@ -32,6 +35,74 @@ pub struct MalformedRecord {
 /// Parses one record's bytes as JSON.
 pub fn parse_record(bytes: &[u8]) -> Result<Value, MalformedRecord> {
     serde_json::from_slice(bytes).map_err(|error| MalformedRecord { message: error.to_string() })
+}
+
+/// Checks that one record's bytes are valid JSON without building a document.
+///
+/// It fails exactly when [`parse_record`] would: every value is read through
+/// `deserialize_any`, the path a document takes, so invalid UTF-8 or escapes in any string,
+/// a number out of range, nesting past the recursion limit and trailing characters are all
+/// rejected. `serde::de::IgnoredAny` would not do, because `serde_json` skips it without
+/// those checks.
+pub fn validate_record(bytes: &[u8]) -> Result<(), MalformedRecord> {
+    let invalid = |error: serde_json::Error| MalformedRecord { message: error.to_string() };
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    Skip.deserialize(&mut deserializer).map_err(invalid)?;
+    deserializer.end().map_err(invalid)
+}
+
+/// Consumes any JSON value with the checks a document gets, keeping nothing.
+#[derive(Clone, Copy)]
+pub(crate) struct Skip;
+
+impl<'de> DeserializeSeed<'de> for Skip {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Skip {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E: Error>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E: Error>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E: Error>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_str<E: Error>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        while seq.next_element_seed(self)?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while map.next_entry_seed(self, self)?.is_some() {}
+        Ok(())
+    }
 }
 
 /// The value at `path`, or `None` when any step is missing, null or not an object.
@@ -129,7 +200,9 @@ where
 mod tests {
     use serde::Deserialize;
 
-    use super::{field, null_as_default, parse_record, parse_timestamp, text, unsigned};
+    use super::{
+        field, null_as_default, parse_record, parse_timestamp, text, unsigned, validate_record,
+    };
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     struct Record {
@@ -199,5 +272,38 @@ mod tests {
         assert_eq!(offset, parse_timestamp("2026-09-15T12:34:56.123456789Z").unwrap());
         assert!(parse_timestamp("2026-09-15 12:34:56").is_err());
         assert!(parse_timestamp("not a time").is_err());
+    }
+
+    #[test]
+    fn validation_rejects_exactly_what_parsing_rejects() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let lines: Vec<Vec<u8>> = [
+            r#"{"type":"response_item","payload":{"content":"text"}}"#,
+            r#"{"content":"\ud800"}"#,
+            r#"{"content":"\ud83d\ude00"}"#,
+            r#"{"size":1e400}"#,
+            r#"{"size":-12.5e-3}"#,
+            r#"{"content":"\q"}"#,
+            r#"{"a":1} trailing"#,
+            r#"{"a":1}   "#,
+            r#"{"a":"#,
+            r#"{"a":1,"a":[true,null,{}]}"#,
+            deep.as_str(),
+        ]
+        .iter()
+        .map(|line| line.as_bytes().to_vec())
+        .chain([b"{\"content\":\"\xff\"}".to_vec()])
+        .collect();
+        for line in &lines {
+            assert_eq!(
+                validate_record(line).is_ok(),
+                parse_record(line).is_ok(),
+                "{}",
+                String::from_utf8_lossy(line)
+            );
+        }
+        assert!(validate_record(br#"{"content":"\ud800"}"#).is_err());
+        assert!(validate_record(br#"{"size":1e400}"#).is_err());
+        assert!(validate_record(deep.as_bytes()).is_err());
     }
 }
