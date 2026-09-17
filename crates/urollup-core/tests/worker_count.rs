@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
-use urollup_core::sources::reader::{ReadBudget, SourceReadError};
 use urollup_core::sources::roots::discover;
 
 /// Worker counts compared against one worker, including more workers than sources.
@@ -42,18 +41,18 @@ fn without_capture_times(mut ingested: Ingested) -> Ingested {
     ingested
 }
 
-fn claude(roots: &[PathBuf], count: usize, budget: &ReadBudget) -> Result<Ingested, AdapterError> {
-    claude_project::ingest_discovery_with_budget(discover(roots), true, budget, workers(count))
+fn claude(roots: &[PathBuf], count: usize) -> Result<Ingested, AdapterError> {
+    claude_project::ingest_discovery_with_workers(discover(roots), true, workers(count))
         .map(without_capture_times)
 }
 
-fn codex(roots: &[PathBuf], count: usize, budget: &ReadBudget) -> Result<Ingested, AdapterError> {
+fn codex(roots: &[PathBuf], count: usize) -> Result<Ingested, AdapterError> {
     let roots = codex_rollout::rollout_roots(roots);
-    codex_rollout::ingest_discovery_with_budget(discover(&roots), true, budget, workers(count))
+    codex_rollout::ingest_discovery_with_workers(discover(&roots), true, workers(count))
         .map(without_capture_times)
 }
 
-type Ingest = fn(&[PathBuf], usize, &ReadBudget) -> Result<Ingested, AdapterError>;
+type Ingest = fn(&[PathBuf], usize) -> Result<Ingested, AdapterError>;
 
 /// Ingests `roots` on one worker and on every other worker count and requires identical
 /// results, or identical errors; returns the one-worker result.
@@ -62,10 +61,9 @@ fn assert_worker_count_invariant(
     roots: &[PathBuf],
     name: &str,
 ) -> Result<Ingested, String> {
-    let sequential = ingest(roots, 1, &ReadBudget::unlimited()).map_err(|error| error.to_string());
+    let sequential = ingest(roots, 1).map_err(|error| error.to_string());
     for count in WORKER_COUNTS {
-        let parallel =
-            ingest(roots, count, &ReadBudget::unlimited()).map_err(|error| error.to_string());
+        let parallel = ingest(roots, count).map_err(|error| error.to_string());
         assert_eq!(parallel, sequential, "{name}: {count} workers differ from one worker");
     }
     sequential
@@ -152,36 +150,11 @@ fn the_first_failing_source_in_discovery_order_is_reported() {
     ));
 
     for count in [1, 2, 8] {
-        let error = claude(&[root.path().to_owned()], count, &ReadBudget::unlimited())
-            .expect_err("a broken sidecar fails ingestion");
+        let error =
+            claude(&[root.path().to_owned()], count).expect_err("a broken sidecar fails ingestion");
         let AdapterError::MetadataParse { path, .. } = error else {
             panic!("{count} workers: unexpected error {error}");
         };
         assert_eq!(path, expected, "{count} workers");
-    }
-}
-
-#[test]
-fn one_record_budget_is_shared_by_all_workers() {
-    let case = [fixtures("claude-project").join("workflow-subagents")];
-    let sequential =
-        claude(&case, 1, &ReadBudget::unlimited()).expect("the fixture ingests without a budget");
-    let records: u64 = sequential.manifest.entries.iter().map(|entry| entry.counters.records).sum();
-    assert!(sequential.manifest.entries.len() > 1, "the fixture has several sources");
-
-    for count in [1, 8] {
-        let exact = ReadBudget::new(u64::MAX, records);
-        let ingested = claude(&case, count, &exact).expect("the exact record budget suffices");
-        assert_eq!(ingested, sequential, "{count} workers");
-
-        let short = ReadBudget::new(u64::MAX, records - 1);
-        let error = claude(&case, count, &short).expect_err("one record too few fails");
-        assert!(
-            matches!(
-                error,
-                AdapterError::Read { source: SourceReadError::RecordBudgetExceeded { .. }, .. }
-            ),
-            "{count} workers: {error}"
-        );
     }
 }

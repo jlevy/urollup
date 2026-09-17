@@ -46,16 +46,14 @@ use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
-use crate::sources::reader::{
-    RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
-};
+use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
 use crate::sources::roots::{DiscoveredSource, Discovery, discover};
 
 const DIALECT: &str = "claude-project";
 const AGENT_NAMESPACE: &str = "claude";
 const PROVIDER_NAMESPACE: &str = "anthropic";
-// Sidecars contain only launch metadata. This hard ceiling bounds allocations even for
-// library callers that deliberately use an unlimited cumulative ingestion budget.
+// Sidecars contain only launch metadata, so this hard ceiling bounds the allocation for a
+// damaged or unexpected sidecar.
 const MAX_SUBAGENT_META_BYTES: u64 = 1024 * 1024;
 
 const REQUEST_SLOTS: &[ComponentSlot] = &[
@@ -498,29 +496,22 @@ pub fn ingest_roots(roots: &[PathBuf], missing_is_error: bool) -> Result<Ingeste
 /// Callers that need exact session selection can filter `discovery.sources` before
 /// invoking this function, avoiding a second walk and full ingestion of unrelated
 /// transcripts while preserving paired plain/compressed representations. Sources decode
-/// on the [default worker bound](default_workers) with no ingestion budget.
+/// on the [default worker bound](default_workers).
 pub fn ingest_discovery(
     discovery: Discovery,
     missing_is_error: bool,
 ) -> Result<Ingested, AdapterError> {
-    ingest_discovery_with_budget(
-        discovery,
-        missing_is_error,
-        &ReadBudget::unlimited(),
-        default_workers(),
-    )
+    ingest_discovery_with_workers(discovery, missing_is_error, default_workers())
 }
 
-/// Reads discovered Claude Code transcripts on at most `workers` threads under a shared
-/// ingestion budget.
+/// Reads discovered Claude Code transcripts on at most `workers` threads.
 ///
 /// Each source decodes independently, and the results merge in discovery order before
 /// normalization, so the result is the same for every worker count. A failure returns
 /// the error of the first failing source in discovery order, as a sequential read does.
-pub fn ingest_discovery_with_budget(
+pub fn ingest_discovery_with_workers(
     discovery: Discovery,
     missing_is_error: bool,
-    budget: &ReadBudget,
     workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
@@ -537,7 +528,7 @@ pub fn ingest_discovery_with_budget(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
-        |source| decode_source(source, budget),
+        decode_source,
     )?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
     normalize(corpus, manifest)
@@ -556,10 +547,7 @@ struct DecodedSource {
 }
 
 /// Reads one transcript and its subagent sidecar, independently of every other source.
-fn decode_source(
-    source: &DiscoveredSource,
-    budget: &ReadBudget,
-) -> Result<DecodedSource, AdapterError> {
+fn decode_source(source: &DiscoveredSource) -> Result<DecodedSource, AdapterError> {
     let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
         environment: "local",
@@ -572,10 +560,8 @@ fn decode_source(
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
     let entry =
-        read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
-            decoder.decode(raw)
-        })
-        .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+        read_source(&spec, &source.files, &ReadOptions::default(), |raw| decoder.decode(raw))
+            .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
     let SourceDecoder { thread, strings, facts, mut records, mut tool_uses } = decoder;
     // Decoding grows the vectors by doubling; release the unused tails before the records
     // wait for the other sources.
@@ -583,9 +569,7 @@ fn decode_source(
     tool_uses.shrink_to_fit();
     let mut subagent_meta = None;
     if thread.agent.is_some() {
-        if let (Some(identity), Some(meta)) =
-            (entry.source.as_ref(), read_subagent_meta(&path, budget)?)
-        {
+        if let (Some(identity), Some(meta)) = (entry.source.as_ref(), read_subagent_meta(&path)?) {
             subagent_meta = Some(SubagentMeta {
                 child: thread,
                 tool_use: text(&meta, &["toolUseId"]).map(digest),
@@ -597,16 +581,12 @@ fn decode_source(
     Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
 }
 
-fn read_subagent_meta(
-    transcript: &Path,
-    budget: &ReadBudget,
-) -> Result<Option<Value>, AdapterError> {
-    read_subagent_meta_with_limit(transcript, budget, MAX_SUBAGENT_META_BYTES)
+fn read_subagent_meta(transcript: &Path) -> Result<Option<Value>, AdapterError> {
+    read_subagent_meta_with_limit(transcript, MAX_SUBAGENT_META_BYTES)
 }
 
 fn read_subagent_meta_with_limit(
     transcript: &Path,
-    budget: &ReadBudget,
     max_sidecar_bytes: u64,
 ) -> Result<Option<Value>, AdapterError> {
     let transcript = if transcript.extension() == Some(std::ffi::OsStr::new("zst")) {
@@ -620,17 +600,11 @@ fn read_subagent_meta_with_limit(
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(AdapterError::MetadataRead { path, source }),
     };
-    let remaining = budget.decoded_bytes_remaining().unwrap_or(u64::MAX);
-    let read_limit = max_sidecar_bytes.min(remaining).saturating_add(1);
     let mut bytes = Vec::new();
-    file.take(read_limit)
+    file.take(max_sidecar_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|source| AdapterError::MetadataRead { path: path.clone(), source })?;
-    let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    budget
-        .charge_decoded_bytes(byte_count)
-        .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    if byte_count > max_sidecar_bytes {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_sidecar_bytes {
         return Err(AdapterError::MetadataTooLarge { path, maximum: max_sidecar_bytes });
     }
     serde_json::from_slice(&bytes)
@@ -1583,36 +1557,17 @@ mod tests {
     use crate::ledger::reconcile::{RequestObservation, RevisionSelector};
     use crate::ledger::tokens::TokenMeasures;
     use crate::sources::evidence::EvidenceRef;
-    use crate::sources::reader::{RawRecord, ReadBudget, RecordDisposition, SourceReadError};
+    use crate::sources::reader::{RawRecord, RecordDisposition};
 
     #[test]
     fn oversized_subagent_metadata_is_rejected_before_json_decode() {
         let root = tempfile::tempdir().unwrap();
         let transcript = root.path().join("agent-example.jsonl");
         fs::write(transcript.with_extension("meta.json"), vec![b' '; 33]).unwrap();
-        let budget = ReadBudget::unlimited();
 
-        let error = read_subagent_meta_with_limit(&transcript, &budget, 32).unwrap_err();
+        let error = read_subagent_meta_with_limit(&transcript, 32).unwrap_err();
 
         assert!(matches!(error, AdapterError::MetadataTooLarge { maximum: 32, .. }));
-    }
-
-    #[test]
-    fn subagent_metadata_charges_the_shared_decoded_budget() {
-        let root = tempfile::tempdir().unwrap();
-        let transcript = root.path().join("agent-example.jsonl");
-        fs::write(transcript.with_extension("meta.json"), br#"{"toolUseId":"tool-one"}"#).unwrap();
-        let budget = ReadBudget::new(5, u64::MAX);
-
-        let error = read_subagent_meta_with_limit(&transcript, &budget, 1024).unwrap_err();
-
-        assert!(matches!(
-            error,
-            AdapterError::Read {
-                source: SourceReadError::DecodedByteBudgetExceeded { maximum: 5 },
-                ..
-            }
-        ));
     }
 
     fn source_evidence(offset: u64) -> EvidenceRef {
