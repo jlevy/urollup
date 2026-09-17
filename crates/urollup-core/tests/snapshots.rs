@@ -22,7 +22,7 @@ fn evidence(reference: &EvidenceRef) -> Value {
     json!({
         "length": reference.length,
         "offset": reference.offset,
-        "source": reference.source.as_str(),
+        "source": reference.source.to_string(),
     })
 }
 
@@ -60,9 +60,9 @@ fn revision(revision: &UsageRevision) -> Value {
 
 fn ownership(ownership: &Ownership) -> Value {
     match ownership {
-        Ownership::Owned { thread } => json!({ "owned": thread.as_str() }),
+        Ownership::Owned { thread } => json!({ "owned": thread.to_string() }),
         Ownership::Ambiguous { candidates } => json!({
-            "ambiguous": candidates.iter().map(AnalyticalId::as_str).collect::<Vec<_>>(),
+            "ambiguous": candidates.iter().map(AnalyticalId::to_string).collect::<Vec<_>>(),
         }),
         Ownership::Unknown => json!("unknown"),
     }
@@ -81,7 +81,7 @@ fn account(account: &AccountAttribution) -> Value {
 fn counting(counting: &Counting) -> Value {
     match counting {
         Counting::Counted => json!("counted"),
-        Counting::Unresolved { counted } => json!({ "unresolved": counted.as_str() }),
+        Counting::Unresolved { counted } => json!({ "unresolved": counted.to_string() }),
         Counting::CopyOnly => json!("copy-only"),
     }
 }
@@ -89,14 +89,14 @@ fn counting(counting: &Counting) -> Value {
 fn request(request: &Request) -> Value {
     json!({
         "account": account(&request.account),
-        "aliases": request.aliases.iter().map(|alias| alias.id.as_str()).collect::<Vec<_>>(),
+        "aliases": request.aliases.iter().map(|alias| alias.id.to_string()).collect::<Vec<_>>(),
         "basis": request.basis.token(),
         "copies": request.copies.iter().map(evidence).collect::<Vec<_>>(),
         "counting": counting(&request.counting),
         "effort": request.effort,
         "evidence": request.evidence.iter().map(evidence).collect::<Vec<_>>(),
         "first_seen": request.first_seen.map(|timestamp| timestamp.to_string()),
-        "id": request.id().as_str(),
+        "id": request.id().to_string(),
         "identity_key_kind": request.identity.key.kind,
         "last_seen": request.last_seen.map(|timestamp| timestamp.to_string()),
         "model": request.model.as_ref().map(|model| json!({
@@ -184,7 +184,7 @@ fn manifest_entry(entry: &ManifestEntry) -> Value {
         "first_malformed": entry.first_malformed.as_ref().map(evidence),
         "locator": entry.locator,
         "representation": format!("{:?}", entry.representation),
-        "source": entry.source.as_ref().map(|source| source.id.as_str()),
+        "source": entry.source.as_ref().map(|source| source.id.to_string()),
         "twin": entry.twin.is_some(),
     })
 }
@@ -194,7 +194,7 @@ fn snapshot(ingested: &Ingested) -> Value {
     json!({
         "ledger": {
             "candidate_sets": ingested.ledger.candidate_sets.iter().map(|set| {
-                set.iter().map(AnalyticalId::as_str).collect::<Vec<_>>()
+                set.iter().map(AnalyticalId::to_string).collect::<Vec<_>>()
             }).collect::<Vec<_>>(),
             "coverage": {
                 "candidate_sets": coverage.candidate_sets,
@@ -213,12 +213,12 @@ fn snapshot(ingested: &Ingested) -> Value {
                 "detail": diagnostic.detail,
                 "evidence": diagnostic.evidence.iter().map(evidence).collect::<Vec<_>>(),
                 "occurrences": diagnostic.occurrences,
-                "subject": diagnostic.subject.as_ref().map(AnalyticalId::as_str),
+                "subject": diagnostic.subject.as_ref().map(AnalyticalId::to_string),
             })).collect::<Vec<_>>(),
             "gaps": ingested.ledger.gaps.iter().map(|gap| json!({
                 "evidence": gap.evidence.iter().map(evidence).collect::<Vec<_>>(),
                 "reason": format!("{:?}", gap.reason),
-                "thread": gap.thread.as_ref().map(AnalyticalId::as_str),
+                "thread": gap.thread.as_ref().map(AnalyticalId::to_string),
             })).collect::<Vec<_>>(),
             "requests": ingested.ledger.requests.values().map(request).collect::<Vec<_>>(),
         },

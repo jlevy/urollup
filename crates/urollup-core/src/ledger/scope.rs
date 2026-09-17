@@ -346,7 +346,7 @@ pub fn artifact_local_key(
         key: IdentityKey::new(
             prefix,
             ARTIFACT_LOCAL_KIND,
-            vec![KeyComponent::text(source.as_str()), KeyComponent::Integer(offset)],
+            vec![KeyComponent::text(source.to_string()), KeyComponent::Integer(offset)],
         ),
     })
 }
@@ -569,7 +569,7 @@ pub(crate) mod tests {
             .key(vec![KeyComponent::text("anthropic"), KeyComponent::text("msg_1")])
             .unwrap();
         let fallback = THREAD_DIGEST
-            .key(vec![KeyComponent::text(thread_id().as_str()), KeyComponent::text("abc")])
+            .key(vec![KeyComponent::text(thread_id().to_string()), KeyComponent::text("abc")])
             .unwrap();
         assert_eq!(identity_basis(&[fallback.clone(), native]), IdentityBasis::Native);
         assert_eq!(identity_basis(&[fallback]), IdentityBasis::Fallback);
