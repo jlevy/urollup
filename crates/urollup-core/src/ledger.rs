@@ -15,6 +15,7 @@ pub mod coverage;
 pub mod diagnostics;
 pub mod entities;
 pub mod identity;
+pub mod inline_list;
 pub mod linking;
 pub mod reconcile;
 pub mod scope;
