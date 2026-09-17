@@ -1,31 +1,50 @@
 //! Claude Code project transcript adapter (`claude-project`).
+//!
+//! Decoding keeps memory proportional to usage records, not to log bytes:
+//!
+//! - Each line is first read by [`LineHead`], which builds no JSON document; only a line
+//!   that bears usage is parsed into one, and only its accounting fields are kept.
+//! - A decoded [`ParsedRecord`] is a compact row: repeated strings are interned per
+//!   ingestion, native IDs that only join records are 128-bit digests, and rare fields
+//!   are boxed.
+//! - Records stay in per-source chunks in discovery order, which normalization consumes
+//!   one at a time, and every map that only builds observations is dropped before
+//!   reconciliation.
 
+mod line;
+
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use jiff::Timestamp;
 use serde_json::Value;
 
+use self::line::{LineHead, LineType};
 use super::{AdapterError, Ingested};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
     RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
-use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity};
+use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::reconcile::{
     ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, RevisionChoice,
     RevisionSelector, reconcile,
 };
-use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
+use crate::ledger::scope::{
+    ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec, ScopedKey,
+};
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
-use crate::sources::manifest::{Fingerprint, ManifestEntry, SnapshotManifest};
+use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{
     RawRecord, ReadBudget, ReadOptions, RecordDisposition, SourceSpec, read_source_with_budget,
@@ -85,37 +104,203 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
     slots: INLINE_THREAD_SLOTS,
 };
 
-#[derive(Clone)]
-struct ParsedRecord {
-    evidence: EvidenceRef,
-    source_thread: NativeThread,
-    forced_copy: bool,
-    request_record: bool,
-    uuid: Option<String>,
-    message_id: Option<String>,
-    request_id: Option<String>,
-    session_id: Option<String>,
-    project: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    timestamp: Option<jiff::Timestamp>,
-    sequence: Option<u64>,
-    usage: ParsedUsage,
-    tool_use_ids: Vec<String>,
-    quota_limits: Option<BTreeMap<String, Value>>,
-    limit_text: Option<String>,
+/// The largest a decoded record may be.
+///
+/// One record is held for every usage line of a whole history until its observation is
+/// built, so this size bounds that phase: the 381,000 records of a 2.8 GB corpus take
+/// 73 MiB inline. The layout is exactly 200 bytes: 16 of evidence position, a 12-byte
+/// thread, four 4-byte symbols, a 32-byte message ID with its digest, a 16-byte request
+/// ID, a 16-byte timestamp, 64 bytes of counts with a 1-byte presence mask, a 17-byte
+/// optional uuid digest, two flags and an 8-byte pointer to rare fields.
+const MAX_RECORD_BYTES: usize = 200;
+
+const _: () = assert!(
+    size_of::<ParsedRecord>() <= MAX_RECORD_BYTES,
+    "a decoded Claude record outgrew its size budget"
+);
+
+/// A 128-bit SHA-256 digest of a native ID that only joins records, never appears in
+/// output, and so need not be kept as text.
+type Digest = [u8; 16];
+
+fn digest(text: &str) -> Digest {
+    sha256_128(text.as_bytes())
 }
 
-#[derive(Clone, Debug, Default)]
-struct ParsedUsage {
-    input: Option<u64>,
-    cache_read: Option<u64>,
-    cache_write: Option<u64>,
-    cache_write_5m: Option<u64>,
-    cache_write_1h: Option<u64>,
-    output: Option<u64>,
-    reasoning: Option<u64>,
+/// An interned string: its position in a string table, plus one.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Sym(NonZeroU32);
+
+impl Sym {
+    fn index(self) -> usize {
+        usize::try_from(self.0.get()).map_or(usize::MAX, |position| position.saturating_sub(1))
+    }
+}
+
+/// Strings interned per source while it decodes, then merged into one table per ingestion
+/// in discovery order, so symbols never depend on the worker count.
+///
+/// Symbols from one table compare equal exactly when their strings do.
+#[derive(Debug, Default)]
+struct Strings {
+    symbols: HashMap<Arc<str>, Sym>,
+    strings: Vec<Arc<str>>,
+}
+
+impl Strings {
+    fn intern(&mut self, text: &str) -> Sym {
+        match self.symbols.get(text) {
+            Some(sym) => *sym,
+            None => self.insert(Arc::from(text)),
+        }
+    }
+
+    /// Adds a string that is not in the table.
+    fn insert(&mut self, text: Arc<str>) -> Sym {
+        let sym = u32::try_from(self.strings.len().saturating_add(1))
+            .ok()
+            .and_then(NonZeroU32::new)
+            .map(Sym)
+            .expect("an ingestion has fewer than 2^32 distinct strings");
+        self.strings.push(Arc::clone(&text));
+        self.symbols.insert(text, sym);
+        sym
+    }
+
+    fn resolve(&self, sym: Sym) -> &str {
+        &self.strings[sym.index()]
+    }
+
+    /// Merges another table into this one, returning where each of its symbols went.
+    fn absorb(&mut self, other: Self) -> Remap {
+        Remap(
+            other
+                .strings
+                .into_iter()
+                .map(|text| match self.symbols.get(&text) {
+                    Some(sym) => *sym,
+                    None => self.insert(text),
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Where each symbol of a merged table went.
+struct Remap(Vec<Sym>);
+
+impl Remap {
+    fn sym(&self, sym: Sym) -> Sym {
+        self.0[sym.index()]
+    }
+
+    fn thread(&self, thread: NativeThread) -> NativeThread {
+        NativeThread {
+            session: self.sym(thread.session),
+            agent: thread.agent.map(|agent| self.sym(agent)),
+            inline_digest: thread.inline_digest.map(|digest| self.sym(digest)),
+        }
+    }
+}
+
+/// A timestamp as seconds and biased nanoseconds, whose niche keeps an optional one at
+/// 16 bytes instead of 24.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RecordTime {
+    second: i64,
+    /// Sub-second nanoseconds plus one billion, which is never zero.
+    biased_nanosecond: NonZeroU32,
+}
+
+impl RecordTime {
+    const BIAS: i32 = 1_000_000_000;
+
+    fn new(timestamp: Timestamp) -> Self {
+        let biased = timestamp.subsec_nanosecond().saturating_add(Self::BIAS);
+        Self {
+            second: timestamp.as_second(),
+            biased_nanosecond: u32::try_from(biased)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .expect("sub-second nanoseconds lie strictly within one second"),
+        }
+    }
+
+    fn get(self) -> Timestamp {
+        let nanosecond = i32::try_from(self.biased_nanosecond.get())
+            .map_or(0, |biased| biased.saturating_sub(Self::BIAS));
+        Timestamp::new(self.second, nanosecond).expect("a decomposed timestamp recomposes")
+    }
+}
+
+/// A number a request record reports; each may be absent.
+#[derive(Clone, Copy, Debug)]
+enum Count {
+    Input,
+    CacheRead,
+    CacheWrite,
+    CacheWrite5m,
+    CacheWrite1h,
+    Output,
+    Reasoning,
+    /// `apiBlockIndex`, the position of a block record within its response.
+    BlockIndex,
+}
+
+const COUNTS: usize = 8;
+
+const COUNT_PATHS: [(Count, &[&str]); COUNTS] = [
+    (Count::Input, &["message", "usage", "input_tokens"]),
+    (Count::CacheRead, &["message", "usage", "cache_read_input_tokens"]),
+    (Count::CacheWrite, &["message", "usage", "cache_creation_input_tokens"]),
+    (Count::CacheWrite5m, &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"]),
+    (Count::CacheWrite1h, &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"]),
+    (Count::Output, &["message", "usage", "output_tokens"]),
+    (Count::Reasoning, &["message", "usage", "output_tokens_details", "thinking_tokens"]),
+    (Count::BlockIndex, &["apiBlockIndex"]),
+];
+
+/// One decoded request-bearing record.
+///
+/// Its evidence source is the source ID of the chunk that holds it.
+struct ParsedRecord {
+    offset: u64,
+    length: u64,
+    thread: NativeThread,
+    session: Option<Sym>,
+    project: Option<Sym>,
+    model: Option<Sym>,
+    effort: Option<Sym>,
+    forced_copy: bool,
+    request_record: bool,
+    /// The digest of `uuid`, which only joins replays to originals.
+    uuid: Option<Digest>,
+    message: Option<MessageId>,
+    request_id: Option<Box<str>>,
+    timestamp: Option<RecordTime>,
+    /// Values by [`Count`]; a value is present when its bit in `counted` is set.
+    counts: [u64; COUNTS],
+    counted: u8,
+    extras: Option<Box<RecordExtras>>,
+}
+
+/// A provider message ID and its digest, which keys ownership and ambiguity.
+struct MessageId {
+    digest: Digest,
+    text: Box<str>,
+}
+
+/// The fields few records have, boxed so that other records do not pay for them.
+struct RecordExtras {
     advisors: Vec<AdvisorUsage>,
+    quota: Option<QuotaLimits>,
+    limit_text: Option<Box<str>>,
+}
+
+/// A record's `quotaLimits` object, already in the form a limit observation keeps.
+struct QuotaLimits {
+    limit_name: Option<Box<str>>,
+    native: Box<str>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,69 +313,168 @@ struct AdvisorUsage {
     reasoning: Option<u64>,
 }
 
-#[derive(Clone)]
+impl ParsedRecord {
+    fn count(&self, count: Count) -> Option<u64> {
+        let bit = 1_u8 << (count as u8);
+        (self.counted & bit != 0).then(|| self.counts[count as usize])
+    }
+
+    fn evidence(&self, source: &AnalyticalId) -> EvidenceRef {
+        EvidenceRef { source: source.clone(), offset: self.offset, length: self.length }
+    }
+
+    fn advisors(&self) -> &[AdvisorUsage] {
+        self.extras.as_ref().map_or(&[], |extras| &extras.advisors)
+    }
+
+    /// The session the record names, or its file's session when it names none.
+    fn recorded_session(&self) -> Sym {
+        self.session.unwrap_or(self.thread.session)
+    }
+
+    /// Whether a main-session record names another session, as a resumed session's
+    /// replay does.
+    fn is_foreign_session(&self) -> bool {
+        !self.thread.is_child() && self.recorded_session() != self.thread.session
+    }
+
+    /// Whether the record may own its message and uuid: a request record that is neither a
+    /// nested copy nor a replay recorded under another session.
+    fn is_original_eligible(&self) -> bool {
+        self.request_record && !self.forced_copy && !self.is_foreign_session()
+    }
+
+    /// The thread that recorded the request natively: the inline sidechain itself, or the
+    /// recorded session with the file's agent.
+    fn native_owner(&self) -> NativeThread {
+        if self.thread.inline_digest.is_some() {
+            self.thread
+        } else {
+            NativeThread {
+                session: self.recorded_session(),
+                agent: self.thread.agent,
+                inline_digest: None,
+            }
+        }
+    }
+
+    fn is_replayed(&self, owners: &Owners) -> bool {
+        if self.forced_copy || self.is_foreign_session() {
+            return true;
+        }
+        let message_replayed = self
+            .message
+            .as_ref()
+            .and_then(|message| owners.messages.get(&message.digest))
+            .is_some_and(|owner| self.thread.is_child() && *owner != self.thread);
+        let uuid_replayed = self
+            .uuid
+            .and_then(|uuid| owners.uuids.get(&uuid))
+            .is_some_and(|owner| *owner != self.thread);
+        message_replayed || uuid_replayed
+    }
+
+    fn remap(&mut self, remap: &Remap) {
+        self.thread = remap.thread(self.thread);
+        for sym in [&mut self.session, &mut self.project, &mut self.model, &mut self.effort] {
+            *sym = sym.map(|sym| remap.sym(sym));
+        }
+    }
+}
+
 struct SourceFacts {
     thread: NativeThread,
     evidence: Option<EvidenceRef>,
     version: Option<String>,
-    project: Option<String>,
+    project: Option<Sym>,
     last_main_evidence: Option<EvidenceRef>,
     active_inline: Option<NativeThread>,
     inline_threads: Vec<(NativeThread, EvidenceRef, Option<EvidenceRef>)>,
 }
 
-#[derive(Clone)]
+impl SourceFacts {
+    fn remap(&mut self, remap: &Remap) {
+        self.thread = remap.thread(self.thread);
+        self.project = self.project.map(|project| remap.sym(project));
+        self.active_inline = self.active_inline.map(|inline| remap.thread(inline));
+        for (child, _, _) in &mut self.inline_threads {
+            *child = remap.thread(*child);
+        }
+    }
+}
+
 struct SubagentMeta {
     child: NativeThread,
-    tool_use_id: Option<String>,
+    tool_use: Option<Digest>,
     agent_type: Option<String>,
     evidence: EvidenceRef,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// A thread by its native strings, interned.
+///
+/// Symbols stand in for strings in equality and hashing; ordering compares the strings,
+/// through [`NativeThread::text_order`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct NativeThread {
-    session: String,
-    agent: Option<String>,
-    inline_digest: Option<String>,
+    session: Sym,
+    agent: Option<Sym>,
+    inline_digest: Option<Sym>,
 }
 
 impl NativeThread {
-    fn main(session: impl Into<String>) -> Self {
-        Self { session: session.into(), agent: None, inline_digest: None }
+    fn main(session: Sym) -> Self {
+        Self { session, agent: None, inline_digest: None }
     }
 
-    fn inline(session: impl Into<String>, first_record: &[u8]) -> Self {
+    fn inline(session: Sym, first_record: &[u8], strings: &mut Strings) -> Self {
         Self {
-            session: session.into(),
+            session,
             agent: None,
-            inline_digest: Some(Fingerprint::of(first_record).to_base32()),
+            inline_digest: Some(strings.intern(&Fingerprint::of(first_record).to_base32())),
         }
     }
 
-    fn is_child(&self) -> bool {
+    fn is_child(self) -> bool {
         self.agent.is_some() || self.inline_digest.is_some()
     }
 
-    fn native_id(&self) -> String {
-        match &self.agent {
-            Some(agent) => format!("{}/{agent}", self.session),
-            None => self.session.clone(),
+    /// The order of the threads' strings: session, then agent, then inline digest, with
+    /// an absent part first.
+    fn text_order(self, other: Self, strings: &Strings) -> Ordering {
+        let parts = |thread: Self| {
+            (
+                strings.resolve(thread.session),
+                thread.agent.map(|agent| strings.resolve(agent)),
+                thread.inline_digest.map(|digest| strings.resolve(digest)),
+            )
+        };
+        parts(self).cmp(&parts(other))
+    }
+
+    fn native_id(self, strings: &Strings) -> String {
+        let session = strings.resolve(self.session);
+        match self.agent {
+            Some(agent) => format!("{session}/{}", strings.resolve(agent)),
+            None => session.to_owned(),
         }
     }
 
-    fn identity(&self) -> Result<StoredIdentity, AdapterError> {
-        let key = match &self.inline_digest {
+    fn identity(self, strings: &Strings) -> Result<StoredIdentity, AdapterError> {
+        let key = match self.inline_digest {
             Some(digest) => {
                 INLINE_THREAD_KEY
-                    .key(vec![KeyComponent::text(AGENT_NAMESPACE), KeyComponent::text(digest)])?
+                    .key(vec![
+                        KeyComponent::text(AGENT_NAMESPACE),
+                        KeyComponent::text(strings.resolve(digest)),
+                    ])?
                     .key
             }
-            None => return Ok(agent_thread_identity(Agent::Claude, &self.native_id())?),
+            None => return Ok(agent_thread_identity(Agent::Claude, &self.native_id(strings))?),
         };
         Ok(StoredIdentity::derive(key)?)
     }
 
-    fn basis(&self) -> IdentityBasis {
+    fn basis(self) -> IdentityBasis {
         if self.inline_digest.is_some() { IdentityBasis::Fallback } else { IdentityBasis::Native }
     }
 }
@@ -255,21 +539,8 @@ pub fn ingest_discovery_with_budget(
         |source| source_weight(&source.files),
         |source| decode_source(source, budget),
     )?;
-    let mut records = Vec::with_capacity(decoded.iter().map(|source| source.records.len()).sum());
-    let mut source_facts = Vec::with_capacity(decoded.len());
-    let mut subagent_meta = Vec::new();
-    let mut manifest = SnapshotManifest {
-        entries: Vec::with_capacity(decoded.len()),
-        skipped_links: discovery.skipped_links,
-    };
-    for source in decoded {
-        records.extend(source.records);
-        manifest.entries.push(source.entry);
-        source_facts.push(source.facts);
-        subagent_meta.extend(source.subagent_meta);
-    }
-
-    normalize(records, &source_facts, &subagent_meta, manifest)
+    let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
+    normalize(corpus, manifest)
 }
 
 /// Everything one transcript contributes before normalization.
@@ -278,6 +549,10 @@ struct DecodedSource {
     facts: SourceFacts,
     subagent_meta: Option<SubagentMeta>,
     records: Vec<ParsedRecord>,
+    /// Tool-use IDs in record order, with the thread of the record that issued each.
+    tool_uses: Vec<(Digest, NativeThread)>,
+    /// The table that this source's symbols index.
+    strings: Strings,
 }
 
 /// Reads one transcript and its subagent sidecar, independently of every other source.
@@ -285,16 +560,7 @@ fn decode_source(
     source: &DiscoveredSource,
     budget: &ReadBudget,
 ) -> Result<DecodedSource, AdapterError> {
-    let source_thread = thread_from_path(&source.locator);
-    let mut facts = SourceFacts {
-        thread: source_thread.clone(),
-        evidence: None,
-        version: None,
-        project: None,
-        last_main_evidence: None,
-        active_inline: None,
-        inline_threads: Vec::new(),
-    };
+    let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
         environment: "local",
         dialect: DIALECT,
@@ -305,26 +571,30 @@ fn decode_source(
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-    let mut records = Vec::new();
     let entry =
         read_source_with_budget(&spec, &source.files, &ReadOptions::default(), budget, |raw| {
-            decode_record(raw, &source_thread, &mut facts, &mut records)
+            decoder.decode(raw)
         })
         .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+    let SourceDecoder { thread, strings, facts, mut records, mut tool_uses } = decoder;
+    // Decoding grows the vectors by doubling; release the unused tails before the records
+    // wait for the other sources.
+    records.shrink_to_fit();
+    tool_uses.shrink_to_fit();
     let mut subagent_meta = None;
-    if source_thread.agent.is_some() {
+    if thread.agent.is_some() {
         if let (Some(identity), Some(meta)) =
             (entry.source.as_ref(), read_subagent_meta(&path, budget)?)
         {
             subagent_meta = Some(SubagentMeta {
-                child: source_thread,
-                tool_use_id: text(&meta, &["toolUseId"]).map(str::to_owned),
+                child: thread,
+                tool_use: text(&meta, &["toolUseId"]).map(digest),
                 agent_type: text(&meta, &["agentType"]).map(str::to_owned),
                 evidence: EvidenceRef { source: identity.id.clone(), offset: 0, length: 0 },
             });
         }
     }
-    Ok(DecodedSource { entry, facts, subagent_meta, records })
+    Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
 }
 
 fn read_subagent_meta(
@@ -368,95 +638,163 @@ fn read_subagent_meta_with_limit(
         .map_err(|source| AdapterError::MetadataParse { path, source })
 }
 
-fn decode_record(
-    raw: &RawRecord<'_>,
-    source_thread: &NativeThread,
-    facts: &mut SourceFacts,
-    records: &mut Vec<ParsedRecord>,
-) -> RecordDisposition {
-    if facts.evidence.is_none() {
-        facts.evidence = Some(raw.evidence.clone());
+/// The state of one transcript while its lines decode.
+struct SourceDecoder {
+    thread: NativeThread,
+    strings: Strings,
+    facts: SourceFacts,
+    records: Vec<ParsedRecord>,
+    tool_uses: Vec<(Digest, NativeThread)>,
+}
+
+impl SourceDecoder {
+    fn new(locator: &str) -> Self {
+        let mut strings = Strings::default();
+        let thread = thread_from_path(locator, &mut strings);
+        Self {
+            thread,
+            strings,
+            facts: SourceFacts {
+                thread,
+                evidence: None,
+                version: None,
+                project: None,
+                last_main_evidence: None,
+                active_inline: None,
+                inline_threads: Vec::new(),
+            },
+            records: Vec::new(),
+            tool_uses: Vec::new(),
+        }
     }
-    let Ok(value) = parse_record(raw.bytes) else {
-        return RecordDisposition::Malformed;
-    };
-    if facts.version.is_none() {
-        facts.version = text(&value, &["version"]).map(str::to_owned);
-    }
-    if facts.project.is_none() {
-        facts.project = text(&value, &["cwd"])
-            .and_then(|cwd| Path::new(cwd).file_name())
-            .map(|name| name.to_string_lossy().into_owned());
-    }
-    let record_thread = if !source_thread.is_child()
-        && value.get("isSidechain").and_then(Value::as_bool) == Some(true)
-    {
-        if facts.active_inline.is_none() {
-            let child = NativeThread::inline(&source_thread.session, raw.bytes);
+
+    fn decode(&mut self, raw: &RawRecord<'_>) -> RecordDisposition {
+        let facts = &mut self.facts;
+        if facts.evidence.is_none() {
+            facts.evidence = Some(raw.evidence.clone());
+        }
+        let Ok(head) = LineHead::read(raw.bytes, facts.version.is_none(), facts.project.is_none())
+        else {
+            return RecordDisposition::Malformed;
+        };
+        if facts.version.is_none() {
+            facts.version = head.version.as_deref().map(str::to_owned);
+        }
+        if facts.project.is_none() {
+            facts.project =
+                head.cwd.as_deref().and_then(project_name).map(|name| self.strings.intern(&name));
+        }
+        let record_thread = if self.thread.is_child() || !head.sidechain {
+            facts.active_inline = None;
+            facts.last_main_evidence = Some(raw.evidence.clone());
+            self.thread
+        } else if let Some(inline) = facts.active_inline {
+            inline
+        } else {
+            // The first record of a run of sidechain records starts an inline thread.
+            let child = NativeThread::inline(self.thread.session, raw.bytes, &mut self.strings);
             facts.inline_threads.push((
-                child.clone(),
+                child,
                 raw.evidence.clone(),
                 facts.last_main_evidence.clone(),
             ));
             facts.active_inline = Some(child);
+            child
+        };
+        if !head.bears_usage() {
+            return RecordDisposition::Skipped;
         }
-        facts.active_inline.as_ref().expect("inline thread was initialized").clone()
-    } else {
-        facts.active_inline = None;
-        facts.last_main_evidence = Some(raw.evidence.clone());
-        source_thread.clone()
-    };
-    let (value, forced_copy, request_record) = match text(&value, &["type"]) {
-        Some("assistant") if unsigned(&value, &["message", "usage", "output_tokens"]).is_some() => {
-            let synthetic_error = text(&value, &["message", "model"]) == Some("<synthetic>")
-                && text(&value, &["requestId"]).is_none();
-            (value, false, !synthetic_error)
-        }
-        Some("progress") => {
-            let Some(mut nested) = value.pointer("/data/message").cloned() else {
-                return RecordDisposition::Skipped;
-            };
-            if unsigned(&nested, &["message", "usage", "output_tokens"]).is_none() {
-                return RecordDisposition::Skipped;
+        // The head proved the line is a valid document that bears usage, so only these
+        // lines pay for a full parse.
+        let Ok(value) = parse_record(raw.bytes) else {
+            return RecordDisposition::Malformed;
+        };
+        let (detail, session, forced_copy, request_record) = match head.line_type {
+            LineType::Assistant => {
+                let synthetic_error = text(&value, &["message", "model"]) == Some("<synthetic>")
+                    && text(&value, &["requestId"]).is_none();
+                (&value, text(&value, &["sessionId"]), false, !synthetic_error)
             }
-            if let (Some(session), Some(object)) =
-                (text(&value, &["sessionId"]), nested.as_object_mut())
-            {
-                object.insert("sessionId".to_owned(), Value::String(session.to_owned()));
+            LineType::Progress => {
+                let Some(nested) = value.pointer("/data/message") else {
+                    return RecordDisposition::Skipped;
+                };
+                // A nested record takes the session of the progress record that carries it.
+                let session = text(&value, &["sessionId"]).or_else(|| text(nested, &["sessionId"]));
+                (nested, session, true, true)
             }
-            (nested, true, true)
+            LineType::Other => return RecordDisposition::Skipped,
+        };
+        let record =
+            self.record(raw.evidence, record_thread, detail, session, forced_copy, request_record);
+        self.records.push(record);
+        RecordDisposition::Decoded
+    }
+
+    /// The accounting fields of a request-bearing record's document.
+    fn record(
+        &mut self,
+        evidence: &EvidenceRef,
+        thread: NativeThread,
+        value: &Value,
+        session: Option<&str>,
+        forced_copy: bool,
+        request_record: bool,
+    ) -> ParsedRecord {
+        let strings = &mut self.strings;
+        let mut counts = [0; COUNTS];
+        let mut counted = 0_u8;
+        for (count, path) in COUNT_PATHS {
+            if let Some(number) = unsigned(value, path) {
+                counts[count as usize] = number;
+                counted |= 1 << (count as u8);
+            }
         }
-        Some(_) | None => return RecordDisposition::Skipped,
-    };
-    records.push(ParsedRecord {
-        evidence: raw.evidence.clone(),
-        source_thread: record_thread,
-        forced_copy,
-        request_record,
-        uuid: text(&value, &["uuid"]).map(str::to_owned),
-        message_id: text(&value, &["message", "id"]).map(str::to_owned),
-        request_id: text(&value, &["requestId"]).map(str::to_owned),
-        session_id: text(&value, &["sessionId"]).map(str::to_owned),
-        project: text(&value, &["cwd"])
-            .and_then(|cwd| Path::new(cwd).file_name())
-            .map(|name| name.to_string_lossy().into_owned()),
-        model: text(&value, &["message", "model"]).map(str::to_owned),
-        effort: text(&value, &["effort"]).map(str::to_owned),
-        timestamp: text(&value, &["timestamp"])
-            .and_then(|timestamp| parse_timestamp(timestamp).ok()),
-        sequence: unsigned(&value, &["apiBlockIndex"]),
-        usage: parsed_usage(&value),
-        tool_use_ids: tool_use_ids(&value),
-        quota_limits: value
-            .get("quotaLimits")
-            .and_then(Value::as_object)
-            .map(|quota| quota.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
-        limit_text: usage_limit_text(&value),
-    });
-    RecordDisposition::Decoded
+        for tool_use_id in tool_use_ids(value) {
+            self.tool_uses.push((digest(tool_use_id), thread));
+        }
+        ParsedRecord {
+            offset: evidence.offset,
+            length: evidence.length,
+            thread,
+            session: session.map(|session| strings.intern(session)),
+            project: text(value, &["cwd"])
+                .and_then(project_name)
+                .map(|project| strings.intern(&project)),
+            model: text(value, &["message", "model"]).map(|model| strings.intern(model)),
+            effort: text(value, &["effort"]).map(|effort| strings.intern(effort)),
+            forced_copy,
+            request_record,
+            uuid: text(value, &["uuid"]).map(digest),
+            message: text(value, &["message", "id"])
+                .map(|id| MessageId { digest: digest(id), text: id.into() }),
+            request_id: text(value, &["requestId"]).map(Box::from),
+            timestamp: text(value, &["timestamp"])
+                .and_then(|timestamp| parse_timestamp(timestamp).ok())
+                .map(RecordTime::new),
+            counts,
+            counted,
+            extras: record_extras(value),
+        }
+    }
 }
 
-fn parsed_usage(value: &Value) -> ParsedUsage {
+/// The project name a working directory implies: its last component.
+fn project_name(cwd: &str) -> Option<Cow<'_, str>> {
+    Path::new(cwd).file_name().map(|name| name.to_string_lossy())
+}
+
+fn record_extras(value: &Value) -> Option<Box<RecordExtras>> {
+    let extras = RecordExtras {
+        advisors: advisor_usage(value),
+        quota: quota_limits(value),
+        limit_text: usage_limit_text(value).map(Box::from),
+    };
+    (!extras.advisors.is_empty() || extras.quota.is_some() || extras.limit_text.is_some())
+        .then(|| Box::new(extras))
+}
+
+fn advisor_usage(value: &Value) -> Vec<AdvisorUsage> {
     let mut advisors = Vec::new();
     if let Some(iterations) = value.pointer("/message/usage/iterations").and_then(Value::as_array) {
         for iteration in iterations {
@@ -473,391 +811,180 @@ fn parsed_usage(value: &Value) -> ParsedUsage {
             });
         }
     }
-    ParsedUsage {
-        input: unsigned(value, &["message", "usage", "input_tokens"]),
-        cache_read: unsigned(value, &["message", "usage", "cache_read_input_tokens"]),
-        cache_write: unsigned(value, &["message", "usage", "cache_creation_input_tokens"]),
-        cache_write_5m: unsigned(
-            value,
-            &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"],
-        ),
-        cache_write_1h: unsigned(
-            value,
-            &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"],
-        ),
-        output: unsigned(value, &["message", "usage", "output_tokens"]),
-        reasoning: unsigned(
-            value,
-            &["message", "usage", "output_tokens_details", "thinking_tokens"],
-        ),
-        advisors,
-    }
+    advisors
 }
 
-fn tool_use_ids(value: &Value) -> Vec<String> {
+fn quota_limits(value: &Value) -> Option<QuotaLimits> {
+    let quota = value.get("quotaLimits").and_then(Value::as_object)?;
+    let sorted: BTreeMap<&String, &Value> = quota.iter().collect();
+    Some(QuotaLimits {
+        limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(Box::from),
+        native: serde_json::to_string(&sorted).unwrap_or_default().into_boxed_str(),
+    })
+}
+
+fn tool_use_ids(value: &Value) -> impl Iterator<Item = &str> {
     value
         .pointer("/message/content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|block| text(block, &["type"]) == Some("tool_use"))
-        .filter_map(|block| text(block, &["id"]).map(str::to_owned))
-        .collect()
+        .filter_map(|block| text(block, &["id"]))
 }
 
-fn usage_limit_text(value: &Value) -> Option<String> {
+fn usage_limit_text(value: &Value) -> Option<&str> {
     (value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true))
         .then(|| value.pointer("/message/content/0/text").and_then(Value::as_str))
         .flatten()
         .filter(|message| message.starts_with("Claude AI usage limit reached"))
-        .map(str::to_owned)
 }
 
-fn normalize(
-    mut records: Vec<ParsedRecord>,
-    source_facts: &[SourceFacts],
-    subagent_meta: &[SubagentMeta],
-    manifest: SnapshotManifest,
-) -> Result<Ingested, AdapterError> {
-    // Decoding grows the vector by doubling; release the unused tail before the records
-    // are held beside observations.
-    records.shrink_to_fit();
+/// One source's records and the source ID they share: a reader assigns one ID to every
+/// record of a scan.
+struct RecordChunk {
+    source: AnalyticalId,
+    records: Vec<ParsedRecord>,
+}
+
+/// Every decoded source merged in discovery order under one string table, with records
+/// left in their per-source chunks so they are never copied into one vector.
+struct Corpus {
+    strings: Strings,
+    chunks: Vec<RecordChunk>,
+    facts: Vec<SourceFacts>,
+    subagent_meta: Vec<SubagentMeta>,
+    /// The thread of the first record, in discovery and record order, that issued each
+    /// tool use a subagent sidecar names.
+    tool_owners: HashMap<Digest, NativeThread>,
+}
+
+impl Corpus {
+    fn merge(
+        decoded: Vec<DecodedSource>,
+        skipped_links: Vec<SkippedLink>,
+    ) -> (Self, SnapshotManifest) {
+        let spawning_tool_uses: HashSet<Digest> =
+            decoded.iter().filter_map(|source| source.subagent_meta.as_ref()?.tool_use).collect();
+        let mut corpus = Self {
+            strings: Strings::default(),
+            chunks: Vec::with_capacity(decoded.len()),
+            facts: Vec::with_capacity(decoded.len()),
+            subagent_meta: Vec::new(),
+            tool_owners: HashMap::new(),
+        };
+        let mut manifest =
+            SnapshotManifest { entries: Vec::with_capacity(decoded.len()), skipped_links };
+        for source in decoded {
+            let DecodedSource { entry, mut facts, subagent_meta, mut records, tool_uses, strings } =
+                source;
+            let remap = corpus.strings.absorb(strings);
+            facts.remap(&remap);
+            for record in &mut records {
+                record.remap(&remap);
+            }
+            if let (Some(evidence), false) = (&facts.evidence, records.is_empty()) {
+                corpus.chunks.push(RecordChunk { source: evidence.source.clone(), records });
+            }
+            for (tool_use, thread) in tool_uses {
+                if spawning_tool_uses.contains(&tool_use) {
+                    corpus.tool_owners.entry(tool_use).or_insert_with(|| remap.thread(thread));
+                }
+            }
+            corpus.subagent_meta.extend(
+                subagent_meta.map(|meta| SubagentMeta { child: remap.thread(meta.child), ..meta }),
+            );
+            manifest.entries.push(entry);
+            corpus.facts.push(facts);
+        }
+        (corpus, manifest)
+    }
+
+    fn records(&self) -> impl Iterator<Item = (&AnalyticalId, &ParsedRecord)> {
+        self.chunks
+            .iter()
+            .flat_map(|chunk| chunk.records.iter().map(move |record| (&chunk.source, record)))
+    }
+}
+
+/// Which thread first recorded each message and uuid, by digest.
+struct Owners {
+    messages: HashMap<Digest, NativeThread>,
+    uuids: HashMap<Digest, NativeThread>,
+}
+
+impl Owners {
+    /// Owners come only from records that can be originals, in an order that does not
+    /// depend on file names: a resumed session's replay never claims the original's IDs.
+    fn new(corpus: &Corpus) -> Self {
+        let mut candidates: Vec<(&AnalyticalId, &ParsedRecord)> =
+            corpus.records().filter(|(_, record)| record.is_original_eligible()).collect();
+        candidates.sort_by(|left, right| compare_owner_precedence(*left, *right));
+        let mut owners = Self { messages: HashMap::new(), uuids: HashMap::new() };
+        for (_, record) in candidates {
+            if let Some(message) = &record.message {
+                owners.messages.entry(message.digest).or_insert(record.thread);
+            }
+            if let Some(uuid) = record.uuid {
+                owners.uuids.entry(uuid).or_insert(record.thread);
+            }
+        }
+        owners
+    }
+}
+
+/// The order in which eligible records claim message and uuid ownership: main-session
+/// records before subagent records, then the earliest timestamp, then evidence position.
+fn compare_owner_precedence(
+    (left_source, left): (&AnalyticalId, &ParsedRecord),
+    (right_source, right): (&AnalyticalId, &ParsedRecord),
+) -> Ordering {
+    left.thread
+        .is_child()
+        .cmp(&right.thread.is_child())
+        .then_with(|| left.timestamp.is_none().cmp(&right.timestamp.is_none()))
+        .then_with(|| {
+            left.timestamp.map(RecordTime::get).cmp(&right.timestamp.map(RecordTime::get))
+        })
+        .then_with(|| left_source.cmp(right_source))
+        .then_with(|| left.offset.cmp(&right.offset))
+        .then_with(|| left.length.cmp(&right.length))
+}
+
+/// Digests of the message IDs that non-replayed request records report with more than one
+/// model.
+fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
+    // The first model seen for each message, or `None` once a second one appears.
+    let mut models: HashMap<Digest, Option<Sym>> = HashMap::new();
+    for (_, record) in corpus.records() {
+        if !record.request_record || record.is_replayed(owners) {
+            continue;
+        }
+        if let (Some(message), Some(model)) = (&record.message, record.model) {
+            models
+                .entry(message.digest)
+                .and_modify(|first| {
+                    if *first != Some(model) {
+                        *first = None;
+                    }
+                })
+                .or_insert(Some(model));
+        }
+    }
+    models.into_iter().filter_map(|(message, first)| first.is_none().then_some(message)).collect()
+}
+
+fn normalize(corpus: Corpus, manifest: SnapshotManifest) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
-    for facts in source_facts {
+    for facts in &corpus.facts {
         if let (Some(evidence), Some(version)) = (&facts.evidence, &facts.version) {
             source_versions.entry(evidence.source.clone()).or_insert_with(|| version.clone());
         }
     }
-    let mut message_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
-    let mut uuid_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
-    // Owners come only from records that can be originals, in an order that does not
-    // depend on file names: a resumed session's replay never claims the original's IDs.
-    let mut owner_candidates: Vec<&ParsedRecord> =
-        records.iter().filter(|record| is_original_eligible(record)).collect();
-    owner_candidates.sort_by(|left, right| compare_owner_precedence(left, right));
-    for record in owner_candidates {
-        if let Some(message_id) = &record.message_id {
-            message_owners
-                .entry(message_id.clone())
-                .or_insert_with(|| record.source_thread.clone());
-        }
-        if let Some(uuid) = &record.uuid {
-            uuid_owners.entry(uuid.clone()).or_insert_with(|| record.source_thread.clone());
-        }
-    }
-    let mut message_models: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for record in &records {
-        if !record.request_record || is_replayed_record(record, &message_owners, &uuid_owners) {
-            continue;
-        }
-        if let (Some(message_id), Some(model)) = (&record.message_id, &record.model) {
-            message_models.entry(message_id.clone()).or_default().insert(model.clone());
-        }
-    }
-    let ambiguous_messages: BTreeSet<String> = message_models
-        .into_iter()
-        .filter_map(|(message, models)| (models.len() > 1).then_some(message))
-        .collect();
-    let mut native_threads: BTreeSet<NativeThread> =
-        source_facts.iter().map(|facts| facts.thread.clone()).collect();
-    let mut relationships = Vec::new();
-    for record in &records {
-        native_threads.insert(record.source_thread.clone());
-        let recorded_session =
-            record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
-        native_threads.insert(NativeThread::main(recorded_session.clone()));
-        if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
-            relationships.push((
-                RelationshipKind::Fork,
-                NativeThread::main(recorded_session),
-                record.source_thread.clone(),
-                record.evidence.clone(),
-            ));
-        }
-    }
-    for facts in source_facts {
-        for (child, evidence, parent_evidence) in &facts.inline_threads {
-            native_threads.insert(child.clone());
-            if let Some(parent_evidence) = parent_evidence {
-                relationships.push((
-                    RelationshipKind::InlineSidechain,
-                    facts.thread.clone(),
-                    child.clone(),
-                    parent_evidence.clone(),
-                ));
-            }
-            relationships.push((
-                RelationshipKind::InlineSidechain,
-                facts.thread.clone(),
-                child.clone(),
-                evidence.clone(),
-            ));
-        }
-    }
-
-    let mut tool_owners = BTreeMap::new();
-    for record in &records {
-        for tool_use_id in &record.tool_use_ids {
-            tool_owners.entry(tool_use_id.clone()).or_insert_with(|| record.source_thread.clone());
-        }
-    }
-    let purpose_by_thread: BTreeMap<NativeThread, String> = subagent_meta
-        .iter()
-        .filter_map(|meta| meta.agent_type.clone().map(|purpose| (meta.child.clone(), purpose)))
-        .collect();
-    let mut spawned = BTreeSet::new();
-    for meta in subagent_meta {
-        let parent = meta
-            .tool_use_id
-            .as_ref()
-            .and_then(|tool_use_id| tool_owners.get(tool_use_id))
-            .cloned()
-            .unwrap_or_else(|| NativeThread::main(&meta.child.session));
-        spawned.insert(meta.child.clone());
-        relationships.push((
-            RelationshipKind::Spawn,
-            parent,
-            meta.child.clone(),
-            meta.evidence.clone(),
-        ));
-    }
-    for child in native_threads.iter().filter(|thread| thread.agent.is_some()) {
-        if let (true, Some(evidence)) = (
-            spawned.insert(child.clone()),
-            records
-                .iter()
-                .find(|record| record.source_thread == *child)
-                .map(|record| record.evidence.clone()),
-        ) {
-            relationships.push((
-                RelationshipKind::Spawn,
-                NativeThread::main(&child.session),
-                child.clone(),
-                evidence,
-            ));
-        }
-    }
-
-    let mut thread_evidence: BTreeMap<NativeThread, Vec<EvidenceRef>> = BTreeMap::new();
-    let mut project_by_thread: BTreeMap<NativeThread, String> = BTreeMap::new();
-    for facts in source_facts {
-        if let Some(evidence) = &facts.evidence {
-            thread_evidence.entry(facts.thread.clone()).or_default().push(evidence.clone());
-        }
-        if let Some(project) = &facts.project {
-            project_by_thread.entry(facts.thread.clone()).or_insert_with(|| project.clone());
-            for (inline, _, _) in &facts.inline_threads {
-                project_by_thread.entry(inline.clone()).or_insert_with(|| project.clone());
-            }
-        }
-        for (inline, evidence, _) in &facts.inline_threads {
-            thread_evidence.entry(inline.clone()).or_default().push(evidence.clone());
-        }
-    }
-    for record in &records {
-        thread_evidence
-            .entry(record.source_thread.clone())
-            .or_default()
-            .push(record.evidence.clone());
-        if let Some(project) = &record.project {
-            project_by_thread
-                .entry(record.source_thread.clone())
-                .or_insert_with(|| project.clone());
-        }
-    }
-    for evidence in thread_evidence.values_mut() {
-        evidence.sort();
-        evidence.dedup();
-    }
-
-    let mut ids = BTreeMap::new();
-    let mut threads = BTreeMap::new();
-    for native in native_threads {
-        let identity = native.identity()?;
-        ids.insert(native.clone(), identity.id.clone());
-        let mut native_key = BTreeMap::new();
-        if native.inline_digest.is_none() {
-            native_key.insert("session_id".to_owned(), native.session.clone());
-            if let Some(agent) = &native.agent {
-                native_key.insert("agent_id".to_owned(), agent.clone());
-            }
-        }
-        threads.insert(
-            identity.id.clone(),
-            Thread {
-                identity,
-                basis: native.basis(),
-                aliases: Vec::new(),
-                native_key,
-                source: Basis::Observed(
-                    if native.inline_digest.is_some() {
-                        "inline-sidechain"
-                    } else if native.agent.is_some() {
-                        "subagent"
-                    } else {
-                        "cli"
-                    }
-                    .to_owned(),
-                ),
-                initiator: Basis::Unknown,
-                purpose: purpose_by_thread
-                    .get(&native)
-                    .cloned()
-                    .map_or(Basis::Unknown, Basis::Observed),
-                execution_environment: Basis::Observed("local".to_owned()),
-                project: project_by_thread
-                    .get(&native)
-                    .cloned()
-                    .map_or(Basis::Unknown, Basis::Observed),
-                account: Basis::Unknown,
-                evidence: thread_evidence.remove(&native).unwrap_or_default(),
-            },
-        );
-    }
-
-    let relationships = relationships
-        .into_iter()
-        .filter_map(|(kind, from, to, evidence)| {
-            Some(Relationship {
-                confidence: if kind == RelationshipKind::InlineSidechain {
-                    Confidence::Inferred
-                } else {
-                    Confidence::Proven
-                },
-                kind,
-                from: ids.get(&from)?.clone(),
-                to: ids.get(&to)?.clone(),
-                evidence: vec![evidence],
-            })
-        })
-        .collect();
-
-    let mut observations = Vec::with_capacity(records.len());
-    let mut limit_observations = Vec::new();
-    let mut diagnostics = Vec::new();
-    for message_id in &ambiguous_messages {
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::ConflictingSharedKey,
-            None,
-            records
-                .iter()
-                .filter(|record| {
-                    record.message_id.as_deref() == Some(message_id.as_str())
-                        && !is_replayed_record(record, &message_owners, &uuid_owners)
-                })
-                .map(|record| record.evidence.clone()),
-            format!("Claude message ID {message_id} is reused by conflicting responses"),
-        ));
-    }
-    for record in records {
-        append_limits(&record, &ids, &ambiguous_messages, &mut limit_observations)?;
-        if !record.request_record {
-            continue;
-        }
-        if let Some((flat, breakdown)) = cache_breakdown_mismatch(&record.usage) {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::UsageInconsistency,
-                None,
-                [record.evidence.clone()],
-                format!(
-                    "Claude cache creation total {flat} differs from its lifetime breakdown {breakdown}"
-                ),
-            ));
-        }
-        let message_id = record.message_id.as_deref();
-        let request_id = record.request_id.as_deref();
-        let mut observation = RequestObservation::new(record.evidence.clone(), DIALECT);
-        let recorded_session =
-            record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
-        if let Some(message_id) = message_id {
-            let key = if ambiguous_messages.contains(message_id) {
-                AMBIGUOUS_RESPONSE_KEY.key(vec![
-                    KeyComponent::text(AGENT_NAMESPACE),
-                    KeyComponent::text(format!("{recorded_session}/{message_id}")),
-                ])?
-            } else {
-                RESPONSE_KEY.key(vec![
-                    KeyComponent::text(PROVIDER_NAMESPACE),
-                    KeyComponent::text(message_id),
-                ])?
-            };
-            observation.keys.push(key.derive()?);
-        }
-        if let Some(request_id) = request_id {
-            observation.keys.push(
-                REQUEST_KEY
-                    .key(vec![
-                        KeyComponent::text(PROVIDER_NAMESPACE),
-                        KeyComponent::text(request_id),
-                    ])?
-                    .derive()?,
-            );
-        }
-        let native_owner = if record.source_thread.inline_digest.is_some() {
-            record.source_thread.clone()
-        } else {
-            NativeThread {
-                session: recorded_session.clone(),
-                agent: record.source_thread.agent.clone(),
-                inline_digest: None,
-            }
-        };
-        let replay_owner = message_id
-            .and_then(|message_id| message_owners.get(message_id))
-            .filter(|owner| {
-                record.forced_copy
-                    || (record.source_thread.is_child() && *owner != &record.source_thread)
-            })
-            .or_else(|| {
-                record
-                    .uuid
-                    .as_deref()
-                    .and_then(|uuid| uuid_owners.get(uuid))
-                    .filter(|owner| *owner != &record.source_thread)
-            });
-        let owner = replay_owner
-            .and_then(|owner| ids.get(owner))
-            .or_else(|| ids.get(&native_owner))
-            .or_else(|| ids.get(&NativeThread::main(recorded_session.clone())));
-        observation.owner = owner.cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-        observation.role = if record.forced_copy
-            || replay_owner.is_some()
-            || (!record.source_thread.is_child()
-                && recorded_session != record.source_thread.session)
-        {
-            ObservationRole::Copy
-        } else {
-            ObservationRole::Original
-        };
-        if observation.role == ObservationRole::Original {
-            let (usage, model_usage) = claude_usage(&record)?;
-            observation.usage = Some(usage);
-            observation.model_usage = model_usage;
-            observation.sequence = record.sequence;
-            observation.model = record
-                .model
-                .as_ref()
-                .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served });
-            observation.effort.clone_from(&record.effort);
-            observation.timestamp = record.timestamp;
-            if let Some(model) = observation.model.as_ref() {
-                observation.invariants.push(("model", model.name.clone()));
-            }
-        }
-        observations.push(observation);
-    }
-
-    let mut ledger = reconcile(
-        ReconcileInput {
-            threads: threads.into_values().collect(),
-            relationships,
-            requests: observations,
-            limit_observations,
-            diagnostics,
-            ..ReconcileInput::default()
-        },
-        &ClaudeBlockSelector,
-    )?;
+    // Building the input consumes the corpus and drops every map it needed, so only the
+    // input is alive while reconciliation reaches its peak.
+    let input = reconcile_input(corpus)?;
+    let mut ledger = reconcile(input, &ClaudeBlockSelector)?;
     for diagnostic in &mut ledger.diagnostics {
         diagnostic.code = match diagnostic.code {
             DiagnosticCode::RevisionDisagreement => DiagnosticCode::ClaudeBlockUsageConflict,
@@ -909,72 +1036,390 @@ fn normalize(
     Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
 }
 
+/// Builds the reconciliation input, consuming the corpus chunk by chunk.
+fn reconcile_input(corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
+    let owners = Owners::new(&corpus);
+    let ambiguous = ambiguous_messages(&corpus, &owners);
+    let mut diagnostics = ambiguity_diagnostics(&corpus, &ambiguous, &owners);
+    let (threads, relationships, ids) = thread_graph(&corpus)?;
+    let Corpus { strings, chunks, facts, subagent_meta, tool_owners } = corpus;
+    drop((facts, subagent_meta, tool_owners));
+
+    let mut observations = Vec::with_capacity(chunks.iter().map(|chunk| chunk.records.len()).sum());
+    let mut limit_observations = Vec::new();
+    for RecordChunk { source, records } in chunks {
+        // Each chunk's records are freed as soon as they are observed.
+        for record in records {
+            let evidence = record.evidence(&source);
+            append_limits(&record, &evidence, &strings, &ids, &ambiguous, &mut limit_observations)?;
+            if !record.request_record {
+                continue;
+            }
+            if let Some((flat, breakdown)) = cache_breakdown_mismatch(&record) {
+                diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::UsageInconsistency,
+                    None,
+                    [evidence.clone()],
+                    format!(
+                        "Claude cache creation total {flat} differs from its lifetime breakdown {breakdown}"
+                    ),
+                ));
+            }
+            observations.push(observe(&record, evidence, &strings, &owners, &ambiguous, &ids)?);
+        }
+    }
+
+    Ok(ReconcileInput {
+        threads,
+        relationships,
+        requests: observations,
+        limit_observations,
+        diagnostics,
+        ..ReconcileInput::default()
+    })
+}
+
+/// One conflicting-key diagnostic per ambiguous message, in message ID order, citing its
+/// non-replayed records.
+fn ambiguity_diagnostics(
+    corpus: &Corpus,
+    ambiguous: &HashSet<Digest>,
+    owners: &Owners,
+) -> Vec<Diagnostic> {
+    if ambiguous.is_empty() {
+        return Vec::new();
+    }
+    let mut evidence_by_message: BTreeMap<&str, Vec<EvidenceRef>> = BTreeMap::new();
+    for (source, record) in corpus.records() {
+        let Some(message) = &record.message else { continue };
+        if ambiguous.contains(&message.digest) && !record.is_replayed(owners) {
+            evidence_by_message.entry(&*message.text).or_default().push(record.evidence(source));
+        }
+    }
+    evidence_by_message
+        .into_iter()
+        .map(|(message_id, evidence)| {
+            Diagnostic::new(
+                DiagnosticCode::ConflictingSharedKey,
+                None,
+                evidence,
+                format!("Claude message ID {message_id} is reused by conflicting responses"),
+            )
+        })
+        .collect()
+}
+
+type ThreadGraph = (Vec<Thread>, Vec<Relationship>, HashMap<NativeThread, AnalyticalId>);
+
+/// Threads, their relationships, and the analytical ID of every native thread.
+fn thread_graph(corpus: &Corpus) -> Result<ThreadGraph, AdapterError> {
+    let strings = &corpus.strings;
+    let mut native_threads: HashSet<NativeThread> =
+        corpus.facts.iter().map(|facts| facts.thread).collect();
+    let mut relationships = Vec::new();
+    for (source, record) in corpus.records() {
+        native_threads.insert(record.thread);
+        let recorded_session = NativeThread::main(record.recorded_session());
+        native_threads.insert(recorded_session);
+        if record.is_foreign_session() {
+            relationships.push((
+                RelationshipKind::Fork,
+                recorded_session,
+                record.thread,
+                record.evidence(source),
+            ));
+        }
+    }
+    for facts in &corpus.facts {
+        for (child, evidence, parent_evidence) in &facts.inline_threads {
+            native_threads.insert(*child);
+            if let Some(parent_evidence) = parent_evidence {
+                relationships.push((
+                    RelationshipKind::InlineSidechain,
+                    facts.thread,
+                    *child,
+                    parent_evidence.clone(),
+                ));
+            }
+            relationships.push((
+                RelationshipKind::InlineSidechain,
+                facts.thread,
+                *child,
+                evidence.clone(),
+            ));
+        }
+    }
+    let mut native_threads: Vec<NativeThread> = native_threads.into_iter().collect();
+    native_threads.sort_by(|left, right| left.text_order(*right, strings));
+
+    let purpose_by_thread: HashMap<NativeThread, &str> = corpus
+        .subagent_meta
+        .iter()
+        .filter_map(|meta| meta.agent_type.as_deref().map(|purpose| (meta.child, purpose)))
+        .collect();
+    let mut spawned = HashSet::new();
+    for meta in &corpus.subagent_meta {
+        let parent = meta
+            .tool_use
+            .and_then(|tool_use| corpus.tool_owners.get(&tool_use))
+            .copied()
+            .unwrap_or_else(|| NativeThread::main(meta.child.session));
+        spawned.insert(meta.child);
+        relationships.push((RelationshipKind::Spawn, parent, meta.child, meta.evidence.clone()));
+    }
+    // A subagent without a sidecar is spawned by its session, cited by its first record.
+    let unspawned: Vec<NativeThread> = native_threads
+        .iter()
+        .copied()
+        .filter(|thread| thread.agent.is_some() && !spawned.contains(thread))
+        .collect();
+    if !unspawned.is_empty() {
+        let wanted: HashSet<NativeThread> = unspawned.iter().copied().collect();
+        let mut first_evidence: HashMap<NativeThread, EvidenceRef> = HashMap::new();
+        for (source, record) in corpus.records() {
+            if wanted.contains(&record.thread) {
+                first_evidence.entry(record.thread).or_insert_with(|| record.evidence(source));
+            }
+        }
+        for child in unspawned {
+            if let Some(evidence) = first_evidence.remove(&child) {
+                relationships.push((
+                    RelationshipKind::Spawn,
+                    NativeThread::main(child.session),
+                    child,
+                    evidence,
+                ));
+            }
+        }
+    }
+
+    let mut thread_evidence: HashMap<NativeThread, Vec<EvidenceRef>> = HashMap::new();
+    let mut project_by_thread: HashMap<NativeThread, Sym> = HashMap::new();
+    for facts in &corpus.facts {
+        if let Some(evidence) = &facts.evidence {
+            thread_evidence.entry(facts.thread).or_default().push(evidence.clone());
+        }
+        if let Some(project) = facts.project {
+            project_by_thread.entry(facts.thread).or_insert(project);
+            for (inline, _, _) in &facts.inline_threads {
+                project_by_thread.entry(*inline).or_insert(project);
+            }
+        }
+        for (inline, evidence, _) in &facts.inline_threads {
+            thread_evidence.entry(*inline).or_default().push(evidence.clone());
+        }
+    }
+    for (source, record) in corpus.records() {
+        thread_evidence.entry(record.thread).or_default().push(record.evidence(source));
+        if let Some(project) = record.project {
+            project_by_thread.entry(record.thread).or_insert(project);
+        }
+    }
+    for evidence in thread_evidence.values_mut() {
+        evidence.sort();
+        evidence.dedup();
+        evidence.shrink_to_fit();
+    }
+
+    let mut ids = HashMap::with_capacity(native_threads.len());
+    let mut threads = BTreeMap::new();
+    for native in native_threads {
+        let identity = native.identity(strings)?;
+        ids.insert(native, identity.id.clone());
+        let mut native_key = BTreeMap::new();
+        if native.inline_digest.is_none() {
+            native_key.insert("session_id".to_owned(), strings.resolve(native.session).to_owned());
+            if let Some(agent) = native.agent {
+                native_key.insert("agent_id".to_owned(), strings.resolve(agent).to_owned());
+            }
+        }
+        threads.insert(
+            identity.id.clone(),
+            Thread {
+                identity,
+                basis: native.basis(),
+                aliases: Vec::new(),
+                native_key,
+                source: Basis::Observed(
+                    if native.inline_digest.is_some() {
+                        "inline-sidechain"
+                    } else if native.agent.is_some() {
+                        "subagent"
+                    } else {
+                        "cli"
+                    }
+                    .to_owned(),
+                ),
+                initiator: Basis::Unknown,
+                purpose: purpose_by_thread
+                    .get(&native)
+                    .map_or(Basis::Unknown, |purpose| Basis::Observed((*purpose).to_owned())),
+                execution_environment: Basis::Observed("local".to_owned()),
+                project: project_by_thread.get(&native).map_or(Basis::Unknown, |project| {
+                    Basis::Observed(strings.resolve(*project).to_owned())
+                }),
+                account: Basis::Unknown,
+                evidence: thread_evidence.remove(&native).unwrap_or_default(),
+            },
+        );
+    }
+
+    let relationships = relationships
+        .into_iter()
+        .filter_map(|(kind, from, to, evidence)| {
+            Some(Relationship {
+                confidence: if kind == RelationshipKind::InlineSidechain {
+                    Confidence::Inferred
+                } else {
+                    Confidence::Proven
+                },
+                kind,
+                from: ids.get(&from)?.clone(),
+                to: ids.get(&to)?.clone(),
+                evidence: vec![evidence],
+            })
+        })
+        .collect();
+    Ok((threads.into_values().collect(), relationships, ids))
+}
+
+/// The request observation of one request record.
+fn observe(
+    record: &ParsedRecord,
+    evidence: EvidenceRef,
+    strings: &Strings,
+    owners: &Owners,
+    ambiguous: &HashSet<Digest>,
+    ids: &HashMap<NativeThread, AnalyticalId>,
+) -> Result<RequestObservation, AdapterError> {
+    let mut observation = RequestObservation::new(evidence, DIALECT);
+    let recorded_session = record.recorded_session();
+    if let Some(message) = &record.message {
+        observation
+            .keys
+            .push(response_key(message, recorded_session, strings, ambiguous)?.derive()?);
+    }
+    if let Some(request_id) = &record.request_id {
+        observation.keys.push(
+            REQUEST_KEY
+                .key(vec![
+                    KeyComponent::text(PROVIDER_NAMESPACE),
+                    KeyComponent::text(&**request_id),
+                ])?
+                .derive()?,
+        );
+    }
+    let replay_owner = record
+        .message
+        .as_ref()
+        .and_then(|message| owners.messages.get(&message.digest))
+        .filter(|owner| {
+            record.forced_copy || (record.thread.is_child() && **owner != record.thread)
+        })
+        .or_else(|| {
+            record
+                .uuid
+                .and_then(|uuid| owners.uuids.get(&uuid))
+                .filter(|owner| **owner != record.thread)
+        });
+    let owner = replay_owner
+        .and_then(|owner| ids.get(owner))
+        .or_else(|| ids.get(&record.native_owner()))
+        .or_else(|| ids.get(&NativeThread::main(recorded_session)));
+    observation.owner = owner.cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+    observation.role =
+        if record.forced_copy || replay_owner.is_some() || record.is_foreign_session() {
+            ObservationRole::Copy
+        } else {
+            ObservationRole::Original
+        };
+    if observation.role == ObservationRole::Original {
+        let (usage, model_usage) = claude_usage(record, strings)?;
+        observation.usage = Some(usage);
+        observation.model_usage = model_usage;
+        observation.sequence = record.count(Count::BlockIndex);
+        observation.model = record.model.map(|model| ModelName {
+            name: strings.resolve(model).to_owned(),
+            basis: ModelBasis::Served,
+        });
+        observation.effort = record.effort.map(|effort| strings.resolve(effort).to_owned());
+        observation.timestamp = record.timestamp.map(RecordTime::get);
+        if let Some(model) = observation.model.as_ref() {
+            observation.invariants.push(("model", model.name.clone()));
+        }
+    }
+    Ok(observation)
+}
+
+/// A message's response key: provider-scoped, or scoped to the recorded session when
+/// conflicting responses share the message ID.
+fn response_key(
+    message: &MessageId,
+    session: Sym,
+    strings: &Strings,
+    ambiguous: &HashSet<Digest>,
+) -> Result<ScopedKey, AdapterError> {
+    Ok(if ambiguous.contains(&message.digest) {
+        AMBIGUOUS_RESPONSE_KEY.key(vec![
+            KeyComponent::text(AGENT_NAMESPACE),
+            KeyComponent::text(format!("{}/{}", strings.resolve(session), message.text)),
+        ])?
+    } else {
+        RESPONSE_KEY
+            .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(&*message.text)])?
+    })
+}
+
 fn append_limits(
     record: &ParsedRecord,
-    ids: &BTreeMap<NativeThread, crate::ledger::identity::AnalyticalId>,
-    ambiguous_messages: &BTreeSet<String>,
+    evidence: &EvidenceRef,
+    strings: &Strings,
+    ids: &HashMap<NativeThread, AnalyticalId>,
+    ambiguous: &HashSet<Digest>,
     limits: &mut Vec<ProviderLimitObservation>,
 ) -> Result<(), AdapterError> {
-    let session = record.session_id.as_deref().unwrap_or(&record.source_thread.session).to_owned();
-    let native_owner = if record.source_thread.inline_digest.is_some() {
-        record.source_thread.clone()
-    } else {
-        NativeThread {
-            session: session.clone(),
-            agent: record.source_thread.agent.clone(),
-            inline_digest: None,
-        }
-    };
-    let owner_thread = ids.get(&native_owner).cloned();
-    let observed_at = record.timestamp.map_or(Basis::Unknown, Basis::Observed);
-    if let Some(quota) = &record.quota_limits {
+    let Some(extras) = &record.extras else { return Ok(()) };
+    if extras.quota.is_none() && extras.limit_text.is_none() {
+        return Ok(());
+    }
+    let owner_thread = ids.get(&record.native_owner()).cloned();
+    let observed_at = record.timestamp.map(RecordTime::get).map_or(Basis::Unknown, Basis::Observed);
+    if let Some(quota) = &extras.quota {
         let owner_request = record
-            .message_id
-            .as_deref()
-            .map(|message_id| {
-                if ambiguous_messages.contains(message_id) {
-                    AMBIGUOUS_RESPONSE_KEY.key(vec![
-                        KeyComponent::text(AGENT_NAMESPACE),
-                        KeyComponent::text(format!("{session}/{message_id}")),
-                    ])
-                } else {
-                    RESPONSE_KEY.key(vec![
-                        KeyComponent::text(PROVIDER_NAMESPACE),
-                        KeyComponent::text(message_id),
-                    ])
-                }
-            })
+            .message
+            .as_ref()
+            .map(|message| response_key(message, record.recorded_session(), strings, ambiguous))
             .transpose()?
             .map(|key| key.key.derive_id())
             .transpose()?;
         limits.push(ProviderLimitObservation {
-            limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(str::to_owned),
+            limit_name: quota.limit_name.as_deref().map(str::to_owned),
             window: None,
             observed_at: observed_at.clone(),
             owner_thread: owner_thread.clone(),
             owner_request,
-            native: serde_json::to_string(quota).unwrap_or_default().into_boxed_str(),
-            evidence: record.evidence.clone(),
+            native: quota.native.clone(),
+            evidence: evidence.clone(),
         });
     }
-    if let Some(message) = &record.limit_text {
+    if let Some(message) = &extras.limit_text {
         limits.push(ProviderLimitObservation {
             limit_name: None,
             window: None,
             observed_at,
             owner_thread,
             owner_request: None,
-            native: serde_json::json!({ "text": message }).to_string().into_boxed_str(),
-            evidence: record.evidence.clone(),
+            native: serde_json::json!({ "text": &**message }).to_string().into_boxed_str(),
+            evidence: evidence.clone(),
         });
     }
     Ok(())
 }
 
-fn cache_breakdown_mismatch(usage: &ParsedUsage) -> Option<(u64, u64)> {
-    let flat = usage.cache_write?;
-    let five = usage.cache_write_5m;
-    let hour = usage.cache_write_1h;
+fn cache_breakdown_mismatch(record: &ParsedRecord) -> Option<(u64, u64)> {
+    let flat = record.count(Count::CacheWrite)?;
+    let five = record.count(Count::CacheWrite5m);
+    let hour = record.count(Count::CacheWrite1h);
     if five.is_none() && hour.is_none() {
         return None;
     }
@@ -982,60 +1427,19 @@ fn cache_breakdown_mismatch(usage: &ParsedUsage) -> Option<(u64, u64)> {
     (flat != breakdown).then_some((flat, breakdown))
 }
 
-/// Whether a main-session record names another session, as a resumed session's replay does.
-fn is_foreign_session_record(record: &ParsedRecord) -> bool {
-    let recorded_session = record.session_id.as_deref().unwrap_or(&record.source_thread.session);
-    !record.source_thread.is_child() && recorded_session != record.source_thread.session
-}
-
-/// Whether a record may own its message and uuid: a request record that is neither a
-/// nested copy nor a replay recorded under another session.
-fn is_original_eligible(record: &ParsedRecord) -> bool {
-    record.request_record && !record.forced_copy && !is_foreign_session_record(record)
-}
-
-/// The order in which eligible records claim message and uuid ownership: main-session
-/// records before subagent records, then the earliest timestamp, then evidence position.
-fn compare_owner_precedence(left: &ParsedRecord, right: &ParsedRecord) -> Ordering {
-    left.source_thread
-        .is_child()
-        .cmp(&right.source_thread.is_child())
-        .then_with(|| left.timestamp.is_none().cmp(&right.timestamp.is_none()))
-        .then_with(|| left.timestamp.cmp(&right.timestamp))
-        .then_with(|| left.evidence.cmp(&right.evidence))
-}
-
-fn is_replayed_record(
-    record: &ParsedRecord,
-    message_owners: &BTreeMap<String, NativeThread>,
-    uuid_owners: &BTreeMap<String, NativeThread>,
-) -> bool {
-    if record.forced_copy || is_foreign_session_record(record) {
-        return true;
-    }
-    let message_replayed = record
-        .message_id
-        .as_deref()
-        .and_then(|message_id| message_owners.get(message_id))
-        .is_some_and(|owner| record.source_thread.is_child() && owner != &record.source_thread);
-    let uuid_replayed = record
-        .uuid
-        .as_deref()
-        .and_then(|uuid| uuid_owners.get(uuid))
-        .is_some_and(|owner| owner != &record.source_thread);
-    message_replayed || uuid_replayed
-}
-
 /// A record's total usage and, when advisor iterations add other models, its per-model
 /// components. A single-model record has no components: its usage belongs to its model.
-fn claude_usage(record: &ParsedRecord) -> Result<(TokenMeasures, Vec<ModelUsage>), AdapterError> {
-    let input = record.usage.input;
-    let cache_read = record.usage.cache_read;
-    let flat_write = record.usage.cache_write;
-    let five_minute_write = record.usage.cache_write_5m;
-    let one_hour_write = record.usage.cache_write_1h;
-    let output = record.usage.output;
-    let reasoning = record.usage.reasoning;
+fn claude_usage(
+    record: &ParsedRecord,
+    strings: &Strings,
+) -> Result<(TokenMeasures, Vec<ModelUsage>), AdapterError> {
+    let input = record.count(Count::Input);
+    let cache_read = record.count(Count::CacheRead);
+    let flat_write = record.count(Count::CacheWrite);
+    let five_minute_write = record.count(Count::CacheWrite5m);
+    let one_hour_write = record.count(Count::CacheWrite1h);
+    let output = record.count(Count::Output);
+    let reasoning = record.count(Count::Reasoning);
     let has_breakdown = five_minute_write.is_some() || one_hour_write.is_some();
     let breakdown_total = five_minute_write.unwrap_or(0).checked_add(one_hour_write.unwrap_or(0));
     let breakdown_matches = match (flat_write, breakdown_total) {
@@ -1055,19 +1459,20 @@ fn claude_usage(record: &ParsedRecord) -> Result<(TokenMeasures, Vec<ModelUsage>
         reasoning,
         provider_only: None,
     };
-    if record.usage.advisors.is_empty() {
+    let advisors = record.advisors();
+    if advisors.is_empty() {
         return Ok((primary, Vec::new()));
     }
     let mut usage = primary;
     let mut model_usage = vec![ModelUsage {
-        model: record
-            .model
-            .as_ref()
-            .map(|name| ModelName { name: name.clone(), basis: ModelBasis::Served }),
+        model: record.model.map(|model| ModelName {
+            name: strings.resolve(model).to_owned(),
+            basis: ModelBasis::Served,
+        }),
         usage: primary,
         source: "message.usage",
     }];
-    for iteration in &record.usage.advisors {
+    for iteration in advisors {
         let advisor = TokenMeasures {
             uncached_input: iteration.input,
             cache_read: iteration.cache_read,
@@ -1142,45 +1547,43 @@ fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation
         .then_with(|| right.evidence.source.cmp(&left.evidence.source))
 }
 
-fn thread_from_path(locator: &str) -> NativeThread {
-    let path = PathBuf::from(locator);
-    let components: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
+fn thread_from_path(locator: &str, strings: &mut Strings) -> NativeThread {
+    let path = Path::new(locator);
+    let components: Vec<Cow<'_, str>> =
+        path.components().map(|component| component.as_os_str().to_string_lossy()).collect();
     let subagents = components.iter().position(|component| component == "subagents");
     match subagents {
         Some(index) if index > 0 => {
-            let session = components[index.saturating_sub(1)].clone();
-            let agent = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .map(|stem| stem.strip_prefix("agent-").unwrap_or(&stem).to_owned());
+            let session = strings.intern(&components[index.saturating_sub(1)]);
+            let agent = path.file_stem().map(|stem| {
+                let stem = stem.to_string_lossy();
+                strings.intern(stem.strip_prefix("agent-").unwrap_or(&stem))
+            });
             NativeThread { session, agent, inline_digest: None }
         }
-        _ => NativeThread::main(
-            path.file_stem()
-                .map_or_else(|| locator.to_owned(), |stem| stem.to_string_lossy().into_owned()),
-        ),
+        _ => NativeThread::main(strings.intern(
+            &path.file_stem().map_or(Cow::Borrowed(locator), |stem| stem.to_string_lossy()),
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
     use std::fs;
 
     use serde_json::Value;
 
     use super::{
-        ClaudeBlockSelector, NativeThread, ParsedRecord, claude_usage, parsed_usage,
-        read_subagent_meta_with_limit, tool_use_ids,
+        ClaudeBlockSelector, Count, NativeThread, RecordTime, SourceDecoder, Strings, claude_usage,
+        digest, read_subagent_meta_with_limit,
     };
     use crate::adapters::AdapterError;
     use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
     use crate::ledger::reconcile::{RequestObservation, RevisionSelector};
     use crate::ledger::tokens::TokenMeasures;
     use crate::sources::evidence::EvidenceRef;
-    use crate::sources::reader::{ReadBudget, SourceReadError};
+    use crate::sources::reader::{RawRecord, ReadBudget, RecordDisposition, SourceReadError};
 
     #[test]
     fn oversized_subagent_metadata_is_rejected_before_json_decode() {
@@ -1212,42 +1615,41 @@ mod tests {
         ));
     }
 
-    fn observation(offset: u64, block: u64) -> RequestObservation {
+    fn source_evidence(offset: u64) -> EvidenceRef {
         let source =
             IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::text("claude")])
                 .derive_id()
                 .unwrap();
-        let mut observation =
-            RequestObservation::new(EvidenceRef { source, offset, length: 1 }, "claude-project");
+        EvidenceRef { source, offset, length: 1 }
+    }
+
+    fn observation(offset: u64, block: u64) -> RequestObservation {
+        let mut observation = RequestObservation::new(source_evidence(offset), "claude-project");
         observation.sequence = Some(block);
         observation.usage = Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() });
         observation
     }
 
-    fn parsed_record(value: &Value) -> ParsedRecord {
-        let source =
-            IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::text("claude")])
-                .derive_id()
-                .unwrap();
-        ParsedRecord {
-            evidence: EvidenceRef { source, offset: 0, length: 1 },
-            source_thread: NativeThread::main("session-one"),
-            forced_copy: false,
-            request_record: true,
-            uuid: None,
-            message_id: value.pointer("/message/id").and_then(Value::as_str).map(str::to_owned),
-            request_id: None,
-            session_id: None,
-            project: None,
-            model: value.pointer("/message/model").and_then(Value::as_str).map(str::to_owned),
-            effort: None,
-            timestamp: None,
-            sequence: None,
-            usage: parsed_usage(value),
-            tool_use_ids: tool_use_ids(value),
-            quota_limits: None,
-            limit_text: None,
-        }
+    /// Decodes lines as one main-session transcript.
+    fn decode(lines: &[Value]) -> (SourceDecoder, Vec<RecordDisposition>) {
+        let mut decoder = SourceDecoder::new("project/session-one.jsonl");
+        let mut offset = 0;
+        let dispositions = lines
+            .iter()
+            .map(|line| {
+                let bytes = serde_json::to_vec(line).unwrap();
+                let evidence = source_evidence(offset);
+                offset += 1;
+                decoder.decode(&RawRecord { evidence: &evidence, bytes: &bytes })
+            })
+            .collect();
+        (decoder, dispositions)
+    }
+
+    fn decode_one(line: &Value) -> SourceDecoder {
+        let (decoder, dispositions) = decode(std::slice::from_ref(line));
+        assert_eq!(dispositions, [RecordDisposition::Decoded]);
+        decoder
     }
 
     #[test]
@@ -1261,6 +1663,7 @@ mod tests {
     #[test]
     fn message_iterations_repeat_top_level_usage_without_adding_it() {
         let value = serde_json::json!({
+            "type": "assistant",
             "message": {
                 "model": "claude-test",
                 "usage": {
@@ -1274,8 +1677,8 @@ mod tests {
                 }
             }
         });
-        let record = parsed_record(&value);
-        let (usage, model_usage) = claude_usage(&record).unwrap();
+        let decoder = decode_one(&value);
+        let (usage, model_usage) = claude_usage(&decoder.records[0], &decoder.strings).unwrap();
         assert_eq!(usage.uncached_input, Some(3));
         assert_eq!(usage.output, Some(10));
         assert!(model_usage.is_empty());
@@ -1284,6 +1687,7 @@ mod tests {
     #[test]
     fn advisor_iterations_add_usage_and_split_it_by_model() {
         let value = serde_json::json!({
+            "type": "assistant",
             "message": {
                 "model": "claude-test",
                 "usage": {
@@ -1305,12 +1709,13 @@ mod tests {
                 }
             }
         });
-        let record = parsed_record(&value);
-        let (usage, model_usage) = claude_usage(&record).unwrap();
+        let decoder = decode_one(&value);
+        let (usage, model_usage) = claude_usage(&decoder.records[0], &decoder.strings).unwrap();
 
         assert_eq!(usage.uncached_input, Some(8));
         assert_eq!(usage.output, Some(17));
         assert_eq!(model_usage.len(), 2);
+        assert_eq!(model_usage[0].model.as_ref().unwrap().name, "claude-test");
         assert_eq!(model_usage[0].usage.uncached_input, Some(3));
         assert_eq!(model_usage[1].model.as_ref().unwrap().name, "claude-advisor");
         assert_eq!(model_usage[1].usage.uncached_input, Some(5));
@@ -1334,11 +1739,107 @@ mod tests {
             }
         });
 
-        let record = parsed_record(&value);
+        let decoder = decode_one(&value);
+        let record = &decoder.records[0];
 
-        assert_eq!(record.message_id.as_deref(), Some("message-one"));
-        assert_eq!(record.tool_use_ids, ["tool-one"]);
-        assert_eq!(record.usage.input, Some(3));
-        assert_eq!(record.usage.output, Some(10));
+        assert_eq!(record.message.as_ref().map(|message| &*message.text), Some("message-one"));
+        assert_eq!(record.uuid, Some(digest("record-one")));
+        assert_eq!(decoder.tool_uses, [(digest("tool-one"), decoder.thread)]);
+        assert_eq!(record.count(Count::Input), Some(3));
+        assert_eq!(record.count(Count::Output), Some(10));
+        assert_eq!(record.count(Count::CacheRead), None);
+        assert!(record.extras.is_none());
+    }
+
+    #[test]
+    fn only_usage_lines_become_records_and_every_line_feeds_source_facts() {
+        let (decoder, dispositions) = decode(&[
+            serde_json::json!({"type": "user", "cwd": "/work/app", "version": "2.1.0"}),
+            serde_json::json!({"type": "assistant", "message": {"usage": {"input_tokens": 1}}}),
+            serde_json::json!({"type": "progress", "data": {"message": {"type": "assistant"}}}),
+            serde_json::json!({
+                "type": "progress",
+                "sessionId": "outer",
+                "data": {"message": {
+                    "sessionId": "inner",
+                    "message": {"usage": {"output_tokens": 2}}
+                }}
+            }),
+            serde_json::json!({"type": "user", "isSidechain": true}),
+        ]);
+        let decoder_output = &decoder.records;
+
+        assert_eq!(
+            dispositions,
+            [
+                RecordDisposition::Skipped,
+                RecordDisposition::Skipped,
+                RecordDisposition::Skipped,
+                RecordDisposition::Decoded,
+                RecordDisposition::Skipped,
+            ]
+        );
+        assert_eq!(decoder.facts.version.as_deref(), Some("2.1.0"));
+        assert_eq!(
+            decoder.facts.project.map(|project| decoder.strings.resolve(project)),
+            Some("app")
+        );
+        assert_eq!(decoder_output.len(), 1);
+        let nested = &decoder_output[0];
+        assert!(nested.forced_copy && nested.request_record);
+        assert_eq!(nested.session.map(|session| decoder.strings.resolve(session)), Some("outer"));
+        assert_eq!(decoder.facts.inline_threads.len(), 1);
+        assert_eq!(
+            decoder.facts.last_main_evidence.as_ref().map(|evidence| evidence.offset),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_malformed_line_is_malformed_and_still_starts_the_source() {
+        let mut decoder = SourceDecoder::new("project/session-one.jsonl");
+        let evidence = source_evidence(0);
+        let disposition = decoder.decode(&RawRecord {
+            evidence: &evidence,
+            bytes: b"{\"type\":\"assistant\",\"n\":1e400}",
+        });
+        assert_eq!(disposition, RecordDisposition::Malformed);
+        assert_eq!(decoder.facts.evidence, Some(evidence));
+    }
+
+    #[test]
+    fn record_times_round_trip_every_sub_second_sign() {
+        for (second, nanosecond) in
+            [(0, 0), (1_700_000_000, 999_999_999), (-1, -1), (-86_400, -500_000_000), (5, 1)]
+        {
+            let timestamp = jiff::Timestamp::new(second, nanosecond).unwrap();
+            assert_eq!(RecordTime::new(timestamp).get(), timestamp);
+        }
+        for timestamp in [jiff::Timestamp::MIN, jiff::Timestamp::MAX] {
+            assert_eq!(RecordTime::new(timestamp).get(), timestamp);
+        }
+        assert_eq!(size_of::<Option<RecordTime>>(), 16);
+    }
+
+    #[test]
+    fn merged_symbols_follow_discovery_order_and_compare_as_strings() {
+        let mut first = Strings::default();
+        let a = NativeThread { session: first.intern("b"), agent: None, inline_digest: None };
+        let mut second = Strings::default();
+        let b = NativeThread {
+            session: second.intern("a"),
+            agent: Some(second.intern("b")),
+            inline_digest: None,
+        };
+
+        let mut merged = Strings::default();
+        let a = merged.absorb(first).thread(a);
+        let b = merged.absorb(second).thread(b);
+
+        assert_eq!(a.session, b.agent.unwrap(), "one string, one symbol");
+        assert_eq!(merged.resolve(a.session), "b");
+        assert_eq!(a.text_order(b, &merged), Ordering::Greater, "\"b\" sorts after \"a\"");
+        let main_a = NativeThread::main(b.session);
+        assert_eq!(main_a.text_order(b, &merged), Ordering::Less, "no agent sorts first");
     }
 }
