@@ -50,7 +50,7 @@ fn assert_limit_observations(actual: &[ProviderLimitObservation], expected: &Val
             "{name}: limit {index}"
         );
         assert_eq!(actual.window.as_deref(), expected["window"].as_str(), "{name}: window {index}");
-        let native = Value::Object(actual.native.clone().into_iter().collect());
+        let native: Value = serde_json::from_str(&actual.native).expect("native fields are JSON");
         assert_eq!(native, expected["native"], "{name}: native limit fields {index}");
     }
 }

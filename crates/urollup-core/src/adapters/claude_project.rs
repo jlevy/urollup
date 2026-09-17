@@ -473,11 +473,14 @@ fn usage_limit_text(value: &Value) -> Option<String> {
 }
 
 fn normalize(
-    records: Vec<ParsedRecord>,
+    mut records: Vec<ParsedRecord>,
     source_facts: &[SourceFacts],
     subagent_meta: &[SubagentMeta],
     manifest: SnapshotManifest,
 ) -> Result<Ingested, AdapterError> {
+    // Decoding grows the vector by doubling; release the unused tail before the records
+    // are held beside observations.
+    records.shrink_to_fit();
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for facts in source_facts {
         if let (Some(evidence), Some(version)) = (&facts.evidence, &facts.version) {
@@ -844,9 +847,9 @@ fn normalize(
         };
     }
     ledger.diagnostics.sort();
-    let threads = ledger.threads.clone();
-    let relationships = ledger.relationships.clone();
-    let limit_observations = ledger.limit_observations.clone();
+    let threads = std::mem::take(&mut ledger.threads);
+    let relationships = std::mem::take(&mut ledger.relationships);
+    let limit_observations = std::mem::take(&mut ledger.limit_observations);
     let sources = manifest
         .entries
         .iter()
@@ -909,7 +912,7 @@ fn append_limits(
             observed_at: observed_at.clone(),
             owner_thread: owner_thread.clone(),
             owner_request,
-            native: quota.clone(),
+            native: serde_json::to_string(quota).unwrap_or_default().into_boxed_str(),
             evidence: record.evidence.clone(),
         });
     }
@@ -920,7 +923,7 @@ fn append_limits(
             observed_at,
             owner_thread,
             owner_request: None,
-            native: BTreeMap::from([("text".to_owned(), Value::String(message.clone()))]),
+            native: serde_json::json!({ "text": message }).to_string().into_boxed_str(),
             evidence: record.evidence.clone(),
         });
     }

@@ -18,6 +18,9 @@ pub mod codex_rollout;
 pub mod discovery;
 
 /// The normalized result of ingesting one or more roots of one dialect.
+///
+/// Threads, relationships and limit observations are moved out of the reconciled ledger
+/// into their own fields rather than copied, so the ledger's copies of them are empty.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ingested {
     /// Every source snapshot read.
