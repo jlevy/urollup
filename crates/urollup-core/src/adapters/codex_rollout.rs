@@ -21,7 +21,7 @@ use crate::ledger::reconcile::{
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
 use crate::selection::{Agent, agent_thread_identity};
-use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
+use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned, validate_record};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
@@ -326,7 +326,7 @@ fn decode_record(
     if !may_be_relevant(raw.bytes) {
         // Validate without building a document: most rollout lines are content the adapter
         // skips, and allocating a JSON tree for each one only fragments the heap.
-        return if serde_json::from_slice::<serde::de::IgnoredAny>(raw.bytes).is_ok() {
+        return if validate_record(raw.bytes).is_ok() {
             skipped.observe();
             RecordDisposition::Skipped
         } else {
@@ -1251,6 +1251,14 @@ mod tests {
         assert_eq!(
             decode(r#"{"type":"turn_context","payload":{"turn_id":"t1"}}"#),
             (RecordDisposition::Decoded, 1, 0)
+        );
+        assert_eq!(
+            decode(r#"{"type":"response_item","payload":{"content":"\ud800"}}"#),
+            (RecordDisposition::Malformed, 0, 0)
+        );
+        assert_eq!(
+            decode(r#"{"type":"response_item","payload":{"size":1e400}}"#),
+            (RecordDisposition::Malformed, 0, 0)
         );
     }
 
