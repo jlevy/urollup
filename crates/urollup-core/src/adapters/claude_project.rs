@@ -688,7 +688,7 @@ fn normalize(
         })
         .collect();
 
-    let mut observations = Vec::new();
+    let mut observations = Vec::with_capacity(records.len());
     let mut limit_observations = Vec::new();
     let mut diagnostics = Vec::new();
     for message_id in &ambiguous_messages {
@@ -738,7 +738,6 @@ fn normalize(
                 ])?
             };
             observation.keys.push(key.derive()?);
-            observation.native_response_id = Some(message_id.to_owned());
         }
         if let Some(request_id) = request_id {
             observation.keys.push(
@@ -749,7 +748,6 @@ fn normalize(
                     ])?
                     .derive()?,
             );
-            observation.native_request_id = Some(request_id.to_owned());
         }
         let native_owner = if record.source_thread.inline_digest.is_some() {
             record.source_thread.clone()
