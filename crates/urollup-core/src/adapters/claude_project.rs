@@ -488,7 +488,12 @@ fn normalize(
     }
     let mut message_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
     let mut uuid_owners: BTreeMap<String, NativeThread> = BTreeMap::new();
-    for record in records.iter().filter(|record| record.request_record && !record.forced_copy) {
+    // Owners come only from records that can be originals, in an order that does not
+    // depend on file names: a resumed session's replay never claims the original's IDs.
+    let mut owner_candidates: Vec<&ParsedRecord> =
+        records.iter().filter(|record| is_original_eligible(record)).collect();
+    owner_candidates.sort_by(|left, right| compare_owner_precedence(left, right));
+    for record in owner_candidates {
         if let Some(message_id) = &record.message_id {
             message_owners
                 .entry(message_id.clone())
@@ -933,16 +938,35 @@ fn cache_breakdown_mismatch(usage: &ParsedUsage) -> Option<(u64, u64)> {
     (flat != breakdown).then_some((flat, breakdown))
 }
 
+/// Whether a main-session record names another session, as a resumed session's replay does.
+fn is_foreign_session_record(record: &ParsedRecord) -> bool {
+    let recorded_session = record.session_id.as_deref().unwrap_or(&record.source_thread.session);
+    !record.source_thread.is_child() && recorded_session != record.source_thread.session
+}
+
+/// Whether a record may own its message and uuid: a request record that is neither a
+/// nested copy nor a replay recorded under another session.
+fn is_original_eligible(record: &ParsedRecord) -> bool {
+    record.request_record && !record.forced_copy && !is_foreign_session_record(record)
+}
+
+/// The order in which eligible records claim message and uuid ownership: main-session
+/// records before subagent records, then the earliest timestamp, then evidence position.
+fn compare_owner_precedence(left: &ParsedRecord, right: &ParsedRecord) -> Ordering {
+    left.source_thread
+        .is_child()
+        .cmp(&right.source_thread.is_child())
+        .then_with(|| left.timestamp.is_none().cmp(&right.timestamp.is_none()))
+        .then_with(|| left.timestamp.cmp(&right.timestamp))
+        .then_with(|| left.evidence.cmp(&right.evidence))
+}
+
 fn is_replayed_record(
     record: &ParsedRecord,
     message_owners: &BTreeMap<String, NativeThread>,
     uuid_owners: &BTreeMap<String, NativeThread>,
 ) -> bool {
-    if record.forced_copy {
-        return true;
-    }
-    let recorded_session = record.session_id.as_deref().unwrap_or(&record.source_thread.session);
-    if !record.source_thread.is_child() && recorded_session != record.source_thread.session {
+    if record.forced_copy || is_foreign_session_record(record) {
         return true;
     }
     let message_replayed = record

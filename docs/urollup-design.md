@@ -791,7 +791,11 @@ set these source-specific rules:
 - **Claude Code copies:** a record that replays a parent message is a copy owned by the
   parent, not an ambiguous key: a `progress` record nesting a subagent’s assistant
   message, a `/btw` side-question record with the parent’s `message.id` under a new
-  `requestId`, and a fork-style subagent record with a parent record’s `uuid`.
+  `requestId`, and a fork-style subagent record with a parent record’s `uuid`. A
+  main-session record whose `sessionId` names another session is a resumed replay.
+  Only records that are neither nested nor replays can own a `message.id` or `uuid`, and
+  main-session records claim ownership before subagent records, then the earliest
+  timestamp, then evidence position, so results never depend on file names.
 - **`claude-stream`:** a capture and its transcript share `session_id` and `message.id`,
   so their requests merge by response ID.
 - **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
