@@ -229,7 +229,7 @@ names the row count and suggests `--source`; it is a safety net, not a budget us
 tune. `reconcile` checks it before building any request: `MAX_OBSERVATIONS` is 2 GiB
 divided by the size of one request observation row, so the ceiling follows the row type
 as it shrinks, and each agent’s reconciliation is checked on its own.
-At a 448 B row the ceiling is 4,793,490 observations; whole history has about 680,000.
+At a 288 B row the ceiling is 7,456,540 observations; whole history has about 1,003,000.
 The CLI reports `N request observations exceed the reconciliation capacity of M compact
 rows (2 GiB); pass narrower --source roots with --no-default-sources`.
 
