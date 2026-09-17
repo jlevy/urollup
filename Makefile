@@ -16,6 +16,7 @@ CARGO_DENY_VERSION := 0.20.2
 NODE_INSTALL_STAMP := node_modules/.package-lock.json
 CCUSAGE_DIR := tests/parity/ccusage
 CCUSAGE_INSTALL_STAMP := $(CCUSAGE_DIR)/node_modules/.package-lock.json
+RELEASE_UROLLUP_BIN := target/release/urollup
 
 # Always pass the repository's uv.toml, so user-level uv configuration never changes
 # resolution (AGENTS.md).
@@ -25,7 +26,7 @@ TAPLO := node_modules/.bin/taplo
 
 .PHONY: help build test rust-test qa-tool-tests golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
-	clippy docs dependency-guard msrv audit npm-audit gate-proofs fix clean
+	clippy docs dependency-guard msrv audit npm-audit gate-proofs scale-gate fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
@@ -38,6 +39,7 @@ help:
 	@echo "make e2e-local          Aggregate consented local logs without private fields"
 	@echo "make parity             Reconcile fixture token rows against pinned ccusage"
 	@echo "make parity-local       Compare consented local aggregates with pinned ccusage"
+	@echo "make scale-gate         Run the Phase 2 CI scale gates on a synthetic corpus"
 	@echo "make check              Handoff gate: everything CI enforces, fastest first"
 	@echo "make fix                Format Rust, TOML and Markdown"
 	@echo "make supply-chain       Verify release age, provenance, pins and CI trust controls"
@@ -50,7 +52,7 @@ help:
 build:
 	$(CARGO) build --locked --workspace
 
-test: rust-test qa-tool-tests golden e2e-results parity
+test: rust-test qa-tool-tests golden e2e-results parity scale-gate
 
 rust-test:
 	$(CARGO) test --locked --workspace
@@ -128,6 +130,14 @@ parity-local: build $(CCUSAGE_INSTALL_STAMP)
 		--output target/parity/local.json \
 		--consent-local-logs
 
+# The scalable-ingestion plan's Phase 2 scale gates (docs/project/qa/scale-measurement.md):
+# raw-bytes independence, a footprint-per-usage-record extrapolation bound, and
+# `daily --all` on a generated corpus under the RSS watchdog at 512 MiB. Builds its own
+# release binary, since a debug build's allocator behavior is not representative.
+scale-gate:
+	$(CARGO) build --locked --release -p urollup
+	$(UV_RUN) python scripts/check-scale.py --binary $(RELEASE_UROLLUP_BIN)
+
 # Everything CI enforces, in the order that fails fastest.
 check: toolchain uv-version supply-chain lint-policy fixtures-check fmt-check toml-fmt-check \
 	docs-format-check uv-lock-check clippy test docs dependency-guard msrv audit npm-audit gate-proofs
@@ -186,7 +196,7 @@ uv-version:
 # Standalone entry points must fail before any recipe asks uv to parse repository
 # configuration. Keep this list aligned with the recipe-coverage test in
 # scripts/check-uv-version.test.mjs.
-UV_BACKED_TARGETS := docs-format-check uv-lock-check qa-tool-tests e2e-local parity parity-local fix
+UV_BACKED_TARGETS := docs-format-check uv-lock-check qa-tool-tests e2e-local parity parity-local scale-gate fix
 
 $(UV_BACKED_TARGETS): uv-version
 

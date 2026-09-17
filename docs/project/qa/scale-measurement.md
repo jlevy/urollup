@@ -95,6 +95,36 @@ Records are modeled on the shapes in
 Run `--help` for the full list, including `--claude-projects` (how many distinct project
 directories to rotate through).
 
+### Usage-record density
+
+The generator writes usage records far more densely than real logs do.
+With default (unpadded) content it produces about 660 usage records per MiB of generated
+content.
+Real Claude Code logs carry about 130 usage records per MiB, and real Codex logs
+about 40 per MiB — both far sparser, since a real transcript spends most of its bytes on
+prompts, replies and tool output that accounting never reads.
+
+This matters because the engine’s
+[Memory Model](../specs/active/plan-2026-09-16-scalable-ingestion.md#memory-model)
+tracks peak footprint against the number of usage-bearing records, not raw bytes.
+A synthetic corpus sized by `--max-bytes` alone is therefore not a stand-in for “this
+many MiB of real logs” — it is denser, so it carries more usage records per MiB than the
+real thing. Whenever record count (not corpus size) is what matters, read it from the
+generator’s own JSON summary (`usage_records`) rather than assuming a fixed
+records-per-MiB ratio from `--max-bytes`.
+
+`--content-padding-bytes` is the generator’s density control: it appends bytes to fields
+the engine never reads for accounting, which lowers records-per-MiB without changing the
+usage-record count at all.
+Passing a larger value approximates real logs’ lower density (for example,
+`--content-padding-bytes 5000` with `--max-bytes 0` and small day/session counts
+produces a corpus with far fewer usage records per MiB of content than the default).
+This is also what makes the raw-bytes independence check possible: two corpora at very
+different densities but identical usage-record counts.
+`scripts/check-scale.py` (below) relies on both properties: it fits its extrapolation
+bound against `usage_records`, and its independence check holds `usage_records` fixed
+while varying padding.
+
 ## Measuring scale
 
 ```bash
@@ -144,6 +174,115 @@ overhead. Compare slopes across urollup builds (`--binary`) to see whether a cha
 the data model actually reduced the bytes-per-input-MiB ratio the
 [Goals](../specs/active/plan-2026-09-16-scalable-ingestion.md#goals) call for.
 
+## CI scale gate
+
+`scripts/check-scale.py` turns three of the plan’s
+[Phase 2](../specs/active/plan-2026-09-16-scalable-ingestion.md#phase-2-fast-decode-and-scale-gates)
+requirements into pass/fail assertions, run by `make scale-gate` (part of `make test`):
+
+1. **Raw-bytes independence.** Two corpora with identical usage records but very
+   different content padding must have peak-memory footprints within
+   `--independence-ceiling-mib` of each other (default 64 MiB — the plan’s own bound).
+   A larger difference means memory is scaling with raw log bytes, not usage records.
+2. **Footprint extrapolation bound.** Peak memory at a few small corpus sizes (default
+   4, 8, 16 MiB; see [Usage-record density](#usage-record-density) for why sizes are
+   expressed in MiB but the fit is not) is fit to
+   `peak_bytes ~= intercept + slope * usage_records`, and both the fitted slope
+   (`--extrapolation-slope-ceiling-bytes-per-record`) and intercept
+   (`--extrapolation-intercept-ceiling-mib`) must stay under calibrated ceilings.
+3. **`daily --all` under the RSS watchdog at 512 MiB.** A smoke test — a generated
+   corpus (`--daily-gate-mib`, default 32 MiB) run through `daily --all` under
+   `scripts/run-rss-watchdog.py` with a 512 MiB kill switch, matching the plan’s
+   whole-history footprint goal.
+
+Run it directly, or through the Make target that builds the release binary it needs:
+
+```bash
+make scale-gate
+# or, against an already-built binary:
+uv --config-file uv.toml run --frozen python scripts/check-scale.py \
+  --binary target/release/urollup
+```
+
+Like the other scripts here, it never reads real logs (`--no-default-sources` always),
+generates at most 256 MiB in one corpus, and deletes every corpus as soon as it has been
+measured. The whole gate — all three checks — takes under a minute on an unloaded
+machine.
+
+If the engine refuses a corpus at its 2 GiB compact-row capacity ceiling, the refusal is
+reported as its own clearly labeled failure, not folded into a generic non-zero-exit
+message.
+The gate’s default corpus sizes are orders of magnitude below that ceiling, so a
+refusal means the ceiling or the row size regressed, not that the gate itself is broken.
+
+### Calibrated thresholds
+
+The default ceilings were calibrated on 2026-09-17 against the Phase 1 engine at commit
+`4c0daae` (with its since-removed 512 MiB input guard raised; the guard did not affect
+these small default sizes), on an Apple M1 Pro under ordinary developer load:
+
+| Check | Measured | Default ceiling | Margin |
+| --- | ---: | ---: | ---: |
+| Raw-bytes independence (peak difference, identical usage records) | ~1.0–1.5 MiB | 64 MiB | ~45x (fixed by the plan, not tuned) |
+| Extrapolation slope (bytes per usage record) | ~3,000–4,100 B/record | 8,192 B/record | ~2–2.7x |
+| Extrapolation intercept (fixed baseline) | ~3.5–10.5 MiB | 48 MiB | ~5–14x |
+| `daily --all` peak at 32 MiB corpus (~21,000 usage records) | ~85–95 MiB | 512 MiB (watchdog) | ~5.5x |
+
+The extrapolation slope was the most stable of these across repeated runs (it varied by
+only a few percent); the intercept was noisier, since it is dominated by fixed process
+and allocator overhead rather than by anything the corpus controls.
+The margins above are deliberately generous for a machine shared with other work, per
+the safety rules above — they are meant to catch a real regression (an accidental return
+to per-record-bytes-proportional retention, or a superlinear growth in record count),
+not to pin the current engine’s numbers exactly.
+
+**These numbers are from macOS (`/usr/bin/time -l`, “peak memory footprint”).** Linux’s
+`/usr/bin/time -v` reports “Maximum resident set size” instead, a different (typically
+larger) accounting that does not exclude the same categories of pages.
+If CI runs on Linux, recalibrate there before trusting the defaults; do not assume the
+macOS numbers transfer.
+
+### Recalibrating
+
+1. Build (or obtain) the release binary you want to calibrate against.
+
+2. Run the gate once with generous ceilings and read the printed measurements — for
+   example:
+
+   ```bash
+   uv --config-file uv.toml run --frozen python scripts/check-scale.py \
+     --binary target/release/urollup \
+     --extrapolation-slope-ceiling-bytes-per-record 1000000 \
+     --extrapolation-intercept-ceiling-mib 1000 \
+     --independence-ceiling-mib 1000
+   ```
+
+   The `[PASS]`/`[FAIL]` summary lines print the fitted `peak MiB ~= intercept + slope *
+   records` line and the independence peak difference directly.
+
+3. Repeat a few times (the machine’s load affects the intercept more than the slope; see
+   above) and pick new ceilings with a margin over the worst observed run, following the
+   same reasoning as the table above.
+
+4. Update the relevant `--extrapolation-*`/`--independence-ceiling-mib` defaults in
+   `scripts/check-scale.py`’s `parse_args`, and update the table above with the new
+   measurements and the date, binary and machine they came from.
+
+### Demonstrating a failure
+
+Passing an unreasonably strict ceiling proves the gate actually checks something, rather
+than always passing:
+
+```bash
+uv --config-file uv.toml run --frozen python scripts/check-scale.py \
+  --binary target/release/urollup \
+  --extrapolation-slope-ceiling-bytes-per-record 10 \
+  --independence-ceiling-mib 0.01
+```
+
+This exits 1 and prints `[FAIL]` lines naming the violated bound and the measured value,
+for example `slope 4044 B/record exceeds the 10 B/record ceiling`.
+
 ## Tests
 
 `tests/qa/test_synthetic_corpus.py` (discovered by `make qa-tool-tests`) checks the
@@ -151,6 +290,14 @@ generator’s determinism (the same seed produces byte-identical output trees) a
 never exceeds `--max-bytes`, at small sizes so the suite stays fast.
 It does not run `measure-scale.py` itself, which needs a release build and takes real
 wall time; run it manually as shown above.
+
+`tests/qa/test_check_scale.py` checks `check-scale.py`’s pure decision logic —
+corpus-size parsing, the peak-memory-versus-usage-records line fit, and the pass/fail
+judgment for each of the three checks (including that an engine refusal or a watchdog
+kill is reported as its own clearly labeled failure) — without running a binary or
+generating a corpus, so it stays fast.
+It does not run `check-scale.py` itself end-to-end; that needs a release build, and is
+instead exercised by `make scale-gate`.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

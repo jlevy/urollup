@@ -336,10 +336,10 @@ footprint; one and eight workers give identical JSON.
 - [ ] Replace `Value` decoding on the hot path with borrowed typed structs (`Cow<str>`
   with `#[serde(borrow)]`, small `{type, id}` content blocks) and `memmem` prefilters;
   keep `Value` only for `quotaLimits` and `rate_limits` lines.
-- [ ] Add a streaming synthetic corpus generator that writes families from fixture
+- [x] Add a streaming synthetic corpus generator that writes families from fixture
   templates into a temporary directory under a byte cap, with part of Codex
   zstd-compressed.
-- [ ] Add CI scale tests: a raw-bytes independence test (identical usage records with
+- [x] Add CI scale tests: a raw-bytes independence test (identical usage records with
   heavily padded content differ by less than 64 MiB peak), a footprint extrapolation
   bound, and `daily --all` on the generated corpus under the watchdog at 512 MiB in
   `make test`.
