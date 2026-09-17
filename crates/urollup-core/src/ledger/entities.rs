@@ -315,10 +315,17 @@ impl Requests {
     /// Sorts requests by ID. IDs must be distinct; for a repeated ID the last request
     /// given wins, as inserting into a map would.
     pub fn from_unsorted(mut rows: Vec<Request>) -> Self {
-        rows.reverse();
-        rows.sort_by(|left, right| left.id.cmp(&right.id));
+        // Sort a permutation and apply it in place: a stable sort of wide rows would
+        // allocate a buffer of half the table. Among equal IDs the latest comes first.
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        order.sort_unstable_by(|&left, &right| {
+            rows[left].id.cmp(&rows[right].id).then(right.cmp(&left))
+        });
+        apply_permutation(&mut rows, &mut order);
         rows.dedup_by(|later, earlier| later.id == earlier.id);
-        rows.shrink_to_fit();
+        if rows.capacity() - rows.len() > rows.len() / 16 {
+            rows.shrink_to_fit();
+        }
         Self { rows }
     }
 
@@ -367,6 +374,23 @@ impl Requests {
     }
 }
 
+/// Reorders `rows` so position `k` holds the row that was at `order[k]`, by swapping along
+/// the permutation's cycles; `order` is left as the identity.
+fn apply_permutation<T>(rows: &mut [T], order: &mut [usize]) {
+    for start in 0..rows.len() {
+        let mut current = start;
+        while order[current] != current {
+            let source = order[current];
+            order[current] = current;
+            if source == start {
+                break;
+            }
+            rows.swap(current, source);
+            current = source;
+        }
+    }
+}
+
 impl std::ops::Index<&AnalyticalId> for Requests {
     type Output = Request;
 
@@ -411,4 +435,26 @@ pub struct ProviderLimitObservation {
     pub native: Box<str>,
     /// The record.
     pub evidence: EvidenceRef,
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::apply_permutation;
+
+    proptest! {
+        #[test]
+        fn applying_a_sorting_permutation_matches_sorting(
+            rows in prop::collection::vec(0u16..50, 0..64),
+        ) {
+            let mut order: Vec<usize> = (0..rows.len()).collect();
+            order.sort_by_key(|&index| (rows[index], std::cmp::Reverse(index)));
+            let expected: Vec<(u16, usize)> = order.iter().map(|&index| (rows[index], index)).collect();
+            let mut tagged: Vec<(u16, usize)> = rows.iter().copied().zip(0..).collect();
+            apply_permutation(&mut tagged, &mut order);
+            prop_assert_eq!(tagged, expected);
+            prop_assert!(order.iter().enumerate().all(|(position, value)| position == *value));
+        }
+    }
 }
