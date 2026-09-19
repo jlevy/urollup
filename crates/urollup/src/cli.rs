@@ -18,6 +18,9 @@ use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
 use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
 use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
+use urollup_core::ledger::capacity::{
+    ObservationCapacity, RamBudget, physical_memory_bytes, resolve_capacity,
+};
 use urollup_core::ledger::reconcile::ReconcileError;
 use urollup_core::query::{
     GroupBy, QueryMetadata, QuerySource, ResolvedTimeZone, daily, report, sessions,
@@ -41,6 +44,8 @@ const JOBS_VARIABLE: &str = "UROLLUP_JOBS";
 const MAX_JOBS: usize = 256;
 /// The environment variable that prints privacy-safe run statistics to stderr.
 const STATS_VARIABLE: &str = "UROLLUP_STATS";
+/// The environment variable that sets the ingest RAM budget when `--max-ram` is omitted.
+const MAX_RAM_VARIABLE: &str = "UROLLUP_MAX_RAM";
 const CLI_STYLES: Styles = Styles::styled()
     .header(STYLE_HEADING)
     .usage(STYLE_HEADING)
@@ -198,6 +203,14 @@ struct SelectionArgs {
     /// Read only paths named by --source
     #[arg(long)]
     no_default_sources: bool,
+
+    /// Ingest budget as a byte size (512M, 8G, 8GiB) or a percent of physical RAM (25%). Default: 25% of RAM, or 2 GiB if RAM cannot be read. `UROLLUP_MAX_RAM` sets the same value when this flag is omitted
+    #[arg(long, value_name = "SIZE")]
+    max_ram: Option<String>,
+
+    /// Exact per-agent observation ceiling. When set with --max-ram, the stricter (smaller) ceiling wins
+    #[arg(long, value_name = "N")]
+    max_rows: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -354,6 +367,12 @@ impl Corpus {
     ) -> Result<Self, Failure> {
         let started = Instant::now();
         let workers = decoding_workers(std::env::var_os(JOBS_VARIABLE).as_deref())?;
+        let capacity = ingest_capacity(
+            args.max_ram.as_deref(),
+            args.max_rows,
+            std::env::var_os(MAX_RAM_VARIABLE).as_deref(),
+            physical_memory_bytes(),
+        )?;
         stats.workers = Some(workers);
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
@@ -390,10 +409,11 @@ impl Corpus {
         let mut index_elapsed = Duration::ZERO;
 
         let started = Instant::now();
-        let mut codex = codex_rollout::ingest_discovery_with_workers(
+        let mut codex = codex_rollout::ingest_discovery_with_capacity(
             codex_discovery,
             codex_missing_is_error,
             workers,
+            &capacity,
         )
         .map_err(|error| Failure::adapter(&error))?;
         stats.phase("codex_ingest", started);
@@ -404,10 +424,11 @@ impl Corpus {
         index_elapsed += started.elapsed();
 
         let started = Instant::now();
-        let mut claude = claude_project::ingest_discovery_with_workers(
+        let mut claude = claude_project::ingest_discovery_with_capacity(
             claude_discovery,
             claude_missing_is_error,
             workers,
+            &capacity,
         )
         .map_err(|error| Failure::adapter(&error))?;
         stats.phase("claude_ingest", started);
@@ -448,6 +469,40 @@ fn decoding_workers(jobs: Option<&OsStr>) -> Result<NonZeroUsize, Failure> {
                 jobs.to_string_lossy()
             ))
         })
+}
+
+/// The per-agent observation ceiling: `--max-ram` (or `UROLLUP_MAX_RAM`) and `--max-rows`.
+///
+/// Empty `UROLLUP_MAX_RAM` counts as unset, as it does for `UROLLUP_JOBS`. `--max-ram`
+/// replaces the environment value. `--max-rows` alone is an exact override of the 25% RAM
+/// default; when both controls are set, the stricter (smaller) ceiling wins.
+fn ingest_capacity(
+    max_ram: Option<&str>,
+    max_rows: Option<u64>,
+    env_max_ram: Option<&OsStr>,
+    physical_ram: Option<u64>,
+) -> Result<ObservationCapacity, Failure> {
+    let ram =
+        if let Some(text) = max_ram {
+            Some(parse_ram_budget(text)?)
+        } else if let Some(value) = env_max_ram.filter(|value| !value.is_empty()) {
+            let text = value.to_str().ok_or_else(|| {
+                Failure::usage(format!(
+                    "{MAX_RAM_VARIABLE} must be a UTF-8 byte size such as 512M or 25%, not {:?}",
+                    value.to_string_lossy()
+                ))
+            })?;
+            Some(RamBudget::parse(text).map_err(|error| {
+                Failure::usage(format!("{MAX_RAM_VARIABLE} is invalid: {error}"))
+            })?)
+        } else {
+            None
+        };
+    resolve_capacity(ram, max_rows, physical_ram).map_err(|error| Failure::usage(error.to_string()))
+}
+
+fn parse_ram_budget(text: &str) -> Result<RamBudget, Failure> {
+    RamBudget::parse(text).map_err(|error| Failure::usage(error.to_string()))
 }
 
 /// Whether `UROLLUP_STATS` asks for run statistics.
@@ -1193,8 +1248,8 @@ mod tests {
         Agent, AgentStats, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit,
         ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ScopeArg, Stats, TerminalContext,
         classify_explicit_source, classify_jsonl_with_limit, decoding_workers,
-        derive_agent_thread_id, execute, narrow_discoveries, run, run_with_context,
-        stats_requested,
+        derive_agent_thread_id, execute, ingest_capacity, narrow_discoveries, run,
+        run_with_context, stats_requested,
     };
     use clap::Parser;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
@@ -1850,17 +1905,63 @@ mod tests {
     }
 
     #[test]
+    fn ingest_capacity_defaults_to_25_percent_or_2_gib_fallback() {
+        let fallback = ingest_capacity(None, None, None, None).unwrap();
+        assert_eq!(fallback.label(), "2 GiB");
+        let ram = ingest_capacity(None, None, None, Some(32 << 30)).unwrap();
+        assert_eq!(ram.label(), "25% of RAM (8 GiB)");
+    }
+
+    #[test]
+    fn ingest_capacity_parses_sizes_percents_and_prefers_the_stricter_control() {
+        let eight = ingest_capacity(Some("8G"), None, None, Some(32 << 30)).unwrap();
+        assert_eq!(eight.label(), "8 GiB");
+        let rows = ingest_capacity(Some("8G"), Some(10), None, Some(32 << 30)).unwrap();
+        assert_eq!(rows.label(), "10 rows");
+        let override_rows = ingest_capacity(None, Some(10), None, Some(32 << 30)).unwrap();
+        assert_eq!(override_rows.label(), "10 rows");
+        let flag_beats_env =
+            ingest_capacity(Some("1G"), None, Some(OsStr::new("8G")), None).unwrap();
+        assert_eq!(flag_beats_env.label(), "1 GiB");
+        let env = ingest_capacity(None, None, Some(OsStr::new("512M")), None).unwrap();
+        assert_eq!(env.label(), "512 MiB");
+        let unknown_percent = ingest_capacity(Some("25%"), None, None, None).unwrap_err();
+        assert_eq!(unknown_percent.exit, Exit::Usage);
+        assert!(unknown_percent.message.contains("physical RAM is unknown"), "{unknown_percent:?}");
+    }
+
+    #[test]
+    fn a_tiny_max_rows_ceiling_fails_a_fixture_with_the_capacity_diagnostic() {
+        let cli =
+            Cli::try_parse_from(fixture_report_args(&["--max-rows", "1", "--format", "json"]))
+                .unwrap();
+        let error = execute(&cli.command, false, &mut Stats::default()).unwrap_err();
+        assert_eq!(error.exit, Exit::Runtime);
+        assert!(
+            error.message.contains("exceed the reconciliation capacity of 1 compact rows (1 rows)"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("pass narrower --source roots with --no-default-sources"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
     fn a_capacity_failure_exits_one_and_suggests_narrower_sources() {
         let error = AdapterError::Reconcile(ReconcileError::CapacityExceeded {
             observations: 9_000_001,
             maximum: 9_000_000,
+            limit: "8 GiB".into(),
         });
         let failure = Failure::adapter(&error);
         assert_eq!(failure.exit, Exit::Runtime);
         assert_eq!(
             failure.message,
             "9000001 request observations exceed the reconciliation capacity of 9000000 compact \
-             rows (2 GiB); pass narrower --source roots with --no-default-sources"
+             rows (8 GiB); pass narrower --source roots with --no-default-sources"
         );
     }
 

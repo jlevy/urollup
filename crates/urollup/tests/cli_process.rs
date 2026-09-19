@@ -39,7 +39,11 @@ fn report_command_help_exits_zero_on_stdout() {
     for command in ["report", "daily", "sessions"] {
         let output = urollup(&[command, "--help"]);
         assert_eq!(output.status.code(), Some(0), "{command}");
-        assert!(String::from_utf8_lossy(&output.stdout).contains("--format"), "{command}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--format"), "{command}");
+        assert!(stdout.contains("--max-ram"), "{command}");
+        assert!(stdout.contains("--max-rows"), "{command}");
+        assert!(stdout.contains("stricter"), "{command}");
         assert!(output.stderr.is_empty(), "{command}");
     }
 }
@@ -81,6 +85,7 @@ fn fixture_report(variable: &str, value: &str) -> Output {
         .env("NO_COLOR", "1")
         .env_remove("UROLLUP_JOBS")
         .env_remove("UROLLUP_STATS")
+        .env_remove("UROLLUP_MAX_RAM")
         .env(variable, value)
         .output()
         .expect("the urollup binary runs")
@@ -139,6 +144,45 @@ fn stats_variable_writes_privacy_safe_stats_to_stderr_only() {
     for private in ["workflow", "thr-", "src-", "req-", "claude-", "fixtures"] {
         assert!(!stderr.contains(private), "{private}: {stderr}");
     }
+}
+
+#[test]
+fn tiny_max_rows_exits_one_with_a_capacity_diagnostic() {
+    let source = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../urollup-core/tests/fixtures/claude-project/workflow-subagents"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_urollup"))
+        .args([
+            "report",
+            "--source",
+            source,
+            "--no-default-sources",
+            "--format",
+            "json",
+            "--max-rows",
+            "1",
+        ])
+        .env("NO_COLOR", "1")
+        .env_remove("UROLLUP_JOBS")
+        .env_remove("UROLLUP_STATS")
+        .env_remove("UROLLUP_MAX_RAM")
+        .output()
+        .expect("the urollup binary runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exceed the reconciliation capacity"), "{stderr}");
+    assert!(stderr.contains("pass narrower --source roots with --no-default-sources"), "{stderr}");
+}
+
+#[test]
+fn invalid_max_ram_variable_is_a_usage_error() {
+    let output = fixture_report("UROLLUP_MAX_RAM", "many");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("UROLLUP_MAX_RAM is invalid"), "{stderr}");
 }
 
 #[test]

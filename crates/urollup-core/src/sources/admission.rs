@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::reconcile::ReconcileError;
 
 /// One budget shared by all sources of an adapter invocation. Reservations live until
@@ -9,12 +10,16 @@ use crate::ledger::reconcile::ReconcileError;
 pub(crate) struct Admission {
     retained: AtomicUsize,
     stopped: AtomicBool,
-    maximum: usize,
+    capacity: ObservationCapacity,
 }
 
 impl Admission {
-    pub(crate) fn new(maximum: usize) -> Self {
-        Self { retained: AtomicUsize::new(0), stopped: AtomicBool::new(false), maximum }
+    pub(crate) fn new(capacity: &ObservationCapacity) -> Self {
+        Self {
+            retained: AtomicUsize::new(0),
+            stopped: AtomicBool::new(false),
+            capacity: capacity.clone(),
+        }
     }
 
     pub(crate) fn stopped(&self) -> bool {
@@ -31,7 +36,7 @@ impl Admission {
         if self
             .retained
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                (count < self.maximum).then(|| count + 1)
+                (count < self.capacity.maximum()).then(|| count + 1)
             })
             .is_err()
         {
@@ -44,8 +49,9 @@ impl Admission {
     pub(crate) fn error(&self) -> ReconcileError {
         // We stopped early: report the first refused slot, not a whole-input count.
         ReconcileError::CapacityExceeded {
-            observations: self.maximum.saturating_add(1),
-            maximum: self.maximum,
+            observations: self.capacity.maximum().saturating_add(1),
+            maximum: self.capacity.maximum(),
+            limit: self.capacity.label().to_owned(),
         }
     }
 }
@@ -56,7 +62,7 @@ mod tests {
 
     #[test]
     fn concurrent_reservations_never_exceed_the_shared_limit() {
-        let admission = Admission::new(97);
+        let admission = Admission::new(&ObservationCapacity::from_rows(97));
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 let admission = &admission;
@@ -66,6 +72,6 @@ mod tests {
         assert_eq!(admission.retained.load(Ordering::Relaxed), 97);
         assert!(admission.stopped());
         assert!(!admission.reserve());
-        assert!(!Admission::new(0).reserve());
+        assert!(!Admission::new(&ObservationCapacity::from_rows(0)).reserve());
     }
 }

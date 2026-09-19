@@ -166,8 +166,9 @@ The capture store lands only after the uncached engine is the correctness refere
   512 MiB input guard made `--all` refuse the default corpus.
   Done so far: exact selectors and `--current` narrow discovery to the selected session
   families before decoding; adapters decode on bounded parallel workers into compact
-  rows; and the input guard is replaced by a 2 GiB compact-row capacity ceiling, so
-  whole-history `sessions`, `daily` and `report --all` complete
+  rows; and the input guard is replaced by a RAM-relative compact-row capacity ceiling
+  (default 25% of physical RAM, 2 GiB fallback), so whole-history `sessions`, `daily`
+  and `report --all` complete
   ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
   [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining on that
   plan: meet the 512 MiB peak and the `bench-1g` peak-RSS target, without spilling to

@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use self::line::{DecodedLimits, EventType, Line, Payload, RecordType, UsageFields};
 use super::{AdapterError, Ingested};
+use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
@@ -32,7 +33,8 @@ use crate::ledger::entities::{
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
-    LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, reconcile,
+    LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation,
+    reconcile_with_capacity,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
@@ -551,6 +553,21 @@ pub fn ingest_discovery_with_workers(
     missing_is_error: bool,
     workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
+    ingest_discovery_with_capacity(
+        discovery,
+        missing_is_error,
+        workers,
+        &ObservationCapacity::default(),
+    )
+}
+
+/// Reads discovered Codex rollouts with an explicit observation ceiling.
+pub fn ingest_discovery_with_capacity(
+    discovery: Discovery,
+    missing_is_error: bool,
+    workers: NonZeroUsize,
+    capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
     }
@@ -561,7 +578,7 @@ pub fn ingest_discovery_with_workers(
         });
     }
 
-    let admission = Admission::new(crate::ledger::reconcile::MAX_OBSERVATIONS);
+    let admission = Admission::new(capacity);
     let thread_ids = Arc::new(thread_ids_from_locators(
         discovery.sources.iter().map(|source| source.locator.as_str()),
     )?);
@@ -578,7 +595,7 @@ pub fn ingest_discovery_with_workers(
     let (entries, rollouts): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
-    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids))
+    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids), capacity)
 }
 
 /// Reads one rollout, independently of every other source.
@@ -1168,6 +1185,7 @@ fn normalize(
     rollouts: Vec<DecodedRollout>,
     mut manifest: SnapshotManifest,
     mut thread_ids: BTreeMap<String, AnalyticalId>,
+    capacity: &ObservationCapacity,
 ) -> Result<Ingested, AdapterError> {
     let source_table = SourceTable::from_ids(
         rollouts.iter().filter_map(rollout_id).cloned().chain(
@@ -1344,7 +1362,7 @@ fn normalize(
     }
     observations.shrink_to_fit();
 
-    let mut ledger = reconcile(
+    let mut ledger = reconcile_with_capacity(
         ReconcileInput {
             threads: threads.into_values().collect(),
             relationships,
@@ -1355,6 +1373,7 @@ fn normalize(
             ..ReconcileInput::default()
         },
         &LatestRevision,
+        capacity,
     )?;
     ledger.coverage.copies = ledger.coverage.copies.saturating_add(copied_regions);
     ledger.diagnostics.retain(|diagnostic| diagnostic.code != DiagnosticCode::CopyWithoutOriginal);
@@ -1674,7 +1693,9 @@ mod tests {
 
     #[test]
     fn admission_does_not_charge_metadata_without_usage() {
-        let budget = crate::sources::admission::Admission::new(0);
+        let budget = crate::sources::admission::Admission::new(
+            &crate::ledger::capacity::ObservationCapacity::from_rows(0),
+        );
         let evidence = EvidenceRef::new(0, 0, 1);
         let mut decoder = SourceDecoder::new("one");
         for line in [
@@ -1697,7 +1718,9 @@ mod tests {
             r#"{"type":"compacted","payload":{"latest_token_usage_record":{"usage":{"input_tokens":3}}}}"#,
             r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3}}}}"#,
         ] {
-            let budget = crate::sources::admission::Admission::new(1);
+            let budget = crate::sources::admission::Admission::new(
+                &crate::ledger::capacity::ObservationCapacity::from_rows(1),
+            );
             let evidence = EvidenceRef::new(0, 0, 1);
             let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
             let mut first = SourceDecoder::new("one");

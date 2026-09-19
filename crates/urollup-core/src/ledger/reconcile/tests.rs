@@ -788,19 +788,24 @@ fn key_graph_roots_are_the_lowest_id_in_any_link_order() {
 
 #[test]
 fn reconciliation_refuses_observations_beyond_its_capacity() {
-    assert_eq!(super::ensure_capacity(0, 2), Ok(()));
-    assert_eq!(super::ensure_capacity(2, 2), Ok(()));
-    let error = super::ensure_capacity(3, 2).unwrap_err();
-    assert_eq!(error, ReconcileError::CapacityExceeded { observations: 3, maximum: 2 });
+    let two = crate::ledger::capacity::ObservationCapacity::from_rows(2);
+    let error = super::ensure_capacity(3, &two).unwrap_err();
+    assert_eq!(
+        error,
+        ReconcileError::CapacityExceeded { observations: 3, maximum: 2, limit: "2 rows".into() }
+    );
     assert_eq!(
         error.to_string(),
-        "3 request observations exceed the reconciliation capacity of 2 compact rows (2 GiB)"
+        "3 request observations exceed the reconciliation capacity of 2 compact rows (2 rows)"
     );
 
-    // The real ceiling is the most whole observation rows that fit in 2 GiB.
+    // The fallback ceiling is the most whole observation rows that fit in 2 GiB.
     let ceiling = 2_u64 << 30;
     let row = u64::try_from(size_of::<RequestObservation>()).unwrap();
     let maximum = u64::try_from(super::MAX_OBSERVATIONS).unwrap();
     assert!(maximum * row <= ceiling && (maximum + 1) * row > ceiling, "{maximum} rows");
-    assert_eq!(super::ensure_capacity(super::MAX_OBSERVATIONS, super::MAX_OBSERVATIONS), Ok(()));
+    let fallback = crate::ledger::capacity::ObservationCapacity::fallback();
+    assert_eq!(super::ensure_capacity(0, &two), Ok(()));
+    assert_eq!(super::ensure_capacity(2, &two), Ok(()));
+    assert_eq!(super::ensure_capacity(super::MAX_OBSERVATIONS, &fallback), Ok(()));
 }

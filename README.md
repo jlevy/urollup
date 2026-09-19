@@ -78,8 +78,10 @@ A bounded, consented real-log corpus passed the command and memory-watchdog chec
 Whole-history `sessions`, `daily` and `report --all` runs now complete on large local
 corpora: sources decode on parallel workers into compact rows, so memory follows the
 number of usage records rather than log bytes.
-The temporary 512 MiB input guard is gone; an internal 2 GiB compact-row ceiling exits
-with a capacity error instead of growing without bound.
+The temporary 512 MiB input guard is gone; a compact-row ceiling (default 25% of
+physical RAM, or 2 GiB when RAM cannot be read) exits with a capacity error instead of
+growing without bound.
+`--max-ram` and `--max-rows` set the budget.
 The
 [scalable-ingestion plan](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
 records dated measurements and the remaining memory work.

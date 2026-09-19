@@ -45,9 +45,8 @@ independent architecture review, whose findings are incorporated here.
 ## Non-Goals
 
 - Spill to disk or external sort.
-  At the measured ratios a 2 GiB compact-row ceiling covers roughly 8 million
-  observations, hundreds of gigabytes of Codex logs.
-- A user-facing memory-budget flag.
+  At the measured ratios a 25% RAM default covers tens of millions of observations on a
+  32 GiB host, hundreds of gigabytes of Codex logs.
 - A `--since` or `--project` filter, the capture cache or incremental reads.
   Whole history in seconds removes the need for this milestone, and time filters remain
   query-time features.
@@ -224,12 +223,20 @@ A 100 GB Codex corpus would peak at about 700 MB.
 
 Raw bytes never accumulate: skipped lines allocate nothing, the reader buffer is per
 source, and limits collapse while streaming.
-An internal ceiling of 2 GiB of compact rows exits 1 with a capacity diagnostic that
-names the row count and suggests `--source`; it is a safety net, not a budget users
-tune. `reconcile` checks it before building any request: `MAX_OBSERVATIONS` is 2 GiB
-divided by the size of one request observation row, so the ceiling follows the row type
-as it shrinks, and each agent’s reconciliation is checked on its own.
-At a 288 B row the ceiling is 7,456,540 observations; whole history has about 1,003,000.
+A hard per-agent observation ceiling exits 1 with a capacity diagnostic that names the
+row count and the budget and suggests `--source`; it does not grow unbounded.
+The default budget is 25% of physical RAM (about 8 GiB on a 32 GiB host).
+If physical RAM cannot be read, the budget falls back to 2 GiB so CI and containers stay
+bounded.
+`--max-ram` (or `UROLLUP_MAX_RAM`) accepts a byte size (`512M`, `8G`, `8GiB`) or
+a percent (`25%`). `--max-rows N` is an exact row-count override.
+When both are set, the stricter (smaller) ceiling wins.
+`reconcile` checks the ceiling before building any request: the byte budget is divided
+by the size of one `RequestObservation` row, so the row count follows the row type as it
+shrinks, and each agent’s reconciliation is checked on its own.
+At a 224 B row, 8 GiB is about 38 million observations; whole history has about
+1,003,000. The CLI reports `N request observations exceed the reconciliation capacity of
+M compact rows (<budget>); pass narrower --source roots with --no-default-sources`.
 
 Admission reserves a shared per-agent slot during decoding before retaining each
 request-bearing record, including pending usage and copies that normalization may
@@ -242,9 +249,6 @@ Successful reads and ordinary source failures retain their existing ordering gua
 The ceiling bounds these rows, not total process memory: line buffers, metadata,
 interned values, auxiliary ledger tables and the other agent’s ledger also consume
 memory.
-
-The CLI reports `N request observations exceed the reconciliation capacity of M compact
-rows (2 GiB); pass narrower --source roots with --no-default-sources`.
 
 ### Parallelism and Determinism
 
@@ -333,8 +337,10 @@ QA reports may quote them.
   There is no second engine, no separate `Obs`/`Req` types, and no projection oracle.
 - [x] Decode sources on bounded workers with `UROLLUP_JOBS`, with worker-count and
   Claude file-rename invariance tests.
-- [x] Remove the 512 MiB guard and the read budgets it required; add the 2 GiB
-  compact-row ceiling and `UROLLUP_STATS`.
+- [x] Remove the 512 MiB guard and the read budgets it required; add a compact-row
+  ceiling and `UROLLUP_STATS`. The ceiling is now 25% of physical RAM by default
+  (`--max-ram` / `--max-rows` / `UROLLUP_MAX_RAM`), falling back to 2 GiB when RAM
+  cannot be read (`uro-zw87`).
 - [x] Add the native session ID as an additive `session` field on `sessions` rows, so
   whole-history results join to ccusage in one pass.
 - [x] Update CLI goldens and `scripts/check-e2e-results.mjs` for aggregated diagnostics.

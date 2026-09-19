@@ -48,8 +48,10 @@ core, Claude Code and Codex adapters, exact session selection, and uncached `rep
 Terminal-aware color and interactive stderr progress are implemented, the fixture-backed
 ccusage reconciliation harness runs in CI, and privacy-tested local aggregate tools are
 available behind explicit consent.
-Whole-history reports run without an input-size guard; the remaining 0.1 implementation
-is the 512 MiB peak-footprint target on
+Whole-history reports run without an input-size guard.
+The ingest ceiling defaults to 25% of physical RAM (`--max-ram` / `--max-rows` /
+`UROLLUP_MAX_RAM`; 2 GiB if RAM cannot be read).
+The remaining 0.1 implementation is the 512 MiB peak-footprint target on
 [`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
 (`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
 586 MiB; about 141 MiB over 512. Canceled leftover children: `uro-cbsg`, `uro-yvn1`,

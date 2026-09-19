@@ -2379,12 +2379,14 @@ records how the engine reached this shape, with dated whole-history measurements
   group. Requests are stored in a vector sorted by ID, and only requests split from a
   conflicting shared key enter the candidate-set graph.
 - **Capacity ceiling:** each agent’s reconciliation refuses more request observations
-  than fit in 2 GiB of observation rows, checked before any request is built.
-  The limit is 2 GiB divided by the observation row size, so it rises as rows shrink.
-  The CLI exits 1 with the observation count and the ceiling and suggests narrower
-  `--source` roots with `--no-default-sources`. The ceiling is a safety net, not a
-  budget users tune. It replaced the temporary 512 MiB input guard and its read budgets;
-  per-record and sidecar size limits remain.
+  than fit in the ingest budget, checked before any request is built.
+  The default budget is 25% of physical RAM, or 2 GiB when RAM cannot be read.
+  `--max-ram` / `UROLLUP_MAX_RAM` accept a byte size or a percent; `--max-rows` is an
+  exact override; when both are set, the stricter ceiling wins.
+  The byte budget is divided by the observation row size, so the row count rises as rows
+  shrink. The CLI exits 1 with the observation count and the named budget and suggests
+  narrower `--source` roots with `--no-default-sources`. It replaced the temporary 512
+  MiB input guard and its read budgets; per-record and sidecar size limits remain.
   No run spills to disk.
 - **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
   stderr after the command runs and before its output or error: the worker count, wall

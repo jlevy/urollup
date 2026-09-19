@@ -304,27 +304,35 @@ pub enum ReconcileError {
     },
     /// More request observations arrived than one reconciliation holds.
     #[error(
-        "{observations} request observations exceed the reconciliation capacity of {maximum} compact rows (2 GiB)"
+        "{observations} request observations exceed the reconciliation capacity of {maximum} compact rows ({limit})"
     )]
     CapacityExceeded {
         /// The observations received.
         observations: usize,
         /// The most observations one reconciliation accepts.
         maximum: usize,
+        /// The budget the ceiling was derived from, such as `8 GiB` or `25% of RAM (8 GiB)`.
+        limit: String,
     },
 }
 
-/// The most request observations one reconciliation accepts: 2 GiB of observation rows.
+/// The most request observations the 2 GiB fallback budget holds.
 ///
-/// This is a safety net, not a budget users tune. Whole history is far below it, and an
-/// input above it fails with [`ReconcileError::CapacityExceeded`] before any request is
-/// built rather than growing without bound.
-pub const MAX_OBSERVATIONS: usize = 2 * 1024 * 1024 * 1024 / size_of::<RequestObservation>();
+/// Prefer [`super::capacity::ObservationCapacity`]. This alias stays so tests and older
+/// call sites can name the fallback row count after the row type shrinks.
+pub const MAX_OBSERVATIONS: usize = super::capacity::FALLBACK_MAX_OBSERVATIONS;
 
-/// Refuses more than `maximum` observations.
-fn ensure_capacity(observations: usize, maximum: usize) -> Result<(), ReconcileError> {
-    if observations > maximum {
-        return Err(ReconcileError::CapacityExceeded { observations, maximum });
+/// Refuses more observations than `capacity` holds.
+fn ensure_capacity(
+    observations: usize,
+    capacity: &super::capacity::ObservationCapacity,
+) -> Result<(), ReconcileError> {
+    if observations > capacity.maximum() {
+        return Err(ReconcileError::CapacityExceeded {
+            observations,
+            maximum: capacity.maximum(),
+            limit: capacity.label().to_owned(),
+        });
     }
     Ok(())
 }
@@ -488,7 +496,17 @@ pub fn reconcile(
     input: ReconcileInput,
     selector: &dyn RevisionSelector,
 ) -> Result<Ledger, ReconcileError> {
-    ensure_capacity(input.requests.len(), MAX_OBSERVATIONS)?;
+    reconcile_with_capacity(input, selector, &super::capacity::ObservationCapacity::default())
+}
+
+/// Reconciles observations, refusing more rows than `capacity` holds before any request
+/// is built.
+pub fn reconcile_with_capacity(
+    input: ReconcileInput,
+    selector: &dyn RevisionSelector,
+    capacity: &super::capacity::ObservationCapacity,
+) -> Result<Ledger, ReconcileError> {
+    ensure_capacity(input.requests.len(), capacity)?;
     let ReconcileInput {
         threads,
         relationships,

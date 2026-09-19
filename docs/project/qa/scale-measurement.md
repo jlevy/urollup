@@ -144,9 +144,9 @@ Useful flags:
   release binary, and so on).
   Defaults to `target/release/urollup`.
 - `--sizes-mib 32,64,128` — a custom size list.
-  A corpus above the engine’s 2 GiB compact-row ceiling is reported as a clean refusal
-  (the row’s status column reads `refused`), not treated as a crash; synthetic corpora
-  of a few GB are far below it.
+  A corpus above the engine’s compact-row ceiling (default 25% of RAM, or 2 GiB when RAM
+  cannot be read) is reported as a clean refusal (the row’s status column reads
+  `refused`), not treated as a crash; synthetic corpora of a few GB are far below it.
 - `--watchdog-limit-mib` — the kill-switch limit (default 2048 MiB); lower it if you
   want to catch a regression sooner rather than let it run to the OS limit.
 - `--skip-independence` — skip the raw-bytes independence check, e.g. for a quick
@@ -209,7 +209,7 @@ generates at most 256 MiB in one corpus, and deletes every corpus as soon as it 
 measured. The whole gate — all three checks — takes under a minute on an unloaded
 machine.
 
-If the engine refuses a corpus at its 2 GiB compact-row capacity ceiling, the refusal is
+If the engine refuses a corpus at its compact-row capacity ceiling, the refusal is
 reported as its own clearly labeled failure, not folded into a generic non-zero-exit
 message.
 The gate’s default corpus sizes are orders of magnitude below that ceiling, so a

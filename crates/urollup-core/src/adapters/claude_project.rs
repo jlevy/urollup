@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
 use super::{AdapterError, Ingested};
+use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
@@ -36,7 +37,7 @@ use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdenti
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
     NativeSequence, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation,
-    RevisionChoice, RevisionSelector, reconcile,
+    RevisionChoice, RevisionSelector, reconcile_with_capacity,
 };
 use crate::ledger::scope::{
     ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec, ScopedKey,
@@ -524,6 +525,21 @@ pub fn ingest_discovery_with_workers(
     missing_is_error: bool,
     workers: NonZeroUsize,
 ) -> Result<Ingested, AdapterError> {
+    ingest_discovery_with_capacity(
+        discovery,
+        missing_is_error,
+        workers,
+        &ObservationCapacity::default(),
+    )
+}
+
+/// Reads discovered Claude Code transcripts with an explicit observation ceiling.
+pub fn ingest_discovery_with_capacity(
+    discovery: Discovery,
+    missing_is_error: bool,
+    workers: NonZeroUsize,
+    capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
     }
@@ -534,7 +550,7 @@ pub fn ingest_discovery_with_workers(
         });
     }
 
-    let admission = Admission::new(crate::ledger::reconcile::MAX_OBSERVATIONS);
+    let admission = Admission::new(capacity);
     let decoded = try_read_in_parallel(
         &discovery.sources,
         workers,
@@ -546,7 +562,7 @@ pub fn ingest_discovery_with_workers(
     }
     let decoded = decoded?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
-    normalize(corpus, manifest)
+    normalize(corpus, manifest, capacity)
 }
 
 /// Everything one transcript contributes before normalization.
@@ -986,7 +1002,11 @@ fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
     models.into_iter().filter_map(|(message, first)| first.is_none().then_some(message)).collect()
 }
 
-fn normalize(corpus: Corpus, mut manifest: SnapshotManifest) -> Result<Ingested, AdapterError> {
+fn normalize(
+    corpus: Corpus,
+    mut manifest: SnapshotManifest,
+    capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for facts in &corpus.facts {
         if let (Some(id), Some(version)) = (&facts.source_id, &facts.version) {
@@ -1001,7 +1021,7 @@ fn normalize(corpus: Corpus, mut manifest: SnapshotManifest) -> Result<Ingested,
             *evidence = stamp_ref(&input.source_table, &source.id, *evidence);
         }
     }
-    let mut ledger = reconcile(input, &ClaudeBlockSelector)?;
+    let mut ledger = reconcile_with_capacity(input, &ClaudeBlockSelector, capacity)?;
     for diagnostic in &mut ledger.diagnostics {
         diagnostic.code = match diagnostic.code {
             DiagnosticCode::RevisionDisagreement => DiagnosticCode::ClaudeBlockUsageConflict,
@@ -1661,7 +1681,9 @@ mod tests {
 
     #[test]
     fn admission_is_shared_and_refuses_before_retaining_request_rows() {
-        let budget = crate::sources::admission::Admission::new(1);
+        let budget = crate::sources::admission::Admission::new(
+            &crate::ledger::capacity::ObservationCapacity::from_rows(1),
+        );
         let bytes =
             br#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#;
         let evidence = source_evidence(0);

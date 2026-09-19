@@ -11,6 +11,7 @@
 //!   for running totals and reporting [`diagnostics`] and [`coverage`].
 
 pub mod canonical_json;
+pub mod capacity;
 pub mod counters;
 pub mod coverage;
 pub mod diagnostics;
