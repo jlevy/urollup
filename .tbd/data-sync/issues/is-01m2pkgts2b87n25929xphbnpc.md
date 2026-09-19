@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 37
+version: 39
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -40,8 +40,10 @@ child_order_hints:
   - is-01m2xfem78f0v4n4fty5n86jdy
   - is-01m2xfq8c4vjc8m9s9j1vbfmcm
   - is-01m2xg2vek9txpj40mvab5rp12
+  - is-01m2xgebdjvv1ybfa5qsmnxh30
+  - is-01m2xgr9vmqwwf9teqq1v0bqnk
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T18:50:28.178Z
+updated_at: 2026-09-19T19:02:11.059Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
