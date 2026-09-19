@@ -3,9 +3,9 @@ type: is
 id: is-01m2nyw6d2sjzx29tj860njhvz
 title: Document and manually validate v0.1 common use cases
 kind: task
-status: in_progress
+status: closed
 priority: 1
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -14,7 +14,11 @@ labels:
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T20:35:03.201Z
-updated_at: 2026-09-17T01:41:29.818Z
+updated_at: 2026-09-19T07:40:01.852Z
+closed_at: 2026-09-19T07:40:01.851Z
+close_reason: "README workflows, milestone 0.1 QA playbook and dated QA report shipped on PR #8 (efa5ef8). Remaining real-log acceptance is uro-d36a and uro-ky6c."
+resolution: null
+duplicate_of: null
 ---
 On stacked PR #8, reconcile the top-level README with the proven ccusage use-case inventory and current tbd Rust CLI/documentation guidance; document only commands urollup 0.1 actually supports and name deferred gaps. Add tests/qa/general-qa.runbook.md with exact manual commands, expected invariants, negative cases, troubleshooting and success criteria. Execute it against this repository's consented real local logs, capture only privacy-safe aggregate evidence in a dated report, fix any failures, reinstall the global developer binary, synchronize the stack with current main, and leave both PRs mergeable with green CI.
 

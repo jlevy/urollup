@@ -3,9 +3,9 @@ type: is
 id: is-01m2p0zv6v24028fckjyagz1ct
 title: Bound large-corpus memory during log ingestion
 kind: bug
-status: in_progress
+status: closed
 priority: 0
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -15,7 +15,11 @@ labels:
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T21:11:59.962Z
-updated_at: 2026-09-17T01:41:29.558Z
+updated_at: 2026-09-19T07:40:01.512Z
+closed_at: 2026-09-19T07:40:01.511Z
+close_reason: "Temporary 512 MiB input guard, session-family preselection and RSS watchdog shipped on PR #8 (4568059, efa5ef8). Whole-history replacement is uro-o6x5."
+resolution: null
+duplicate_of: null
 ---
 A consented local all-log acceptance run caused severe memory pressure and the Codex desktop task restarted. Remove raw-payload retention in both adapters, restrict default Codex discovery to rollout directories, reduce avoidable reconciliation duplication, preserve manifest and fixture behavior, and add selection-aware family discovery so --current and exact selections parse only the relevant family before applying a temporary capacity guard. Validate with bounded real and synthetic corpora. Multi-gigabyte --all streaming/spill is tracked separately by uro-o6x5.
 

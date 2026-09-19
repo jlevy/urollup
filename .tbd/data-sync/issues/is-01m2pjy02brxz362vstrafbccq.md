@@ -3,9 +3,9 @@ type: is
 id: is-01m2pjy02brxz362vstrafbccq
 title: Claude owner maps depend on file order and drop resumed-session usage
 kind: bug
-status: open
+status: closed
 priority: 0
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -15,7 +15,11 @@ dependencies:
     target: is-01m2pkgts2b87n25929xphbnpc
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-17T02:25:33.758Z
-updated_at: 2026-09-17T02:36:08.265Z
+updated_at: 2026-09-17T02:39:39.323Z
+closed_at: 2026-09-17T02:39:39.322Z
+close_reason: null
+resolution: null
+duplicate_of: null
 ---
 Claude owner maps depend on discovery order, so resumed-session copies can drop or misattribute the original request.
 

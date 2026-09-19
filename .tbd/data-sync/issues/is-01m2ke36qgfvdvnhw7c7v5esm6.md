@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 43
+version: 46
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -14,49 +14,25 @@ dependencies:
     target: is-01m2ke45tasy262pas37jxwss5
   - type: blocks
     target: is-01m2ksyxh3c3qvgg8qhp5fgbsx
+  - type: blocks
+    target: is-01m2ksyz8vzvrj9r0tj246h08q
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 child_order_hints:
-  - is-01m2f0tdzbrnzahscvp1e5ffe8
-  - is-01m2f0te8wwa4jmh6zzamt27zb
-  - is-01m2f0tej82vk57g0eaapfr88r
-  - is-01m2f0tewzgw6zd3vzrp2c865s
-  - is-01m2f0tf88qgvz2kjm2dx4kvr1
-  - is-01m2f0tg7kbpmm11wycct2vb5n
-  - is-01m2keezphdvk2jf3rj921mws0
-  - is-01m2khsdqz3qndz3aetey1f5c7
-  - is-01m2khsqbsy48eyvw5sevz9gqk
-  - is-01m2ks65qyqbk8r5xg0qmyw2sq
-  - is-01m2ks6m5jg3tqh3dv22mqmv17
-  - is-01m2ks74tkw1s25dhkb5q4e2q8
-  - is-01m2ks757afpt4nq41pktqk07a
+  - is-01m2p3evvpmcn8cf59wc1196f6
   - is-01m2ksd5yzhp73gb475pzbvvg6
+  - is-01m2nrq5y06fsr5zjk075ks6fc
+  - is-01m2ksns5eqx65np449amxw7wd
+  - is-01m2ksp7t02wzxrgvs75js0a7d
+  - is-01m2ks757afpt4nq41pktqk07a
   - is-01m2ksma5tmkfs0acfc62p7z23
   - is-01m2ksmr7x9e0t324y8zfx071j
   - is-01m2ksms2rd2kwm66zpy8p159d
   - is-01m2ksn7rykwftnqzpq1xgmys3
-  - is-01m2ksns5eqx65np449amxw7wd
-  - is-01m2ksnt5qd09gtrxkgvaxw9vw
-  - is-01m2ksntwyn71sp9tdqxrvv5wn
-  - is-01m2ksp6dstb6fwkbmy587tt8a
-  - is-01m2ksp7t02wzxrgvs75js0a7d
-  - is-01m2kspssne0kaf0ykdmt0pbe3
-  - is-01m2ksptx4kzgd5wrf4vdvaaa0
-  - is-01m2nerjrrsfghn5avwj8mjr6a
-  - is-01m2nh4cky25nw5gjc3qhzh05s
-  - is-01m2nrdts2g88hmxm1pn9gzvkn
-  - is-01m2nrq2x33grg7kg9v3c9psph
-  - is-01m2nrq5y06fsr5zjk075ks6fc
-  - is-01m2nrrbmesqz5w2hzh0phza1v
-  - is-01m2nw89ncs6egan0784hkk356
-  - is-01m2nyw6d2sjzx29tj860njhvz
-  - is-01m2p0zv6v24028fckjyagz1ct
-  - is-01m2p3evvpmcn8cf59wc1196f6
-  - is-01m2pjy02brxz362vstrafbccq
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-17T02:25:33.758Z
+updated_at: 2026-09-19T07:40:49.943Z
 ---
-Scaffold, sanitized fixtures, snapshot reading, identities and ledger, Claude Code and Codex adapters, exact session selection, and report, daily and sessions in table and JSON with CLI goldens. Plan milestone 0.1; design docs/urollup-design.md. Status 2026-09-16: the uncached engine, 29 fixture cases, 239 golden blocks, pinned ccusage fixture parity, terminal-aware color, interactive progress, and privacy-safe consent-gated local acceptance tooling are implemented. Remaining acceptance gates are the consented real-log run, recorded maintainer decisions, independent full implementation review, and release/publishing rehearsal. Automated fixture gates do not represent those human gates as complete.
+Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools. Remaining before this epic closes: 512 MiB whole-history ingestion (uro-o6x5), consented G1 (uro-d36a), full-history QA (uro-ky6c), independent review (uro-nncx), and recorded or deferred maintainer decisions.
 
 ## Notes
 
-Completed on stacked PR #8 above PR #4: uro-nazs, uro-wqf8, uro-4gxg, uro-qp7j, grouped by uro-pwjv. The local commands deliberately were not run against real logs without fresh consent. Remaining milestone blockers include uro-d36a, uro-nncx, uro-89s7 and the maintainer-decision beads; packaging and publication remain downstream.
+2026-09-19: Functional core, terminal UX, local tools, temporary memory guard (uro-0726) and v0.1 QA docs (uro-m31h) are done on the PR #4 / #8 stack. Remaining 0.1 implementation is uro-o6x5 / uro-n1cp (512 MiB whole history), then uro-d36a (G1) and uro-ky6c (full-history QA). Parallel: uro-nncx (review) and the P2 decision beads. Packaging (uro-30ef) waits on this epic.
