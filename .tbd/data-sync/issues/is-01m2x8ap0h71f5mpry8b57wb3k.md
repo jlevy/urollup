@@ -3,9 +3,9 @@ type: is
 id: is-01m2x8ap0h71f5mpry8b57wb3k
 title: Drop Claude payload records after owner-map facts
 kind: task
-status: in_progress
+status: closed
 priority: 2
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -14,7 +14,11 @@ labels:
 dependencies: []
 parent_id: is-01m2pkgts2b87n25929xphbnpc
 created_at: 2026-09-19T16:34:56.143Z
-updated_at: 2026-09-19T17:34:02.741Z
+updated_at: 2026-09-19T20:56:09.938Z
+closed_at: 2026-09-19T20:56:09.938Z
+close_reason: "Peak did not fall or the design was abandoned. Field and ID relocation are exhausted (uro-t8ws standing 653/586). Do not retry two-pass Claude, prefix-merge, boxing shells, dropping KeyGraph, one-inline-key, per-rollout shrink_to_fit, or chunked consume. Tail-consume after grouping was not filed: the grouping peak holds every shell before Requests are reserved, and shrink_to_fit of that remainder reallocs while the table is still live (already raised RSS)."
+resolution: canceled
+duplicate_of: null
 ---
 Contingency if typed Claude decode plus EvidenceRef still miss 512 MiB. Claude cannot observe on the worker: Owners::new and ambiguous_messages need a global pass. Today Corpus keeps every ParsedRecord until reconcile_input walks RecordChunk and frees each chunk only after observe.
 

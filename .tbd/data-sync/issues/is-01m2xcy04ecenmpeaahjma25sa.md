@@ -3,9 +3,9 @@ type: is
 id: is-01m2xcy04ecenmpeaahjma25sa
 title: Merge Claude DecodedSources as the discovery-order prefix completes
 kind: task
-status: in_progress
+status: closed
 priority: 1
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels:
@@ -19,8 +19,12 @@ parent_id: is-01m2pkgts2b87n25929xphbnpc
 hold: null
 hold_until: null
 created_at: 2026-09-19T17:55:23.397Z
-updated_at: 2026-09-19T18:05:10.941Z
+updated_at: 2026-09-19T20:56:09.948Z
 started_at: 2026-09-19T17:56:19.836Z
+closed_at: 2026-09-19T20:56:09.948Z
+close_reason: "Peak did not fall or the design was abandoned. Field and ID relocation are exhausted (uro-t8ws standing 653/586). Do not retry two-pass Claude, prefix-merge, boxing shells, dropping KeyGraph, one-inline-key, per-rollout shrink_to_fit, or chunked consume. Tail-consume after grouping was not filed: the grouping peak holds every shell before Requests are reserved, and shrink_to_fit of that remainder reallocs while the table is still live (already raised RSS)."
+resolution: canceled
+duplicate_of: null
 ---
 After uro-mxcp, loaded whole-history peak is 796 MiB (815,008 KiB). Claude still calls try_read_in_parallel, which retains every DecodedSource (per-source Strings intern table plus Vec<ParsedRecord>) until Corpus::merge absorbs them in discovery order. That join vec sits beside the Codex ledger (611,314 Request rows) for the whole Claude ingest.
 

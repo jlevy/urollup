@@ -3,9 +3,9 @@ type: is
 id: is-01m2xg2vek9txpj40mvab5rp12
 title: Shrink RequestObservation keys to one inline slot
 kind: task
-status: in_progress
+status: closed
 priority: 1
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels:
@@ -19,8 +19,12 @@ parent_id: is-01m2pkgts2b87n25929xphbnpc
 hold: null
 hold_until: null
 created_at: 2026-09-19T18:50:28.178Z
-updated_at: 2026-09-19T18:53:10.911Z
+updated_at: 2026-09-19T20:56:09.976Z
 started_at: 2026-09-19T18:50:31.440Z
+closed_at: 2026-09-19T20:56:09.976Z
+close_reason: "Peak did not fall or the design was abandoned. Field and ID relocation are exhausted (uro-t8ws standing 653/586). Do not retry two-pass Claude, prefix-merge, boxing shells, dropping KeyGraph, one-inline-key, per-rollout shrink_to_fit, or chunked consume. Tail-consume after grouping was not filed: the grouping peak holds every shell before Requests are reserved, and shrink_to_fit of that remainder reallocs while the table is still live (already raised RSS)."
+resolution: canceled
+duplicate_of: null
 ---
 Adapters push one request key per observation. The second inline DerivedKey slot is 27 bytes on every shell (about 16 MiB on 612k Codex rows) and sits beside the Request table through reconcile. Change RequestObservation.keys to InlineList<DerivedKey, 1>; a second key spills. Do not box observations. Peak must fall.
 
