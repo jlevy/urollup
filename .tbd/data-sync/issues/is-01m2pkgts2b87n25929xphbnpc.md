@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 22
+version: 24
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -31,8 +31,9 @@ child_order_hints:
   - is-01m2x8ap0h71f5mpry8b57wb3k
   - is-01m2x8apcp21hd5yacp01m0a9b
   - is-01m2wbbfnm8gs10hrmyrg14tma
+  - is-01m2xbpewbkwxm6ac5mx8pewzn
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T17:12:28.451Z
+updated_at: 2026-09-19T17:34:03.411Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -49,4 +50,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: uro-1sm8 landed. Peak 793 MiB / 20.3 s. Remaining children: uro-l3fw, uro-l0gd.
+2026-09-19: uro-l3fw two-pass tried and reverted (peak 929-946 MiB). Baseline after revert is 804 MiB / 22.1 s. Remaining: uro-cbsg (inline Request.records), uro-l3fw (open, approach failed), uro-l0gd.
