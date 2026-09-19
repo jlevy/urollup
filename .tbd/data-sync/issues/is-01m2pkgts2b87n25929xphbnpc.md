@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 46
+version: 48
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -46,8 +46,9 @@ child_order_hints:
   - is-01m2xhmbbke03tcmr6f115a3jj
   - is-01m2xjc7sfjtv1wzrrv7vb4xaw
   - is-01m2xkhjsnysfmzrqtvxd2ccpk
+  - is-01m2xm3qa0jxax4tsdx8m93kgc
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T19:51:08.759Z
+updated_at: 2026-09-19T20:01:15.473Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -64,4 +65,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: uro-mxyh reverted (observe-Pending-first raised Codex 774-836 MiB, WH 799-857). Interner maps already drop at finish(). Standing tree uro-24ua: 614/768. Next leftover uro-4h93 (137k fat limit rows at grouping). Not closable.
+2026-09-19: uro-4h93 landed (interned 137k limit rows). Standing tree 583/670. Next leftover uro-t8ws (KeyGraph stores each AnalyticalId twice during grouping). Not closable.

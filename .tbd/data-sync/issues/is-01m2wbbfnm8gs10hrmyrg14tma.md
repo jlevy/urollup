@@ -5,7 +5,7 @@ title: Measure whole-history RSS after each 512 MiB compaction
 kind: task
 status: open
 priority: 2
-version: 17
+version: 18
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -16,7 +16,7 @@ dependencies:
     target: is-01m2pkgts2b87n25929xphbnpc
 parent_id: is-01m2pkgts2b87n25929xphbnpc
 created_at: 2026-09-19T08:08:33.712Z
-updated_at: 2026-09-19T19:51:09.612Z
+updated_at: 2026-09-19T20:01:15.843Z
 ---
 After each Phase 1 compaction, run privacy-safe whole-history sessions --all (and daily/report --all when the peak changes) on the maintainer corpus. Record peak RSS, wall time, UROLLUP_STATS row counts and worker-count identity. Quote no paths, IDs or prompt text. Update the scalable-ingestion spec Progress table and the 512 MiB checkbox when the goal is met.
 
@@ -24,4 +24,4 @@ Acceptance: dated privacy-safe numbers in the spec; uro-n1cp closable only when 
 
 ## Notes
 
-2026-09-19: last closed cut uro-24ua (614/768). uro-mxyh canceled. Next ready uro-4h93 limit-row compact. Gate still 512 MiB.
+2026-09-19: last closed cut uro-4h93 (583/670). Next ready uro-t8ws KeyGraph ID compact. Gate still 512 MiB.
