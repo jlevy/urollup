@@ -3,7 +3,7 @@
 //! Decoding keeps memory proportional to usage records, not to log bytes:
 //!
 //! - Each line is first read by `LineHead`, which builds no JSON document. A usage-bearing
-//!   line is read again as [`line::UsageBody`], which keeps accounting fields and never
+//!   line is read again as a typed usage body, which keeps accounting fields and never
 //!   a parent `serde_json::Value`.
 //! - A decoded `ParsedRecord` is a compact row: repeated strings are interned per
 //!   ingestion, native IDs that only join records are 128-bit digests, and rare fields
