@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 24
+version: 28
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -32,8 +32,10 @@ child_order_hints:
   - is-01m2x8apcp21hd5yacp01m0a9b
   - is-01m2wbbfnm8gs10hrmyrg14tma
   - is-01m2xbpewbkwxm6ac5mx8pewzn
+  - is-01m2xcfaq8tx365vxpxfqshk18
+  - is-01m2xcy04ecenmpeaahjma25sa
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T17:34:03.411Z
+updated_at: 2026-09-19T17:55:33.973Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -50,4 +52,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: uro-l3fw two-pass tried and reverted (peak 929-946 MiB). Baseline after revert is 804 MiB / 22.1 s. Remaining: uro-cbsg (inline Request.records), uro-l3fw (open, approach failed), uro-l0gd.
+2026-09-19: uro-mxcp closed at 796 MiB loaded. uro-cbsg implemented, left open (A/B in noise). Filed uro-h0fw for discovery-order prefix merge of Claude DecodedSources. Gate still 512 MiB.

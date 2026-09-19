@@ -5,7 +5,7 @@ title: Measure whole-history RSS after each 512 MiB compaction
 kind: task
 status: open
 priority: 2
-version: 10
+version: 11
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -16,7 +16,7 @@ dependencies:
     target: is-01m2pkgts2b87n25929xphbnpc
 parent_id: is-01m2pkgts2b87n25929xphbnpc
 created_at: 2026-09-19T08:08:33.712Z
-updated_at: 2026-09-19T17:34:03.070Z
+updated_at: 2026-09-19T17:55:32.842Z
 ---
 After each Phase 1 compaction, run privacy-safe whole-history sessions --all (and daily/report --all when the peak changes) on the maintainer corpus. Record peak RSS, wall time, UROLLUP_STATS row counts and worker-count identity. Quote no paths, IDs or prompt text. Update the scalable-ingestion spec Progress table and the 512 MiB checkbox when the goal is met.
 
@@ -24,4 +24,4 @@ Acceptance: dated privacy-safe numbers in the spec; uro-n1cp closable only when 
 
 ## Notes
 
-2026-09-19 after uro-l3fw attempt: two-pass Claude re-decode peaked at 929-946 MiB (workers=8, same row counts). Sequential pass 2: 908 MiB / 28.0 s. Reverted. Post-revert sessions --all: 804 MiB (823632 KiB) / 22.1 s, workers=8, Codex 612561/611314, Claude 413742/191476. Still above 512. Next: uro-cbsg.
+2026-09-19: After uro-mxcp, loaded sessions --all: exit 0, 796 MiB (815008 KiB), 81.3 s at load 117–193, workers=8, same row counts as uro-ecol. Quiet-machine 804 MiB / 22.1 s after l3fw revert is the last low-load baseline. Still above 512 MiB. Next cut uro-h0fw.
