@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 43
+version: 46
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -44,8 +44,10 @@ child_order_hints:
   - is-01m2xgr9vmqwwf9teqq1v0bqnk
   - is-01m2xh33f1j10y2c3ykq2x8pkj
   - is-01m2xhmbbke03tcmr6f115a3jj
+  - is-01m2xjc7sfjtv1wzrrv7vb4xaw
+  - is-01m2xkhjsnysfmzrqtvxd2ccpk
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T19:28:26.402Z
+updated_at: 2026-09-19T19:51:08.759Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -62,4 +64,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: uro-o5c0 reverted (216 B shell, peak did not fall). Standing remasure remains uro-24ua: Codex-only 614 MiB (628608 KiB) / 14.5 s, WH 768 MiB (786656 KiB) / 17.5 s. Shell-field shrinks exhausted. Remaining ~256 MiB is intern/KeyGraph/limit rows/allocator at grouping, not another 8 B field. Not closable.
+2026-09-19: uro-mxyh reverted (observe-Pending-first raised Codex 774-836 MiB, WH 799-857). Interner maps already drop at finish(). Standing tree uro-24ua: 614/768. Next leftover uro-4h93 (137k fat limit rows at grouping). Not closable.
