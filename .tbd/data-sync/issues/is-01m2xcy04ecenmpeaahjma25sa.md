@@ -3,10 +3,11 @@ type: is
 id: is-01m2xcy04ecenmpeaahjma25sa
 title: Merge Claude DecodedSources as the discovery-order prefix completes
 kind: task
-status: open
+status: in_progress
 priority: 1
-version: 2
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
+delegate: claude-code@spud10.local
 labels:
   - milestone-0.1
   - performance
@@ -15,8 +16,11 @@ dependencies:
   - type: blocks
     target: is-01m2wbbfnm8gs10hrmyrg14tma
 parent_id: is-01m2pkgts2b87n25929xphbnpc
+hold: null
+hold_until: null
 created_at: 2026-09-19T17:55:23.397Z
-updated_at: 2026-09-19T17:55:31.501Z
+updated_at: 2026-09-19T18:05:10.941Z
+started_at: 2026-09-19T17:56:19.836Z
 ---
 After uro-mxcp, loaded whole-history peak is 796 MiB (815,008 KiB). Claude still calls try_read_in_parallel, which retains every DecodedSource (per-source Strings intern table plus Vec<ParsedRecord>) until Corpus::merge absorbs them in discovery order. That join vec sits beside the Codex ledger (611,314 Request rows) for the whole Claude ingest.
 
@@ -25,3 +29,7 @@ Deliver completed sources into a slot array and merge source i as soon as 0..i a
 Files: sources/parallel.rs (prefix-ready helper); claude_project.rs ingest_discovery_with_workers and Corpus::merge.
 
 Acceptance: fixture snapshots and worker-count identity unchanged; make test; privacy-safe sessions --all on uro-l0gd. Peak must fall.
+
+## Notes
+
+2026-09-19: Prefix merge implemented then reverted. sessions --all 854 MiB (874640 KiB) / 36.2 s and 830 MiB (849824 KiB) / 30.4 s at load 52-73, above uro-mxcp 796 MiB. In-flight decode overlapped the growing corpus. Claude again uses try_read_in_parallel + Corpus::merge. Left open.
