@@ -3,10 +3,11 @@ type: is
 id: is-01m2x8an7mrxpsqaea7f9gvdz1
 title: Decode Claude usage lines without parse_record
 kind: task
-status: open
+status: closed
 priority: 0
-version: 4
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
+delegate: claude-code@spud10.local
 labels:
   - milestone-0.1
   - performance
@@ -19,8 +20,15 @@ dependencies:
   - type: blocks
     target: is-01m2x8apcp21hd5yacp01m0a9b
 parent_id: is-01m2pkgts2b87n25929xphbnpc
+hold: null
+hold_until: null
 created_at: 2026-09-19T16:34:55.347Z
-updated_at: 2026-09-19T16:35:15.726Z
+updated_at: 2026-09-19T16:45:02.000Z
+started_at: 2026-09-19T16:36:06.138Z
+closed_at: 2026-09-19T16:45:01.997Z
+close_reason: "Claude SourceDecoder::decode no longer calls parse_record. UsageBody streams accounting fields; quotaLimits is the only Value, and only for that small object. make test green. Whole-history sessions --all: exit 0, 835 MiB peak (855312 KiB), 36.3 s, same row counts as uro-ecol."
+resolution: null
+duplicate_of: null
 ---
 The remaining whole-history peak is Claude ingest while the compact Codex ledger is still resident. LineHead already proves a usage-bearing line is valid JSON, then SourceDecoder::decode calls parse_record and keeps a serde_json::Value for the whole assistant or progress document — including message content accounting never reads. That is ~413k Claude usage lines, eight workers at once.
 

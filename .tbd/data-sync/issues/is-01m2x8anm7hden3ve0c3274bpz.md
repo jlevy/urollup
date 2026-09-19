@@ -3,10 +3,11 @@ type: is
 id: is-01m2x8anm7hden3ve0c3274bpz
 title: Type Codex rate_limits without a Value map
 kind: task
-status: open
+status: in_progress
 priority: 0
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
+delegate: claude-code@spud10.local
 labels:
   - milestone-0.1
   - performance
@@ -19,8 +20,11 @@ dependencies:
   - type: blocks
     target: is-01m2x8apcp21hd5yacp01m0a9b
 parent_id: is-01m2pkgts2b87n25929xphbnpc
+hold: null
+hold_until: null
 created_at: 2026-09-19T16:34:55.750Z
-updated_at: 2026-09-19T16:35:15.736Z
+updated_at: 2026-09-19T16:45:03.163Z
+started_at: 2026-09-19T16:45:03.162Z
 ---
 Codex Line is already borrowed and typed except rate_limits. RateLimitsSeed deserializes the object as serde_json::Value, Payload.rate_limits holds Map<String, Value>, and rate_limits() re-serializes that map to compare consecutive snapshots. Token-count lines are the Codex observation hot path.
 
