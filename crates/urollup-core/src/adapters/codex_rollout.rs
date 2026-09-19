@@ -826,7 +826,7 @@ impl SourceDecoder {
                 forked_from_id: payload.forked_from_id.map(Cow::into_owned),
                 subagent_history_start_ordinal: payload.subagent_history_start_ordinal,
             };
-            metas.own = Some(Box::new((meta, evidence.clone())));
+            metas.own = Some(Box::new((meta, *evidence)));
         }
         RecordKind::SessionMeta { id }
     }
@@ -1016,7 +1016,7 @@ fn observe_parsed_source(
                 }
                 if has_direct && active_thread != file_thread {
                     if let Some(usage) = &last {
-                        let mut observation = RequestObservation::new(view.evidence.clone());
+                        let mut observation = RequestObservation::new(view.evidence);
                         observation.role = ObservationRole::Copy;
                         observation.owner = thread_ids
                             .get(strings.resolve(active_thread))
@@ -1070,7 +1070,7 @@ fn observe_parsed_source(
                         diagnostics.push(Diagnostic::new(
                             DiagnosticCode::CodexCounterEpochReset,
                             thread_ids.get(file_thread_text).cloned(),
-                            [view.evidence.clone()],
+                            [view.evidence],
                             "Codex cumulative usage decreased and opened a new counter epoch",
                         ));
                     }
@@ -1089,7 +1089,7 @@ fn observe_parsed_source(
                                 DiagnosticCode::CodexEstimateCompaction
                             },
                             thread_ids.get(file_thread_text).cloned(),
-                            [view.evidence.clone()],
+                            [view.evidence],
                             "Codex emitted an estimate with zero input and output tokens",
                         ));
                         continue;
@@ -1243,7 +1243,7 @@ fn normalize(
                 account: Basis::Unknown,
                 evidence: meta_by_thread
                     .get(&native)
-                    .map(|(_, evidence)| vec![evidence.clone()])
+                    .map(|(_, evidence)| vec![*evidence])
                     .unwrap_or_default(),
             },
         );
@@ -1267,7 +1267,7 @@ fn normalize(
             from: from.clone(),
             to: to.clone(),
             confidence: Confidence::Proven,
-            evidence: vec![evidence.clone()],
+            evidence: vec![*evidence],
         });
     }
 
@@ -1281,7 +1281,7 @@ fn normalize(
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::ThreadOrphan,
                 thread_ids.get(thread).cloned(),
-                [evidence.clone()],
+                [*evidence],
                 "Codex thread names a parent whose rollout was not discovered",
             ));
         }
@@ -1441,7 +1441,7 @@ fn counter_observation(
     total: &CodexUsage,
     counter: CounterObservation<'_>,
 ) -> Result<RequestObservation, AdapterError> {
-    let mut observation = RequestObservation::new(record.evidence.clone());
+    let mut observation = RequestObservation::new(record.evidence);
     observation.role = counter.role;
     observation.owner = counter
         .thread_ids
@@ -1500,7 +1500,7 @@ fn append_limits(
             owner_thread: owner_thread.clone(),
             owner_request: None,
             native: Name::new(&limits.native),
-            evidence: record.evidence.clone(),
+            evidence: record.evidence,
         });
     }
 }
@@ -1515,7 +1515,7 @@ fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::MalformedLine,
                 None,
-                [evidence.clone()],
+                [*evidence],
                 "a complete Codex rollout line is malformed",
             ));
         }
@@ -1584,7 +1584,7 @@ fn usage_observation(
     turns: &Turns,
 ) -> Result<RequestObservation, AdapterError> {
     let owner = payload.thread_id.unwrap_or(file_thread);
-    let mut observation = RequestObservation::new(record.evidence.clone());
+    let mut observation = RequestObservation::new(record.evidence);
     observation.role = if default_role == ObservationRole::Copy || owner != file_thread {
         ObservationRole::Copy
     } else {

@@ -682,7 +682,7 @@ impl SourceDecoder {
         }
         let facts = &mut self.facts;
         if facts.evidence.is_none() {
-            facts.evidence = Some(raw.evidence.clone());
+            facts.evidence = Some(*raw.evidence);
         }
         let Ok(head) = LineHead::read(raw.bytes, facts.version.is_none(), facts.project.is_none())
         else {
@@ -697,18 +697,14 @@ impl SourceDecoder {
         }
         let record_thread = if self.thread.is_child() || !head.sidechain {
             facts.active_inline = None;
-            facts.last_main_evidence = Some(raw.evidence.clone());
+            facts.last_main_evidence = Some(*raw.evidence);
             self.thread
         } else if let Some(inline) = facts.active_inline {
             inline
         } else {
             // The first record of a run of sidechain records starts an inline thread.
             let child = NativeThread::inline(self.thread.session, raw.bytes, &mut self.strings);
-            facts.inline_threads.push((
-                child,
-                raw.evidence.clone(),
-                facts.last_main_evidence.clone(),
-            ));
+            facts.inline_threads.push((child, *raw.evidence, facts.last_main_evidence));
             facts.active_inline = Some(child);
             child
         };
@@ -1112,7 +1108,7 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
                 diagnostics.push(Diagnostic::new(
                     DiagnosticCode::UsageInconsistency,
                     None,
-                    [evidence.clone()],
+                    [evidence],
                     format!(
                         "Claude cache creation total {flat} differs from its lifetime breakdown {breakdown}"
                     ),
@@ -1196,14 +1192,14 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
                     RelationshipKind::InlineSidechain,
                     facts.thread,
                     *child,
-                    parent_evidence.clone(),
+                    *parent_evidence,
                 ));
             }
             relationships.push((
                 RelationshipKind::InlineSidechain,
                 facts.thread,
                 *child,
-                evidence.clone(),
+                *evidence,
             ));
         }
     }
@@ -1223,7 +1219,7 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
             .copied()
             .unwrap_or_else(|| NativeThread::main(meta.child.session));
         spawned.insert(meta.child);
-        relationships.push((RelationshipKind::Spawn, parent, meta.child, meta.evidence.clone()));
+        relationships.push((RelationshipKind::Spawn, parent, meta.child, meta.evidence));
     }
     // A subagent without a sidecar is spawned by its session, cited by its first record.
     let unspawned: Vec<NativeThread> = native_threads
@@ -1257,7 +1253,7 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
     let mut project_by_thread: HashMap<NativeThread, Sym> = HashMap::new();
     for facts in &corpus.facts {
         if let Some(evidence) = &facts.evidence {
-            thread_evidence.entry(facts.thread).or_default().push(evidence.clone());
+            thread_evidence.entry(facts.thread).or_default().push(*evidence);
         }
         if let Some(project) = facts.project {
             project_by_thread.entry(facts.thread).or_insert(project);
@@ -1266,7 +1262,7 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
             }
         }
         for (inline, evidence, _) in &facts.inline_threads {
-            thread_evidence.entry(*inline).or_default().push(evidence.clone());
+            thread_evidence.entry(*inline).or_default().push(*evidence);
         }
     }
     for (source, record) in corpus.records() {
@@ -1473,7 +1469,7 @@ fn append_limits(
             owner_thread: owner_thread.clone(),
             owner_request,
             native: Name::new(&quota.native),
-            evidence: evidence.clone(),
+            evidence: *evidence,
         });
     }
     if let Some(message) = &extras.limit_text {
@@ -1484,7 +1480,7 @@ fn append_limits(
             owner_thread,
             owner_request: None,
             native: Name::new(&serde_json::json!({ "text": &**message }).to_string()),
-            evidence: evidence.clone(),
+            evidence: *evidence,
         });
     }
     Ok(())
