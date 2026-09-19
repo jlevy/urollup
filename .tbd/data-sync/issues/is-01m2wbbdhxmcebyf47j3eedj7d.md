@@ -3,11 +3,11 @@ type: is
 id: is-01m2wbbdhxmcebyf47j3eedj7d
 title: Observe Codex without retaining every decoded source
 kind: task
-status: open
+status: closed
 priority: 1
-version: 4
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
-delegate: null
+delegate: claude-code@spud10.local
 labels:
   - milestone-0.1
   - performance
@@ -19,8 +19,12 @@ parent_id: is-01m2pkgts2b87n25929xphbnpc
 hold: null
 hold_until: null
 created_at: 2026-09-19T08:08:31.525Z
-updated_at: 2026-09-19T08:24:11.845Z
+updated_at: 2026-09-19T16:29:13.069Z
 started_at: 2026-09-19T08:15:35.299Z
+closed_at: 2026-09-19T16:29:13.068Z
+close_reason: Usage-bearing Codex rollouts are observed on the decode worker and drop records before join. Observation slots count usage/compacted/token-count only. Whole-history peak 861 MiB (881296 KiB), down ~75 MiB. Remaining peak is Codex decode (rate_limits Value, worker buffers) — uro-zrr0.
+resolution: null
+duplicate_of: null
 ---
 Codex ingest collects every ParsedSource (records plus interned strings) before normalize. Observe then frees records per source, but the peak includes the whole decoded corpus plus growing observations. known_turns is a two-pass over root rollouts, so workers cannot observe in isolation without a merge of turn IDs first.
 
