@@ -3,9 +3,9 @@ type: is
 id: is-01m2wbbcf9be2tbvyz9f7yydnx
 title: Compact EvidenceRef to a source index
 kind: task
-status: open
+status: closed
 priority: 1
-version: 5
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -20,7 +20,11 @@ dependencies:
     target: is-01m2x8apcp21hd5yacp01m0a9b
 parent_id: is-01m2pkgts2b87n25929xphbnpc
 created_at: 2026-09-19T08:08:30.439Z
-updated_at: 2026-09-19T16:35:17.022Z
+updated_at: 2026-09-19T17:07:54.033Z
+closed_at: 2026-09-19T17:07:54.032Z
+close_reason: "EvidenceRef is 16 bytes (u32 source index, u32 length, u64 offset) with custom Ord (source, offset, length). SourceTable on ReconcileInput/Ledger assigns indices in AnalyticalId order; adapters stamp local 0 then remap. artifact_local resolves src- IDs through the table. RequestObservation <= 264 B. make test green. Release sessions --all: 875 MiB (896016 KiB) / 26.5 s, same row counts. Did not meet 512 MiB."
+resolution: null
+duplicate_of: null
 ---
 EvidenceRef stores a full AnalyticalId (17 B) plus offset and length u64s, about 40 B per reference. The spec budget is 16 B via a source u32 into a side table. Observation and request rows carry these refs at corpus scale (~1.00M observations; Request.records is a Box<[EvidenceRef]>).
 
