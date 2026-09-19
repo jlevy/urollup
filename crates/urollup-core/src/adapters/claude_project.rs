@@ -110,10 +110,8 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 /// thread, four 4-byte symbols, a 32-byte message ID with its digest, a 16-byte request
 /// ID, a 16-byte timestamp, 64 bytes of counts with a 1-byte presence mask, a 17-byte
 /// optional uuid digest, two flags and an 8-byte pointer to rare fields.
-const _: () = assert!(
-    size_of::<ParsedRecord>() <= 200,
-    "a decoded Claude record outgrew its size budget"
-);
+const _: () =
+    assert!(size_of::<ParsedRecord>() <= 200, "a decoded Claude record outgrew its size budget");
 
 /// A 128-bit SHA-256 digest of a native ID that only joins records, never appears in
 /// output, and so need not be kept as text.
