@@ -3,20 +3,26 @@ type: is
 id: is-01m2xr9e3p2krpf2x0vf0f09d7
 title: Skip full JSON walk on Codex lines the type prefilter rejects
 kind: task
-status: open
+status: closed
 priority: 1
-version: 2
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
+delegate: claude-code@spud10.local
 labels:
   - milestone-0.1
   - performance
   - memory
-dependencies:
-  - type: blocks
-    target: is-01m2x8apr4dv9jctc0j20g6mbq
+dependencies: []
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
+hold: null
+hold_until: null
 created_at: 2026-09-19T21:13:52.502Z
-updated_at: 2026-09-19T21:13:58.217Z
+updated_at: 2026-09-19T21:19:48.461Z
+started_at: 2026-09-19T21:14:51.206Z
+closed_at: 2026-09-19T21:19:48.459Z
+close_reason: Zero-copy JSON accept matched parse_record in tests (malformed contract held) but quiet WH 650 MiB / 20.7 s vs lsaz remasure 648 / 18.2 and Codex-only 583 MiB / 15.3 s vs 573 / 14.3. Wall and peak both rose. Reverted validate_record to serde_json deserialize_any Skip.
+resolution: canceled
+duplicate_of: null
 ---
 Phase 2 speed leftover named by the uro-lsaz profile. Codex-only wall is worker decode, not grouping.
 
