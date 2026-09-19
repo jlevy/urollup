@@ -3,9 +3,9 @@ type: is
 id: is-01m2wbbd2eaetkn9zdz86xdhys
 title: Drop boxed Claude per-record native IDs
 kind: task
-status: open
+status: closed
 priority: 1
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -16,7 +16,11 @@ dependencies:
     target: is-01m2wbbfnm8gs10hrmyrg14tma
 parent_id: is-01m2pkgts2b87n25929xphbnpc
 created_at: 2026-09-19T08:08:31.053Z
-updated_at: 2026-09-19T08:08:38.335Z
+updated_at: 2026-09-19T08:15:32.735Z
+closed_at: 2026-09-19T08:15:32.735Z
+close_reason: "Engine landed: Codex-first ingest, Ingested::release_discovery, interned Claude message/request IDs. Whole-history sessions --all release peak is 936 MiB (958032 KiB), down from 1.14 GB. Remaining peak is Codex ingest (uro-ecol, uro-as4a)."
+resolution: null
+duplicate_of: null
 ---
 Claude ParsedRecord still holds request_id: Option<Box<str>> and MessageId.text: Box<str> for every decoded record while the corpus waits to normalize. Identity already uses digests. Drop the boxed native text from the hot record type and keep digests (and interned names) only.
 
