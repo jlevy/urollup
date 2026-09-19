@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard, with the memory target, whole-history acceptance, decisions and independent review in progress
+status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard; remaining 0.1 work is the 512 MiB peak (uro-n1cp), G1 and full-history QA (uro-d36a, uro-ky6c), maintainer decisions, and independent review
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 

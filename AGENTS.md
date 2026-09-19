@@ -48,8 +48,15 @@ core, Claude Code and Codex adapters, exact session selection, and uncached `rep
 Terminal-aware color and interactive stderr progress are implemented, the fixture-backed
 ccusage reconciliation harness runs in CI, and privacy-tested local aggregate tools are
 available behind explicit consent.
-The remaining milestone 0.1 work is the consented real-log acceptance run, recorded
-maintainer decisions and independent implementation review.
+Whole-history reports run without an input-size guard; the remaining 0.1 implementation
+is the 512 MiB peak-footprint target on
+[`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
+(`uro-n1cp`), then consented G1 and full-history QA (`uro-d36a`, `uro-ky6c`). Recorded
+maintainer decisions and independent review of the published stack remain before the
+milestone is accepted.
+Publishing is planned in
+[`plan-2026-09-16-first-release-publishing.md`](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
+and waits on that acceptance.
 There is one exploration (a Rust log throughput spike) under
 `explorations/log-throughput/`. urollup will be a Rust CLI and local read-only web UI
 that produces usage rollups (tokens, cost, request sizes, tools) from coding-agent
@@ -59,11 +66,12 @@ The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
 decisions, open questions and the CLI flag index.
 Planning docs live under `docs/project/`:
 
-- `specs/active/`: the plan spec, with phases, milestones, testing and rollout.
+- `specs/active/`: the three active plan specs (product, scalable ingestion, first
+  release).
 - `research/`: background research briefs.
 
-The planning epic is `uro-lpow`. Run `tbd list --specs` to see beads grouped by linked
-spec.
+The product epic is `uro-2pp9`; current implementation is `uro-n1cp`. Run
+`tbd list --specs` to see beads grouped by linked spec.
 
 ## Build & Test
 

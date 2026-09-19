@@ -3,7 +3,7 @@ title: "Scalable Whole-History Ingestion"
 description: Replace urollup's retain-everything ingestion with bounded parallel family decoding into a compact global ledger, so whole-history reports over tens of gigabytes of Claude Code and Codex logs run in seconds within a few hundred MiB.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Active; Phase 1 in progress
+status: Active; Phase 1 in progress — whole history completes; 512 MiB peak not met
 ---
 # Feature: Scalable Whole-History Ingestion
 
@@ -314,27 +314,19 @@ QA reports may quote them.
 ### Phase 1: Whole History Works
 
 - [x] Fix the Claude owner-map ordering bug (`uro-sn1e`) in the current engine, with
-  renamed-file cases for `gateway-message-id-reuse` and `brief-double-counting`, so the
-  oracle is correct before the rewrite.
-- [ ] Add a projection oracle test comparing the current engine with the new one on all
-  fixture cases: totals, per-thread owned totals, counting classes, ownership, selected
-  evidence, limit counts and diagnostic occurrence sums.
-- [ ] Introduce `Evidence`, `KeyDigest`, `Measures`, `Obs`, `Req`, `LimitRow` and
-  interning tables with size assertions, and the canonical-JSON digest helper pinned to
-  `IdentityKey::derive_id`.
-- [ ] Convert both adapters to streaming per-family decoders that emit `FamilyBatch`,
-  still parsing with `serde_json::Value`, with streaming limit collapse and per-code
-  diagnostics.
-- [ ] Implement global assembly: source table, thread and relationship reconcile, the
-  Claude key-facts pass and compact request reconciliation.
-- [ ] Port `accounting::totals`, `query` and `SessionIndex` to the compact ledger.
-- [x] Add the bounded family worker pool and `UROLLUP_JOBS`, with worker-count and
-  file-rename invariance tests.
+  renamed-file cases for `gateway-message-id-reuse` and `brief-double-counting`.
+- [x] Compact `RequestObservation` and `Request` in place, with digest identities,
+  streaming limit collapse and per-code diagnostics.
+  There is no second engine, no separate `Obs`/`Req` types, and no projection oracle.
+- [x] Decode sources on bounded workers with `UROLLUP_JOBS`, with worker-count and
+  Claude file-rename invariance tests.
 - [x] Remove the 512 MiB guard and the read budgets it required; add the 2 GiB
   compact-row ceiling and `UROLLUP_STATS`.
 - [x] Add the native session ID as an additive `session` field on `sessions` rows, so
   whole-history results join to ccusage in one pass.
 - [x] Update CLI goldens and `scripts/check-e2e-results.mjs` for aggregated diagnostics.
+- [ ] Compact Codex decoded records and the observation and request rows so default
+  whole-history peak footprint is at or below 512 MiB (`uro-n1cp`).
 
 Acceptance: `make check` passes; whole-history `sessions`, `daily` and `report --all` on
 the maintainer’s corpus exit 0 in at most 25 seconds at no more than 512 MiB peak
@@ -342,9 +334,9 @@ footprint; one and eight workers give identical JSON.
 
 ### Phase 2: Fast Decode and Scale Gates
 
-- [ ] Replace `Value` decoding on the hot path with borrowed typed structs (`Cow<str>`
-  with `#[serde(borrow)]`, small `{type, id}` content blocks) and `memmem` prefilters;
-  keep `Value` only for `quotaLimits` and `rate_limits` lines.
+- [ ] Replace remaining `Value` decoding on the hot path with borrowed typed structs
+  (`Cow<str>` with `#[serde(borrow)]`, small `{type, id}` content blocks) and `memmem`
+  prefilters; keep `Value` only for `quotaLimits` and `rate_limits` lines (`uro-zrr0`).
 - [x] Add a streaming synthetic corpus generator that writes families from fixture
   templates into a temporary directory under a byte cap, with part of Codex
   zstd-compressed.
@@ -362,9 +354,9 @@ seconds; the scale gates pass in CI.
   one whole-history run joined on the native `session` field.
 - [ ] Execute the
   [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md) on this
-  machine and commit a privacy-safe dated QA report.
-- [ ] Update design §3.4 and §8.3, the main implementation plan and the README status.
-- [ ] Delete the old engine and the projection oracle once the QA report is accepted.
+  machine and commit a privacy-safe dated QA report (`uro-ky6c`).
+- [ ] Update any leftover wording in design §3.4 and §8.3, the main implementation plan
+  and the README after that report.
 
 Acceptance: the QA playbook passes, and milestone 0.1 local acceptance is recorded
 without an input-size limitation.
@@ -429,14 +421,29 @@ watchdog on a loaded machine: it exited 0 at 878 MiB peak RSS in 18.6 s over 468
 requests. The `UROLLUP_STATS` example under
 [CLI and Output Changes](#cli-and-output-changes) is that run.
 
+### Remaining Work
+
+1. **Phase 1 (`uro-n1cp`).** Compact Codex decoded records and the observation and
+   request rows until default whole-history peak footprint is at or below 512 MiB.
+   Worker-count identity and guard removal already landed.
+2. **Phase 2 (`uro-zrr0`).** Finish borrowed typed decode on the remaining hot path and
+   hit the 10-second whole-history target.
+   The synthetic corpus and CI scale gates already landed.
+3. **Phase 3 (`uro-ky6c`).** Run the full-history QA playbook and record a privacy-safe
+   report. The one-pass local parity join already landed.
+   There is no second engine to delete.
+
+Milestone 0.1 G1 (`uro-d36a`) waits on Phase 1. Independent review of the published
+stack (`uro-nncx`) is parallel and does not block this work.
+
 ## Testing Strategy
 
-- **Oracle equivalence:** the projection test compares engines on every fixture until
-  Phase 3.
-- **Properties:** proptest generates multi-family corpora with Claude resumed sessions,
-  uuid replays, gateway message-ID reuse, progress nesting and Codex forks with copied
-  token records and legacy counters; results must match the oracle and be invariant
-  under file renaming and worker count.
+- **Equivalence:** each compaction step keeps fixture, snapshot, golden, fixture-result
+  and parity gates green, and is compared back to back with the previous release build
+  on real-log slices.
+- **Properties:** worker-count identity is tested on every fixture; Claude session-file
+  rename invariance is tested.
+  There is no second engine or projection oracle.
 - **Existing gates:** fixtures, snapshots (regenerated once for compact shapes), CLI
   goldens, fixture results and ccusage parity pass; the parity ledger does not change.
 - **Scale:** size assertions, the synthetic generator, raw-bytes independence and the
@@ -447,8 +454,9 @@ requests. The `UROLLUP_STATS` example under
 ## Rollout Plan
 
 Each phase lands as a stacked pull request with `make check` green.
-Phase 1 removes the guard and makes the default commands usable; the developer binary is
-reinstalled after each phase, and the 0.1.0 release waits for Phase 3.
+The input-size guard is already gone on this branch; Phase 1 still has to meet the 512
+MiB peak. Reinstall the developer binary after each phase.
+The 0.1.0 release waits for Phase 3.
 
 ## Open Questions
 
@@ -475,8 +483,8 @@ otherwise.
 - [Portable agent usage research](../../research/research-2026-09-13-portable-agent-usage.md)
   on local log volume and throughput
 - [Full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md)
-- Beads `uro-o6x5` (stream or spill all-log aggregation) and `uro-sn1e` (owner-map
-  ordering bug)
+- Beads `uro-o6x5` (scalable whole-history ingestion) and `uro-sn1e` (owner-map ordering
+  bug)
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
