@@ -37,6 +37,25 @@ pub struct Ingested {
     pub limit_observations: Vec<ProviderLimitObservation>,
 }
 
+impl Ingested {
+    /// Drops source, thread and relationship tables after
+    /// [`crate::selection::SessionIndex`] has copied what selection needs.
+    ///
+    /// Query reads the ledger and limit observations. Discovery tables would otherwise
+    /// stay resident while the next dialect ingests, which is the whole-history peak.
+    pub fn release_discovery(&mut self) {
+        self.manifest.entries.clear();
+        self.manifest.entries.shrink_to_fit();
+        self.manifest.skipped_links.clear();
+        self.manifest.skipped_links.shrink_to_fit();
+        self.sources.clear();
+        self.sources.shrink_to_fit();
+        self.threads = BTreeMap::new();
+        self.relationships.clear();
+        self.relationships.shrink_to_fit();
+    }
+}
+
 /// A persistent-log adapter could not produce a normalized result.
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {

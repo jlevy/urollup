@@ -1,4 +1,4 @@
-//! Interned names: model and reasoning-effort strings that ledger rows share.
+//! Interned names: model, effort and provider-limit strings that ledger rows share.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -7,14 +7,13 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, PoisonError};
 
-/// A model or reasoning-effort name, interned so a row holds an 8-byte reference instead
-/// of an owned string.
+/// A model, effort or provider-limit string, interned so a row holds an 8-byte reference
+/// instead of an owned string.
 ///
-/// Each distinct text is stored once per process and never freed. The vocabulary is small
-/// (a whole history names a few dozen models and efforts), so the table stays a few
-/// kilobytes, and a row needs no ledger table to compare or print its names. Equality,
-/// ordering and hashing are those of the text, so a row that embeds a `Name` compares as
-/// it did with a `String`.
+/// Each distinct text is stored once per process and never freed. Models and efforts are
+/// a few dozen values; limit snapshots intern once per distinct JSON. Equality, ordering
+/// and hashing are those of the text, so a row that embeds a `Name` compares as it did
+/// with a `String`.
 #[derive(Clone, Copy)]
 pub struct Name(&'static &'static str);
 

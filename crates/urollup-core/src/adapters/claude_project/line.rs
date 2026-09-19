@@ -20,8 +20,9 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use serde::Deserialize;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::sources::decode::{Skip, unsigned};
 
@@ -384,6 +385,799 @@ impl Visitor<'_> for KeyIs<'_> {
     }
 }
 
+/// Implements `DeserializeSeed` for a visitor seed that reads any JSON value.
+macro_rules! any_value_seed {
+    ($seed:ty) => {
+        impl<'de> DeserializeSeed<'de> for $seed {
+            type Value = <Self as Visitor<'de>>::Value;
+
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_any(self)
+            }
+        }
+    };
+}
+
+/// The accounting fields of one usage-bearing line, without a parent JSON document.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct UsageBody<'a> {
+    /// Top-level record fields.
+    pub top: RecordFields<'a>,
+    /// `data.message`, the nested transcript record a progress line carries.
+    pub nested: Option<RecordFields<'a>>,
+}
+
+/// The fields [`super::SourceDecoder::record`] reads from an assistant line or a nested
+/// progress record.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct RecordFields<'a> {
+    pub session: Option<Cow<'a, str>>,
+    pub uuid: Option<Cow<'a, str>>,
+    pub request_id: Option<Cow<'a, str>>,
+    pub timestamp: Option<Cow<'a, str>>,
+    pub effort: Option<Cow<'a, str>>,
+    pub cwd: Option<Cow<'a, str>>,
+    pub is_api_error: bool,
+    /// `quotaLimits` when it is an object; the parent document is never kept.
+    pub quota: Option<Map<String, Value>>,
+    pub api_block_index: Option<u64>,
+    pub message: MessageFields<'a>,
+}
+
+/// The fields below a record's `message`.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct MessageFields<'a> {
+    pub id: Option<Cow<'a, str>>,
+    pub model: Option<Cow<'a, str>>,
+    pub usage: UsageCounts,
+    pub tool_use_ids: Vec<Cow<'a, str>>,
+    /// `message.content[0].text`, used only for the usage-limit error string.
+    pub first_text: Option<Cow<'a, str>>,
+    pub advisors: Vec<AdvisorFields<'a>>,
+}
+
+/// Token counts a usage object may report.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct UsageCounts {
+    pub input: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub cache_write_5m: Option<u64>,
+    pub cache_write_1h: Option<u64>,
+    pub output: Option<u64>,
+    pub reasoning: Option<u64>,
+}
+
+/// One `message.usage.iterations` entry whose `type` is `advisor_message`.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct AdvisorFields<'a> {
+    pub model: Option<Cow<'a, str>>,
+    pub input: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub output: Option<u64>,
+    pub reasoning: Option<u64>,
+}
+
+impl<'a> UsageBody<'a> {
+    /// Reads one line; fails exactly when the line is not a valid JSON document.
+    pub(super) fn read(bytes: &'a [u8]) -> Result<Self, serde_json::Error> {
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let body = BodySeed.deserialize(&mut deserializer)?;
+        deserializer.end()?;
+        Ok(body)
+    }
+}
+
+/// Reads an unsigned integer as [`unsigned`] reads it from a document.
+struct Unsigned;
+
+any_value_seed!(Unsigned);
+
+impl<'de> Visitor<'de> for Unsigned {
+    type Value = Option<u64>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, str, unit, map]);
+
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(unsigned(&Value::from(value), &[]))
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(unsigned(&Value::from(value), &[]))
+    }
+
+    fn visit_f64<E: Error>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(unsigned(&Value::from(value), &[]))
+    }
+}
+
+struct BodySeed;
+
+any_value_seed!(BodySeed);
+
+impl<'de> Visitor<'de> for BodySeed {
+    type Value = UsageBody<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(UsageBody::default(), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let mut top = RecordFields::default();
+        let nested = read_record_map(map, &mut top)?;
+        Ok(UsageBody { top, nested })
+    }
+}
+
+/// Top-level keys of an assistant or nested progress record.
+#[derive(Clone, Copy)]
+enum RecordField {
+    SessionId,
+    Uuid,
+    RequestId,
+    Timestamp,
+    Effort,
+    Cwd,
+    IsApiErrorMessage,
+    QuotaLimits,
+    ApiBlockIndex,
+    Message,
+    Data,
+    Other,
+}
+
+impl RecordField {
+    fn named(name: &str) -> Self {
+        match name {
+            "sessionId" => Self::SessionId,
+            "uuid" => Self::Uuid,
+            "requestId" => Self::RequestId,
+            "timestamp" => Self::Timestamp,
+            "effort" => Self::Effort,
+            "cwd" => Self::Cwd,
+            "isApiErrorMessage" => Self::IsApiErrorMessage,
+            "quotaLimits" => Self::QuotaLimits,
+            "apiBlockIndex" => Self::ApiBlockIndex,
+            "message" => Self::Message,
+            "data" => Self::Data,
+            _ => Self::Other,
+        }
+    }
+}
+
+struct RecordKey;
+
+impl<'de> DeserializeSeed<'de> for RecordKey {
+    type Value = RecordField;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<RecordField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for RecordKey {
+    type Value = RecordField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<RecordField, E> {
+        Ok(RecordField::named(name))
+    }
+}
+
+fn read_record_map<'de, A: MapAccess<'de>>(
+    mut map: A,
+    fields: &mut RecordFields<'de>,
+) -> Result<Option<RecordFields<'de>>, A::Error> {
+    let mut nested = None;
+    while let Some(field) = map.next_key_seed(RecordKey)? {
+        match field {
+            RecordField::SessionId => fields.session = map.next_value_seed(Text)?,
+            RecordField::Uuid => fields.uuid = map.next_value_seed(Text)?,
+            RecordField::RequestId => fields.request_id = map.next_value_seed(Text)?,
+            RecordField::Timestamp => fields.timestamp = map.next_value_seed(Text)?,
+            RecordField::Effort => fields.effort = map.next_value_seed(Text)?,
+            RecordField::Cwd => fields.cwd = map.next_value_seed(Text)?,
+            RecordField::IsApiErrorMessage => fields.is_api_error = map.next_value_seed(IsTrue)?,
+            RecordField::QuotaLimits => fields.quota = map.next_value_seed(ObjectSeed)?,
+            RecordField::ApiBlockIndex => fields.api_block_index = map.next_value_seed(Unsigned)?,
+            RecordField::Message => fields.message = map.next_value_seed(MessageSeed)?,
+            RecordField::Data => nested = map.next_value_seed(DataSeed)?,
+            RecordField::Other => map.next_value_seed(Skip)?,
+        }
+    }
+    Ok(nested)
+}
+
+struct NestedRecordSeed;
+
+any_value_seed!(NestedRecordSeed);
+
+impl<'de> Visitor<'de> for NestedRecordSeed {
+    type Value = Option<RecordFields<'de>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let mut fields = RecordFields::default();
+        let _nested = read_record_map(map, &mut fields)?;
+        Ok(Some(fields))
+    }
+}
+
+/// Reads `data`; only an object with a `message` object yields a nested record.
+struct DataSeed;
+
+any_value_seed!(DataSeed);
+
+impl<'de> Visitor<'de> for DataSeed {
+    type Value = Option<RecordFields<'de>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut nested = None;
+        while let Some(matches) = map.next_key_seed(KeyIs("message"))? {
+            if matches {
+                nested = map.next_value_seed(NestedRecordSeed)?;
+            } else {
+                map.next_value_seed(Skip)?;
+            }
+        }
+        Ok(nested)
+    }
+}
+
+/// Reads an object as a document, keeping it only when it is an object.
+struct ObjectSeed;
+
+impl<'de> DeserializeSeed<'de> for ObjectSeed {
+    type Value = Option<Map<String, Value>>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::Object(object) => Some(object),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_) => None,
+        })
+    }
+}
+
+struct MessageSeed;
+
+any_value_seed!(MessageSeed);
+
+impl<'de> Visitor<'de> for MessageSeed {
+    type Value = MessageFields<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(MessageFields::default(), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut message = MessageFields::default();
+        while let Some(field) = map.next_key_seed(MessageKey)? {
+            match field {
+                MessageField::Id => message.id = map.next_value_seed(Text)?,
+                MessageField::Model => message.model = map.next_value_seed(Text)?,
+                MessageField::Usage => {
+                    let extra = map.next_value_seed(UsageSeed)?;
+                    message.usage = extra.counts;
+                    message.advisors = extra.advisors;
+                }
+                MessageField::Content => {
+                    let content = map.next_value_seed(ContentSeed)?;
+                    message.tool_use_ids = content.tool_use_ids;
+                    message.first_text = content.first_text;
+                }
+                MessageField::Other => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok(message)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MessageField {
+    Id,
+    Model,
+    Usage,
+    Content,
+    Other,
+}
+
+struct MessageKey;
+
+impl<'de> DeserializeSeed<'de> for MessageKey {
+    type Value = MessageField;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<MessageField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for MessageKey {
+    type Value = MessageField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<MessageField, E> {
+        Ok(match name {
+            "id" => MessageField::Id,
+            "model" => MessageField::Model,
+            "usage" => MessageField::Usage,
+            "content" => MessageField::Content,
+            _ => MessageField::Other,
+        })
+    }
+}
+
+#[derive(Default)]
+struct UsageExtra<'a> {
+    counts: UsageCounts,
+    advisors: Vec<AdvisorFields<'a>>,
+}
+
+struct UsageSeed;
+
+any_value_seed!(UsageSeed);
+
+impl<'de> Visitor<'de> for UsageSeed {
+    type Value = UsageExtra<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(UsageExtra::default(), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut extra = UsageExtra::default();
+        while let Some(field) = map.next_key_seed(UsageKey)? {
+            match field {
+                UsageField::Input => extra.counts.input = map.next_value_seed(Unsigned)?,
+                UsageField::CacheRead => extra.counts.cache_read = map.next_value_seed(Unsigned)?,
+                UsageField::CacheWrite => {
+                    extra.counts.cache_write = map.next_value_seed(Unsigned)?;
+                }
+                UsageField::Output => extra.counts.output = map.next_value_seed(Unsigned)?,
+                UsageField::CacheCreation => {
+                    let (five, hour) = map.next_value_seed(CacheCreationSeed)?;
+                    extra.counts.cache_write_5m = five;
+                    extra.counts.cache_write_1h = hour;
+                }
+                UsageField::OutputDetails => {
+                    extra.counts.reasoning = map.next_value_seed(ThinkingSeed)?;
+                }
+                UsageField::Iterations => extra.advisors = map.next_value_seed(IterationsSeed)?,
+                UsageField::Other => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok(extra)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UsageField {
+    Input,
+    CacheRead,
+    CacheWrite,
+    Output,
+    CacheCreation,
+    OutputDetails,
+    Iterations,
+    Other,
+}
+
+struct UsageKey;
+
+impl<'de> DeserializeSeed<'de> for UsageKey {
+    type Value = UsageField;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<UsageField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for UsageKey {
+    type Value = UsageField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<UsageField, E> {
+        Ok(match name {
+            "input_tokens" => UsageField::Input,
+            "cache_read_input_tokens" => UsageField::CacheRead,
+            "cache_creation_input_tokens" => UsageField::CacheWrite,
+            "output_tokens" => UsageField::Output,
+            "cache_creation" => UsageField::CacheCreation,
+            "output_tokens_details" => UsageField::OutputDetails,
+            "iterations" => UsageField::Iterations,
+            _ => UsageField::Other,
+        })
+    }
+}
+
+struct CacheCreationSeed;
+
+any_value_seed!(CacheCreationSeed);
+
+impl<'de> Visitor<'de> for CacheCreationSeed {
+    type Value = (Option<u64>, Option<u64>);
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!((None, None), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let (mut five, mut hour) = (None, None);
+        while let Some(field) = map.next_key_seed(CacheCreationKey)? {
+            match field {
+                CacheCreationField::Five => five = map.next_value_seed(Unsigned)?,
+                CacheCreationField::Hour => hour = map.next_value_seed(Unsigned)?,
+                CacheCreationField::Other => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok((five, hour))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CacheCreationField {
+    Five,
+    Hour,
+    Other,
+}
+
+struct CacheCreationKey;
+
+impl<'de> DeserializeSeed<'de> for CacheCreationKey {
+    type Value = CacheCreationField;
+
+    fn deserialize<D: Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<CacheCreationField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for CacheCreationKey {
+    type Value = CacheCreationField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<CacheCreationField, E> {
+        Ok(match name {
+            "ephemeral_5m_input_tokens" => CacheCreationField::Five,
+            "ephemeral_1h_input_tokens" => CacheCreationField::Hour,
+            _ => CacheCreationField::Other,
+        })
+    }
+}
+
+struct ThinkingSeed;
+
+any_value_seed!(ThinkingSeed);
+
+impl<'de> Visitor<'de> for ThinkingSeed {
+    type Value = Option<u64>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut thinking = None;
+        while let Some(matches) = map.next_key_seed(KeyIs("thinking_tokens"))? {
+            if matches {
+                thinking = map.next_value_seed(Unsigned)?;
+            } else {
+                map.next_value_seed(Skip)?;
+            }
+        }
+        Ok(thinking)
+    }
+}
+
+struct IterationsSeed;
+
+any_value_seed!(IterationsSeed);
+
+impl<'de> Visitor<'de> for IterationsSeed {
+    type Value = Vec<AdvisorFields<'de>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        Skip.visit_map(map)?;
+        Ok(Vec::new())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut advisors = Vec::new();
+        while let Some(advisor) = seq.next_element_seed(AdvisorSeed)? {
+            if let Some(advisor) = advisor {
+                advisors.push(advisor);
+            }
+        }
+        Ok(advisors)
+    }
+}
+
+struct AdvisorSeed;
+
+any_value_seed!(AdvisorSeed);
+
+impl<'de> Visitor<'de> for AdvisorSeed {
+    type Value = Option<AdvisorFields<'de>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut advisor = AdvisorFields::default();
+        let mut is_advisor = false;
+        while let Some(field) = map.next_key_seed(AdvisorKey)? {
+            match field {
+                AdvisorField::Type => {
+                    is_advisor = map.next_value_seed(Text)?.as_deref() == Some("advisor_message");
+                }
+                AdvisorField::Model => advisor.model = map.next_value_seed(Text)?,
+                AdvisorField::Input => advisor.input = map.next_value_seed(Unsigned)?,
+                AdvisorField::CacheRead => advisor.cache_read = map.next_value_seed(Unsigned)?,
+                AdvisorField::CacheWrite => advisor.cache_write = map.next_value_seed(Unsigned)?,
+                AdvisorField::Output => advisor.output = map.next_value_seed(Unsigned)?,
+                AdvisorField::Reasoning => advisor.reasoning = map.next_value_seed(Unsigned)?,
+                AdvisorField::Other => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok(is_advisor.then_some(advisor))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AdvisorField {
+    Type,
+    Model,
+    Input,
+    CacheRead,
+    CacheWrite,
+    Output,
+    Reasoning,
+    Other,
+}
+
+struct AdvisorKey;
+
+impl<'de> DeserializeSeed<'de> for AdvisorKey {
+    type Value = AdvisorField;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<AdvisorField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for AdvisorKey {
+    type Value = AdvisorField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<AdvisorField, E> {
+        Ok(match name {
+            "type" => AdvisorField::Type,
+            "model" => AdvisorField::Model,
+            "input_tokens" => AdvisorField::Input,
+            "cache_read_input_tokens" => AdvisorField::CacheRead,
+            "cache_creation_input_tokens" => AdvisorField::CacheWrite,
+            "output_tokens" => AdvisorField::Output,
+            "reasoning" => AdvisorField::Reasoning,
+            _ => AdvisorField::Other,
+        })
+    }
+}
+
+#[derive(Default)]
+struct ContentBits<'a> {
+    tool_use_ids: Vec<Cow<'a, str>>,
+    first_text: Option<Cow<'a, str>>,
+}
+
+struct ContentSeed;
+
+any_value_seed!(ContentSeed);
+
+impl<'de> Visitor<'de> for ContentSeed {
+    type Value = ContentBits<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok(ContentBits::default())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        Skip.visit_map(map)?;
+        Ok(ContentBits::default())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut bits = ContentBits::default();
+        let mut first = true;
+        while let Some(block) = seq.next_element_seed(ContentBlockSeed)? {
+            if first {
+                bits.first_text = block.text;
+                first = false;
+            }
+            if block.tool_use {
+                if let Some(id) = block.id {
+                    bits.tool_use_ids.push(id);
+                }
+            }
+        }
+        Ok(bits)
+    }
+}
+
+#[derive(Default)]
+struct ContentBlock<'a> {
+    tool_use: bool,
+    id: Option<Cow<'a, str>>,
+    text: Option<Cow<'a, str>>,
+}
+
+struct ContentBlockSeed;
+
+any_value_seed!(ContentBlockSeed);
+
+impl<'de> Visitor<'de> for ContentBlockSeed {
+    type Value = ContentBlock<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(ContentBlock::default(), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut block = ContentBlock::default();
+        while let Some(field) = map.next_key_seed(BlockKey)? {
+            match field {
+                BlockField::Type => {
+                    block.tool_use = map.next_value_seed(Text)?.as_deref() == Some("tool_use");
+                }
+                BlockField::Id => block.id = map.next_value_seed(Text)?,
+                BlockField::Text => block.text = map.next_value_seed(Text)?,
+                BlockField::Other => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok(block)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BlockField {
+    Type,
+    Id,
+    Text,
+    Other,
+}
+
+struct BlockKey;
+
+impl<'de> DeserializeSeed<'de> for BlockKey {
+    type Value = BlockField;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<BlockField, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for BlockKey {
+    type Value = BlockField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<BlockField, E> {
+        Ok(match name {
+            "type" => BlockField::Type,
+            "id" => BlockField::Id,
+            "text" => BlockField::Text,
+            _ => BlockField::Other,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -391,7 +1185,9 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::Value;
 
-    use super::{LineHead, LineType};
+    use super::{
+        AdvisorFields, LineHead, LineType, MessageFields, RecordFields, UsageBody, UsageCounts,
+    };
     use crate::sources::decode::{parse_record, text, unsigned};
 
     /// What the adapter read from a line before this pass existed, from a document.
@@ -506,6 +1302,109 @@ mod tests {
             r"{}",
         ] {
             assert_matches_document(line.as_bytes());
+        }
+    }
+
+    fn owned_text(value: &Value, path: &[&str]) -> Option<Cow<'static, str>> {
+        text(value, path).map(|text| Cow::Owned(text.to_owned()))
+    }
+
+    fn message_from_document(value: &Value) -> MessageFields<'static> {
+        let content = value.pointer("/message/content").and_then(Value::as_array);
+        let first = content.and_then(|blocks| blocks.first());
+        MessageFields {
+            id: owned_text(value, &["message", "id"]),
+            model: owned_text(value, &["message", "model"]),
+            usage: UsageCounts {
+                input: unsigned(value, &["message", "usage", "input_tokens"]),
+                cache_read: unsigned(value, &["message", "usage", "cache_read_input_tokens"]),
+                cache_write: unsigned(value, &["message", "usage", "cache_creation_input_tokens"]),
+                cache_write_5m: unsigned(
+                    value,
+                    &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"],
+                ),
+                cache_write_1h: unsigned(
+                    value,
+                    &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"],
+                ),
+                output: unsigned(value, &["message", "usage", "output_tokens"]),
+                reasoning: unsigned(
+                    value,
+                    &["message", "usage", "output_tokens_details", "thinking_tokens"],
+                ),
+            },
+            tool_use_ids: content
+                .into_iter()
+                .flatten()
+                .filter(|block| text(block, &["type"]) == Some("tool_use"))
+                .filter_map(|block| owned_text(block, &["id"]))
+                .collect(),
+            first_text: first.and_then(|block| owned_text(block, &["text"])),
+            advisors: value
+                .pointer("/message/usage/iterations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|iteration| text(iteration, &["type"]) == Some("advisor_message"))
+                .map(|iteration| AdvisorFields {
+                    model: owned_text(iteration, &["model"]),
+                    input: unsigned(iteration, &["input_tokens"]),
+                    cache_read: unsigned(iteration, &["cache_read_input_tokens"]),
+                    cache_write: unsigned(iteration, &["cache_creation_input_tokens"]),
+                    output: unsigned(iteration, &["output_tokens"]),
+                    reasoning: unsigned(iteration, &["reasoning"]),
+                })
+                .collect(),
+        }
+    }
+
+    fn record_from_document(value: &Value) -> RecordFields<'static> {
+        RecordFields {
+            session: owned_text(value, &["sessionId"]),
+            uuid: owned_text(value, &["uuid"]),
+            request_id: owned_text(value, &["requestId"]),
+            timestamp: owned_text(value, &["timestamp"]),
+            effort: owned_text(value, &["effort"]),
+            cwd: owned_text(value, &["cwd"]),
+            is_api_error: value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true),
+            quota: value.get("quotaLimits").and_then(Value::as_object).cloned(),
+            api_block_index: unsigned(value, &["apiBlockIndex"]),
+            message: message_from_document(value),
+        }
+    }
+
+    fn body_from_document(bytes: &[u8]) -> Option<UsageBody<'static>> {
+        let value = parse_record(bytes).ok()?;
+        Some(UsageBody {
+            top: record_from_document(&value),
+            nested: value
+                .get("data")
+                .and_then(|data| data.get("message"))
+                .and_then(|nested| nested.as_object().map(|_| record_from_document(nested))),
+        })
+    }
+
+    fn assert_body_matches_document(bytes: &[u8]) {
+        let expected = body_from_document(bytes);
+        let body = UsageBody::read(bytes).ok();
+        assert_eq!(body, expected, "{}", String::from_utf8_lossy(bytes));
+    }
+
+    #[test]
+    fn the_body_reads_usage_fields_as_a_document_does() {
+        for line in [
+            r#"{"type":"assistant","sessionId":"s1","message":{"id":"m1","model":"claude","usage":{"input_tokens":2,"output_tokens":3}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":4}}}}"#,
+            r#"{"type":"assistant","apiBlockIndex":7,"message":{"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"Claude AI usage limit reached tonight"}],"usage":{"output_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","input":{"huge":true}},{"type":"tool_use","id":"t2"}],"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","quotaLimits":{"rateLimitType":"five_hour","used":1},"message":{"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":1,"iterations":[{"type":"advisor_message","model":"a","input_tokens":2},{"type":"other"}]}}}"#,
+            r#"{"type":"progress","sessionId":"outer","data":{"message":{"sessionId":"inner","message":{"id":"m2","usage":{"output_tokens":4}}}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":3}},"message":{"usage":{}}}"#,
+            r#"{"type":"assistant","quotaLimits":"none","message":{"usage":{"output_tokens":1}}}"#,
+        ] {
+            assert_body_matches_document(line.as_bytes());
         }
     }
 

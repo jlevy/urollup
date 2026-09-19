@@ -183,7 +183,7 @@ mod tests {
     }
 
     fn evidence(offset: u64) -> EvidenceRef {
-        EvidenceRef { source: id(IdPrefix::Source, 1), offset, length: 10 }
+        EvidenceRef::new(0, offset, 10)
     }
 
     fn diagnostic(

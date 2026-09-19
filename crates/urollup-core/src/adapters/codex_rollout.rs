@@ -3,8 +3,8 @@
 //! Decoding keeps memory proportional to relevant records, not to log bytes:
 //!
 //! - A line the byte prefilter rules out is only validated. Any other line is read by a
-//!   typed first pass, which borrows its strings and builds no JSON document apart from a
-//!   `rate_limits` object.
+//!   typed first pass, which borrows its strings and builds no JSON document. A
+//!   `rate_limits` object is reduced to compact native JSON while it is read.
 //! - A decoded record is a compact row that allocates nothing of its own: the strings it
 //!   names are interned in its rollout's string table, its usage counts are packed into
 //!   its rollout's count buffer, and consecutive identical rate-limit snapshots share one
@@ -21,9 +21,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
-
-use self::line::{EventType, Line, Payload, RecordType, UsageFields};
+use self::line::{DecodedLimits, EventType, Line, Payload, RecordType, UsageFields};
 use super::{AdapterError, Ingested};
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
@@ -41,7 +39,7 @@ use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normaliz
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::admission::Admission;
 use crate::sources::decode::{parse_timestamp, validate_record};
-use crate::sources::evidence::EvidenceRef;
+use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
@@ -105,6 +103,40 @@ struct ParsedSource {
     metas: SourceMetas,
     /// Lines skipped after the last record.
     trailing_skipped: u64,
+    /// Records that can become request or limit observations: usage, compacted, and
+    /// token-count lines. Session meta and turn context stay in `records` but do not
+    /// reserve observation slots.
+    observation_slots: usize,
+    /// Turn-ID digests from this rollout when it is a root, collected while decoding so
+    /// normalization does not walk every record again to build [`KnownTurns`].
+    root_turns: Vec<TurnDigest>,
+}
+
+/// One rollout after decode: usage-bearing files are observed on the worker so their
+/// records never sit in the join result.
+enum DecodedRollout {
+    Observed(ObservedSource),
+    Pending(ParsedSource),
+}
+
+/// A rollout whose records were observed and dropped on the decoding worker.
+struct ObservedSource {
+    id: Option<AnalyticalId>,
+    file_thread: String,
+    metas: SourceMetas,
+    root_turns: Vec<TurnDigest>,
+    observations: Vec<RequestObservation>,
+    limit_observations: Vec<ProviderLimitObservation>,
+    diagnostics: Vec<Diagnostic>,
+    copied_regions: u64,
+}
+
+/// Observations, limits and diagnostics from one rollout.
+struct SourceObserve {
+    observations: Vec<RequestObservation>,
+    limit_observations: Vec<ProviderLimitObservation>,
+    diagnostics: Vec<Diagnostic>,
+    copied_regions: u64,
 }
 
 /// The accounting fields of one relevant rollout record.
@@ -145,8 +177,8 @@ enum RecordKind {
 }
 
 impl ParsedRecord {
-    fn evidence(&self, source: &AnalyticalId) -> EvidenceRef {
-        EvidenceRef { source: source.clone(), offset: self.offset, length: self.length }
+    fn evidence(&self, source: u32) -> EvidenceRef {
+        EvidenceRef::new(source, self.offset, self.length)
     }
 }
 
@@ -367,6 +399,38 @@ fn turn_digest(turn: &str) -> TurnDigest {
     sha256_128(turn.as_bytes())
 }
 
+fn can_emit_observation(kind: &RecordKind) -> bool {
+    matches!(
+        kind,
+        RecordKind::UsageRecord(_) | RecordKind::Compacted(_) | RecordKind::TokenCount { .. }
+    )
+}
+
+fn root_turn_digests(
+    records: &[ParsedRecord],
+    strings: &Strings,
+    is_root: bool,
+) -> Vec<TurnDigest> {
+    if !is_root {
+        return Vec::new();
+    }
+    let mut turns: Vec<TurnDigest> = records
+        .iter()
+        .filter_map(|record| match record.kind {
+            RecordKind::TurnContext { turn_id, .. } => {
+                turn_id.map(|turn| turn_digest(strings.resolve(turn)))
+            }
+            RecordKind::SessionMeta { .. }
+            | RecordKind::UsageRecord(_)
+            | RecordKind::Compacted(_)
+            | RecordKind::TokenCount { .. }
+            | RecordKind::ThreadSettingsApplied { .. } => None,
+        })
+        .collect();
+    turns.shrink_to_fit();
+    turns
+}
+
 /// Whether `thread` is a root thread that never recorded `turn`.
 fn is_unknown_turn(known_turns: &KnownTurns, strings: &Strings, thread: Sym, turn: Sym) -> bool {
     known_turns
@@ -498,20 +562,23 @@ pub fn ingest_discovery_with_workers(
     }
 
     let admission = Admission::new(crate::ledger::reconcile::MAX_OBSERVATIONS);
+    let thread_ids = Arc::new(thread_ids_from_locators(
+        discovery.sources.iter().map(|source| source.locator.as_str()),
+    )?);
     let decoded = try_read_in_parallel(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
-        |source| decode_source(source, &admission),
+        |source| decode_rollout(source, &thread_ids, &admission),
     );
     if admission.stopped() {
         return Err(admission.error().into());
     }
     let decoded = decoded?;
-    let (entries, parsed_sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
+    let (entries, rollouts): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
-    normalize(parsed_sources, manifest)
+    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids))
 }
 
 /// Reads one rollout, independently of every other source.
@@ -536,7 +603,9 @@ fn decode_source(
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path, source })?;
-    Ok((entry, decoder.finish()))
+    let mut parsed = decoder.finish();
+    parsed.id = entry.source.as_ref().map(|source| source.id.clone());
+    Ok((entry, parsed))
 }
 
 /// The quoted type tokens a relevant rollout record must contain: a record is relevant only
@@ -567,6 +636,7 @@ struct SourceDecoder {
     /// Lines skipped since the last record.
     skipped: u64,
     last_limits: Option<Arc<RateLimits>>,
+    observation_slots: usize,
 }
 
 impl SourceDecoder {
@@ -582,23 +652,38 @@ impl SourceDecoder {
             metas: SourceMetas::default(),
             skipped: 0,
             last_limits: None,
+            observation_slots: 0,
         }
     }
 
     fn finish(self) -> ParsedSource {
-        let Self { id, file_thread, interner, mut counts, mut records, metas, skipped, .. } = self;
+        let Self {
+            id,
+            file_thread,
+            interner,
+            mut counts,
+            mut records,
+            metas,
+            skipped,
+            observation_slots,
+            ..
+        } = self;
         // Decoding grows the buffers by doubling; release the unused tails before the
         // records wait for the other rollouts.
         counts.shrink_to_fit();
         records.shrink_to_fit();
+        let strings = interner.finish();
+        let root_turns = root_turn_digests(&records, &strings, metas.root == Some(true));
         ParsedSource {
             id,
             file_thread,
-            strings: interner.finish(),
+            strings,
             counts,
             records,
             metas,
             trailing_skipped: skipped,
+            observation_slots,
+            root_turns,
         }
     }
 
@@ -646,10 +731,13 @@ impl SourceDecoder {
         if request_bearing && admission.is_some_and(|budget| !budget.reserve()) {
             return RecordDisposition::Stop;
         }
-        self.id.get_or_insert_with(|| raw.evidence.source.clone());
+        // The `src-` ID lives on the manifest entry; evidence carries a local index.
+        if can_emit_observation(&kind) {
+            self.observation_slots = self.observation_slots.saturating_add(1);
+        }
         self.records.push(ParsedRecord {
             offset: raw.evidence.offset,
-            length: raw.evidence.length,
+            length: u64::from(raw.evidence.length),
             skipped_before: std::mem::take(&mut self.skipped),
             ordinal: line.ordinal,
             timestamp: line
@@ -746,23 +834,17 @@ impl SourceDecoder {
 
 /// A token count's `rate_limits` object, sharing the previous snapshot when identical.
 fn rate_limits(
-    rate_limits: Option<Map<String, Value>>,
+    rate_limits: Option<DecodedLimits>,
     last: &mut Option<Arc<RateLimits>>,
 ) -> Option<Arc<RateLimits>> {
-    let object = rate_limits?;
-    let sorted: BTreeMap<&String, &Value> = object.iter().collect();
-    let native = serde_json::to_string(&sorted).unwrap_or_default();
-    if let Some(previous) = last.as_ref().filter(|previous| previous.native == native) {
+    let decoded = rate_limits?;
+    if let Some(previous) = last.as_ref().filter(|previous| previous.native == decoded.native) {
         return Some(Arc::clone(previous));
     }
-    let name = |key: &str| object.get(key).and_then(Value::as_str);
     let limits = Arc::new(RateLimits {
-        limit_name: name("limit_id").or_else(|| name("limit_name")).map(str::to_owned),
-        windows: ["primary", "secondary"]
-            .into_iter()
-            .filter(|window| object.get(*window).is_some_and(|value| !value.is_null()))
-            .collect(),
-        native,
+        limit_name: decoded.limit_name,
+        windows: decoded.windows,
+        native: decoded.native,
     });
     *last = Some(Arc::clone(&limits));
     Some(limits)
@@ -790,29 +872,349 @@ pub fn rollout_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     expanded
 }
 
-fn normalize(
-    sources: Vec<ParsedSource>,
-    manifest: SnapshotManifest,
-) -> Result<Ingested, AdapterError> {
-    let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
-    for source in &sources {
-        if let (Some(id), Some(version)) = (&source.id, &source.metas.cli_version) {
-            source_versions.entry(id.clone()).or_insert_with(|| version.clone());
+fn thread_ids_from_locators<'a>(
+    locators: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, AnalyticalId>, AdapterError> {
+    let mut ids = BTreeMap::new();
+    for locator in locators {
+        let native = rollout_name(locator).thread_id;
+        if let std::collections::btree_map::Entry::Vacant(slot) = ids.entry(native) {
+            let identity = thread_identity(slot.key())?;
+            slot.insert(identity.id);
         }
     }
+    Ok(ids)
+}
+
+fn has_direct_usage(source: &ParsedSource) -> bool {
+    source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)))
+}
+
+fn decode_rollout(
+    source: &DiscoveredSource,
+    thread_ids: &BTreeMap<String, AnalyticalId>,
+    admission: &Admission,
+) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
+    let (entry, parsed) = decode_source(source, admission)?;
+    if has_direct_usage(&parsed) {
+        Ok((
+            entry,
+            DecodedRollout::Observed(observe_to_observed(parsed, thread_ids, &KnownTurns::new())?),
+        ))
+    } else {
+        Ok((entry, DecodedRollout::Pending(parsed)))
+    }
+}
+
+fn observe_parsed_source(
+    source: &ParsedSource,
+    thread_ids: &BTreeMap<String, AnalyticalId>,
+    known_turns: &KnownTurns,
+) -> Result<SourceObserve, AdapterError> {
+    let mut observations = Vec::with_capacity(source.observation_slots);
+    let mut limit_observations = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut copied_regions = 0_u64;
+    let Some(_source_id) = source.id.as_ref() else {
+        return Ok(SourceObserve { observations, limit_observations, diagnostics, copied_regions });
+    };
+    let strings = &source.strings;
+    let file_thread = source.file_thread;
+    let file_thread_text = strings.resolve(file_thread);
+    let has_direct = has_direct_usage(source);
+    let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
+    let parent_thread = own_meta.and_then(SessionMeta::parent);
+    let native_boundary = own_meta.and_then(|meta| meta.subagent_history_start_ordinal);
+    let has_foreign_meta = source.metas.foreign;
+    if parent_thread.is_some() && has_foreign_meta && (!has_direct || native_boundary.is_some()) {
+        copied_regions = copied_regions.saturating_add(1);
+        if !has_direct && native_boundary.is_none() {
+            let copied = legacy_copied_evidence(source, known_turns);
+            diagnostics.push(
+                Diagnostic::new(
+                    DiagnosticCode::CodexCopiedHistoryInferred,
+                    thread_ids.get(file_thread_text).cloned(),
+                    copied.evidence,
+                    "Codex copied-history boundary was inferred from legacy rollout records",
+                )
+                .with_occurrences(copied.occurrences),
+            );
+        }
+    }
+    let mut active_thread = file_thread;
+    let mut turns = Turns::new();
+    let mut current_turn: Option<Sym> = None;
+    let mut last_response_by_thread: HashMap<Sym, Sym> = HashMap::new();
+    let mut inherited_total = None;
+    let mut counter = None;
+    let mut previous_limits = BTreeMap::new();
+    let mut counts = CountReader::new(&source.counts);
+    for record in &source.records {
+        let [first_usage, second_usage] = counts.record(&record.kind);
+        let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
+        if native_boundary
+            .is_some_and(|boundary| record.ordinal.is_some_and(|ordinal| ordinal >= boundary))
+        {
+            active_thread = file_thread;
+        }
+        match &record.kind {
+            RecordKind::SessionMeta { id } => {
+                if let Some(thread_id) = *id {
+                    active_thread = thread_id;
+                }
+            }
+            RecordKind::TurnContext { turn_id, model, effort } => {
+                if !has_direct
+                    && active_thread != file_thread
+                    && turn_id.is_some_and(|turn| {
+                        is_unknown_turn(known_turns, strings, active_thread, turn)
+                    })
+                {
+                    active_thread = file_thread;
+                }
+                if let Some(turn_id) = *turn_id {
+                    turns.insert(turn_id, TurnContext { model: *model, effort: *effort });
+                }
+                current_turn = *turn_id;
+            }
+            RecordKind::ThreadSettingsApplied { thread_id } => {
+                active_thread = thread_id.unwrap_or(file_thread);
+            }
+            RecordKind::UsageRecord(usage_record) => {
+                let payload = usage_record.payload(strings, first_usage);
+                let observation =
+                    direct_observation(&view, &payload, file_thread_text, thread_ids, &turns)?;
+                if let Some(response_id) = usage_record.response_id {
+                    let owner = usage_record.thread_id.unwrap_or(file_thread);
+                    last_response_by_thread.insert(owner, response_id);
+                }
+                observations.push(observation);
+            }
+            RecordKind::Compacted(latest) => {
+                if let Some(latest) = latest {
+                    observations.push(usage_observation(
+                        &view,
+                        &latest.payload(strings, first_usage),
+                        ObservationRole::Copy,
+                        file_thread_text,
+                        thread_ids,
+                        &turns,
+                    )?);
+                }
+            }
+            RecordKind::TokenCount { limits, .. } => {
+                let (total, last) = (first_usage, second_usage);
+                if let Some(limits) = limits {
+                    append_limits(
+                        &view,
+                        limits,
+                        strings.resolve(active_thread),
+                        thread_ids,
+                        &mut previous_limits,
+                        &mut limit_observations,
+                    );
+                }
+                if has_direct && active_thread != file_thread {
+                    if let Some(usage) = &last {
+                        let mut observation = RequestObservation::new(view.evidence.clone());
+                        observation.role = ObservationRole::Copy;
+                        observation.owner = thread_ids
+                            .get(strings.resolve(active_thread))
+                            .cloned()
+                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+                        observation.usage = Some(codex_usage(usage)?.into());
+                        if let Some(response_id) = last_response_by_thread.get(&active_thread) {
+                            observation.keys.push(
+                                RESPONSE_KEY
+                                    .key(vec![
+                                        KeyComponent::text(PROVIDER_NAMESPACE),
+                                        KeyComponent::text(strings.resolve(*response_id)),
+                                    ])?
+                                    .derive()?,
+                            );
+                        }
+                        observation.timestamp = view.timestamp;
+                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
+                            apply_context(&mut observation, context);
+                        }
+                        observations.push(observation);
+                    }
+                } else if !has_direct {
+                    let Some(total) = &total else { continue };
+                    let total_usage = codex_usage(total)?;
+                    let last = last.as_ref();
+                    if active_thread != file_thread {
+                        inherited_total = Some(total_usage);
+                        if let Some(last) = last {
+                            observations.push(counter_observation(
+                                &view,
+                                last,
+                                total,
+                                CounterObservation {
+                                    role: ObservationRole::Copy,
+                                    owner: strings.resolve(active_thread),
+                                    thread_ids,
+                                    context: current_turn.and_then(|turn| turns.get(&turn)),
+                                    delta: None,
+                                },
+                            )?);
+                        }
+                        continue;
+                    }
+
+                    let tracker = counter.get_or_insert_with(|| {
+                        inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
+                    });
+                    let step = tracker.observe(&total_usage, None)?;
+                    if step.event == CounterEvent::Reset {
+                        diagnostics.push(Diagnostic::new(
+                            DiagnosticCode::CodexCounterEpochReset,
+                            thread_ids.get(file_thread_text).cloned(),
+                            [view.evidence.clone()],
+                            "Codex cumulative usage decreased and opened a new counter epoch",
+                        ));
+                    }
+                    let Some(last) = last else { continue };
+                    let estimated = last.input.unwrap_or(0) == 0
+                        && last.output.unwrap_or(0) == 0
+                        && last.total.unwrap_or(0) > 0;
+                    if estimated {
+                        let context_fill = total.input.unwrap_or(0) == 0
+                            && total.output.unwrap_or(0) == 0
+                            && total.total.unwrap_or(0) > 0;
+                        diagnostics.push(Diagnostic::new(
+                            if context_fill {
+                                DiagnosticCode::CodexEstimateContextWindowFill
+                            } else {
+                                DiagnosticCode::CodexEstimateCompaction
+                            },
+                            thread_ids.get(file_thread_text).cloned(),
+                            [view.evidence.clone()],
+                            "Codex emitted an estimate with zero input and output tokens",
+                        ));
+                        continue;
+                    }
+                    if step.event != CounterEvent::Repeated {
+                        observations.push(counter_observation(
+                            &view,
+                            last,
+                            total,
+                            CounterObservation {
+                                role: ObservationRole::Original,
+                                owner: file_thread_text,
+                                thread_ids,
+                                context: current_turn.and_then(|turn| turns.get(&turn)),
+                                delta: Some(step.delta),
+                            },
+                        )?);
+                    }
+                }
+            }
+        }
+    }
+    Ok(SourceObserve { observations, limit_observations, diagnostics, copied_regions })
+}
+
+fn observe_to_observed(
+    source: ParsedSource,
+    thread_ids: &BTreeMap<String, AnalyticalId>,
+    known_turns: &KnownTurns,
+) -> Result<ObservedSource, AdapterError> {
+    let file_thread = source.strings.resolve(source.file_thread).to_owned();
+    let observed = observe_parsed_source(&source, thread_ids, known_turns)?;
+    Ok(ObservedSource {
+        id: source.id,
+        file_thread,
+        metas: source.metas,
+        root_turns: source.root_turns,
+        observations: observed.observations,
+        limit_observations: observed.limit_observations,
+        diagnostics: observed.diagnostics,
+        copied_regions: observed.copied_regions,
+    })
+}
+
+fn rollout_id(rollout: &DecodedRollout) -> Option<&AnalyticalId> {
+    match rollout {
+        DecodedRollout::Observed(observed) => observed.id.as_ref(),
+        DecodedRollout::Pending(source) => source.id.as_ref(),
+    }
+}
+
+fn source_index(table: &SourceTable, id: Option<&AnalyticalId>) -> u32 {
+    id.and_then(|id| table.index_of(id)).unwrap_or(0)
+}
+
+fn stamp_refs(
+    observations: &mut [RequestObservation],
+    limits: &mut [ProviderLimitObservation],
+    diagnostics: &mut [Diagnostic],
+    source: u32,
+) {
+    for observation in observations {
+        observation.evidence = observation.evidence.with_source(source);
+    }
+    for limit in limits {
+        limit.evidence = limit.evidence.with_source(source);
+    }
+    for diagnostic in diagnostics {
+        for evidence in &mut diagnostic.evidence {
+            *evidence = evidence.with_source(source);
+        }
+    }
+}
+
+fn normalize(
+    rollouts: Vec<DecodedRollout>,
+    mut manifest: SnapshotManifest,
+    mut thread_ids: BTreeMap<String, AnalyticalId>,
+) -> Result<Ingested, AdapterError> {
+    let source_table = SourceTable::from_ids(
+        rollouts.iter().filter_map(rollout_id).cloned().chain(
+            manifest
+                .entries
+                .iter()
+                .filter_map(|entry| entry.source.as_ref().map(|source| source.id.clone())),
+        ),
+    );
+    for entry in &mut manifest.entries {
+        let Some(id) = entry.source.as_ref() else { continue };
+        let Some(index) = source_table.index_of(&id.id) else { continue };
+        if let Some(evidence) = &mut entry.first_malformed {
+            *evidence = evidence.with_source(index);
+        }
+    }
+    let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     let mut native_threads: BTreeSet<String> = BTreeSet::new();
     // Session metadata is copied out, one per thread, so each rollout's records can be
     // freed as soon as its observations are built.
     let mut meta_by_thread: BTreeMap<String, (SessionMeta, EvidenceRef)> = BTreeMap::new();
-    for source in &sources {
-        let file_thread = source.strings.resolve(source.file_thread);
+    for rollout in &rollouts {
+        let (id, file_thread, metas) = match rollout {
+            DecodedRollout::Observed(observed) => {
+                (observed.id.as_ref(), observed.file_thread.as_str(), &observed.metas)
+            }
+            DecodedRollout::Pending(source) => {
+                (source.id.as_ref(), source.strings.resolve(source.file_thread), &source.metas)
+            }
+        };
+        if let (Some(id), Some(version)) = (id, &metas.cli_version) {
+            source_versions.entry(id.clone()).or_insert_with(|| version.clone());
+        }
         native_threads.insert(file_thread.to_owned());
-        if let Some(own) = &source.metas.own {
-            meta_by_thread.entry(file_thread.to_owned()).or_insert_with(|| (**own).clone());
+        if let Some(own) = &metas.own {
+            let evidence = own.1.with_source(source_index(&source_table, id));
+            meta_by_thread
+                .entry(file_thread.to_owned())
+                .or_insert_with(|| (own.0.clone(), evidence));
+        }
+    }
+    for native in &native_threads {
+        if let std::collections::btree_map::Entry::Vacant(slot) = thread_ids.entry(native.clone()) {
+            slot.insert(thread_identity(native)?.id);
         }
     }
 
-    let mut thread_ids = BTreeMap::new();
     let mut threads = BTreeMap::new();
     for native in native_threads {
         let identity = thread_identity(&native)?;
@@ -869,9 +1271,11 @@ fn normalize(
         });
     }
 
-    let mut observations =
-        Vec::with_capacity(sources.iter().map(|source| source.records.len()).sum());
-    let mut diagnostics = source_diagnostics(&manifest);
+    // Reserve per rollout after earlier observation vectors have been moved. A single
+    // reserve for every row would allocate the 224-byte observation table while every
+    // worker result still holds its own copy.
+    let mut observations = Vec::new();
+    let mut diagnostics = source_diagnostics(&manifest, &source_table);
     for (thread, (meta, evidence)) in &meta_by_thread {
         if meta.parent().is_some_and(|parent| !thread_ids.contains_key(parent)) {
             diagnostics.push(Diagnostic::new(
@@ -885,225 +1289,60 @@ fn normalize(
     let mut copied_regions = 0_u64;
     let mut limit_observations = Vec::new();
     let mut known_turns = KnownTurns::new();
-    for source in &sources {
-        if source.metas.root == Some(true) {
-            let strings = &source.strings;
-            let turns =
-                known_turns.entry(strings.resolve(source.file_thread).to_owned()).or_default();
-            turns.extend(source.records.iter().filter_map(|record| match record.kind {
-                RecordKind::TurnContext { turn_id, .. } => {
-                    turn_id.map(|turn| turn_digest(strings.resolve(turn)))
-                }
-                RecordKind::SessionMeta { .. }
-                | RecordKind::UsageRecord(_)
-                | RecordKind::Compacted(_)
-                | RecordKind::TokenCount { .. }
-                | RecordKind::ThreadSettingsApplied { .. } => None,
-            }));
+    for rollout in &rollouts {
+        let (is_root, file_thread, root_turns) = match rollout {
+            DecodedRollout::Observed(observed) => (
+                observed.metas.root == Some(true),
+                observed.file_thread.as_str(),
+                &observed.root_turns,
+            ),
+            DecodedRollout::Pending(source) => (
+                source.metas.root == Some(true),
+                source.strings.resolve(source.file_thread),
+                &source.root_turns,
+            ),
+        };
+        if is_root {
+            known_turns
+                .entry(file_thread.to_owned())
+                .or_default()
+                .extend(root_turns.iter().copied());
         }
     }
-    for source in sources {
-        // A rollout without records has no metadata and builds nothing.
-        let Some(source_id) = source.id.as_ref() else { continue };
-        let strings = &source.strings;
-        let file_thread = source.file_thread;
-        let file_thread_text = strings.resolve(file_thread);
-        let has_direct =
-            source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)));
-        let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
-        let parent_thread = own_meta.and_then(SessionMeta::parent);
-        let native_boundary = own_meta.and_then(|meta| meta.subagent_history_start_ordinal);
-        let has_foreign_meta = source.metas.foreign;
-        if parent_thread.is_some() && has_foreign_meta && (!has_direct || native_boundary.is_some())
-        {
-            copied_regions = copied_regions.saturating_add(1);
-            if !has_direct && native_boundary.is_none() {
-                let copied = legacy_copied_evidence(&source, source_id, &known_turns);
-                diagnostics.push(
-                    Diagnostic::new(
-                        DiagnosticCode::CodexCopiedHistoryInferred,
-                        thread_ids.get(file_thread_text).cloned(),
-                        copied.evidence,
-                        "Codex copied-history boundary was inferred from legacy rollout records",
-                    )
-                    .with_occurrences(copied.occurrences),
+    for rollout in rollouts {
+        match rollout {
+            DecodedRollout::Observed(mut observed) => {
+                let index = source_index(&source_table, observed.id.as_ref());
+                stamp_refs(
+                    &mut observed.observations,
+                    &mut observed.limit_observations,
+                    &mut observed.diagnostics,
+                    index,
                 );
+                copied_regions = copied_regions.saturating_add(observed.copied_regions);
+                observations.reserve(observed.observations.len());
+                observations.append(&mut observed.observations);
+                limit_observations.append(&mut observed.limit_observations);
+                diagnostics.append(&mut observed.diagnostics);
             }
-        }
-        let mut active_thread = file_thread;
-        let mut turns = Turns::new();
-        let mut current_turn: Option<Sym> = None;
-        let mut last_response_by_thread: HashMap<Sym, Sym> = HashMap::new();
-        let mut inherited_total = None;
-        let mut counter = None;
-        let mut previous_limits = BTreeMap::new();
-        let mut counts = CountReader::new(&source.counts);
-        for record in &source.records {
-            // Counts are packed in record order, so every record reads its own first.
-            let [first_usage, second_usage] = counts.record(&record.kind);
-            let view =
-                RecordView { evidence: record.evidence(source_id), timestamp: record.timestamp };
-            if native_boundary
-                .is_some_and(|boundary| record.ordinal.is_some_and(|ordinal| ordinal >= boundary))
-            {
-                active_thread = file_thread;
-            }
-            match &record.kind {
-                RecordKind::SessionMeta { id } => {
-                    if let Some(thread_id) = *id {
-                        active_thread = thread_id;
-                    }
-                }
-                RecordKind::TurnContext { turn_id, model, effort } => {
-                    if !has_direct
-                        && active_thread != file_thread
-                        && turn_id.is_some_and(|turn| {
-                            is_unknown_turn(&known_turns, strings, active_thread, turn)
-                        })
-                    {
-                        active_thread = file_thread;
-                    }
-                    if let Some(turn_id) = *turn_id {
-                        turns.insert(turn_id, TurnContext { model: *model, effort: *effort });
-                    }
-                    current_turn = *turn_id;
-                }
-                RecordKind::ThreadSettingsApplied { thread_id } => {
-                    active_thread = thread_id.unwrap_or(file_thread);
-                }
-                RecordKind::UsageRecord(usage_record) => {
-                    let payload = usage_record.payload(strings, first_usage);
-                    let observation =
-                        direct_observation(&view, &payload, file_thread_text, &thread_ids, &turns)?;
-                    if let Some(response_id) = usage_record.response_id {
-                        let owner = usage_record.thread_id.unwrap_or(file_thread);
-                        last_response_by_thread.insert(owner, response_id);
-                    }
-                    observations.push(observation);
-                }
-                RecordKind::Compacted(latest) => {
-                    if let Some(latest) = latest {
-                        observations.push(usage_observation(
-                            &view,
-                            &latest.payload(strings, first_usage),
-                            ObservationRole::Copy,
-                            file_thread_text,
-                            &thread_ids,
-                            &turns,
-                        )?);
-                    }
-                }
-                RecordKind::TokenCount { limits, .. } => {
-                    let (total, last) = (first_usage, second_usage);
-                    if let Some(limits) = limits {
-                        append_limits(
-                            &view,
-                            limits,
-                            strings.resolve(active_thread),
-                            &thread_ids,
-                            &mut previous_limits,
-                            &mut limit_observations,
-                        );
-                    }
-                    if has_direct && active_thread != file_thread {
-                        if let Some(usage) = &last {
-                            let mut observation = RequestObservation::new(view.evidence.clone());
-                            observation.role = ObservationRole::Copy;
-                            observation.owner = thread_ids
-                                .get(strings.resolve(active_thread))
-                                .cloned()
-                                .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                            observation.usage = Some(codex_usage(usage)?.into());
-                            if let Some(response_id) = last_response_by_thread.get(&active_thread) {
-                                observation.keys.push(
-                                    RESPONSE_KEY
-                                        .key(vec![
-                                            KeyComponent::text(PROVIDER_NAMESPACE),
-                                            KeyComponent::text(strings.resolve(*response_id)),
-                                        ])?
-                                        .derive()?,
-                                );
-                            }
-                            observation.timestamp = view.timestamp;
-                            if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
-                                apply_context(&mut observation, context);
-                            }
-                            observations.push(observation);
-                        }
-                    } else if !has_direct {
-                        let Some(total) = &total else { continue };
-                        let total_usage = codex_usage(total)?;
-                        let last = last.as_ref();
-                        if active_thread != file_thread {
-                            inherited_total = Some(total_usage);
-                            if let Some(last) = last {
-                                observations.push(counter_observation(
-                                    &view,
-                                    last,
-                                    total,
-                                    CounterObservation {
-                                        role: ObservationRole::Copy,
-                                        owner: strings.resolve(active_thread),
-                                        thread_ids: &thread_ids,
-                                        context: current_turn.and_then(|turn| turns.get(&turn)),
-                                        delta: None,
-                                    },
-                                )?);
-                            }
-                            continue;
-                        }
-
-                        let tracker = counter.get_or_insert_with(|| {
-                            inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
-                        });
-                        let step = tracker.observe(&total_usage, None)?;
-                        if step.event == CounterEvent::Reset {
-                            diagnostics.push(Diagnostic::new(
-                                DiagnosticCode::CodexCounterEpochReset,
-                                thread_ids.get(file_thread_text).cloned(),
-                                [view.evidence.clone()],
-                                "Codex cumulative usage decreased and opened a new counter epoch",
-                            ));
-                        }
-                        let Some(last) = last else { continue };
-                        let estimated = last.input.unwrap_or(0) == 0
-                            && last.output.unwrap_or(0) == 0
-                            && last.total.unwrap_or(0) > 0;
-                        if estimated {
-                            let context_fill = total.input.unwrap_or(0) == 0
-                                && total.output.unwrap_or(0) == 0
-                                && total.total.unwrap_or(0) > 0;
-                            diagnostics.push(Diagnostic::new(
-                                if context_fill {
-                                    DiagnosticCode::CodexEstimateContextWindowFill
-                                } else {
-                                    DiagnosticCode::CodexEstimateCompaction
-                                },
-                                thread_ids.get(file_thread_text).cloned(),
-                                [view.evidence.clone()],
-                                "Codex emitted an estimate with zero input and output tokens",
-                            ));
-                            continue;
-                        }
-                        if step.event != CounterEvent::Repeated {
-                            observations.push(counter_observation(
-                                &view,
-                                last,
-                                total,
-                                CounterObservation {
-                                    role: ObservationRole::Original,
-                                    owner: file_thread_text,
-                                    thread_ids: &thread_ids,
-                                    context: current_turn.and_then(|turn| turns.get(&turn)),
-                                    delta: Some(step.delta),
-                                },
-                            )?);
-                        }
-                    }
-                }
+            DecodedRollout::Pending(source) => {
+                let index = source_index(&source_table, source.id.as_ref());
+                let mut observed = observe_parsed_source(&source, &thread_ids, &known_turns)?;
+                stamp_refs(
+                    &mut observed.observations,
+                    &mut observed.limit_observations,
+                    &mut observed.diagnostics,
+                    index,
+                );
+                copied_regions = copied_regions.saturating_add(observed.copied_regions);
+                observations.reserve(observed.observations.len());
+                observations.append(&mut observed.observations);
+                limit_observations.append(&mut observed.limit_observations);
+                diagnostics.append(&mut observed.diagnostics);
             }
         }
     }
+    observations.shrink_to_fit();
 
     let mut ledger = reconcile(
         ReconcileInput {
@@ -1112,6 +1351,7 @@ fn normalize(
             requests: observations,
             limit_observations,
             diagnostics,
+            source_table,
             ..ReconcileInput::default()
         },
         &LatestRevision,
@@ -1139,11 +1379,7 @@ fn normalize(
     Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
 }
 
-fn legacy_copied_evidence(
-    source: &ParsedSource,
-    source_id: &AnalyticalId,
-    known_turns: &KnownTurns,
-) -> CopiedEvidence {
+fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> CopiedEvidence {
     let strings = &source.strings;
     let file_thread = source.file_thread;
     let mut active_thread = file_thread;
@@ -1176,7 +1412,7 @@ fn legacy_copied_evidence(
         }
         if active_thread != file_thread {
             occurrences = occurrences.saturating_add(1);
-            evidence.push(record.evidence(source_id));
+            evidence.push(record.evidence(0));
         }
     }
     if active_thread != file_thread {
@@ -1256,20 +1492,20 @@ fn append_limits(
             continue;
         }
         observations.push(ProviderLimitObservation {
-            limit_name: limits.limit_name.clone(),
-            window: Some((*window).to_owned()),
+            limit_name: limits.limit_name.as_deref().map(Name::new),
+            window: Some(Name::new(window)),
             observed_at: record
                 .timestamp
                 .map_or(Basis::Unknown, |time| Basis::Observed(time.get())),
             owner_thread: owner_thread.clone(),
             owner_request: None,
-            native: limits.native.as_str().into(),
+            native: Name::new(&limits.native),
             evidence: record.evidence.clone(),
         });
     }
 }
 
-fn source_diagnostics(manifest: &SnapshotManifest) -> Vec<Diagnostic> {
+fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut locations: BTreeMap<&str, Vec<&crate::sources::manifest::ManifestEntry>> =
         BTreeMap::new();
@@ -1287,22 +1523,21 @@ fn source_diagnostics(manifest: &SnapshotManifest) -> Vec<Diagnostic> {
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::PendingTail,
                 None,
-                [EvidenceRef {
-                    source: source.id.clone(),
-                    offset: tail.offset,
-                    length: tail.length,
-                }],
+                [EvidenceRef::new(
+                    source_index(sources, Some(&source.id)),
+                    tail.offset,
+                    tail.length,
+                )],
                 "the incomplete final Codex rollout line is pending",
             ));
         }
     }
     for entries in locations.values().filter(|entries| entries.len() > 1) {
         let evidence = entries.iter().filter_map(|entry| {
-            entry.source.as_ref().map(|source| EvidenceRef {
-                source: source.id.clone(),
-                offset: 0,
-                length: 0,
-            })
+            entry
+                .source
+                .as_ref()
+                .map(|source| EvidenceRef::new(source_index(sources, Some(&source.id)), 0, 0))
         });
         diagnostics.push(
             Diagnostic::new(
@@ -1428,23 +1663,19 @@ mod tests {
         UsageMask, ingest_root, pack_usage,
     };
     use crate::ledger::diagnostics::DiagnosticCode;
-    use crate::ledger::identity::AnalyticalId;
     use crate::sources::evidence::EvidenceRef;
     use crate::sources::reader::{RawRecord, RecordDisposition};
 
     /// Decodes one line as the next line of `decoder`'s rollout.
     fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
-        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
-        let evidence =
-            EvidenceRef { source, offset: 0, length: u64::try_from(line.len()).unwrap() };
+        let evidence = EvidenceRef::new(0, 0, u64::try_from(line.len()).unwrap());
         decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
     }
 
     #[test]
     fn admission_does_not_charge_metadata_without_usage() {
         let budget = crate::sources::admission::Admission::new(0);
-        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
-        let evidence = EvidenceRef { source, offset: 0, length: 1 };
+        let evidence = EvidenceRef::new(0, 0, 1);
         let mut decoder = SourceDecoder::new("one");
         for line in [
             r#"{"type":"compacted","payload":{}}"#,
@@ -1467,8 +1698,7 @@ mod tests {
             r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3}}}}"#,
         ] {
             let budget = crate::sources::admission::Admission::new(1);
-            let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
-            let evidence = EvidenceRef { source, offset: 0, length: 1 };
+            let evidence = EvidenceRef::new(0, 0, 1);
             let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
             let mut first = SourceDecoder::new("one");
             let mut second = SourceDecoder::new("two");
@@ -1491,6 +1721,36 @@ mod tests {
     fn a_decoded_record_is_compact() {
         assert_eq!(size_of::<ParsedRecord>(), 80);
         assert_eq!(size_of::<RecordKind>(), 24);
+    }
+
+    #[test]
+    fn observation_slots_count_usage_bearing_records_only() {
+        let mut decoder = SourceDecoder::new("thread");
+        assert_eq!(
+            decode(&mut decoder, r#"{"type":"session_meta","payload":{"id":"thread"}}"#),
+            RecordDisposition::Decoded
+        );
+        assert_eq!(
+            decode(&mut decoder, r#"{"type":"turn_context","payload":{"turn_id":"t1"}}"#),
+            RecordDisposition::Decoded
+        );
+        assert_eq!(
+            decode(
+                &mut decoder,
+                r#"{"type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":1}}}"#
+            ),
+            RecordDisposition::Decoded
+        );
+        assert_eq!(
+            decode(&mut decoder, r#"{"type":"event_msg","payload":{"type":"token_count"}}"#),
+            RecordDisposition::Decoded
+        );
+        assert_eq!(decoder.records.len(), 4);
+        assert_eq!(decoder.observation_slots, 2);
+
+        let parsed = decoder.finish();
+        assert_eq!(parsed.observation_slots, 2);
+        assert_eq!(parsed.root_turns.len(), 1);
     }
 
     #[test]

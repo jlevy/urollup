@@ -1,8 +1,8 @@
 //! The typed first pass over a Codex rollout line that may be relevant.
 //!
 //! [`Line::read`] reads every field the adapter uses from any relevant record kind,
-//! borrowing strings from the line and building no JSON document, apart from a
-//! `rate_limits` object, which few lines carry once consecutive snapshots are shared.
+//! borrowing strings from the line and building no JSON document. A `rate_limits` object
+//! is reduced to compact native JSON and window names while it is read.
 //! A record's type is only known once its `type` field is read, which may follow its
 //! payload, so the payload fields of every kind are read.
 //!
@@ -23,11 +23,11 @@
 //!   is not an object.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::Deserialize;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::CodexUsage;
 use crate::sources::decode::{Skip, unsigned};
@@ -111,8 +111,16 @@ pub(super) struct Payload<'a> {
     pub(super) total_token_usage: Option<CodexUsage>,
     /// `info.last_token_usage`.
     pub(super) last_token_usage: Option<CodexUsage>,
-    /// `rate_limits`, when it is an object.
-    pub(super) rate_limits: Option<Map<String, Value>>,
+    /// `rate_limits`, when it is an object, already reduced to native JSON and windows.
+    pub(super) rate_limits: Option<DecodedLimits>,
+}
+
+/// A `rate_limits` object without a `serde_json::Value` document.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct DecodedLimits {
+    pub limit_name: Option<String>,
+    pub windows: Vec<&'static str>,
+    pub native: String,
 }
 
 /// The fields of a usage record: a `token_usage_record` payload, or the latest one a
@@ -542,22 +550,111 @@ impl<'de> Visitor<'de> for InfoSeed {
     }
 }
 
-/// Reads a `rate_limits` value as a document, keeping it only when it is an object.
+/// Reads a `rate_limits` value, keeping it only when it is an object.
 struct RateLimitsSeed;
 
-impl<'de> DeserializeSeed<'de> for RateLimitsSeed {
-    type Value = Option<Map<String, Value>>;
+any_value_seed!(RateLimitsSeed);
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        Ok(match Value::deserialize(deserializer)? {
-            Value::Object(object) => Some(object),
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_) => None,
-        })
+impl<'de> Visitor<'de> for RateLimitsSeed {
+    type Value = Option<DecodedLimits>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
     }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut fields = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            fields.insert(key, map.next_value_seed(CompactJson)?);
+        }
+        Ok(Some(DecodedLimits::from_fields(&fields)))
+    }
+}
+
+impl DecodedLimits {
+    fn from_fields(fields: &BTreeMap<String, String>) -> Self {
+        let native = compact_object(fields);
+        let json_string = |key: &str| {
+            fields.get(key).and_then(|value| serde_json::from_str::<String>(value).ok())
+        };
+        Self {
+            limit_name: json_string("limit_id").or_else(|| json_string("limit_name")),
+            windows: ["primary", "secondary"]
+                .into_iter()
+                .filter(|window| fields.get(*window).is_some_and(|value| value != "null"))
+                .collect(),
+            native,
+        }
+    }
+}
+
+/// Compact JSON text of one value, matching `serde_json::to_string` on a document.
+struct CompactJson;
+
+any_value_seed!(CompactJson);
+
+impl<'de> Visitor<'de> for CompactJson {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, value: bool) -> Result<String, E> {
+        Ok(if value { "true".to_owned() } else { "false".to_owned() })
+    }
+
+    fn visit_i64<E: Error>(self, value: i64) -> Result<String, E> {
+        Ok(serde_json::to_string(&Value::from(value)).unwrap_or_else(|_| value.to_string()))
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<String, E> {
+        Ok(serde_json::to_string(&Value::from(value)).unwrap_or_else(|_| value.to_string()))
+    }
+
+    fn visit_f64<E: Error>(self, value: f64) -> Result<String, E> {
+        Ok(serde_json::to_string(&Value::from(value)).unwrap_or_else(|_| value.to_string()))
+    }
+
+    fn visit_str<E: Error>(self, value: &str) -> Result<String, E> {
+        Ok(serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned()))
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<String, E> {
+        Ok("null".to_owned())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(CompactJson)? {
+            items.push(item);
+        }
+        Ok(format!("[{}]", items.join(",")))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+        let mut fields = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            fields.insert(key, map.next_value_seed(CompactJson)?);
+        }
+        Ok(compact_object(&fields))
+    }
+}
+
+fn compact_object(fields: &BTreeMap<String, String>) -> String {
+    let mut out = String::from("{");
+    for (index, (key, value)) in fields.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_owned()));
+        out.push(':');
+        out.push_str(value);
+    }
+    out.push('}');
+    out
 }
 
 /// Reads a string value through a function from its text; any other value is the
@@ -641,11 +738,12 @@ impl<'de> Visitor<'de> for Unsigned {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::collections::BTreeMap;
 
     use proptest::prelude::*;
     use serde_json::Value;
 
-    use super::{EventType, Line, Payload, RecordType, UsageFields};
+    use super::{DecodedLimits, EventType, Line, Payload, RecordType, UsageFields};
     use crate::adapters::codex_rollout::CodexUsage;
     use crate::sources::decode::{parse_record, text, unsigned};
 
@@ -719,7 +817,21 @@ mod tests {
                     .map(usage_fields),
                 total_token_usage: value.pointer("/payload/info/total_token_usage").map(usage),
                 last_token_usage: value.pointer("/payload/info/last_token_usage").map(usage),
-                rate_limits: payload.get("rate_limits").and_then(Value::as_object).cloned(),
+                rate_limits: payload.get("rate_limits").and_then(Value::as_object).map(|object| {
+                    let sorted: BTreeMap<&String, &Value> = object.iter().collect();
+                    let name =
+                        |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
+                    DecodedLimits {
+                        limit_name: name("limit_id").or_else(|| name("limit_name")),
+                        windows: ["primary", "secondary"]
+                            .into_iter()
+                            .filter(|window| {
+                                object.get(*window).is_some_and(|value| !value.is_null())
+                            })
+                            .collect(),
+                        native: serde_json::to_string(&sorted).unwrap_or_default(),
+                    }
+                }),
             },
         })
     }

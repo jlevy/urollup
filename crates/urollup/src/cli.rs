@@ -384,18 +384,13 @@ impl Corpus {
         narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query)?;
         stats.phase("discovery", started);
 
-        let started = Instant::now();
-        let claude = claude_project::ingest_discovery_with_workers(
-            claude_discovery,
-            claude_missing_is_error,
-            workers,
-        )
-        .map_err(|error| Failure::adapter(&error))?;
-        stats.phase("claude_ingest", started);
-        stats.agent("claude", &claude);
+        // Codex is the larger corpus. Index and drop its discovery tables before Claude
+        // starts, so the peak is one ingest working set plus the other's compact ledger.
+        let mut index = SessionIndex::default();
+        let mut index_elapsed = Duration::ZERO;
 
         let started = Instant::now();
-        let codex = codex_rollout::ingest_discovery_with_workers(
+        let mut codex = codex_rollout::ingest_discovery_with_workers(
             codex_discovery,
             codex_missing_is_error,
             workers,
@@ -403,12 +398,26 @@ impl Corpus {
         .map_err(|error| Failure::adapter(&error))?;
         stats.phase("codex_ingest", started);
         stats.agent("codex", &codex);
+        let started = Instant::now();
+        index.add(Agent::Codex, &codex).map_err(|error| Failure::selection(&error))?;
+        codex.release_discovery();
+        index_elapsed += started.elapsed();
 
         let started = Instant::now();
-        let mut index = SessionIndex::default();
+        let mut claude = claude_project::ingest_discovery_with_workers(
+            claude_discovery,
+            claude_missing_is_error,
+            workers,
+        )
+        .map_err(|error| Failure::adapter(&error))?;
+        stats.phase("claude_ingest", started);
+        stats.agent("claude", &claude);
+        let started = Instant::now();
         index.add(Agent::Claude, &claude).map_err(|error| Failure::selection(&error))?;
-        index.add(Agent::Codex, &codex).map_err(|error| Failure::selection(&error))?;
-        stats.phase("session_index", started);
+        claude.release_discovery();
+        index_elapsed += started.elapsed();
+
+        stats.record("session_index", index_elapsed);
         Ok(Self { claude, codex, index })
     }
 
@@ -482,7 +491,12 @@ struct AgentStats {
 impl Stats {
     /// Records a phase that began at `started` and ends now.
     fn phase(&mut self, name: &'static str, started: Instant) {
-        self.phases.push((name, started.elapsed()));
+        self.record(name, started.elapsed());
+    }
+
+    /// Records a phase whose duration was accumulated across non-contiguous steps.
+    fn record(&mut self, name: &'static str, elapsed: Duration) {
+        self.phases.push((name, elapsed));
     }
 
     fn agent(&mut self, agent: &'static str, ingested: &Ingested) {
@@ -1823,9 +1837,9 @@ mod tests {
         let phases: Vec<_> = stats.phases.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             phases,
-            ["discovery", "claude_ingest", "codex_ingest", "session_index", "query_render"]
+            ["discovery", "codex_ingest", "claude_ingest", "session_index", "query_render"]
         );
-        let [claude, codex] = stats.agents.as_slice() else {
+        let [codex, claude] = stats.agents.as_slice() else {
             panic!("expected one row per agent: {:?}", stats.agents);
         };
         assert_eq!((claude.agent, codex.agent), ("claude", "codex"));

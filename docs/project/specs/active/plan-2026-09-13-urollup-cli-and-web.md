@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard; remaining 0.1 work is the 512 MiB peak (uro-n1cp), G1 and full-history QA (uro-d36a, uro-ky6c), maintainer decisions, and independent review
+status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard; remaining 0.1 implementation is the 512 MiB peak (uro-n1cp), then G1 and full-history QA (uro-d36a, uro-ky6c), maintainer decisions, and independent review
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -169,9 +169,10 @@ The capture store lands only after the uncached engine is the correctness refere
   rows; and the input guard is replaced by a 2 GiB compact-row capacity ceiling, so
   whole-history `sessions`, `daily` and `report --all` complete
   ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
-  [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining: meet that
-  plan’s peak-footprint goal on the whole default corpus and the `bench-1g` peak-RSS
-  target, without spilling to disk ([performance targets](#performance-targets)).
+  [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining on that
+  plan: meet the 512 MiB peak and the `bench-1g` peak-RSS target, without spilling to
+  disk. Claude two-pass re-decode (`uro-l3fw`) raised the peak and was reverted.
+  ([performance targets](#performance-targets)).
 - [ ] Run the consented real-log acceptance checks, including the
   [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md), and review
   the resulting aggregates without committing log content, paths or identifiers

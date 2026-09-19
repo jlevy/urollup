@@ -2,14 +2,14 @@
 //!
 //! Decoding keeps memory proportional to usage records, not to log bytes:
 //!
-//! - Each line is first read by `LineHead`, which builds no JSON document; only a line
-//!   that bears usage is parsed into one, and only its accounting fields are kept.
+//! - Each line is first read by `LineHead`, which builds no JSON document. A usage-bearing
+//!   line is read again as [`line::UsageBody`], which keeps accounting fields and never
+//!   a parent `serde_json::Value`.
 //! - A decoded `ParsedRecord` is a compact row: repeated strings are interned per
 //!   ingestion, native IDs that only join records are 128-bit digests, and rare fields
 //!   are boxed.
-//! - Records stay in per-source chunks in discovery order, which normalization consumes
-//!   one at a time, and every map that only builds observations is dropped before
-//!   reconciliation.
+//! - Owner maps run over the decoded records; each source's records are observed and
+//!   dropped before the next source's payload is kept beside the observation vector.
 
 mod line;
 
@@ -25,7 +25,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use serde_json::Value;
 
-use self::line::{LineHead, LineType};
+use self::line::{LineHead, LineType, RecordFields, UsageBody};
 use super::{AdapterError, Ingested};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
@@ -33,9 +33,10 @@ use crate::ledger::entities::{
     RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
+use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
-    ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, RevisionChoice,
-    RevisionSelector, reconcile,
+    NativeSequence, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation,
+    RevisionChoice, RevisionSelector, reconcile,
 };
 use crate::ledger::scope::{
     ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec, ScopedKey,
@@ -43,8 +44,8 @@ use crate::ledger::scope::{
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::admission::Admission;
-use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
-use crate::sources::evidence::EvidenceRef;
+use crate::sources::decode::{parse_timestamp, text};
+use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
@@ -166,6 +167,14 @@ impl Strings {
         &self.strings[sym.index()]
     }
 
+    /// Drops the intern map after a source has finished decoding. [`Self::absorb`] only
+    /// needs the string vector, and the map would otherwise wait on the join with every
+    /// other source.
+    fn freeze(&mut self) {
+        self.symbols = HashMap::new();
+        self.strings.shrink_to_fit();
+    }
+
     /// Merges another table into this one, returning where each of its symbols went.
     fn absorb(&mut self, other: Self) -> Remap {
         Remap(
@@ -244,17 +253,6 @@ enum Count {
 
 const COUNTS: usize = 8;
 
-const COUNT_PATHS: [(Count, &[&str]); COUNTS] = [
-    (Count::Input, &["message", "usage", "input_tokens"]),
-    (Count::CacheRead, &["message", "usage", "cache_read_input_tokens"]),
-    (Count::CacheWrite, &["message", "usage", "cache_creation_input_tokens"]),
-    (Count::CacheWrite5m, &["message", "usage", "cache_creation", "ephemeral_5m_input_tokens"]),
-    (Count::CacheWrite1h, &["message", "usage", "cache_creation", "ephemeral_1h_input_tokens"]),
-    (Count::Output, &["message", "usage", "output_tokens"]),
-    (Count::Reasoning, &["message", "usage", "output_tokens_details", "thinking_tokens"]),
-    (Count::BlockIndex, &["apiBlockIndex"]),
-];
-
 /// One decoded request-bearing record.
 ///
 /// Its evidence source is the source ID of the chunk that holds it.
@@ -271,7 +269,7 @@ struct ParsedRecord {
     /// The digest of `uuid`, which only joins replays to originals.
     uuid: Option<Digest>,
     message: Option<MessageId>,
-    request_id: Option<Box<str>>,
+    request_id: Option<Sym>,
     timestamp: Option<RecordTime>,
     /// Values by [`Count`]; a value is present when its bit in `counted` is set.
     counts: [u64; COUNTS],
@@ -280,9 +278,10 @@ struct ParsedRecord {
 }
 
 /// A provider message ID and its digest, which keys ownership and ambiguity.
+#[derive(Clone, Copy)]
 struct MessageId {
     digest: Digest,
-    text: Box<str>,
+    text: Sym,
 }
 
 /// The fields few records have, boxed so that other records do not pay for them.
@@ -314,8 +313,8 @@ impl ParsedRecord {
         (self.counted & bit != 0).then(|| self.counts[count as usize])
     }
 
-    fn evidence(&self, source: &AnalyticalId) -> EvidenceRef {
-        EvidenceRef { source: source.clone(), offset: self.offset, length: self.length }
+    fn evidence(&self, source: u32) -> EvidenceRef {
+        EvidenceRef::new(source, self.offset, self.length)
     }
 
     fn advisors(&self) -> &[AdvisorUsage] {
@@ -371,14 +370,25 @@ impl ParsedRecord {
 
     fn remap(&mut self, remap: &Remap) {
         self.thread = remap.thread(self.thread);
-        for sym in [&mut self.session, &mut self.project, &mut self.model, &mut self.effort] {
+        for sym in [
+            &mut self.session,
+            &mut self.project,
+            &mut self.model,
+            &mut self.effort,
+            &mut self.request_id,
+        ] {
             *sym = sym.map(|sym| remap.sym(sym));
+        }
+        if let Some(message) = &mut self.message {
+            message.text = remap.sym(message.text);
         }
     }
 }
 
 struct SourceFacts {
     thread: NativeThread,
+    /// The snapshot `src-` ID, set after the reader fingerprints the first record.
+    source_id: Option<AnalyticalId>,
     evidence: Option<EvidenceRef>,
     version: Option<String>,
     project: Option<Sym>,
@@ -402,6 +412,7 @@ struct SubagentMeta {
     child: NativeThread,
     tool_use: Option<Digest>,
     agent_type: Option<String>,
+    source_id: AnalyticalId,
     evidence: EvidenceRef,
 }
 
@@ -570,11 +581,15 @@ fn decode_source(
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    let SourceDecoder { thread, strings, facts, mut records, mut tool_uses } = decoder;
-    // Decoding grows the vectors by doubling; release the unused tails before the records
-    // wait for the other sources.
+    let SourceDecoder { thread, mut strings, mut facts, mut records, mut tool_uses } = decoder;
+    if let Some(identity) = &entry.source {
+        facts.source_id = Some(identity.id.clone());
+    }
+    // Decoding grows the vectors by doubling; release the unused tails and the intern
+    // map before the source waits for the other workers.
     records.shrink_to_fit();
     tool_uses.shrink_to_fit();
+    strings.freeze();
     let mut subagent_meta = None;
     if thread.agent.is_some() {
         if let (Some(identity), Some(meta)) = (entry.source.as_ref(), read_subagent_meta(&path)?) {
@@ -582,7 +597,8 @@ fn decode_source(
                 child: thread,
                 tool_use: text(&meta, &["toolUseId"]).map(digest),
                 agent_type: text(&meta, &["agentType"]).map(str::to_owned),
-                evidence: EvidenceRef { source: identity.id.clone(), offset: 0, length: 0 },
+                source_id: identity.id.clone(),
+                evidence: EvidenceRef::new(0, 0, 0),
             });
         }
     }
@@ -638,6 +654,7 @@ impl SourceDecoder {
             strings,
             facts: SourceFacts {
                 thread,
+                source_id: None,
                 evidence: None,
                 version: None,
                 project: None,
@@ -698,23 +715,23 @@ impl SourceDecoder {
         if !head.bears_usage() {
             return RecordDisposition::Skipped;
         }
-        // The head proved the line is a valid document that bears usage, so only these
-        // lines pay for a full parse.
-        let Ok(value) = parse_record(raw.bytes) else {
+        // The head proved the line is a valid document that bears usage. The body pass
+        // keeps accounting fields and never builds a parent document.
+        let Ok(body) = UsageBody::read(raw.bytes) else {
             return RecordDisposition::Malformed;
         };
-        let (detail, session, forced_copy, request_record) = match head.line_type {
+        let (fields, session, forced_copy, request_record) = match head.line_type {
             LineType::Assistant => {
-                let synthetic_error = text(&value, &["message", "model"]) == Some("<synthetic>")
-                    && text(&value, &["requestId"]).is_none();
-                (&value, text(&value, &["sessionId"]), false, !synthetic_error)
+                let synthetic_error = body.top.message.model.as_deref() == Some("<synthetic>")
+                    && body.top.request_id.is_none();
+                (&body.top, body.top.session.as_deref(), false, !synthetic_error)
             }
             LineType::Progress => {
-                let Some(nested) = value.pointer("/data/message") else {
+                let Some(nested) = &body.nested else {
                     return RecordDisposition::Skipped;
                 };
                 // A nested record takes the session of the progress record that carries it.
-                let session = text(&value, &["sessionId"]).or_else(|| text(nested, &["sessionId"]));
+                let session = body.top.session.as_deref().or(nested.session.as_deref());
                 (nested, session, true, true)
             }
             LineType::Other => return RecordDisposition::Skipped,
@@ -723,17 +740,17 @@ impl SourceDecoder {
             return RecordDisposition::Stop;
         }
         let record =
-            self.record(raw.evidence, record_thread, detail, session, forced_copy, request_record);
+            self.record(raw.evidence, record_thread, fields, session, forced_copy, request_record);
         self.records.push(record);
         RecordDisposition::Decoded
     }
 
-    /// The accounting fields of a request-bearing record's document.
+    /// The accounting fields of a request-bearing record.
     fn record(
         &mut self,
         evidence: &EvidenceRef,
         thread: NativeThread,
-        value: &Value,
+        fields: &RecordFields<'_>,
         session: Option<&str>,
         forced_copy: bool,
         request_record: bool,
@@ -741,37 +758,52 @@ impl SourceDecoder {
         let strings = &mut self.strings;
         let mut counts = [0; COUNTS];
         let mut counted = 0_u8;
-        for (count, path) in COUNT_PATHS {
-            if let Some(number) = unsigned(value, path) {
+        let mut set = |count: Count, value: Option<u64>| {
+            if let Some(number) = value {
                 counts[count as usize] = number;
                 counted |= 1 << (count as u8);
             }
-        }
-        for tool_use_id in tool_use_ids(value) {
+        };
+        set(Count::Input, fields.message.usage.input);
+        set(Count::CacheRead, fields.message.usage.cache_read);
+        set(Count::CacheWrite, fields.message.usage.cache_write);
+        set(Count::CacheWrite5m, fields.message.usage.cache_write_5m);
+        set(Count::CacheWrite1h, fields.message.usage.cache_write_1h);
+        set(Count::Output, fields.message.usage.output);
+        set(Count::Reasoning, fields.message.usage.reasoning);
+        set(Count::BlockIndex, fields.api_block_index);
+        for tool_use_id in &fields.message.tool_use_ids {
             self.tool_uses.push((digest(tool_use_id), thread));
         }
         ParsedRecord {
             offset: evidence.offset,
-            length: evidence.length,
+            length: u64::from(evidence.length),
             thread,
             session: session.map(|session| strings.intern(session)),
-            project: text(value, &["cwd"])
+            project: fields
+                .cwd
+                .as_deref()
                 .and_then(project_name)
                 .map(|project| strings.intern(&project)),
-            model: text(value, &["message", "model"]).map(|model| strings.intern(model)),
-            effort: text(value, &["effort"]).map(|effort| strings.intern(effort)),
+            model: fields.message.model.as_deref().map(|model| strings.intern(model)),
+            effort: fields.effort.as_deref().map(|effort| strings.intern(effort)),
             forced_copy,
             request_record,
-            uuid: text(value, &["uuid"]).map(digest),
-            message: text(value, &["message", "id"])
-                .map(|id| MessageId { digest: digest(id), text: id.into() }),
-            request_id: text(value, &["requestId"]).map(Box::from),
-            timestamp: text(value, &["timestamp"])
+            uuid: fields.uuid.as_deref().map(digest),
+            message: fields
+                .message
+                .id
+                .as_deref()
+                .map(|id| MessageId { digest: digest(id), text: strings.intern(id) }),
+            request_id: fields.request_id.as_deref().map(|id| strings.intern(id)),
+            timestamp: fields
+                .timestamp
+                .as_deref()
                 .and_then(|timestamp| parse_timestamp(timestamp).ok())
                 .map(RecordTime::new),
             counts,
             counted,
-            extras: record_extras(value),
+            extras: record_extras(fields),
         }
     }
 }
@@ -781,38 +813,34 @@ fn project_name(cwd: &str) -> Option<Cow<'_, str>> {
     Path::new(cwd).file_name().map(|name| name.to_string_lossy())
 }
 
-fn record_extras(value: &Value) -> Option<Box<RecordExtras>> {
+fn record_extras(fields: &RecordFields<'_>) -> Option<Box<RecordExtras>> {
     let extras = RecordExtras {
-        advisors: advisor_usage(value),
-        quota: quota_limits(value),
-        limit_text: usage_limit_text(value).map(Box::from),
+        advisors: advisor_usage(fields),
+        quota: quota_limits(fields),
+        limit_text: usage_limit_text(fields).map(Box::from),
     };
     (!extras.advisors.is_empty() || extras.quota.is_some() || extras.limit_text.is_some())
         .then(|| Box::new(extras))
 }
 
-fn advisor_usage(value: &Value) -> Vec<AdvisorUsage> {
-    let mut advisors = Vec::new();
-    if let Some(iterations) = value.pointer("/message/usage/iterations").and_then(Value::as_array) {
-        for iteration in iterations {
-            if text(iteration, &["type"]) != Some("advisor_message") {
-                continue;
-            }
-            advisors.push(AdvisorUsage {
-                model: text(iteration, &["model"]).map(str::to_owned),
-                input: unsigned(iteration, &["input_tokens"]),
-                cache_read: unsigned(iteration, &["cache_read_input_tokens"]),
-                cache_write: unsigned(iteration, &["cache_creation_input_tokens"]),
-                output: unsigned(iteration, &["output_tokens"]),
-                reasoning: unsigned(iteration, &["reasoning"]),
-            });
-        }
-    }
-    advisors
+fn advisor_usage(fields: &RecordFields<'_>) -> Vec<AdvisorUsage> {
+    fields
+        .message
+        .advisors
+        .iter()
+        .map(|advisor| AdvisorUsage {
+            model: advisor.model.as_deref().map(str::to_owned),
+            input: advisor.input,
+            cache_read: advisor.cache_read,
+            cache_write: advisor.cache_write,
+            output: advisor.output,
+            reasoning: advisor.reasoning,
+        })
+        .collect()
 }
 
-fn quota_limits(value: &Value) -> Option<QuotaLimits> {
-    let quota = value.get("quotaLimits").and_then(Value::as_object)?;
+fn quota_limits(fields: &RecordFields<'_>) -> Option<QuotaLimits> {
+    let quota = fields.quota.as_ref()?;
     let sorted: BTreeMap<&String, &Value> = quota.iter().collect();
     Some(QuotaLimits {
         limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(Box::from),
@@ -820,19 +848,10 @@ fn quota_limits(value: &Value) -> Option<QuotaLimits> {
     })
 }
 
-fn tool_use_ids(value: &Value) -> impl Iterator<Item = &str> {
-    value
-        .pointer("/message/content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|block| text(block, &["type"]) == Some("tool_use"))
-        .filter_map(|block| text(block, &["id"]))
-}
-
-fn usage_limit_text(value: &Value) -> Option<&str> {
-    (value.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true))
-        .then(|| value.pointer("/message/content/0/text").and_then(Value::as_str))
+fn usage_limit_text<'a>(fields: &'a RecordFields<'_>) -> Option<&'a str> {
+    fields
+        .is_api_error
+        .then_some(fields.message.first_text.as_deref())
         .flatten()
         .filter(|message| message.starts_with("Claude AI usage limit reached"))
 }
@@ -880,8 +899,8 @@ impl Corpus {
             for record in &mut records {
                 record.remap(&remap);
             }
-            if let (Some(evidence), false) = (&facts.evidence, records.is_empty()) {
-                corpus.chunks.push(RecordChunk { source: evidence.source.clone(), records });
+            if let (Some(id), false) = (&facts.source_id, records.is_empty()) {
+                corpus.chunks.push(RecordChunk { source: id.clone(), records });
             }
             for (tool_use, thread) in tool_uses {
                 if spawning_tool_uses.contains(&tool_use) {
@@ -915,15 +934,15 @@ impl Owners {
     /// depend on file names: a resumed session's replay never claims the original's IDs.
     fn new(corpus: &Corpus) -> Self {
         let mut candidates: Vec<(&AnalyticalId, &ParsedRecord)> =
-            corpus.records().filter(|(_, record)| record.is_original_eligible()).collect();
-        candidates.sort_by(|left, right| compare_owner_precedence(*left, *right));
+            corpus.records().filter(|(_, row)| row.is_original_eligible()).collect();
+        candidates.sort_by(compare_owner_precedence);
         let mut owners = Self { messages: HashMap::new(), uuids: HashMap::new() };
-        for (_, record) in candidates {
-            if let Some(message) = &record.message {
-                owners.messages.entry(message.digest).or_insert(record.thread);
+        for (_, row) in candidates {
+            if let Some(message) = &row.message {
+                owners.messages.entry(message.digest).or_insert(row.thread);
             }
-            if let Some(uuid) = record.uuid {
-                owners.uuids.entry(uuid).or_insert(record.thread);
+            if let Some(uuid) = row.uuid {
+                owners.uuids.entry(uuid).or_insert(row.thread);
             }
         }
         owners
@@ -933,8 +952,8 @@ impl Owners {
 /// The order in which eligible records claim message and uuid ownership: main-session
 /// records before subagent records, then the earliest timestamp, then evidence position.
 fn compare_owner_precedence(
-    (left_source, left): (&AnalyticalId, &ParsedRecord),
-    (right_source, right): (&AnalyticalId, &ParsedRecord),
+    (left_source, left): &(&AnalyticalId, &ParsedRecord),
+    (right_source, right): &(&AnalyticalId, &ParsedRecord),
 ) -> Ordering {
     left.thread
         .is_child()
@@ -953,11 +972,11 @@ fn compare_owner_precedence(
 fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
     // The first model seen for each message, or `None` once a second one appears.
     let mut models: HashMap<Digest, Option<Sym>> = HashMap::new();
-    for (_, record) in corpus.records() {
-        if !record.request_record || record.is_replayed(owners) {
+    for (_, row) in corpus.records() {
+        if !row.request_record || row.is_replayed(owners) {
             continue;
         }
-        if let (Some(message), Some(model)) = (&record.message, record.model) {
+        if let (Some(message), Some(model)) = (&row.message, row.model) {
             models
                 .entry(message.digest)
                 .and_modify(|first| {
@@ -974,8 +993,8 @@ fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
 fn normalize(corpus: Corpus, manifest: SnapshotManifest) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for facts in &corpus.facts {
-        if let (Some(evidence), Some(version)) = (&facts.evidence, &facts.version) {
-            source_versions.entry(evidence.source.clone()).or_insert_with(|| version.clone());
+        if let (Some(id), Some(version)) = (&facts.source_id, &facts.version) {
+            source_versions.entry(id.clone()).or_insert_with(|| version.clone());
         }
     }
     // Building the input consumes the corpus and drops every map it needed, so only the
@@ -1033,21 +1052,58 @@ fn normalize(corpus: Corpus, manifest: SnapshotManifest) -> Result<Ingested, Ada
     Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
 }
 
+fn source_index(table: &SourceTable, source: &AnalyticalId) -> u32 {
+    table.index_of(source).expect("every cited source was interned")
+}
+
+fn stamp_ref(table: &SourceTable, id: &AnalyticalId, evidence: EvidenceRef) -> EvidenceRef {
+    evidence.with_source(source_index(table, id))
+}
+
 /// Builds the reconciliation input, consuming the corpus chunk by chunk.
-fn reconcile_input(corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
+fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
+    let source_table = SourceTable::from_ids(
+        corpus
+            .chunks
+            .iter()
+            .map(|chunk| chunk.source.clone())
+            .chain(corpus.facts.iter().filter_map(|facts| facts.source_id.clone()))
+            .chain(corpus.subagent_meta.iter().map(|meta| meta.source_id.clone())),
+    );
+    for facts in &mut corpus.facts {
+        let Some(id) = facts.source_id.as_ref() else { continue };
+        if let Some(evidence) = facts.evidence {
+            facts.evidence = Some(stamp_ref(&source_table, id, evidence));
+        }
+        if let Some(evidence) = facts.last_main_evidence {
+            facts.last_main_evidence = Some(stamp_ref(&source_table, id, evidence));
+        }
+        for (_, evidence, parent) in &mut facts.inline_threads {
+            *evidence = stamp_ref(&source_table, id, *evidence);
+            if let Some(parent) = parent {
+                *parent = stamp_ref(&source_table, id, *parent);
+            }
+        }
+    }
+    for meta in &mut corpus.subagent_meta {
+        meta.evidence = stamp_ref(&source_table, &meta.source_id, meta.evidence);
+    }
     let owners = Owners::new(&corpus);
     let ambiguous = ambiguous_messages(&corpus, &owners);
-    let mut diagnostics = ambiguity_diagnostics(&corpus, &ambiguous, &owners);
-    let (threads, relationships, ids) = thread_graph(&corpus)?;
+    let mut diagnostics = ambiguity_diagnostics(&corpus, &ambiguous, &owners, &source_table);
+    let (threads, relationships, ids) = thread_graph(&corpus, &source_table)?;
     let Corpus { strings, chunks, facts, subagent_meta, tool_owners } = corpus;
     drop((facts, subagent_meta, tool_owners));
 
-    let mut observations = Vec::with_capacity(chunks.iter().map(|chunk| chunk.records.len()).sum());
+    // Reserve per chunk after earlier record vectors have dropped. A single reserve for
+    // every record would allocate the observation table (~224 B each) while the corpus
+    // is still fully resident beside the Codex ledger.
+    let mut observations = Vec::new();
     let mut limit_observations = Vec::new();
     for RecordChunk { source, records } in chunks {
-        // Each chunk's records are freed as soon as they are observed.
+        observations.reserve(records.iter().filter(|record| record.request_record).count());
         for record in records {
-            let evidence = record.evidence(&source);
+            let evidence = record.evidence(source_index(&source_table, &source));
             append_limits(&record, &evidence, &strings, &ids, &ambiguous, &mut limit_observations)?;
             if !record.request_record {
                 continue;
@@ -1072,6 +1128,7 @@ fn reconcile_input(corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
         requests: observations,
         limit_observations,
         diagnostics,
+        source_table,
         ..ReconcileInput::default()
     })
 }
@@ -1082,6 +1139,7 @@ fn ambiguity_diagnostics(
     corpus: &Corpus,
     ambiguous: &HashSet<Digest>,
     owners: &Owners,
+    sources: &SourceTable,
 ) -> Vec<Diagnostic> {
     if ambiguous.is_empty() {
         return Vec::new();
@@ -1090,7 +1148,10 @@ fn ambiguity_diagnostics(
     for (source, record) in corpus.records() {
         let Some(message) = &record.message else { continue };
         if ambiguous.contains(&message.digest) && !record.is_replayed(owners) {
-            evidence_by_message.entry(&*message.text).or_default().push(record.evidence(source));
+            evidence_by_message
+                .entry(corpus.strings.resolve(message.text))
+                .or_default()
+                .push(record.evidence(source_index(sources, source)));
         }
     }
     evidence_by_message
@@ -1109,7 +1170,7 @@ fn ambiguity_diagnostics(
 type ThreadGraph = (Vec<Thread>, Vec<Relationship>, HashMap<NativeThread, AnalyticalId>);
 
 /// Threads, their relationships, and the analytical ID of every native thread.
-fn thread_graph(corpus: &Corpus) -> Result<ThreadGraph, AdapterError> {
+fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, AdapterError> {
     let strings = &corpus.strings;
     let mut native_threads: HashSet<NativeThread> =
         corpus.facts.iter().map(|facts| facts.thread).collect();
@@ -1123,7 +1184,7 @@ fn thread_graph(corpus: &Corpus) -> Result<ThreadGraph, AdapterError> {
                 RelationshipKind::Fork,
                 recorded_session,
                 record.thread,
-                record.evidence(source),
+                record.evidence(source_index(sources, source)),
             ));
         }
     }
@@ -1175,7 +1236,9 @@ fn thread_graph(corpus: &Corpus) -> Result<ThreadGraph, AdapterError> {
         let mut first_evidence: HashMap<NativeThread, EvidenceRef> = HashMap::new();
         for (source, record) in corpus.records() {
             if wanted.contains(&record.thread) {
-                first_evidence.entry(record.thread).or_insert_with(|| record.evidence(source));
+                first_evidence
+                    .entry(record.thread)
+                    .or_insert_with(|| record.evidence(source_index(sources, source)));
             }
         }
         for child in unspawned {
@@ -1207,7 +1270,10 @@ fn thread_graph(corpus: &Corpus) -> Result<ThreadGraph, AdapterError> {
         }
     }
     for (source, record) in corpus.records() {
-        thread_evidence.entry(record.thread).or_default().push(record.evidence(source));
+        thread_evidence
+            .entry(record.thread)
+            .or_default()
+            .push(record.evidence(source_index(sources, source)));
         if let Some(project) = record.project {
             project_by_thread.entry(record.thread).or_insert(project);
         }
@@ -1296,12 +1362,12 @@ fn observe(
             .keys
             .push(response_key(message, recorded_session, strings, ambiguous)?.derive()?);
     }
-    if let Some(request_id) = &record.request_id {
+    if let Some(request_id) = record.request_id {
         observation.keys.push(
             REQUEST_KEY
                 .key(vec![
                     KeyComponent::text(PROVIDER_NAMESPACE),
-                    KeyComponent::text(&**request_id),
+                    KeyComponent::text(strings.resolve(request_id)),
                 ])?
                 .derive()?,
         );
@@ -1334,7 +1400,7 @@ fn observe(
         let (usage, model_usage) = claude_usage(record, strings)?;
         observation.usage = Some(usage.into());
         observation.model_usage = model_usage.into();
-        observation.sequence = record.count(Count::BlockIndex);
+        observation.sequence = record.count(Count::BlockIndex).and_then(NativeSequence::new);
         observation.model = record.model.map(|model| ModelName {
             name: strings.resolve(model).into(),
             basis: ModelBasis::Served,
@@ -1359,11 +1425,17 @@ fn response_key(
     Ok(if ambiguous.contains(&message.digest) {
         AMBIGUOUS_RESPONSE_KEY.key(vec![
             KeyComponent::text(AGENT_NAMESPACE),
-            KeyComponent::text(format!("{}/{}", strings.resolve(session), message.text)),
+            KeyComponent::text(format!(
+                "{}/{}",
+                strings.resolve(session),
+                strings.resolve(message.text)
+            )),
         ])?
     } else {
-        RESPONSE_KEY
-            .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(&*message.text)])?
+        RESPONSE_KEY.key(vec![
+            KeyComponent::text(PROVIDER_NAMESPACE),
+            KeyComponent::text(strings.resolve(message.text)),
+        ])?
     })
 }
 
@@ -1371,7 +1443,7 @@ fn append_limits(
     record: &ParsedRecord,
     evidence: &EvidenceRef,
     strings: &Strings,
-    ids: &HashMap<NativeThread, AnalyticalId>,
+    known_threads: &HashMap<NativeThread, AnalyticalId>,
     ambiguous: &HashSet<Digest>,
     limits: &mut Vec<ProviderLimitObservation>,
 ) -> Result<(), AdapterError> {
@@ -1379,7 +1451,12 @@ fn append_limits(
     if extras.quota.is_none() && extras.limit_text.is_none() {
         return Ok(());
     }
-    let owner_thread = ids.get(&record.native_owner()).cloned();
+    let owner_thread = record
+        .native_owner()
+        .identity(strings)
+        .ok()
+        .map(|identity| identity.id)
+        .filter(|id| known_threads.values().any(|known| known == id));
     let observed_at = record.timestamp.map(RecordTime::get).map_or(Basis::Unknown, Basis::Observed);
     if let Some(quota) = &extras.quota {
         let owner_request = record
@@ -1390,12 +1467,12 @@ fn append_limits(
             .map(|key| key.key.derive_id())
             .transpose()?;
         limits.push(ProviderLimitObservation {
-            limit_name: quota.limit_name.as_deref().map(str::to_owned),
+            limit_name: quota.limit_name.as_deref().map(Name::new),
             window: None,
             observed_at: observed_at.clone(),
             owner_thread: owner_thread.clone(),
             owner_request,
-            native: quota.native.clone(),
+            native: Name::new(&quota.native),
             evidence: evidence.clone(),
         });
     }
@@ -1406,7 +1483,7 @@ fn append_limits(
             observed_at,
             owner_thread,
             owner_request: None,
-            native: serde_json::json!({ "text": &**message }).to_string().into_boxed_str(),
+            native: Name::new(&serde_json::json!({ "text": &**message }).to_string()),
             evidence: evidence.clone(),
         });
     }
@@ -1576,8 +1653,7 @@ mod tests {
         digest, read_subagent_meta_with_limit,
     };
     use crate::adapters::AdapterError;
-    use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
-    use crate::ledger::reconcile::{RequestObservation, RevisionSelector};
+    use crate::ledger::reconcile::{NativeSequence, RequestObservation, RevisionSelector};
     use crate::ledger::tokens::TokenMeasures;
     use crate::sources::evidence::EvidenceRef;
     use crate::sources::reader::{RawRecord, RecordDisposition};
@@ -1612,16 +1688,12 @@ mod tests {
     }
 
     fn source_evidence(offset: u64) -> EvidenceRef {
-        let source =
-            IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::text("claude")])
-                .derive_id()
-                .unwrap();
-        EvidenceRef { source, offset, length: 1 }
+        EvidenceRef::new(0, offset, 1)
     }
 
     fn observation(offset: u64, block: u64) -> RequestObservation {
         let mut observation = RequestObservation::new(source_evidence(offset));
-        observation.sequence = Some(block);
+        observation.sequence = NativeSequence::new(block);
         observation.usage =
             Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() }.into());
         observation
@@ -1739,7 +1811,10 @@ mod tests {
         let decoder = decode_one(&value);
         let record = &decoder.records[0];
 
-        assert_eq!(record.message.as_ref().map(|message| &*message.text), Some("message-one"));
+        assert_eq!(
+            record.message.as_ref().map(|message| decoder.strings.resolve(message.text)),
+            Some("message-one")
+        );
         assert_eq!(record.uuid, Some(digest("record-one")));
         assert_eq!(decoder.tool_uses, [(digest("tool-one"), decoder.thread)]);
         assert_eq!(record.count(Count::Input), Some(3));
@@ -1829,6 +1904,8 @@ mod tests {
             inline_digest: None,
         };
 
+        first.freeze();
+        second.freeze();
         let mut merged = Strings::default();
         let a = merged.absorb(first).thread(a);
         let b = merged.absorb(second).thread(b);

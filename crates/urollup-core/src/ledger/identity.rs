@@ -171,6 +171,11 @@ impl AnalyticalId {
     pub const fn prefix(&self) -> IdPrefix {
         self.prefix
     }
+
+    /// The first 64 bits of the digest, for open-addressed tables that still compare IDs.
+    pub(crate) fn table_hash(&self) -> u64 {
+        u64::from_be_bytes(self.digest[..8].try_into().expect("digest is 16 bytes"))
+    }
 }
 
 impl fmt::Display for AnalyticalId {

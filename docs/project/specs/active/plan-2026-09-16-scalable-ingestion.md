@@ -3,7 +3,7 @@ title: "Scalable Whole-History Ingestion"
 description: Replace urollup's retain-everything ingestion with bounded parallel family decoding into a compact global ledger, so whole-history reports over tens of gigabytes of Claude Code and Codex logs run in seconds within a few hundred MiB.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Active; Phase 1 in progress — whole history completes; 512 MiB peak not met
+status: Active; Phase 1 compaction exhausted at 586/653 MiB; 512 MiB and 10 s live on Phase 2 (`uro-zrr0`)
 ---
 # Feature: Scalable Whole-History Ingestion
 
@@ -338,8 +338,36 @@ QA reports may quote them.
 - [x] Add the native session ID as an additive `session` field on `sessions` rows, so
   whole-history results join to ccusage in one pass.
 - [x] Update CLI goldens and `scripts/check-e2e-results.mjs` for aggregated diagnostics.
-- [ ] Compact Codex decoded records and the observation and request rows so default
-  whole-history peak footprint is at or below 512 MiB (`uro-n1cp`).
+- [x] Observe usage-bearing Codex rollouts on the decode worker so their record vectors
+  never join (`uro-ecol`). Peak after that step is 861 MiB.
+- [x] Decode Claude usage-bearing lines without `parse_record` (`uro-q1ik`). `UsageBody`
+  streams accounting fields; `quotaLimits` is the only `Value`, and only for that
+  object. Peak after that step is 835 MiB.
+- [x] Type Codex `rate_limits` without a `Map<String, Value>` (`uro-g7pi`).
+  `RateLimitsSeed` reduces the object to `DecodedLimits` (name, windows, compact native
+  JSON). Two release `sessions --all` runs after that step peaked at 844 MiB (864,176
+  KiB, 23.4 s) and 868 MiB (889,232 KiB, 24.9 s). Row counts match `uro-q1ik`. Removing
+  the Codex `Value` map did not cut the peak.
+- [x] Compact `EvidenceRef` to a 16-byte source index (`uro-as4a`). `RequestObservation`
+  is 264 bytes. A release `sessions --all` after that step peaked at 875 MiB (896,016
+  KiB) in 26.5 s. Same row counts.
+  The 16-byte ref did not meet 512 MiB.
+- [x] Bound reused worker line buffers (`uro-1sm8`). After each line, capacity above 256
+  KiB is released. A release `sessions --all` after that step peaked at 793 MiB (811,568
+  KiB) in 20.3 s.
+- [ ] Meet the 512 MiB whole-history peak (`uro-n1cp`, now waiting on Phase 2). A
+  two-pass Claude re-decode (`uro-l3fw`) peaked at 929–946 MiB and was reverted.
+  Shell-field shrinks are exhausted (`uro-o5c0` reverted).
+  Codex intern-lifetime reorder (`uro-mxyh`) raised the peak and was reverted.
+  Compact Codex limit rows (`uro-4h93`) interned names, windows and native JSON.
+  `KeyGraph` stores each ID once (`uro-t8ws`). Packing observation keys to nodes
+  (`uro-73al`) relocated IDs into a join-time table and did not lower peak; reverted.
+  Field and ID relocation have run out.
+  Tail-consume after grouping was not implemented: the peak holds every shell before
+  Requests are reserved, and `shrink_to_fit` of that remainder reallocs while the table
+  is still live. The 512 cut queue is empty.
+  The 512 MiB gate now lives on Phase 2 (`uro-zrr0`). `uro-l0gd` recorded the standing
+  remasure and is closed.
 
 Acceptance: `make check` passes; whole-history `sessions`, `daily` and `report --all` on
 the maintainer’s corpus exit 0 in at most 25 seconds at no more than 512 MiB peak
@@ -347,9 +375,26 @@ footprint; one and eight workers give identical JSON.
 
 ### Phase 2: Fast Decode and Scale Gates
 
-- [ ] Replace remaining `Value` decoding on the hot path with borrowed typed structs
-  (`Cow<str>` with `#[serde(borrow)]`, small `{type, id}` content blocks) and `memmem`
-  prefilters; keep `Value` only for `quotaLimits` and `rate_limits` lines (`uro-zrr0`).
+- [ ] Meet 512 MiB and 10 s on the leftover typed-decode / allocator path (`uro-zrr0`).
+  Phase 1 row compaction is exhausted; do not start more shell-field cuts.
+- [x] Write Codex `CompactJson` numbers without `Value` (`uro-nuhn`); quiet WH rose to
+  685 MiB / 21.3 s; reverted.
+- [ ] Check Claude usage numbers without `Value::from` (`uro-nzo1`).
+- [ ] Parse Claude sidecars without `Value`; confine `parse_record` to tests
+  (`uro-a3fo`).
+- [x] Measure a process allocator for whole-history RSS (`uro-96vw`); quiet WH rose to
+  834 MiB / 19.0 s and Codex-only to 676 MiB / 15.3 s; reverted.
+- [ ] Cut whole-history wall time to at most 10 seconds (`uro-lsaz`). Profile
+  (2026-09-19): Codex ingest is 74% of quiet WH 18.2 s; remaining worker time is kernel
+  read and `Line::read`.
+- [x] Skip the full JSON walk on Codex lines the type prefilter rejects (`uro-s5vb`);
+  quiet WH rose to 650 MiB / 20.7 s and Codex-only to 583 MiB / 15.3 s; reverted.
+  Contract held in tests; wall did not fall.
+- [x] Enlarge the sequential read window (`uro-h6iw`); 1 MiB `BufReader` left quiet WH
+  at 635 MiB / 21.2 s and Codex-only at 602 MiB / 13.7 s; WH wall and Codex peak rose;
+  reverted.
+- [ ] Clear leftover `Value` helpers off the decode path (`uro-6gwt`) after the
+  file-level children above.
 - [x] Add a streaming synthetic corpus generator that writes families from fixture
   templates into a temporary directory under a byte cap, with part of Codex
   zstd-compressed.
@@ -417,16 +462,106 @@ under the RSS watchdog, on the maintainer’s corpus:
 | Codex 2026-09, 8.4 GB | 139,375 | refused by the guard | 306 MiB, 6.5 s (`cf9b704`) |
 | All Claude projects, 2.8 GB | 176,634 | 1,386 MiB, 14.3 s (`1924d8f`) | 860 MiB, 11 s (`e9fe862`) |
 | Claude projects and active Codex sessions, without the 7 GB archive | 461,049 | above 20 GB (milestone 0.1 engine) | 963–1,028 MiB, 22–24 s (`9f290e6`) |
-| Default whole history, including the Codex archive, `sessions --all` | 789,000 | above 20 GB (milestone 0.1 engine) | 1,136–1,146 MiB, 23–30 s on a loaded machine (`c332aba`) |
+| Default whole history, including the Codex archive, `sessions --all` | 802,790 | 1,136–1,146 MiB, 23–30 s (`c332aba`) | 653 MiB (668384 KiB) / 17.3 s after `uro-t8ws` (repeat 661 MiB; Codex-only quiet 586 MiB / 13.2 s). `uro-lsaz` remasure: WH 648 MiB / 18.2 s, Codex-only 573 MiB / 14.3 s. `uro-4h93` was 670/583; `uro-24ua` was 768/614 |
 
-Whole history now completes within the Phase 1 time target.
+Whole history completes.
 Compacting the Claude adapter’s decoded records and owner maps (`8bd7580`) cut the full
-Claude corpus from 860 MiB to about 395 MiB. Measurements before 2026-09-17 used
-`--source ~/.codex/sessions` and so left out the archived Codex history, which holds
-320,000 more observations; with it, the default whole history has about 394,000 Claude
-and 609,000 Codex observations and peaks at about 1.14 GB, over twice the 512 MiB goal.
-Codex observations are nearly one per request, so row size sets that peak; compacting
-Codex decoded records and the observation and request rows is in progress.
+Claude corpus from 860 MiB to about 395 MiB. The 1.14 GB whole-history peak was not row
+math (about 477 MB of observations plus requests): the CLI held a full Claude `Ingested`
+while Codex ingested.
+`Ingested::release_discovery` indexes and drops discovery tables after the first
+dialect, and Codex ingests first (`uro-brar`). Claude per-record message and request IDs
+are interned (`uro-hw2q`). Usage-bearing Codex rollouts are observed on the decode
+worker so their record vectors never join (`uro-ecol`); observation slots are reserved
+only for usage, compacted, and token-count lines.
+A release `sessions --all` on 2026-09-19 after reverting a two-pass Claude re-decode
+peaked at 804 MiB (823,632 KiB) in 22.1 s: 612,561 Codex observations and 413,742 Claude
+observations, same row counts as `uro-ecol`. After `uro-1sm8` the same corpus was 793
+MiB in 20.3 s. The two-pass cut (`uro-l3fw`) re-decoded Claude after owner-map rows and
+peaked at 929–946 MiB (even a sequential second pass was 908 MiB), so that approach was
+reverted. `Request.records` is now an inline `RecordRefs` (`uro-cbsg`); a loaded A/B
+against `Box<[EvidenceRef]>` stayed in the 827–852 vs 840 MiB band, so that bead was
+canceled. `reconcile_input` then reserved the full Claude observation vector (about 104
+MiB at 264 B each) while every `ParsedRecord` chunk was still alive; reserving per chunk
+after earlier records drop (`uro-mxcp`) brought a loaded run to 796 MiB (815,008 KiB).
+Wall time on that run was 81 s at load 117–193 and is not the quiet 22 s baseline.
+Claude ingest still runs beside the Codex ledger (611,314 `Request` rows).
+Merging Claude sources as the discovery-order prefix completed (`uro-h0fw`) peaked at
+830–854 MiB and was reverted: in-flight decode sat beside the growing corpus.
+`Strings::freeze` (`uro-yvn1`) drops each source’s intern map after decode; that bead
+was canceled because dialect-split measurement showed the peak is Codex ingest (760 MiB
+alone vs Claude 357 MiB). `codex_rollout.rs` then reserved the full observation `Vec`
+(about 154 MiB at 264 B) while every worker result still held its rows; reserving per
+rollout (`uro-3y9m`) cut Codex-only to 650 MiB and whole history to 647–770 MiB (one 855
+MiB loaded outlier).
+A quieter remasure of that tree was Codex-only 659 MiB (674416 KiB) / 13.7 s and whole
+history 786 MiB (804512 KiB) / 18.8 s. Dropping `KeyGraph` after grouping (`uro-kvrb`)
+did not lower peak (Codex-only 669 MiB / 18.1 s; whole history 818 MiB / 20.2 s) and was
+reverted: peak is still ingest plus the observation and request tables, not the KeyGraph
+overlap. Per-rollout `shrink_to_fit` after observe (`uro-ibij`) raised Codex-only to 731
+MiB (748512 KiB) / 18.5 s and whole history to 828 MiB (848112 KiB) / 24.9 s; realloc of
+each rollout table added allocator slack and was reverted.
+One inline key slot (`uro-b3gg`) raised Codex-only to 725 MiB (742672 KiB) / 14.1 s and
+whole history to 800 MiB (818960 KiB) / 18.2 s; Claude observations often carry two keys
+and spill, and was reverted.
+`UROLLUP_JOBS=1` on the restored tree was 720 MiB (737920 KiB) / 57 s, worse than eight
+workers.
+Per-rollout observation chunks dropped after each home chunk (`uro-08oj`) raised
+whole history to 927–958 MiB (949728–980896 KiB) and was reverted: grouping still holds
+every shell, so the Request overlap was not the peak.
+Compact `Measures` (`uro-7w0u`) stores counters that fit in `u32` inline and interns
+overflow above `u32::MAX`. `Option<Measures>` fell from 72 B to 36 B, the observation
+shell from 264 B to 232 B, and `Request` from 248 B to 216 B. Quiet remasure: Codex-only
+645 MiB (660064 KiB) / 14.0 s and whole history 770 MiB (788704 KiB) / 18.1 s. Packing
+`sequence` (`uro-24ua`) stores `n + 1` in `Option<NativeSequence>` so the field is 8 B.
+The shell is 224 B. A same-session A/B against `uro-7w0u` was Codex-only 614 MiB (628608
+KiB) / 14.5 s versus 631 MiB (646416 KiB), and whole history 768 MiB (786656 KiB) / 17.5
+s versus 778 MiB (797008 KiB). Dropping the unused key-spill pointer (`uro-o5c0`) kept
+two inline slots and interned a 3+ tail.
+The shell compiled at 216 B and tests stayed green.
+Peak did not fall: a same-session A/B was whole history 786 MiB (805072 KiB) versus 733
+MiB (750480 KiB) for `uro-24ua` at the same load, and other `uro-o5c0` WH samples were
+752–759 MiB against the standing 768 MiB. Codex-only swung 576–688 MiB in the same 50 ms
+watchdog band as `uro-24ua` (614–690 MiB). The cut was reverted.
+Further 8 B shell-field shrinks cannot close 512 MiB. Codex-only after `uro-24ua` is
+already 614 MiB; grouping-resident shells plus requests are about 269 MiB (612k × 224 B
+and 611k × 216 B), so about 345 MiB of that peak is intern tables still live through
+observe, `KeyGraph` during grouping, 138k limit rows and allocator slack.
+`SessionIndex` is built after each ingest and is not the Codex-only peak; on whole
+history it sits beside Claude ingest.
+Observing every Pending rollout before concatenating Observed shells (`uro-mxyh`) raised
+Codex-only to 774–836 MiB (792832–855760 KiB) and whole history to 799–857 MiB
+(817968–878176 KiB). `Interner` lookup maps already drop in `finish` before observe;
+holding every Observed shell while materializing Pending observations increased the
+overlap. The cut was reverted.
+Interning those rows (`uro-4h93`) stores `limit_name`, `window` and native JSON as
+`Name` (8 B each; `ProviderLimitObservation` ≤128 B). Quiet remasure: Codex-only 583 MiB
+(596784 KiB) / 14.3 s (loaded sample 631 MiB) and whole history 670 MiB (686192 KiB) /
+18.0 s (repeat 668.5 MiB / 17.9 s). Row counts match `uro-24ua`. Grouping-resident
+shells plus requests are about 257 MiB (612k × 224 B and 611k × 216 B); compact limit
+rows are about 17 MiB (137k × ≤128 B). `KeyGraph` (`uro-t8ws`) now stores each
+`AnalyticalId` once (`ids`) and looks up through an open-addressed table of `u32`
+indices.
+Quiet remasure: Codex-only 586 MiB (600336 KiB) / 13.2 s (loaded sample 630 MiB)
+and whole history 653 MiB (668384 KiB) / 17.3 s (repeat 661 MiB / 18.6 s). Row counts
+match `uro-4h93`. Packing those IDs to `KeyGraph` nodes (`uro-73al`) was tried three
+ways (join-time `HashMap` intern, join-time `KeyGraph`, concat pending IDs then pack at
+reconcile).
+Quiet whole-history peaks were 682, 657 and 661 MiB; none fell below 653. The
+IDs are already live in every grouping shell; moving them out adds a second table beside
+the shells. Reverted.
+The remaining Codex-only gap to 512 MiB is about 74 MiB; whole history still misses by
+about 141 MiB. Field and ID relocation have run out.
+A post-grouping tail-consume (`truncate` plus `shrink_to_fit` so processed shells are a
+suffix) was not attempted: grouping is the peak (every `RequestObservation` is live
+before any `Request` is reserved), so freeing a suffix happens after that peak;
+`shrink_to_fit` on the live remainder reallocates the still-resident prefix and has
+already raised RSS (`uro-ibij`, large-remainder shrink).
+That cut is not `uro-08oj` (per-rollout chunks during ingest), but it cannot return the
+grouping resident set.
+The 512 cut queue is empty.
+Next path is Phase 2 typed decode / allocator (`uro-zrr0`), not another shell field or
+key-table move.
 
 After the guard was removed, a release build ran `sessions --all` over the Claude
 projects and active Codex sessions, without the archive, on 2026-09-17 under a 2 GiB
@@ -436,18 +571,65 @@ requests. The `UROLLUP_STATS` example under
 
 ### Remaining Work
 
-1. **Phase 1 (`uro-n1cp`).** Compact Codex decoded records and the observation and
-   request rows until default whole-history peak footprint is at or below 512 MiB.
-   Worker-count identity and guard removal already landed.
-2. **Phase 2 (`uro-zrr0`).** Finish borrowed typed decode on the remaining hot path and
-   hit the 10-second whole-history target.
-   The synthetic corpus and CI scale gates already landed.
+`uro-t8ws` stored each `KeyGraph` ID once; standing peak is Codex-only 586 MiB / WH 653
+MiB. Field and ID relocation have run out.
+Leftover open Phase 1 children that will not land were canceled (`uro-cbsg`, `uro-yvn1`,
+`uro-l3fw`, `uro-h0fw`, `uro-vsdu`, `uro-kvrb`, `uro-ibij`, `uro-b3gg`, `uro-08oj`). Do
+not resume boxing, `N=1` keys, `shrink_to` of a large remainder, chunked consume,
+intern-lifetime observe reorder, packing keys off the shell, two-pass Claude, or
+prefix-merge. Tail-consume after grouping was judged unable to return RSS and was not
+filed. `uro-l0gd` is closed as the dated remasure (Codex-only 586 MiB / WH 653 MiB).
+`uro-n1cp` is not closable and now depends on `uro-zrr0`. The 512 MiB gate and the 10 s
+target live on Phase 2.
+
+1. **Phase 1 (`uro-n1cp`), 512 MiB.**
+
+| Bead | Files and functions | Why |
+| --- | --- | --- |
+| `uro-q1ik` (done) | `claude_project/line.rs` `UsageBody`; `claude_project.rs` `SourceDecoder::decode` | Claude usage lines no longer call `parse_record`. Peak stayed in the 835–868 MiB band. |
+| `uro-g7pi` (done) | `codex_rollout/line.rs` `DecodedLimits`, `RateLimitsSeed`, `CompactJson`; `codex_rollout.rs` `rate_limits` | Codex `rate_limits` is compact native JSON. Peak 844–868 MiB; not the remaining gap. |
+| `uro-as4a` (done) | `sources/evidence.rs` `EvidenceRef` and `SourceTable`; `ReconcileInput` / `Ledger`; adapters stamp local index 0 then intern in `AnalyticalId` order | 40 B → 16 B. Peak 875 MiB. Custom `Ord` is source, offset, length. |
+| `uro-l3fw` (canceled; two-pass reverted) | `claude_project.rs` two-pass ingest | Re-decode after owner-map rows peaked at 929–946 MiB. Single-pass observe restored. |
+| `uro-1sm8` (done) | `sources/reader.rs` `Scan::run`, `shrink_line_buffer`, `ReadOptions::RETAINED_LINE_CAPACITY` | After each line, capacity above 256 KiB is released. Peak 793 MiB. |
+| `uro-cbsg` (canceled; implemented, peak did not fall) | `entities.rs` `RecordRefs` on `Request.records`; `reconcile.rs` builder `collect` | One-ref case is inline. Loaded A/B 827–852 vs Box 840 MiB; quiet baseline was 804 MiB. Peak did not clearly fall. |
+| `uro-mxcp` (done) | `claude_project.rs` `reconcile_input` | Observation `Vec` reserved per `RecordChunk` after earlier records drop. Loaded peak 796 MiB. |
+| `uro-h0fw` (canceled; prefix-merge reverted) | `sources/parallel.rs` `try_read_in_parallel_prefix`; `claude_project.rs` `CorpusMerger` | Prefix absorb while workers still decoded peaked at 830–854 MiB. Single-pass join restored. |
+| `uro-yvn1` (canceled; implemented, peak is Codex) | `claude_project.rs` `Strings::freeze`, `decode_source` | Intern `HashMap` dropped after each source decodes. Peak is Codex (760 MiB alone). |
+| `uro-3y9m` (done) | `codex_rollout.rs` `normalize` | Observation `Vec` reserved per rollout after worker results move. Codex-only 650 MiB; whole history 647–770 MiB. |
+| `uro-vsdu` (canceled; boxing reverted) | `reconcile.rs` request-building loop | Boxing each shell at emit raised Codex-only to 699 MiB. Tail-consume after grouping was not filed: peak is all shells before Requests are reserved; `shrink_to_fit` of the live remainder reallocs. |
+| `uro-kvrb` (canceled; drop-after-group reverted) | `reconcile.rs` after `order.sort_unstable_by`, `build_request` | Dropping `KeyGraph` after grouping did not lower peak (Codex-only 669 MiB; WH 818 MiB). |
+| `uro-ibij` (canceled; shrink_to_fit reverted) | `codex_rollout.rs` `observe_to_observed` | Per-rollout `shrink_to_fit` raised Codex-only to 731 MiB and WH to 828 MiB. |
+| `uro-b3gg` (canceled; one-inline-key reverted) | `reconcile.rs` `RequestObservation.keys` | `InlineList<DerivedKey, 1>` raised Codex-only to 725 MiB and WH to 800 MiB. Claude often has two keys. |
+| `uro-08oj` (canceled; chunked consume reverted) | `reconcile.rs` `request_chunks`; `codex_rollout.rs` `normalize` | Per-rollout tables dropped after each home chunk. Codex-only 652–677 MiB; WH 927–958 MiB. Grouping still holds every shell. Reverted. |
+| `uro-7w0u` (done) | `tokens.rs` `Measures`; `RequestObservation.usage` | Counters that fit in `u32` stay inline; overflow interns once. Shell 264→232 B. Codex-only 645 MiB; WH 770 MiB. |
+| `uro-24ua` (done) | `reconcile.rs` `NativeSequence`; `RequestObservation.sequence` | `Option<u64>` 16 B → 8 B. Shell 232→224 B. Paired A/B: Codex-only 614 MiB; WH 768 MiB. |
+| `uro-o5c0` (canceled; spill drop reverted) | `reconcile.rs` `RequestObservation.keys`; `observation_keys.rs` | Two inline slots plus interned 3+ tail compiled at 216 B. Paired WH 786 vs 733 MiB; other samples in the 752–768 band. Reverted. Field shrinks exhausted. |
+| `uro-mxyh` (canceled; observe-Pending-first reverted) | `codex_rollout.rs` `Interner::finish`, `normalize`, `observe_to_observed` | Lookup maps already drop at decode finish. Observing all Pending while holding every Observed shell raised Codex-only to 774–836 MiB and WH to 799–857 MiB. |
+| `uro-4h93` (done) | `entities.rs` `ProviderLimitObservation`; `names.rs`; adapters `append_limits`; `reconcile.rs` limit keys | Names, windows and native JSON interned as `Name`. Row ≤128 B. Codex-only 583 MiB; WH 670 MiB. |
+| `uro-t8ws` (done) | `reconcile.rs` `KeyGraph`; `identity.rs` `AnalyticalId::table_hash` | IDs stored once in `ids`; open-addressed `u32` slots. Do not drop after grouping. Codex-only 586 MiB; WH 653 MiB. |
+| `uro-73al` (canceled; pack-to-nodes reverted) | `reconcile.rs` `RequestObservation.keys`, `resolve_identities` | Packed keys to a node index (two inline slots kept). Join-time intern, join-time `KeyGraph`, and concat-then-pack all left WH at 657–682 MiB vs 653 standing. IDs already live in the shells. Reverted. |
+| `uro-l0gd` (done; remasure only) | privacy-safe `sessions --all` | Dated numbers: Codex-only 586 MiB (600336 KiB) / 13.2 s; WH 653 MiB (668384 KiB) / 17.3 s (repeat 661 / 18.6). Does not close `uro-n1cp`. |
+
+2. **Phase 2 (`uro-zrr0`) owns 512 MiB and 10 s.**
+
+| Bead | Files and functions | Why |
+| --- | --- | --- |
+| `uro-nuhn` (canceled; no-Value numbers reverted) | `codex_rollout/line.rs` `CompactJson` `visit_i64`/`u64`/`f64` | Writing primitives without `Value` left quiet WH at 685 MiB / 21.3 s vs 653 / 17.3. Reverted. |
+| `uro-nzo1` (open) | `claude_project/line.rs` `UnsignedAt`, `unsigned` | Usage-line number checks still wrap `Value::from`. |
+| `uro-a3fo` (open) | `claude_project.rs` `read_subagent_meta`; `sources/decode.rs` `parse_record` | Sidecar is a `Value`; `parse_record` still builds a document. |
+| `uro-96vw` (canceled; mimalloc reverted) | `crates/urollup` `mimalloc` 0.1.52 | Quiet WH 834 MiB (853568 KiB) / 19.0 s vs 653 / 17.3; Codex-only 676 MiB (692016 KiB) / 15.3 s vs 586 / 13.2. Slack is not the system allocator. Reverted. |
+| `uro-lsaz` (open; profile recorded) | `cli.rs` phases; sampling profile | Quiet remasure WH 648 MiB / 18.2 s, Codex-only 573 MiB / 14.3 s (standing band 653 / 17.3 and 586 / 13.2). `codex_ingest` 13.5 s of WH. Remaining worker time after `uro-s5vb` revert is kernel read (~40%) and `Line::read`. |
+| `uro-s5vb` (canceled; zero-copy accept reverted) | `sources/json.rs` `accept`; `decode.rs` `validate_record` | In-place scanner matched `parse_record` in tests (malformed contract held) but quiet WH 650 MiB (665712 KiB) / 20.7 s vs 648 / 18.2 and Codex-only 583 MiB (596928 KiB) / 15.3 s vs 573 / 14.3. Reverted. |
+| `uro-h6iw` (canceled; 1 MiB window reverted) | `reader.rs` `reader_for` | 128 KiB → 1 MiB `BufReader`. Quiet WH 635 MiB (649696 KiB) / 21.2 s vs 648 / 18.2; Codex-only 602 MiB (616160 KiB) / 13.7 s vs 573 / 14.3. WH wall and Codex peak rose. `posix_fadvise` not added (`unsafe` denied; Darwin no-ops it). Reverted. |
+| `uro-6gwt` (open) | leftover `Value` umbrella | Blocked on `uro-nzo1` and `uro-a3fo`. |
+
 3. **Phase 3 (`uro-ky6c`).** Run the full-history QA playbook and record a privacy-safe
    report. The one-pass local parity join already landed.
    There is no second engine to delete.
 
-Milestone 0.1 G1 (`uro-d36a`) waits on Phase 1. Independent review of the published
-stack (`uro-nncx`) is parallel and does not block this work.
+Milestone 0.1 G1 (`uro-d36a`) waits on Phase 2 (`uro-zrr0`), which owns the 512 MiB
+gate. Independent review of the published stack (`uro-nncx`) is parallel and does not
+block this work. Publishing (`uro-30ef`) waits on the 0.1 epic.
 
 ## Testing Strategy
 
@@ -496,8 +678,9 @@ otherwise.
 - [Portable agent usage research](../../research/research-2026-09-13-portable-agent-usage.md)
   on local log volume and throughput
 - [Full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md)
-- Beads `uro-o6x5` (scalable whole-history ingestion) and `uro-sn1e` (owner-map ordering
-  bug)
+- Beads `uro-o6x5` (scalable whole-history ingestion), `uro-n1cp` (Phase 1, 512 MiB),
+  `uro-as4a` / `uro-l3fw` / `uro-1sm8` (remaining 512 cuts), `uro-zrr0` (Phase 2, 10 s),
+  and `uro-sn1e` (owner-map ordering bug)
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

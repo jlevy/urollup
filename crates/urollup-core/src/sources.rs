@@ -3,7 +3,8 @@
 //!
 //! - [`manifest`] records each source's identity, extent, fingerprint, cutoff, counters
 //!   and detected changes (§2.2).
-//! - [`evidence`] defines the source ID, offset and length every record is cited by.
+//! - [`evidence`] defines the source-table index, offset and length every record is cited
+//!   by.
 //! - [`reader`] streams complete records within a snapshot's extent and detects the
 //!   changes, tails and failures §2.2 requires; [`decode`] holds the lenient decoding
 //!   helpers, [`prefilter`] the line hint and [`parallel`] the bounded,

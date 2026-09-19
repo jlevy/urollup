@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
+use std::slice;
 
 use jiff::Timestamp;
 
@@ -331,11 +332,59 @@ impl fmt::Debug for CompactTimestamp {
     }
 }
 
+/// Originals then copies for one request.
+///
+/// The common case is one original and no copies, stored inline so a whole-history
+/// ledger does not allocate once per request. Two or more refs share one boxed slice.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RecordRefs {
+    /// No original or copy records.
+    Empty,
+    /// One original or one copy.
+    One(EvidenceRef),
+    /// Two or more refs, originals then copies.
+    Many(Box<[EvidenceRef]>),
+}
+
+impl RecordRefs {
+    fn as_slice(&self) -> &[EvidenceRef] {
+        match self {
+            Self::Empty => &[],
+            Self::One(record) => slice::from_ref(record),
+            Self::Many(records) => records,
+        }
+    }
+
+    fn split(&self, originals: u32) -> (&[EvidenceRef], &[EvidenceRef]) {
+        let records = self.as_slice();
+        usize::try_from(originals)
+            .ok()
+            .and_then(|originals| records.split_at_checked(originals))
+            .unwrap_or((records, &[]))
+    }
+}
+
+impl FromIterator<EvidenceRef> for RecordRefs {
+    fn from_iter<I: IntoIterator<Item = EvidenceRef>>(items: I) -> Self {
+        let mut items = items.into_iter();
+        let Some(first) = items.next() else {
+            return Self::Empty;
+        };
+        let Some(second) = items.next() else {
+            return Self::One(first);
+        };
+        let mut records = vec![first, second];
+        records.extend(items);
+        Self::Many(records.into_boxed_slice())
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<RecordRefs>() <= 24);
+
 /// A logical request and its response (design §3.1).
 ///
 /// Whole-history ledgers hold hundreds of thousands of requests, so names are interned,
-/// usage and time are stored compactly, originals and copies share one allocation, and the
-/// selected revision is a position among the originals.
+/// usage and time are stored compactly, and a single evidence ref stays inline.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Request {
     /// The canonical `req-` ID.
@@ -356,19 +405,16 @@ pub struct Request {
     pub effort: Option<Name>,
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
-    /// Every original record in canonical order, then every copy in canonical order, in
-    /// one allocation that [`Request::evidence`] and [`Request::copies`] split.
-    pub records: Box<[EvidenceRef]>,
+    /// Every original record in canonical order, then every copy in canonical order.
+    pub records: RecordRefs,
     /// How many of `records` are originals.
     pub originals: u32,
     /// Whether the request counts in totals.
     pub counting: Counting,
 }
 
-// 240 bytes, down from 440: interned names, compact measures and timestamps, a position
-// in place of the selected record's evidence reference, the rule name kept once per
-// ledger, and originals and copies in one allocation.
-const _: () = assert!(std::mem::size_of::<Request>() <= 240);
+// Compact Measures shrinks the selected-usage revision.
+const _: () = assert!(std::mem::size_of::<Request>() <= 216);
 
 impl Request {
     /// The canonical ID.
@@ -393,10 +439,7 @@ impl Request {
     }
 
     fn split_records(&self) -> (&[EvidenceRef], &[EvidenceRef]) {
-        usize::try_from(self.originals)
-            .ok()
-            .and_then(|originals| self.records.split_at_checked(originals))
-            .unwrap_or((&self.records, &[]))
+        self.records.split(self.originals)
     }
 }
 
@@ -518,9 +561,9 @@ pub struct ToolAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderLimitObservation {
     /// The native limit name, such as a Codex `limit_id` or Claude `rateLimitType`.
-    pub limit_name: Option<String>,
+    pub limit_name: Option<Name>,
     /// The native window label, such as Codex `primary` or `secondary`.
-    pub window: Option<String>,
+    pub window: Option<Name>,
     /// When the limit was observed; unknown for sources without a record timestamp.
     pub observed_at: Basis<Timestamp>,
     /// The owning thread, when proven.
@@ -528,19 +571,23 @@ pub struct ProviderLimitObservation {
     /// The owning request, when proven.
     pub owner_request: Option<AnalyticalId>,
     /// Native field names and values verbatim, including window length, reset time,
-    /// utilization in its native unit, plan, credit and overage fields, as one compact
-    /// JSON object with sorted keys.
-    pub native: Box<str>,
+    /// utilization in its native unit, plan, credit and overage fields, as one interned
+    /// compact JSON object with sorted keys.
+    pub native: Name,
     /// The record.
     pub evidence: EvidenceRef,
 }
+
+const _: () = assert!(std::mem::size_of::<ProviderLimitObservation>() <= 128);
 
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
     use proptest::prelude::*;
 
-    use super::{CompactTimestamp, apply_permutation};
+    use crate::sources::evidence::EvidenceRef;
+
+    use super::{CompactTimestamp, RecordRefs, apply_permutation};
 
     /// Timestamps across jiff's whole range, and near the epoch with sub-second parts of
     /// either sign, which jiff normalizes to the sign of the seconds.
@@ -551,6 +598,21 @@ mod tests {
             (-3_i64..3, -999_999_999_i32..=999_999_999)
                 .prop_map(|(second, nanosecond)| Timestamp::new(second, nanosecond).unwrap()),
         ]
+    }
+
+    #[test]
+    fn record_refs_keep_one_ref_inline_and_spill_the_rest() {
+        let a = EvidenceRef::new(0, 1, 2);
+        let b = EvidenceRef::new(0, 3, 4);
+        let c = EvidenceRef::new(1, 5, 6);
+        assert_eq!(RecordRefs::from_iter([]), RecordRefs::Empty);
+        assert_eq!(RecordRefs::from_iter(std::iter::once(a)), RecordRefs::One(a));
+        assert_eq!(RecordRefs::from_iter([a, b]), RecordRefs::Many(vec![a, b].into_boxed_slice()));
+        assert_eq!(RecordRefs::One(a).split(1), (&[a][..], &[][..]));
+        assert_eq!(RecordRefs::One(a).split(0), (&[][..], &[a][..]));
+        assert_eq!(RecordRefs::from_iter([a, b, c]).split(1), (&[a][..], &[b, c][..]));
+        assert!(std::mem::size_of::<RecordRefs>() <= 24);
+        assert!(std::mem::size_of::<super::Request>() <= 216);
     }
 
     proptest! {

@@ -11,18 +11,18 @@ use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::names::Name;
 use urollup_core::ledger::reconcile::Ledger;
 use urollup_core::ledger::tokens::TokenMeasures;
-use urollup_core::sources::evidence::EvidenceRef;
+use urollup_core::sources::evidence::{EvidenceRef, SourceTable};
 use urollup_core::sources::manifest::{CoverageFailure, ManifestEntry, SourceChange};
 
 fn fixture(dialect: &str, case: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(dialect).join(case)
 }
 
-fn evidence(reference: &EvidenceRef) -> Value {
+fn evidence(table: &SourceTable, reference: &EvidenceRef) -> Value {
     json!({
         "length": reference.length,
         "offset": reference.offset,
-        "source": reference.source.to_string(),
+        "source": table.get(reference.source).map(ToString::to_string).unwrap_or_default(),
     })
 }
 
@@ -48,9 +48,9 @@ fn model_usage(component: &ModelUsage) -> Value {
 
 /// The selected revision, whose evidence the request stores as a position in its evidence
 /// list and whose rule the ledger stores once.
-fn revision(request: &Request, selected: &SelectedUsage) -> Value {
+fn revision(table: &SourceTable, request: &Request, selected: &SelectedUsage) -> Value {
     json!({
-        "evidence": evidence(request.selected_evidence().expect("selected usage has evidence")),
+        "evidence": evidence(table, request.selected_evidence().expect("selected usage has evidence")),
         "model_usage": selected.revision.model_usage.iter().map(model_usage).collect::<Vec<_>>(),
         "usage": usage(&selected.revision.usage.into()),
     })
@@ -78,10 +78,10 @@ fn request(ledger: &Ledger, request: &Request) -> Value {
     json!({
         "aliases": request.aliases.iter().map(AnalyticalId::to_string).collect::<Vec<_>>(),
         "basis": request.basis.token(),
-        "copies": request.copies().iter().map(evidence).collect::<Vec<_>>(),
+        "copies": request.copies().iter().map(|reference| evidence(&ledger.source_table, reference)).collect::<Vec<_>>(),
         "counting": counting(&request.counting),
         "effort": request.effort.map(Name::as_str),
-        "evidence": request.evidence().iter().map(evidence).collect::<Vec<_>>(),
+        "evidence": request.evidence().iter().map(|reference| evidence(&ledger.source_table, reference)).collect::<Vec<_>>(),
         "first_seen": request.first_seen.map(|timestamp| timestamp.get().to_string()),
         "id": request.id().to_string(),
         "last_seen": request.last_seen.map(|timestamp| timestamp.get().to_string()),
@@ -91,7 +91,7 @@ fn request(ledger: &Ledger, request: &Request) -> Value {
         })),
         "ownership": ownership(&request.ownership),
         "selected_usage": request.usage.as_ref().map(|selected| json!({
-            "revision": revision(request, selected),
+            "revision": revision(&ledger.source_table, request, selected),
             "rule": ledger.revision_rule,
             "status": format!("{:?}", selected.status),
         })),
@@ -139,7 +139,7 @@ fn source_change(change: &SourceChange) -> Value {
     }
 }
 
-fn manifest_entry(entry: &ManifestEntry) -> Value {
+fn manifest_entry(table: &SourceTable, entry: &ManifestEntry) -> Value {
     json!({
         "changes": entry.changes.iter().map(source_change).collect::<Vec<_>>(),
         "complete": entry.is_complete(),
@@ -164,7 +164,7 @@ fn manifest_entry(entry: &ManifestEntry) -> Value {
         "failures": entry.failures.iter().map(coverage_failure).collect::<Vec<_>>(),
         "file_len": entry.file_len,
         "fingerprint": entry.fingerprint.map(|fingerprint| fingerprint.to_string()),
-        "first_malformed": entry.first_malformed.as_ref().map(evidence),
+        "first_malformed": entry.first_malformed.as_ref().map(|reference| evidence(table, reference)),
         "locator": entry.locator,
         "representation": format!("{:?}", entry.representation),
         "source": entry.source.as_ref().map(|source| source.id.to_string()),
@@ -194,12 +194,12 @@ fn snapshot(ingested: &Ingested) -> Value {
             "diagnostics": ingested.ledger.diagnostics.iter().map(|diagnostic| json!({
                 "code": diagnostic.code.token(),
                 "detail": diagnostic.detail,
-                "evidence": diagnostic.evidence.iter().map(evidence).collect::<Vec<_>>(),
+                "evidence": diagnostic.evidence.iter().map(|reference| evidence(&ingested.ledger.source_table, reference)).collect::<Vec<_>>(),
                 "occurrences": diagnostic.occurrences,
                 "subject": diagnostic.subject.as_ref().map(AnalyticalId::to_string),
             })).collect::<Vec<_>>(),
             "gaps": ingested.ledger.gaps.iter().map(|gap| json!({
-                "evidence": gap.evidence.iter().map(evidence).collect::<Vec<_>>(),
+                "evidence": gap.evidence.iter().map(|reference| evidence(&ingested.ledger.source_table, reference)).collect::<Vec<_>>(),
                 "reason": format!("{:?}", gap.reason),
                 "thread": gap.thread.as_ref().map(AnalyticalId::to_string),
             })).collect::<Vec<_>>(),
@@ -211,7 +211,7 @@ fn snapshot(ingested: &Ingested) -> Value {
                 .collect::<Vec<_>>(),
         },
         "manifest": {
-            "entries": ingested.manifest.entries.iter().map(manifest_entry).collect::<Vec<_>>(),
+            "entries": ingested.manifest.entries.iter().map(|entry| manifest_entry(&ingested.ledger.source_table, entry)).collect::<Vec<_>>(),
             "skipped_links": ingested.manifest.skipped_links.iter().map(|link| json!({
                 "file": link.path.file_name().map(|name| name.to_string_lossy()),
                 "reason": format!("{:?}", link.reason),

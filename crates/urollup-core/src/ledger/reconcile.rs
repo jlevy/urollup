@@ -29,7 +29,8 @@
 //!    counts the member with the strongest identity basis, then the lowest ID, and marks
 //!    the others [`Counting::Unresolved`], which totals never add.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU64;
 
 use jiff::Timestamp;
 
@@ -46,7 +47,7 @@ use super::linking::LinkGraph;
 use super::names::Name;
 use super::scope::{DerivedKey, IdentityBasis, artifact_local_key};
 use super::tokens::Measures;
-use crate::sources::evidence::EvidenceRef;
+use crate::sources::evidence::{EvidenceRef, SourceTable};
 
 /// Whether an observation is the request's own record or a copy of it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -55,6 +56,22 @@ pub enum ObservationRole {
     Original,
     /// A replay nested in or copied into another record or file; never counted.
     Copy,
+}
+
+/// A native revision sequence stored as `n + 1` so `Option` stays 8 bytes.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NativeSequence(NonZeroU64);
+
+impl NativeSequence {
+    /// The sequence, or `None` if `value + 1` does not fit in `u64`.
+    pub fn new(value: u64) -> Option<Self> {
+        value.checked_add(1).and_then(NonZeroU64::new).map(Self)
+    }
+
+    /// The recorded sequence.
+    pub fn get(self) -> u64 {
+        self.0.get().saturating_sub(1)
+    }
 }
 
 /// What an observation says about the owning thread.
@@ -86,7 +103,7 @@ pub struct RequestObservation {
     /// This record's usage split by model.
     pub model_usage: ModelUsageList,
     /// A native revision sequence, when the dialect orders revisions.
-    pub sequence: Option<u64>,
+    pub sequence: Option<NativeSequence>,
     /// Revision-invariant fields and their interned values; observations sharing a key
     /// must agree on every field both carry.
     pub invariants: InlineList<(&'static str, Name), 1>,
@@ -98,9 +115,7 @@ pub struct RequestObservation {
     pub timestamp: Option<CompactTimestamp>,
 }
 
-// 288 bytes, down from 448. The evidence reference (40 bytes), two inline keys (64) and the
-// measures (72) take 176; a smaller row needs evidence that names its source by index.
-const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 288);
+const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 224);
 
 impl RequestObservation {
     /// An original observation with no keys, owner, usage or properties yet.
@@ -170,7 +185,7 @@ impl RevisionSelector for LatestRevision {
     fn select(&self, revisions: &[&RequestObservation]) -> RevisionChoice {
         let last = revisions.len().saturating_sub(1);
         let sequences: Option<Vec<u64>> =
-            revisions.iter().map(|revision| revision.sequence).collect();
+            revisions.iter().map(|revision| revision.sequence.map(NativeSequence::get)).collect();
         match sequences {
             Some(sequences) => {
                 // `max_by_key` keeps the last maximum, so ties resolve to canonical order.
@@ -217,6 +232,8 @@ pub struct ReconcileInput {
     pub gaps: Vec<CoverageGap>,
     /// Diagnostics adapters raised while decoding, carried into the ledger.
     pub diagnostics: Vec<Diagnostic>,
+    /// `src-` IDs in the index order [`EvidenceRef::source`] uses.
+    pub source_table: SourceTable,
 }
 
 /// The reconciled request ledger.
@@ -242,6 +259,8 @@ pub struct Ledger {
     pub gaps: Vec<CoverageGap>,
     /// Reconciliation counters.
     pub coverage: ReconcileCoverage,
+    /// `src-` IDs in the index order [`EvidenceRef::source`] uses.
+    pub source_table: SourceTable,
 }
 
 /// Why reconciliation could not produce a ledger.
@@ -310,28 +329,77 @@ fn ensure_capacity(observations: usize, maximum: usize) -> Result<(), ReconcileE
 /// different keys deriving one ID without storing either key.
 ///
 /// Nodes are indices, so linking hundreds of thousands of observations allocates a few
-/// flat vectors rather than tree nodes per ID. A set's root is always its lowest ID, so
+/// flat vectors rather than tree nodes per ID. Each ID is stored once in `ids`; lookup
+/// is an open-addressed table of those indices. A set's root is always its lowest ID, so
 /// roots do not depend on link order.
-#[derive(Default)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct KeyGraph {
-    nodes: HashMap<AnalyticalId, u32>,
     ids: Vec<AnalyticalId>,
     checks: Vec<Option<[u8; 8]>>,
     parent: Vec<u32>,
+    /// Open-addressed node indices. `u32::MAX` is empty. Length is 0 or a power of two.
+    slots: Vec<u32>,
 }
 
+const EMPTY_SLOT: u32 = u32::MAX;
+
 impl KeyGraph {
+    /// An empty graph, or one sized for about `nodes` IDs without growing the ID vectors.
+    fn with_capacity(nodes: usize) -> Self {
+        let slots = if nodes == 0 { 0 } else { slot_len(nodes) };
+        Self {
+            ids: Vec::with_capacity(nodes),
+            checks: Vec::with_capacity(nodes),
+            parent: Vec::with_capacity(nodes),
+            slots: vec![EMPTY_SLOT; slots],
+        }
+    }
+
     /// The node for `id`, added unregistered and alone when new.
     fn node(&mut self, id: &AnalyticalId) -> u32 {
-        if let Some(node) = self.nodes.get(id) {
-            return *node;
+        if let Some(node) = self.lookup(id) {
+            return node;
         }
         let node = index_u32(self.ids.len());
-        self.nodes.insert(id.clone(), node);
         self.ids.push(id.clone());
         self.checks.push(None);
         self.parent.push(node);
+        self.insert_slot(id, node);
         node
+    }
+
+    fn lookup(&self, id: &AnalyticalId) -> Option<u32> {
+        if self.slots.is_empty() {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut slot = probe_slot(id, mask);
+        loop {
+            let node = self.slots[slot];
+            if node == EMPTY_SLOT {
+                return None;
+            }
+            if self.ids[node as usize] == *id {
+                return Some(node);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn insert_slot(&mut self, id: &AnalyticalId, node: u32) {
+        if self.ids.len().saturating_mul(2) > self.slots.len() {
+            self.rehash();
+            return;
+        }
+        place(&mut self.slots, id, node);
+    }
+
+    fn rehash(&mut self) {
+        let mut slots = vec![EMPTY_SLOT; slot_len(self.ids.len())];
+        for (index, id) in self.ids.iter().enumerate() {
+            place(&mut slots, id, index_u32(index));
+        }
+        self.slots = slots;
     }
 
     /// Registers a derived key's check bits, failing when another key derived its ID.
@@ -377,6 +445,33 @@ impl KeyGraph {
     }
 }
 
+impl Default for KeyGraph {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
+}
+
+fn slot_len(nodes: usize) -> usize {
+    nodes.saturating_mul(2).max(8).next_power_of_two()
+}
+
+fn probe_slot(id: &AnalyticalId, mask: usize) -> usize {
+    let hash = id.table_hash() & u64::try_from(mask).expect("slot mask fits u64");
+    usize::try_from(hash).expect("masked hash fits usize")
+}
+
+fn place(slots: &mut [u32], id: &AnalyticalId, node: u32) {
+    let mask = slots.len() - 1;
+    let mut slot = probe_slot(id, mask);
+    loop {
+        if slots[slot] == EMPTY_SLOT {
+            slots[slot] = node;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
 /// A linked set's canonical ID, the basis of its key, and its other IDs in order.
 struct LinkedRequest {
     id: AnalyticalId,
@@ -399,6 +494,7 @@ pub fn reconcile(
         mut links,
         mut gaps,
         mut diagnostics,
+        source_table,
     } = input;
     let mut coverage =
         ReconcileCoverage { observations: count(requests.len()), ..ReconcileCoverage::default() };
@@ -411,10 +507,10 @@ pub fn reconcile(
     dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
 
     // Register every key, linking keys that share an observation, then lineage links.
-    let mut graph = KeyGraph::default();
+    let mut graph = KeyGraph::with_capacity(observations.len());
     let mut first_keys = Vec::with_capacity(observations.len());
     for observation in &mut observations {
-        first_keys.push(resolve_identities(observation, &mut graph)?);
+        first_keys.push(resolve_identities(observation, &mut graph, &source_table)?);
     }
     links.sort();
     for link in &links {
@@ -453,7 +549,7 @@ pub fn reconcile(
                 Vec::new()
             } else {
                 coverage.conflicting_keys = coverage.conflicting_keys.saturating_add(1);
-                members.iter().map(|member| member.evidence.clone()).collect()
+                members.iter().map(|member| member.evidence).collect()
             };
             let parts: Vec<Vec<&RequestObservation>> = if split.is_empty() {
                 vec![members]
@@ -468,6 +564,7 @@ pub fn reconcile(
                     selector,
                     &mut graph,
                     &mut diagnostics,
+                    &source_table,
                 )?
                 else {
                     continue;
@@ -531,6 +628,7 @@ pub fn reconcile(
         diagnostics,
         gaps,
         coverage,
+        source_table,
     })
 }
 
@@ -727,10 +825,10 @@ fn reconcile_limit_observations(
     observations.sort_by_cached_key(limit_sort_key);
     observations.dedup();
     let mut reconciled: Vec<ProviderLimitObservation> = Vec::with_capacity(observations.len());
-    let mut previous: BTreeMap<LimitStreamKey, Box<str>> = BTreeMap::new();
+    let mut previous: BTreeMap<LimitStreamKey, Name> = BTreeMap::new();
     for observation in observations {
         let stream = limit_stream_key(&observation);
-        let signature = observation.native.clone();
+        let signature = observation.native;
         let repeated = previous.get(&stream) == Some(&signature);
         if !repeated {
             reconciled.push(observation);
@@ -799,7 +897,7 @@ fn register_entity_identity(
 }
 
 fn merged_evidence<'a>(evidence: impl IntoIterator<Item = &'a EvidenceRef>) -> Vec<EvidenceRef> {
-    evidence.into_iter().cloned().collect::<BTreeSet<_>>().into_iter().collect()
+    evidence.into_iter().copied().collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 fn merge_native_keys<'a>(
@@ -867,44 +965,43 @@ fn diagnose_entity_conflicts(
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::ConflictingSharedKey,
             Some(id.clone()),
-            evidence.iter().cloned(),
+            evidence.iter().copied(),
             format!("{entity} observations disagree on {}", join(conflicts.iter())),
         ));
     }
 }
 
-type LimitStreamKey =
-    (AnalyticalId, Option<AnalyticalId>, Option<AnalyticalId>, Option<String>, Option<String>);
+type LimitStreamKey = (u32, Option<AnalyticalId>, Option<AnalyticalId>, Option<Name>, Option<Name>);
 
 type LimitSortKey = (
     EvidenceRef,
     Option<AnalyticalId>,
     Option<AnalyticalId>,
-    Option<String>,
-    Option<String>,
+    Option<Name>,
+    Option<Name>,
     Basis<Timestamp>,
-    Box<str>,
+    Name,
 );
 
 fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
     (
-        observation.evidence.source.clone(),
+        observation.evidence.source,
         observation.owner_thread.clone(),
         observation.owner_request.clone(),
-        observation.limit_name.clone(),
-        observation.window.clone(),
+        observation.limit_name,
+        observation.window,
     )
 }
 
 fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey {
     (
-        observation.evidence.clone(),
+        observation.evidence,
         observation.owner_thread.clone(),
         observation.owner_request.clone(),
-        observation.limit_name.clone(),
-        observation.window.clone(),
+        observation.limit_name,
+        observation.window,
         observation.observed_at.clone(),
-        observation.native.clone(),
+        observation.native,
     )
 }
 
@@ -933,7 +1030,7 @@ fn dedupe_rereads(
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::ConflictingReread,
                 None,
-                [observation.evidence.clone()],
+                [observation.evidence],
                 "one record location was observed with different content",
             ));
             return false;
@@ -941,7 +1038,7 @@ fn dedupe_rereads(
         if observation.role == ObservationRole::Copy {
             coverage.copies = coverage.copies.saturating_add(1);
         }
-        previous = Some(observation.evidence.clone());
+        previous = Some(observation.evidence);
         true
     });
 }
@@ -951,12 +1048,13 @@ fn dedupe_rereads(
 fn resolve_identities(
     observation: &mut RequestObservation,
     graph: &mut KeyGraph,
+    sources: &SourceTable,
 ) -> Result<u32, ReconcileError> {
     let mut first = None;
     for key in &observation.keys {
         if key.id.prefix() != IdPrefix::Request {
             return Err(ReconcileError::WrongPrefix {
-                evidence: observation.evidence.clone(),
+                evidence: observation.evidence,
                 prefix: key.id.prefix(),
             });
         }
@@ -969,15 +1067,19 @@ fn resolve_identities(
     if let Some(first) = first {
         return Ok(first);
     }
-    let local = artifact_local(&observation.evidence)?;
+    let local = artifact_local(&observation.evidence, sources)?;
     let node = graph.register(&local)?;
     observation.keys.push(local);
     Ok(node)
 }
 
-fn artifact_local(evidence: &EvidenceRef) -> Result<DerivedKey, ReconcileError> {
-    Ok(artifact_local_key(IdPrefix::Request, &evidence.source, evidence.offset)
-        .ok_or_else(|| ReconcileError::OffsetOutOfRange(evidence.clone()))?
+fn artifact_local(
+    evidence: &EvidenceRef,
+    sources: &SourceTable,
+) -> Result<DerivedKey, ReconcileError> {
+    let source = sources.get(evidence.source).ok_or(ReconcileError::OffsetOutOfRange(*evidence))?;
+    Ok(artifact_local_key(IdPrefix::Request, source, evidence.offset)
+        .ok_or(ReconcileError::OffsetOutOfRange(*evidence))?
         .derive()?)
 }
 
@@ -1029,13 +1131,14 @@ fn build_request(
     selector: &dyn RevisionSelector,
     graph: &mut KeyGraph,
     diagnostics: &mut Vec<Diagnostic>,
+    sources: &SourceTable,
 ) -> Result<Option<Request>, ReconcileError> {
     // A split part has only its artifact-local ID; otherwise every key of every member
     // counts, and a member without keys already carries its artifact-local key.
     let linked = if split {
         let mut local_keys = Vec::with_capacity(observations.len());
         for observation in observations {
-            let key = artifact_local(&observation.evidence)?;
+            let key = artifact_local(&observation.evidence, sources)?;
             graph.register(&key)?;
             local_keys.push(key);
         }
@@ -1070,7 +1173,7 @@ fn build_request(
             diagnostics.push(Diagnostic::new(
                 DiagnosticCode::RevisionDisagreement,
                 Some(id.clone()),
-                revisions.iter().map(|r| r.evidence.clone()),
+                revisions.iter().map(|r| r.evidence),
                 format!("{}: {}", selector.rule(), join(disagreements.iter())),
             ));
         }
@@ -1092,7 +1195,7 @@ fn build_request(
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::CopyWithoutOriginal,
             Some(id.clone()),
-            observations.iter().map(|o| o.evidence.clone()),
+            observations.iter().map(|o| o.evidence),
             "request observed only as copies; its usage is not counted",
         ));
         Counting::CopyOnly
@@ -1114,7 +1217,7 @@ fn build_request(
         records: originals
             .iter()
             .chain(observations.iter().filter(|o| o.role == ObservationRole::Copy))
-            .map(|o| o.evidence.clone())
+            .map(|o| o.evidence)
             .collect(),
         usage,
         counting,
@@ -1140,7 +1243,7 @@ fn ownership(
             observations
                 .iter()
                 .filter(|o| matches!(o.owner, OwnerEvidence::Proven(_)))
-                .map(|o| o.evidence.clone()),
+                .map(|o| o.evidence),
             format!("proven owners {}", join(proven.iter())),
         ));
         return Ownership::Ambiguous { candidates: proven };
@@ -1164,7 +1267,7 @@ fn model(
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::ConflictingModels,
             Some(id.clone()),
-            originals.iter().filter(|o| o.model.is_some()).map(|o| o.evidence.clone()),
+            originals.iter().filter(|o| o.model.is_some()).map(|o| o.evidence),
             format!("served models {}", join(served.iter())),
         ));
     }
@@ -1198,7 +1301,7 @@ fn resolve_candidate_sets(
                 if let Some(request) = requests.get_mut(id) {
                     if *id != winner && request.counting == Counting::Counted {
                         request.counting = Counting::Unresolved { counted: winner.clone() };
-                        evidence.extend(request.evidence().iter().cloned());
+                        evidence.extend(request.evidence().iter().copied());
                     }
                 }
             }

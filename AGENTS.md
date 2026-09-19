@@ -51,9 +51,30 @@ available behind explicit consent.
 Whole-history reports run without an input-size guard; the remaining 0.1 implementation
 is the 512 MiB peak-footprint target on
 [`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
-(`uro-n1cp`), then consented G1 and full-history QA (`uro-d36a`, `uro-ky6c`). Recorded
-maintainer decisions and independent review of the published stack remain before the
-milestone is accepted.
+(`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
+586 MiB; about 141 MiB over 512. Canceled leftover children: `uro-cbsg`, `uro-yvn1`,
+`uro-l3fw`, `uro-h0fw`, `uro-vsdu`, `uro-kvrb`, `uro-ibij`, `uro-b3gg`, `uro-08oj`.
+Reverted cuts also include `uro-73al`, `uro-o5c0`, `uro-mxyh`. Do not retry those.
+Tail-consume after grouping was not attempted: the peak holds every shell before
+Requests are reserved.
+Phase 1 compaction is exhausted.
+`uro-l0gd` recorded WH 653 MiB / Codex-only 586 MiB and is closed.
+The 512 MiB gate and 10 s target live on Phase 2 (`uro-zrr0`); G1 (`uro-d36a`) waits on
+that bead.
+Phase 2 children `uro-nuhn` (CompactJson numbers without `Value`; quiet WH 685
+/ 21.3 s), `uro-96vw` (process `mimalloc`; quiet WH 834 / 19.0, Codex-only 676 / 15.3),
+`uro-s5vb` (zero-copy JSON accept; quiet WH 650 / 20.7, Codex-only 583 / 15.3), and
+`uro-h6iw` (1 MiB `BufReader`; quiet WH 635 / 21.2, Codex-only 602 / 13.7) were
+reverted. Do not retry those.
+Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
+pattern. `uro-lsaz` profile: the ~7 s over 10 s is Codex worker decode, not grouping.
+A larger read window did not cut WH wall.
+Next ready: `uro-lsaz` or `uro-a3fo`. `EvidenceRef` is 16 bytes and worker line buffers
+are bounded (`uro-as4a`, `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence`
+(`uro-24ua`), interned limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs
+(`uro-t8ws`) landed.
+Recorded maintainer decisions and independent review of the published stack remain
+before the milestone is accepted.
 Publishing is planned in
 [`plan-2026-09-16-first-release-publishing.md`](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
 and waits on that acceptance.
@@ -70,8 +91,8 @@ Planning docs live under `docs/project/`:
   release).
 - `research/`: background research briefs.
 
-The product epic is `uro-2pp9`; current implementation is `uro-n1cp`. Run
-`tbd list --specs` to see beads grouped by linked spec.
+The product epic is `uro-2pp9`; current implementation is `uro-t8ws`. The 512 gate is
+owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
 
 ## Build & Test
 

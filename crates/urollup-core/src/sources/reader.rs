@@ -60,6 +60,10 @@ impl ReadOptions {
     /// worker's buffer stays bounded.
     pub const DEFAULT_MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+    /// Capacity kept after a long line so the next short lines do not reallocate, without
+    /// retaining a 64 MiB buffer for the rest of the file.
+    pub const RETAINED_LINE_CAPACITY: usize = 256 * 1024;
+
     /// The default limits: 64 MiB records, three re-checks 20 ms apart.
     pub fn new() -> Self {
         Self {
@@ -320,6 +324,7 @@ impl Scan {
         let mut buffer = Vec::new();
         loop {
             buffer.clear();
+            shrink_line_buffer(&mut buffer);
             let line = match read_line(reader, &mut buffer, options.max_record_bytes) {
                 Ok(line) => line,
                 Err(error) => {
@@ -355,10 +360,10 @@ impl Scan {
                         self.fingerprint = Some(fingerprint);
                         self.source = Some(source_identity(spec, fingerprint)?);
                     }
-                    let Some(source) = self.source.as_ref().map(|stored| stored.id.clone()) else {
+                    if self.source.is_none() {
                         return Ok(());
-                    };
-                    let evidence = EvidenceRef { source, offset: self.offset, length };
+                    }
+                    let evidence = EvidenceRef::new(0, self.offset, length);
                     let disposition = visit(&RawRecord { evidence: &evidence, bytes: &buffer });
                     self.counters.records = self.counters.records.saturating_add(1);
                     match disposition {
@@ -372,7 +377,7 @@ impl Scan {
                         RecordDisposition::Malformed => {
                             self.counters.malformed = self.counters.malformed.saturating_add(1);
                             if self.first_malformed.is_none() {
-                                self.first_malformed = Some(evidence.clone());
+                                self.first_malformed = Some(evidence);
                             }
                         }
                         RecordDisposition::Unparsable => {
@@ -467,6 +472,13 @@ enum Line {
     Oversized { length: u64 },
     /// Bytes after the last terminator: an unfinished tail.
     Pending { length: u64, oversized: bool },
+}
+
+/// Drops spare capacity after a long line so one huge record does not pin the worker.
+pub(super) fn shrink_line_buffer(buffer: &mut Vec<u8>) {
+    if buffer.capacity() > ReadOptions::RETAINED_LINE_CAPACITY {
+        buffer.shrink_to(ReadOptions::RETAINED_LINE_CAPACITY);
+    }
 }
 
 /// Reads one line into `buffer` without its terminator, buffering at most `limit` bytes.

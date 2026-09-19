@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 
 use super::{
-    KeyGraph, LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError,
-    ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector, reconcile,
+    KeyGraph, LatestRevision, LineageLink, NativeSequence, ObservationRole, OwnerEvidence,
+    ReconcileError, ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector,
+    reconcile,
 };
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
@@ -14,16 +15,21 @@ use crate::ledger::entities::{
     RelationshipKind, RevisionStatus, Thread, ToolAction,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
+use crate::ledger::names::Name;
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
 use crate::ledger::scope::{DerivedKey, IdentityBasis, ScopedKey};
 use crate::ledger::tokens::{Measures, TokenMeasures};
-use crate::sources::evidence::EvidenceRef;
+use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::test_support::shuffle;
 
-fn source(n: u8) -> AnalyticalId {
+fn test_source(n: u8) -> AnalyticalId {
     IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::Integer(i64::from(n))])
         .derive_id()
         .unwrap()
+}
+
+fn test_sources() -> SourceTable {
+    SourceTable::from_ordered((0..=32).map(test_source).collect())
 }
 
 fn thread(name: &str) -> AnalyticalId {
@@ -33,7 +39,7 @@ fn thread(name: &str) -> AnalyticalId {
 }
 
 fn evidence(src: u8, offset: u64) -> EvidenceRef {
-    EvidenceRef { source: source(src), offset, length: 10 }
+    EvidenceRef { source: u32::from(src), offset, length: 10 }
 }
 
 fn response_key(id: &str) -> DerivedKey {
@@ -113,18 +119,22 @@ fn relationship_observation(from: u8, to: u8, src: u8, offset: u64, proven: bool
 
 fn limit_observation(stream: u8, src: u8, offset: u64, value: u8) -> ProviderLimitObservation {
     ProviderLimitObservation {
-        limit_name: Some(format!("limit-{stream}")),
-        window: Some("primary".to_owned()),
+        limit_name: Some(Name::new(&format!("limit-{stream}"))),
+        window: Some(Name::new("primary")),
         observed_at: Basis::Unknown,
         owner_thread: Some(thread(&format!("t{stream}"))),
         owner_request: None,
-        native: serde_json::json!({ "used_percent": value }).to_string().into_boxed_str(),
+        native: Name::new(&serde_json::json!({ "used_percent": value }).to_string()),
         evidence: evidence(src, offset),
     }
 }
 
 fn run(requests: Vec<RequestObservation>) -> super::Ledger {
-    reconcile(ReconcileInput { requests, ..ReconcileInput::default() }, &LatestRevision).unwrap()
+    reconcile(
+        ReconcileInput { requests, source_table: test_sources(), ..ReconcileInput::default() },
+        &LatestRevision,
+    )
+    .unwrap()
 }
 
 fn codes(ledger: &super::Ledger) -> Vec<DiagnosticCode> {
@@ -149,7 +159,7 @@ fn streamed_usage_updates_collapse_into_one_request_with_revisions() {
     let mut records = Vec::new();
     for (sequence, output) in [(1, 5), (2, 9), (3, 30)] {
         let mut record = observed(0, sequence * 100, "msg_1", output);
-        record.sequence = Some(sequence);
+        record.sequence = NativeSequence::new(sequence);
         records.push(record);
     }
     let ledger = run(records);
@@ -318,6 +328,7 @@ fn lineage_links_merge_keys_and_keep_aliases() {
             b: native_id.clone(),
             evidence: vec![evidence(1, 0)],
         }],
+        source_table: test_sources(),
         ..ReconcileInput::default()
     };
     let ledger = reconcile(input, &LatestRevision).unwrap();
@@ -338,6 +349,7 @@ fn unobserved_gaps_and_unknown_usage_make_totals_partial() {
             thread: None,
             evidence: Vec::new(),
         }],
+        source_table: test_sources(),
         ..ReconcileInput::default()
     };
     let ledger = reconcile(input, &LatestRevision).unwrap();
@@ -385,7 +397,11 @@ fn a_dialect_selector_plugs_in_and_reports_disagreements() {
     first.usage = Some(usage(100, 40));
     let mut second = observed(0, 10, "msg_1", 12);
     second.usage = Some(usage(101, 12));
-    let input = ReconcileInput { requests: vec![second, first], ..ReconcileInput::default() };
+    let input = ReconcileInput {
+        requests: vec![second, first],
+        source_table: test_sources(),
+        ..ReconcileInput::default()
+    };
     let ledger = reconcile(input, &LargestOutput).unwrap();
     let request = ledger.requests.values().next().unwrap();
     assert_eq!(
@@ -413,8 +429,11 @@ impl RevisionSelector for OutOfRange {
 
 #[test]
 fn engine_errors_are_values() {
-    let input =
-        ReconcileInput { requests: vec![observed(0, 0, "m", 1)], ..ReconcileInput::default() };
+    let input = ReconcileInput {
+        requests: vec![observed(0, 0, "m", 1)],
+        source_table: test_sources(),
+        ..ReconcileInput::default()
+    };
     assert!(matches!(
         reconcile(input.clone(), &OutOfRange),
         Err(ReconcileError::InvalidRevisionChoice { selected: 1, count: 1, .. })
@@ -430,7 +449,11 @@ fn engine_errors_are_values() {
         .unwrap(),
     ]
     .into();
-    let input = ReconcileInput { requests: vec![wrong], ..ReconcileInput::default() };
+    let input = ReconcileInput {
+        requests: vec![wrong],
+        source_table: test_sources(),
+        ..ReconcileInput::default()
+    };
     assert!(matches!(reconcile(input, &LatestRevision), Err(ReconcileError::WrongPrefix { .. })));
 }
 
@@ -450,6 +473,7 @@ fn non_request_entities_merge_evidence_and_diagnose_conflicting_properties() {
             relationship_observation(0, 1, 1, 20, true),
         ],
         tool_actions: vec![second_action, first_action],
+        source_table: test_sources(),
         ..ReconcileInput::default()
     };
     let ledger = reconcile(input, &LatestRevision).unwrap();
@@ -502,6 +526,7 @@ fn entity_references_follow_reconciled_aliases() {
             requests: vec![request],
             tool_actions: vec![action],
             limit_observations: vec![limit],
+            source_table: test_sources(),
             ..ReconcileInput::default()
         },
         &LatestRevision,
@@ -526,6 +551,7 @@ fn only_consecutive_identical_limit_snapshots_collapse() {
                 limit_observation(0, 0, 20, 2),
                 limit_observation(0, 0, 10, 1),
             ],
+            source_table: test_sources(),
             ..ReconcileInput::default()
         },
         &LatestRevision,
@@ -573,7 +599,7 @@ fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
                 _ => OwnerEvidence::Proven(thread("t3")),
             };
             observation.usage = used.map(|(input, output)| usage(input, output));
-            observation.sequence = sequence;
+            observation.sequence = sequence.and_then(NativeSequence::new);
             if let Some(session) = session {
                 observation.invariants.push(("session", format!("s{session}").into()));
             }
@@ -611,6 +637,7 @@ fn arbitrary_entity_input() -> impl Strategy<Value = ReconcileInput> {
                 .into_iter()
                 .map(|(stream, src, slot, value)| limit_observation(stream, src, slot * 10, value))
                 .collect(),
+            source_table: test_sources(),
             ..ReconcileInput::default()
         })
 }

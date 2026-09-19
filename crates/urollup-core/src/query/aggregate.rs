@@ -507,11 +507,7 @@ mod tests {
                 .derive_id()
                 .unwrap()
         };
-        let mut observation = RequestObservation::new(EvidenceRef {
-            source: identity(IdPrefix::Source, "source"),
-            offset,
-            length: 1,
-        });
+        let mut observation = RequestObservation::new(EvidenceRef { source: 0, offset, length: 1 });
         observation.owner = OwnerEvidence::Proven(identity(IdPrefix::Thread, owner));
         observation.usage = with_usage.then(|| {
             TokenMeasures { uncached_input: Some(10), output: Some(1), ..TokenMeasures::default() }
@@ -521,12 +517,19 @@ mod tests {
     }
 
     fn coverage_report(
-        input: crate::ledger::reconcile::ReconcileInput,
+        mut input: crate::ledger::reconcile::ReconcileInput,
         selected: &BTreeSet<crate::ledger::identity::AnalyticalId>,
         all: bool,
     ) -> crate::query::ReportDocument {
         use crate::adapters::Ingested;
+        use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
         use crate::ledger::reconcile::{LatestRevision, reconcile};
+        use crate::sources::evidence::SourceTable;
+        input.source_table = SourceTable::from_ordered(vec![
+            IdentityKey::new(IdPrefix::Source, "coverage-test", vec![KeyComponent::text("source")])
+                .derive_id()
+                .unwrap(),
+        ]);
         let ingested =
             Ingested { ledger: reconcile(input, &LatestRevision).unwrap(), ..Ingested::default() };
         let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();

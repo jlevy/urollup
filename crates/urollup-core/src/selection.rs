@@ -1,5 +1,6 @@
 //! Session discovery, exact current-session detection and hierarchy selection.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -125,8 +126,11 @@ impl SessionIndex {
             // Inline children share the main transcript, so its path selects the native
             // main session; their analytical IDs select the children.
             if thread.source.value().map(String::as_str) != Some("inline-sidechain") {
-                let evidence_sources: BTreeSet<_> =
-                    thread.evidence.iter().map(|evidence| &evidence.source).collect();
+                let evidence_sources: BTreeSet<_> = thread
+                    .evidence
+                    .iter()
+                    .filter_map(|evidence| ingested.ledger.source_table.get(evidence.source))
+                    .collect();
                 for source in evidence_sources {
                     matched.extend(by_identity.get(source).into_iter().flatten());
                 }
@@ -141,10 +145,22 @@ impl SessionIndex {
             }
             paths.sort();
             paths.dedup();
-            let session = IndexedSession { thread: thread.clone(), agent, source_paths: paths };
-            if let Some(existing) = self.sessions.insert(id.clone(), session.clone()) {
-                if existing != session {
-                    return Err(SelectionError::ConflictingThread(id.clone()));
+            // Query and selection keep native keys, project and paths. Evidence only
+            // matched sources above, and aliases are unused after reconciliation.
+            let mut thread = thread.clone();
+            thread.evidence.clear();
+            thread.evidence.shrink_to_fit();
+            thread.aliases.clear();
+            thread.aliases.shrink_to_fit();
+            let session = IndexedSession { thread, agent, source_paths: paths };
+            match self.sessions.entry(id.clone()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(session);
+                }
+                Entry::Occupied(slot) => {
+                    if slot.get() != &session {
+                        return Err(SelectionError::ConflictingThread(id.clone()));
+                    }
                 }
             }
         }
@@ -720,8 +736,11 @@ mod tests {
             .threads
             .values()
             .map(|thread| {
-                let evidence: BTreeSet<_> =
-                    thread.evidence.iter().map(|evidence| &evidence.source).collect();
+                let evidence: BTreeSet<_> = thread
+                    .evidence
+                    .iter()
+                    .filter_map(|evidence| ingested.ledger.source_table.get(evidence.source))
+                    .collect();
                 let mut paths: Vec<PathBuf> = ingested
                     .sources
                     .iter()

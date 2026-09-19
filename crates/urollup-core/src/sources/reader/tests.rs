@@ -61,10 +61,7 @@ fn scan_with(
         files,
         options,
         |record: &RawRecord<'_>| {
-            records.push((
-                record.evidence.clone(),
-                String::from_utf8_lossy(record.bytes).into_owned(),
-            ));
+            records.push((*record.evidence, String::from_utf8_lossy(record.bytes).into_owned()));
             if serde_json::from_slice::<serde_json::Value>(record.bytes).is_ok() {
                 RecordDisposition::Decoded
             } else {
@@ -130,7 +127,7 @@ fn reads_complete_records_with_decoded_offsets_and_a_source_id() {
     let source = entry.source.clone().unwrap();
     source.verify().unwrap();
     assert_eq!(records.len(), 3);
-    assert_eq!(records[0].0, EvidenceRef { source: source.id.clone(), offset: 0, length: 7 });
+    assert_eq!(records[0].0, EvidenceRef { source: 0, offset: 0, length: 7 });
     assert_eq!(records[1].0.offset, 8);
     assert_eq!(records[2].0.offset, 16);
     assert_eq!(records[2].1, "{\"i\":3}");
@@ -517,4 +514,25 @@ fn a_stopped_visitor_aborts_without_visiting_the_tail_or_returning_a_snapshot() 
         assert!(matches!(result, Err(SourceReadError::VisitorStopped)));
         assert_eq!(visited, 2);
     }
+}
+
+#[test]
+fn spare_capacity_after_a_long_line_is_released() {
+    let mut buffer = Vec::with_capacity(2 * 1024 * 1024);
+    buffer.resize(8, 1);
+    super::shrink_line_buffer(&mut buffer);
+    assert!(buffer.capacity() <= ReadOptions::RETAINED_LINE_CAPACITY);
+    assert_eq!(buffer, [1; 8]);
+}
+
+#[test]
+fn a_long_line_does_not_prevent_reading_the_next_record() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("session.jsonl");
+    let long = format!("{{\"n\":1,\"pad\":\"{}\"}}", "x".repeat(300_000));
+    write(&path, format!("{long}\n{{\"n\":2}}\n").as_bytes());
+    let (entry, records) = scan(&plain(&path));
+    assert_eq!(records.len(), 2);
+    assert_eq!(entry.counters.decoded, 2);
+    assert_eq!(records[1].1, "{\"n\":2}");
 }

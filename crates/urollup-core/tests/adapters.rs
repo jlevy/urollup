@@ -46,12 +46,17 @@ fn assert_limit_observations(actual: &[ProviderLimitObservation], expected: &Val
     assert_eq!(actual.len(), expected.len(), "{name}: limit observations");
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         assert_eq!(
-            actual.limit_name.as_deref(),
+            actual.limit_name.as_ref().map(|name| name.as_str()),
             expected["limit"].as_str(),
             "{name}: limit {index}"
         );
-        assert_eq!(actual.window.as_deref(), expected["window"].as_str(), "{name}: window {index}");
-        let native: Value = serde_json::from_str(&actual.native).expect("native fields are JSON");
+        assert_eq!(
+            actual.window.as_ref().map(|name| name.as_str()),
+            expected["window"].as_str(),
+            "{name}: window {index}"
+        );
+        let native: Value =
+            serde_json::from_str(actual.native.as_str()).expect("native fields are JSON");
         assert_eq!(native, expected["native"], "{name}: native limit fields {index}");
     }
 }
@@ -98,6 +103,27 @@ fn claude_rejects_malformed_subagent_metadata() {
     std::fs::write(subagents.join("agent-example.meta.json"), b"{").unwrap();
 
     assert!(matches!(ingest_root(root.path()), Err(AdapterError::MetadataParse { .. })));
+}
+
+#[test]
+fn release_discovery_keeps_the_ledger_after_session_index_copies_threads() {
+    let ingested = ingest_root(&fixture("brief-double-counting")).unwrap();
+    let requests = ingested.ledger.requests.len();
+    let threads = ingested.threads.len();
+    assert!(requests > 0 && threads > 0);
+
+    let mut index = SessionIndex::default();
+    index.add(Agent::Claude, &ingested).unwrap();
+    assert_eq!(index.sessions().count(), threads);
+
+    let mut ingested = ingested;
+    ingested.release_discovery();
+    assert!(ingested.manifest.entries.is_empty());
+    assert!(ingested.sources.is_empty());
+    assert!(ingested.threads.is_empty());
+    assert!(ingested.relationships.is_empty());
+    assert_eq!(ingested.ledger.requests.len(), requests);
+    assert_eq!(index.sessions().count(), threads);
 }
 
 #[test]

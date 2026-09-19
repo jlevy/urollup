@@ -17,6 +17,7 @@
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
 
 use crate::sources::manifest::Representation;
@@ -128,6 +129,88 @@ where
     Ok(values)
 }
 
+/// Applies a fallible `read` to every item on at most `workers` threads and consumes
+/// each value as it completes, without collecting the results.
+///
+/// `consume` receives the item's input index and the value. Consumption order is
+/// completion order, not input order. A failure still reports the first failing item in
+/// input order. Once an item has failed, later items may be skipped; earlier items still
+/// run.
+pub fn try_read_in_parallel_for_each<T, U, E, W, R, F>(
+    items: &[T],
+    workers: NonZeroUsize,
+    weight: W,
+    read: R,
+    mut consume: F,
+) -> Result<(), E>
+where
+    T: Sync,
+    U: Send,
+    E: Send + From<ParallelReadError>,
+    W: Fn(&T) -> u64,
+    R: Fn(&T) -> Result<U, E> + Sync,
+    F: FnMut(usize, U) -> Result<(), E>,
+{
+    if items.is_empty() {
+        return Ok(());
+    }
+    let worker_count = workers.get().min(items.len());
+    if worker_count <= 1 {
+        for (index, item) in items.iter().enumerate() {
+            consume(index, read(item)?)?;
+        }
+        return Ok(());
+    }
+    let weights: Vec<u64> = items.iter().map(weight).collect();
+    let order = heaviest_first(&weights);
+    let next = AtomicUsize::new(0);
+    let first_failure = AtomicUsize::new(usize::MAX);
+    let (tx, rx) = mpsc::channel();
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let tx = tx.clone();
+            let read = &read;
+            let order = &order;
+            let next = &next;
+            let first_failure = &first_failure;
+            scope.spawn(move || {
+                while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if index > first_failure.load(Ordering::Relaxed) {
+                        let _ = tx.send((index, None));
+                        continue;
+                    }
+                    let Some(item) = items.get(index) else {
+                        continue;
+                    };
+                    let result = read(item);
+                    if result.is_err() {
+                        first_failure.fetch_min(index, Ordering::Relaxed);
+                    }
+                    let _ = tx.send((index, Some(result)));
+                }
+            });
+        }
+        drop(tx);
+        let mut remaining = items.len();
+        let mut first_error = None;
+        while remaining > 0 {
+            let (index, result) = rx.recv().map_err(|_| ParallelReadError)?;
+            remaining = remaining.saturating_sub(1);
+            match result {
+                Some(Ok(value)) if first_error.is_none() => consume(index, value)?,
+                Some(Err(error)) if first_error.as_ref().is_none_or(|(seen, _)| index < *seen) => {
+                    first_error = Some((index, error));
+                }
+                _ => {}
+            }
+        }
+        match first_error {
+            Some((_, error)) => Err(error),
+            None => Ok(()),
+        }
+    })
+}
+
 /// Applies `read` to every item and its input index on at most `workers` threads, and
 /// returns the results in input order.
 fn run_in_parallel<T, U, W, R>(
@@ -193,7 +276,7 @@ mod tests {
 
     use super::{
         MAX_DEFAULT_WORKERS, ParallelReadError, default_workers, heaviest_first, read_in_parallel,
-        source_weight, try_read_in_parallel,
+        source_weight, try_read_in_parallel, try_read_in_parallel_for_each,
     };
     use crate::sources::reader::LogicalSource;
 
@@ -305,6 +388,32 @@ mod tests {
         );
         assert_eq!(result, Err(Failure::Item(3)));
         assert_eq!(reads.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn for_each_visits_every_item_once_on_every_worker_count() {
+        let items: Vec<usize> = (0..64).collect();
+        for count in [1, 2, 3, 8, 64] {
+            let reads = AtomicUsize::new(0);
+            let mut seen = Vec::new();
+            try_read_in_parallel_for_each(
+                &items,
+                workers(count),
+                |item| u64::try_from(*item % 7).unwrap(),
+                |item| {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    Ok::<_, Failure>(*item)
+                },
+                |_, item| {
+                    seen.push(item);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            seen.sort_unstable();
+            assert_eq!(seen, items, "worker count {count}");
+            assert_eq!(reads.load(Ordering::Relaxed), items.len(), "worker count {count}");
+        }
     }
 
     #[test]

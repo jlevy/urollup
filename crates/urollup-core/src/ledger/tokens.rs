@@ -14,9 +14,11 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Disjoint token categories. `None` means the source does not report the category.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -74,8 +76,9 @@ impl TokenMeasures {
 /// [`TokenMeasures`] as ledger rows store them: eight counters and a presence mask.
 ///
 /// Each `Option<u64>` of a `TokenMeasures` spends 8 bytes on its tag, so the public type
-/// takes 128 bytes; this form takes 72, and so does `Option<Measures>`, because the mask
-/// has a niche. Rows store `Measures`, and arithmetic converts to `TokenMeasures`.
+/// takes 128 bytes. Counters that fit in `u32` stay inline (36 bytes, including the
+/// `Option` niche). A counter above `u32::MAX` is interned once per distinct pattern so
+/// rows do not allocate and values are not truncated.
 ///
 /// An absent counter is stored as zero, so equality is value equality. Ordering and
 /// hashing are those of the equivalent `TokenMeasures`: its derived order compares fields
@@ -83,28 +86,70 @@ impl TokenMeasures {
 /// observation order.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Measures {
-    /// Counter values in [`TokenMeasures`] field order; zero when absent.
-    values: [u64; 8],
+    /// Compact counters in [`TokenMeasures`] field order, or an overflow intern index in
+    /// slot 0 when [`OVERFLOW_BIT`] is set.
+    values: [u32; 8],
     /// Bit 0 is always set, which gives the niche; bit `n + 1` marks counter `n` present.
     present: NonZeroU16,
 }
 
-const _: () = assert!(std::mem::size_of::<Measures>() == 72);
-const _: () = assert!(std::mem::size_of::<Option<Measures>>() == 72);
+const _: () = assert!(std::mem::size_of::<Measures>() == 36);
+const _: () = assert!(std::mem::size_of::<Option<Measures>>() == 36);
 
 /// The presence bit of each counter, in field order.
 const PRESENCE_BITS: [u16; 8] = [0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100];
 
+/// Set on [`Measures::present`] when [`Measures::values`]`[0]` is an overflow intern index.
+const OVERFLOW_BIT: u16 = 0x8000;
+
+/// One interned pattern whose counters do not fit in `u32`.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct OverflowRow {
+    values: [u64; 8],
+    present: u16,
+}
+
+/// Distinct overflow patterns, interned for the process like [`super::names::Name`]s.
+static OVERFLOW: OnceLock<Mutex<HashMap<OverflowRow, u32>>> = OnceLock::new();
+static OVERFLOW_ROWS: Mutex<Vec<OverflowRow>> = Mutex::new(Vec::new());
+
 impl Measures {
     fn fields(&self) -> [Option<u64>; 8] {
-        let mut fields = [None; 8];
-        for ((field, value), bit) in fields.iter_mut().zip(self.values).zip(PRESENCE_BITS) {
-            if self.present.get() & bit != 0 {
-                *field = Some(value);
-            }
+        let present = self.present.get();
+        if present & OVERFLOW_BIT != 0 {
+            let rows = OVERFLOW_ROWS.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(row) = rows.get(self.values[0] as usize) else {
+                return [None; 8];
+            };
+            return fields_from(row.values, row.present);
         }
-        fields
+        fields_from(self.values.map(u64::from), present)
     }
+}
+
+fn fields_from(values: [u64; 8], present: u16) -> [Option<u64>; 8] {
+    let mut fields = [None; 8];
+    for ((field, value), bit) in fields.iter_mut().zip(values).zip(PRESENCE_BITS) {
+        if present & bit != 0 {
+            *field = Some(value);
+        }
+    }
+    fields
+}
+
+fn intern_overflow(row: OverflowRow) -> u32 {
+    let mut index = OVERFLOW
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(id) = index.get(&row) {
+        return *id;
+    }
+    let mut rows = OVERFLOW_ROWS.lock().unwrap_or_else(PoisonError::into_inner);
+    let id = u32::try_from(rows.len()).expect("fewer than 2^32 overflow measure patterns");
+    rows.push(row);
+    index.insert(row, id);
+    id
 }
 
 impl Default for Measures {
@@ -115,16 +160,33 @@ impl Default for Measures {
 
 impl From<TokenMeasures> for Measures {
     fn from(measures: TokenMeasures) -> Self {
-        let mut compact = Self::default();
+        let mut values = [0_u64; 8];
+        let mut present = 1_u16;
+        let mut overflow = false;
         for ((field, value), bit) in
-            measures.fields().into_iter().zip(&mut compact.values).zip(PRESENCE_BITS)
+            measures.fields().into_iter().zip(&mut values).zip(PRESENCE_BITS)
         {
             if let Some(field) = field {
                 *value = field;
-                compact.present |= bit;
+                present |= bit;
+                overflow |= field > u64::from(u32::MAX);
             }
         }
-        compact
+        if overflow {
+            let id = intern_overflow(OverflowRow { values, present });
+            let mut compact = [0_u32; 8];
+            compact[0] = id;
+            return Self {
+                values: compact,
+                present: NonZeroU16::new(present | OVERFLOW_BIT)
+                    .expect("overflow measures keep the niche bit"),
+            };
+        }
+        Self {
+            values: values
+                .map(|value| u32::try_from(value).expect("the compact path has no u32 overflow")),
+            present: NonZeroU16::new(present).expect("compact measures keep the niche bit"),
+        }
     }
 }
 
@@ -318,6 +380,7 @@ fn sum_known<const N: usize>(
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
     use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 
     use proptest::prelude::*;
@@ -357,6 +420,20 @@ mod tests {
             prop_assert_eq!(hasher.hash_one(compact_left), hasher.hash_one(left));
             prop_assert_eq!(format!("{compact_left:?}"), format!("{left:?}"));
         }
+    }
+
+    #[test]
+    fn counters_above_u32_round_trip_and_intern_once() {
+        let original = TokenMeasures {
+            uncached_input: Some(u64::from(u32::MAX).saturating_add(1)),
+            output: Some(u64::MAX),
+            ..TokenMeasures::default()
+        };
+        let first = Measures::from(original);
+        let second = Measures::from(original);
+        assert_eq!(TokenMeasures::from(first), original);
+        assert_eq!(first, second);
+        assert_eq!(first.cmp(&second), Ordering::Equal);
     }
 
     #[test]
