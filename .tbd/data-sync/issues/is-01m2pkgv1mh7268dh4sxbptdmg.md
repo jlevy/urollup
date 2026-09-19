@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 2: fast decode and scale gates"
 kind: task
 status: open
 priority: 1
-version: 15
+version: 16
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -26,8 +26,9 @@ child_order_hints:
   - is-01m2xqdnc3rt0x1zvx49m19n4a
   - is-01m2xqdnqejxxt9dexr6218q7f
   - is-01m2xr9e3p2krpf2x0vf0f09d7
+  - is-01m2xsj6xgcxet8hy8dxcbeyh4
 created_at: 2026-09-17T02:35:51.219Z
-updated_at: 2026-09-19T21:13:52.502Z
+updated_at: 2026-09-19T21:36:08.623Z
 ---
 Finish Phase 2 of the scalable-ingestion plan: leftover typed decode and allocator work so whole-history peak can still reach 512 MiB, then wall time at most 10 s. Phase 1 row compaction is exhausted (uro-t8ws standing 653/586). The 512 MiB gate now lives here, not on more Phase 1 children. G1 (uro-d36a) waits on this bead.
 
