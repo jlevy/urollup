@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 11
+version: 19
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -16,18 +16,37 @@ dependencies:
     target: is-01m2pkgv1mh7268dh4sxbptdmg
   - type: blocks
     target: is-01m2ksd5yzhp73gb475pzbvvg6
+  - type: blocks
+    target: is-01m2x8apr4dv9jctc0j20g6mbq
+  - type: blocks
+    target: is-01m2x8aq4skat5vmx2y97th32e
 parent_id: is-01m2p3evvpmcn8cf59wc1196f6
 child_order_hints:
   - is-01m2wbbbwc2m0rmc4vzdqtkb67
   - is-01m2wbbd2eaetkn9zdz86xdhys
-  - is-01m2wbbcf9be2tbvyz9f7yydnx
   - is-01m2wbbdhxmcebyf47j3eedj7d
+  - is-01m2x8an7mrxpsqaea7f9gvdz1
+  - is-01m2x8anm7hden3ve0c3274bpz
+  - is-01m2wbbcf9be2tbvyz9f7yydnx
+  - is-01m2x8ap0h71f5mpry8b57wb3k
+  - is-01m2x8apcp21hd5yacp01m0a9b
   - is-01m2wbbfnm8gs10hrmyrg14tma
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T16:29:13.724Z
+updated_at: 2026-09-19T16:35:22.766Z
 ---
-Finish Phase 1 of the scalable-ingestion plan: compact Codex decoded records and the observation/request rows so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus. Already landed: the owner-map fix, in-place compact rows, bounded workers, guard removal, the 2 GiB compact-row ceiling, UROLLUP_STATS, the native session field, worker-count identity tests, and whole-history completion in about 18–30 s at about 1.14 GB. Acceptance: make check; whole history exits 0 in at most 25 s at no more than 512 MiB; one and eight workers give identical JSON.
+Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
+
+Already landed: the owner-map fix, in-place compact rows, bounded workers, guard removal, the 2 GiB compact-row ceiling, UROLLUP_STATS, the native session field, worker-count identity tests, Ingested::release_discovery (uro-brar), Claude per-record interned IDs (uro-hw2q), and worker-side Codex observe (uro-ecol). Whole history completes in about 22 s at 861 MiB.
+
+Remaining children:
+- uro-q1ik: Claude SourceDecoder::decode must not call parse_record after LineHead
+- uro-g7pi: Codex RateLimitsSeed must not build Map<String, Value>
+- uro-as4a: EvidenceRef 40 B → 16 B source index
+- uro-l3fw, uro-1sm8: contingencies if those three miss 512 MiB
+- uro-l0gd: privacy-safe RSS after each cut; closes this bead at ≤512 MiB
+
+Acceptance: make check; whole history exits 0 in at most 25 s at no more than 512 MiB; one and eight workers give identical JSON.
 
 ## Notes
 
-2026-09-19: uro-ecol landed. Peak 861 MiB. Remaining 512 gap is Codex decode (Value rate_limits + worker line buffers), which is the Phase 2 typed-decode path (uro-zrr0), plus a small uro-as4a EvidenceRef shrink.
+2026-09-19: Phase 1/2 deadlock fixed. Remaining 512 work is now Phase 1 children, not uro-zrr0: uro-q1ik (Claude parse_record after LineHead), uro-g7pi (Codex RateLimitsSeed Value map), uro-as4a (16-byte EvidenceRef). Contingencies uro-l3fw and uro-1sm8 wait on those. uro-zrr0 is 10 s and leftover Value cleanup after 512.
