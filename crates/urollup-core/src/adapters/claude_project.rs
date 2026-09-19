@@ -110,10 +110,8 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 /// thread, four 4-byte symbols, a 32-byte message ID with its digest, a 16-byte request
 /// ID, a 16-byte timestamp, 64 bytes of counts with a 1-byte presence mask, a 17-byte
 /// optional uuid digest, two flags and an 8-byte pointer to rare fields.
-const MAX_RECORD_BYTES: usize = 200;
-
 const _: () = assert!(
-    size_of::<ParsedRecord>() <= MAX_RECORD_BYTES,
+    size_of::<ParsedRecord>() <= 200,
     "a decoded Claude record outgrew its size budget"
 );
 

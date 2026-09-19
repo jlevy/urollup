@@ -87,10 +87,8 @@ const COUNTER_KEY: KeySpec = KeySpec {
 /// largest variants are a usage record (three 4-byte symbols and a 2-byte count mask,
 /// behind an option), a turn context (a symbol and two 8-byte names) and a token count (a
 /// count mask and an 8-byte shared rate-limit pointer).
-const MAX_RECORD_BYTES: usize = 80;
-
 const _: () = assert!(
-    size_of::<ParsedRecord>() <= MAX_RECORD_BYTES,
+    size_of::<ParsedRecord>() <= 80,
     "a decoded Codex record outgrew its size budget"
 );
 
