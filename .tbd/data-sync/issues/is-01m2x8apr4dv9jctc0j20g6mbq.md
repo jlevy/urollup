@@ -5,7 +5,7 @@ title: Cut whole-history wall time to 10 seconds
 kind: task
 status: open
 priority: 1
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -13,7 +13,7 @@ labels:
 dependencies: []
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 created_at: 2026-09-19T16:34:56.899Z
-updated_at: 2026-09-19T16:34:56.899Z
+updated_at: 2026-09-19T20:58:52.315Z
 ---
 Phase 2 speed target after the 512 MiB peak is met. Whole-history sessions --all is 22.3 s after uro-ecol on the reference laptop (Apple M1 Pro). Phase 2 acceptance is at most 10 s with outputs byte-identical to Phase 1.
 
@@ -26,3 +26,7 @@ Likely files once measured:
 - crates/urollup/src/cli.rs (ingest order, UROLLUP_STATS phases)
 
 Acceptance: release sessions --all on the maintainer corpus at most 10 s; one and eight workers identical JSON; scale gates still green; privacy-safe numbers in the spec.
+
+## Notes
+
+2026-09-19: Unblocked from uro-n1cp. 10 s still follows typed-decode/allocator cuts under uro-zrr0. Standing wall 17.3 s.

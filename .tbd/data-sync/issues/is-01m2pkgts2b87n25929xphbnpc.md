@@ -5,21 +5,13 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 52
+version: 57
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
   - performance
   - memory
-dependencies:
-  - type: blocks
-    target: is-01m2pkgv1mh7268dh4sxbptdmg
-  - type: blocks
-    target: is-01m2ksd5yzhp73gb475pzbvvg6
-  - type: blocks
-    target: is-01m2x8apr4dv9jctc0j20g6mbq
-  - type: blocks
-    target: is-01m2x8aq4skat5vmx2y97th32e
+dependencies: []
 parent_id: is-01m2p3evvpmcn8cf59wc1196f6
 child_order_hints:
   - is-01m2wbbbwc2m0rmc4vzdqtkb67
@@ -49,7 +41,7 @@ child_order_hints:
   - is-01m2xm3qa0jxax4tsdx8m93kgc
   - is-01m2xny7rtfamywg0z6b1qxbpq
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T20:56:33.388Z
+updated_at: 2026-09-19T20:58:51.305Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -66,4 +58,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: Canceled leftover Phase 1 children that will not land (uro-cbsg, uro-yvn1, uro-l3fw, uro-h0fw, uro-vsdu, uro-kvrb, uro-ibij, uro-b3gg, uro-08oj). Tail-consume after grouping not filed: peak is all shells before Requests are reserved; shrink_to_fit of the live remainder reallocs. Field/ID relocation exhausted. Standing uro-t8ws 653/586. 512 cut queue empty. Next path Phase 2 typed decode / allocator (uro-zrr0). This bead not closable (141 MiB over).
+2026-09-19: Phase 1 row compaction exhausted. uro-l0gd closed as remasure (653/586 in the spec). This bead now depends on uro-zrr0: the 512 gate lives on Phase 2 typed decode / allocator. Do not add more Phase 1 shell-field children. Not closable until zrr0 meets 512.
