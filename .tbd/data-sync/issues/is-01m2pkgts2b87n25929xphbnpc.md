@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 42
+version: 43
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -45,7 +45,7 @@ child_order_hints:
   - is-01m2xh33f1j10y2c3ykq2x8pkj
   - is-01m2xhmbbke03tcmr6f115a3jj
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T19:18:10.157Z
+updated_at: 2026-09-19T19:28:26.402Z
 ---
 Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
 
@@ -62,4 +62,4 @@ Acceptance: make check; whole history exits 0 in at most 25 s at no more than 51
 
 ## Notes
 
-2026-09-19: uro-7w0u and uro-24ua landed. Observation shell 264 to 224 B. Paired remasure after uro-24ua: Codex-only 614 MiB (628608 KiB) / 14.5 s, WH 768 MiB (786656 KiB) / 17.5 s. Still above 512. Next uro-o5c0 (keep two key slots; drop unused spill). Not closable.
+2026-09-19: uro-o5c0 reverted (216 B shell, peak did not fall). Standing remasure remains uro-24ua: Codex-only 614 MiB (628608 KiB) / 14.5 s, WH 768 MiB (786656 KiB) / 17.5 s. Shell-field shrinks exhausted. Remaining ~256 MiB is intern/KeyGraph/limit rows/allocator at grouping, not another 8 B field. Not closable.
