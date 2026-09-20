@@ -2,16 +2,16 @@
 title: PR Stack and Memory Audit
 description: Published-head validation, reproduced findings, merge order, and the remaining 0.1 acceptance work.
 date: 2026-09-19
-status: R1–R11 implemented locally; integrated checks, CI and milestone acceptance pending
+status: Implementation fixes validated locally; final per-layer CI and milestone acceptance pending
 ---
 # PR Stack and Memory Audit
 
-The audit and follow-up review identified eleven actionable findings.
-R1–R11 now have local fixes on their owning branches; the stack is rebased and both
-intended coverage goldens have been reviewed.
-Final integrated checks and fresh CI remain before merge approval.
-The whole-history memory and speed targets remain unproven on the updated heads.
-Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementation and
+The audit and follow-up review identified eleven implementation findings and four Cursor
+planning findings. R1–R11 now have local fixes on their owning branches; the stack is
+rebased and both intended coverage goldens have been reviewed.
+The full integrated handoff gate passed; final per-layer CI remains before merge
+approval. The whole-history memory and speed targets remain unproven on the updated
+heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementation and
 validation. No maintainer decision has been accepted or silently closed.
 
 ## Stabilization Control
@@ -51,28 +51,33 @@ The six policy decisions and the unverified-shape evidence remain pending; see
 
 ## Restacked Implementation Heads
 
-These local heads include R1–R11 and the typed-sidecar follow-up.
-Final CI and local handoff validation are pending at this checkpoint.
+These revisions contain the final implementation fixes, before the evidence-only review
+update on #12. The entire #12 tree equals the fully tested `296f12b` tree after the last
+restack; the subsequent commit updates only this review document.
+Final CI is reported on each PR and its linked check runs.
 
-| PR | Branch | Head |
+| PR | Branch | Validated code revision |
 | --- | --- | --- |
 | #4 | `milestone-0.1` | `2f9afa38acbf` |
-| #8 | `codex/v0.1-terminal-ux-acceptance` | `d359321ea810` |
-| #10 | `scalable-ingestion` | `789e79ee0e08` |
-| #11 | `ingest-compact` | `5cd55f8d3e91` |
-| #12 | `ingest-capacity` | `6a3277c25cd7` |
+| #8 | `codex/v0.1-terminal-ux-acceptance` | `4a8ef34cd284` |
+| #10 | `scalable-ingestion` | `b390982f0efb` |
+| #11 | `ingest-compact` | `e79980583d87` |
+| #12 | `ingest-capacity` | `8ad8f94d350a` |
 
-The subsequent documentation commit changes no Rust implementation.
-Independent review of the conflict resolutions found no blocker in key canonicalization,
-reset handling, reader cutoff/cancellation or selected coverage.
-PR11 passed 215 core tests and all-target Clippy before PR12 replay; PR12 admission
-received a separate read-only review.
+The final propagation repaired two standalone-layer compilation gaps: #8 needed a
+mutable binding when consuming identity keys, and #10 needed its new coverage tests
+ported to its own API. Standalone #8 passed 156 core tests and all-target core Clippy;
+#10 passed 198 core tests and the same Clippy gate.
+These corrections leave the tested top-layer tree unchanged.
+Independent review found no blocker in the conflict resolutions or configured admission.
+PR11 passed 215 core tests before PR12 replay; the new PR12 test covers 18 early-refusal
+and nine exact-capacity success cases, and all 11 CLI process tests pass.
 
 ## Local Finding Dispositions
 
-All rows mean **implemented locally; integrated validation and CI pending**. Commit IDs
-identify the current pre-restack fixes, not final published heads; retain the published
-snapshot below as historical evidence and record final SHAs after propagation.
+All rows describe implemented fixes validated locally; final per-layer CI is tracked
+separately. Commit IDs below preserve the original fixing commits before restacking,
+rather than naming the current published heads.
 
 | Finding | Owning layer and local commit | Implemented behavior and regression evidence |
 | --- | --- | --- |
@@ -285,6 +290,27 @@ completeness. Copy exclusion and provenance diagnostics remain.
 Any policy to make missing originals an explicit coverage gap must use that concept,
 rather than misclassifying copies as counted requests without usage.
 
+## Cursor Planning Review Findings
+
+A bounded independent review of PR #14 at `6c3fc36` found four additional planning
+issues. Commit `c8befd9` fixes them on the separate `cursor-dialect` branch; all four
+changed files passed pinned Flowmark checks and `git diff --check`. No private data was
+re-surveyed.
+
+| Finding | Bead | Disposition |
+| --- | --- | --- |
+| R12: plan contradicts confirmed database-input ordering | `uro-g7da` | Retain product Phase 3 ordering; an earlier named database adapter requires an explicit exception to Decision 20. |
+| R13: JSONL coverage aggregates do not reconcile | `uro-6unm` | Preserve and qualify the historical counts, identify the unexplained difference, and forbid an exact missing-session claim without evidence. |
+| R14: current model selection can relabel historical usage | `uro-oxnw` | Attribute each measurement using its own model evidence; leave missing historical attribution unknown. Current picker/list state remains metadata. |
+| R15: current-session wording describes unimplemented behavior | `uro-1vfu` | Label Cursor detection and its unsupported-dialect diagnostic as planned; require an exact signal before either is implemented. |
+
+PR #14 still needs its implementation-dependent integration check (`uro-knnz`). Five
+distinct targets require the implementation stack: golden README, discovery source,
+scalable/publishing specs, and the product golden-test anchor.
+The known product-plan conflict must preserve both acceptance goals and the Cursor
+pointer. Its current `main` base has no workflow; local docs checks do not constitute a
+hosted CI pass.
+
 ## Independent Review Scope
 
 Three Astra passes examined the published stack: accounting/identity/reconciliation;
@@ -335,6 +361,29 @@ Those historical runs implied roughly 141 MiB and 7–8 seconds of remaining gap
 must not be presented as measurements of the updated heads.
 No private logs were read for this audit.
 
+## Stabilization Measurement Evidence
+
+The 32 MiB, seed-1 synthetic reproduction contains 21,253 usage records across 4,012
+files. At integrated implementation `296f12b`, `report --all --max-rows 1` exits 1 with
+**2** request observations, a one-row budget label and empty stdout.
+It records 0.36 seconds and 10,469,760 bytes (9.98 MiB) peak physical footprint via
+macOS `/usr/bin/time -l`; the separate 50 ms process-group RSS sampler saw 5.03 MiB. The
+original audit retained 19,757 Codex observations before refusal and recorded 35.44 MiB
+physical footprint. These bounded, loaded local runs establish early refusal; they are
+not whole-history performance acceptance or a zero-overhead row-budget claim.
+
+The new hosted synthetic jobs on `296f12b` both passed:
+
+| Platform | Padded-content peak delta | Fitted bytes/record | Daily watchdog sampled peak |
+| --- | ---: | ---: | ---: |
+| [macOS 15](https://github.com/jlevy/urollup/actions/runs/35490373538/job/106024196668) | +0.23 MiB | 1,798 | 36.4 MiB |
+| [Ubuntu 24.04](https://github.com/jlevy/urollup/actions/runs/35490373538/job/106024196669) | +0.79 MiB | 1,549 | 37.4 MiB |
+
+The local gate on that tree passed with +1.78 MiB padded-content delta, a 2,445 B/record
+fit and 50.9 MiB daily sampled RSS. These metrics use different OS accounting and
+sampling; do not treat them as interchangeable peak-footprint measurements.
+No result here claims that the maintainer corpus meets 512 MiB or 10 seconds.
+
 ## Design Assessment and Remaining Limits
 
 Compact in-place rows and one global reconciliation preserve Claude’s cross-session
@@ -366,8 +415,9 @@ neither workstream yet proves the full target.
    bottom to top: **#4 → #8 → #10 → #11 → #12**. Record final per-layer SHAs after
    rebasing; the historical published-head table is not current integration evidence.
    No merge is authorized by a merely green ancestor.
-2. Run the required integrated checks and obtain completed CI on each final head,
-   including Windows goldens/results and the new Ubuntu/macOS scale jobs.
+2. The integrated checks passed.
+   Obtain completed CI on each final head, including Windows goldens/results and the new
+   Ubuntu/macOS scale jobs.
    Preserve negative-probe failures and workload artifacts.
    The passed #10 gate on `d16542e` does not replace this step.
    Record exact-head independent verdicts and close findings only when their acceptance
