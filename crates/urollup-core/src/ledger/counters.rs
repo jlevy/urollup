@@ -16,8 +16,9 @@
 //! - A forked or resumed child continues its parent's running total, so the tracker starts
 //!   from the inherited total and the child's first delta excludes it.
 //!
-//! A category a total omits keeps its last value, and a category reported for the first
-//! time counts from zero. All arithmetic is checked.
+//! Within an epoch, a category a total omits keeps its last value. A reset discards
+//! the previous epoch's baseline, including omitted categories. A category reported for
+//! the first time in an epoch counts from zero. All arithmetic is checked.
 
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -106,7 +107,7 @@ impl RunningTotal {
         } else {
             (difference(&self.last, total)?, gap.unwrap_or(CounterEvent::Advanced))
         };
-        self.last = merged(&self.last, total);
+        self.last = if decreased { *total } else { merged(&self.last, total) };
         Ok(CounterStep { delta, event, epoch: self.epoch })
     }
 }
@@ -175,6 +176,21 @@ mod tests {
         assert_eq!((reset.event, reset.epoch, reset.delta), (CounterEvent::Reset, 1, io(120, 4)));
         let after = tracker.observe(&io(130, 5), None).unwrap();
         assert_eq!((after.event, after.epoch, after.delta), (CounterEvent::Advanced, 1, io(10, 1)));
+    }
+
+    #[test]
+    fn a_reset_discards_omitted_categories_from_the_previous_epoch() {
+        let mut tracker = RunningTotal::new();
+        tracker.observe(&io(100, 100), None).unwrap();
+        let partial = TokenMeasures { uncached_input: Some(5), ..TokenMeasures::default() };
+        let reset = tracker.observe(&partial, None).unwrap();
+        assert_eq!((reset.event, reset.epoch, reset.delta), (CounterEvent::Reset, 1, partial));
+        let next = tracker.observe(&io(10, 1), None).unwrap();
+        assert_eq!((next.event, next.epoch, next.delta), (CounterEvent::Advanced, 1, io(5, 1)));
+        let partial = TokenMeasures { uncached_input: Some(15), ..TokenMeasures::default() };
+        tracker.observe(&partial, None).unwrap();
+        let next = tracker.observe(&io(20, 2), None).unwrap();
+        assert_eq!((next.event, next.epoch, next.delta), (CounterEvent::Advanced, 1, io(5, 1)));
     }
 
     #[test]
