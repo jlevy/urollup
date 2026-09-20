@@ -3,9 +3,9 @@ type: is
 id: is-01m2y1r17bpgerkxyxqf4tqzaz
 title: Lock Cursor format facts from the research brief
 kind: task
-status: open
+status: closed
 priority: 2
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 labels: []
 dependencies:
@@ -17,7 +17,11 @@ dependencies:
     target: is-01m2y1rag1z513ncz2mr4k7vk9
 parent_id: is-01m2y1qw9mgfwsbpdgam8nn13r
 created_at: 2026-09-19T23:59:08.007Z
-updated_at: 2026-09-20T00:05:59.286Z
+updated_at: 2026-09-20T00:11:22.049Z
+closed_at: 2026-09-20T00:11:22.047Z
+close_reason: Phase 0 format facts are locked in the committed plan spec and research brief on cursor-dialect (docs PR). No adapter.
+resolution: null
+duplicate_of: null
 ---
 Phase 0 of plan-2026-09-19-cursor-dialect.md. Accept docs/project/research/research-2026-09-19-cursor-agent-logs.md (uro-890b, closed) and lock dialect stores, discovery, usage-bearing records, identity keys, and fixture Cursor version.
 
