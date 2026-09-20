@@ -873,7 +873,7 @@ fn resolve_identities(
     registry: &mut IdentityRegistry,
 ) -> Result<Vec<Resolved>, ReconcileError> {
     let mut resolved = Vec::with_capacity(observations.len());
-    for observation in observations {
+    for mut observation in observations {
         let mut keys = Vec::with_capacity(observation.keys.len());
         for key in std::mem::take(&mut observation.keys) {
             if key.key.prefix != IdPrefix::Request {
