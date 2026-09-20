@@ -41,19 +41,22 @@ owns the broader repository standards.
 
 ## Current Readiness and Critical Path
 
-As of 2026-09-19, readiness is divided into four gates so a locally testable alpha is
-not confused with a publishable release:
+As of 2026-09-20 UTC, readiness is divided into four gates so a locally testable alpha
+is not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implemented on stacked PRs #4 and #8, both CI-green. Whole-history ingestion continues on the unpushed `scalable-ingestion` branch; remaining 512 MiB cuts are `uro-q1ik`, `uro-g7pi` and `uro-as4a` under `uro-n1cp` |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | The opt-in local tools and privacy sentinels are implemented; G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) wait on Phase 1 of the scalable-ingestion plan (512 MiB), not on Phase 2’s 10-second target |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). Current CLI and local-QA corrections are tracked as `uro-oz6w` and `uro-qg1a` |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open; representative performance is owned by `uro-zrr0`. A successful exploratory live run does not close these gates. The aggregate helper must eliminate per-session rescans (`uro-qg1a`) |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
 The local alpha can be installed and exercised before packaging machinery exists.
 Publication begins only after both the product-acceptance and packaging-rehearsal gates
 pass; neither gate is evidence for the other.
+The [whole-history analysis workflow](plan-2026-09-20-usage-analysis-workflow.md) is G5
+across milestones 0.2–0.5. Cache-hit request metrics, tool/time reports and list-price
+valuation must not be advertised as completed 0.1 features.
 
 ## Goals
 

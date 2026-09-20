@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard; remaining 0.1 implementation is the 512 MiB peak (uro-n1cp), then G1 and full-history QA (uro-d36a, uro-ky6c), maintainer decisions, and independent review
+status: Active; 0.1 implementation stack merged and technically reviewed; representative performance, local QA and maintainer decisions remain; G5 tracks the complete usage-analysis workflow
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -84,6 +84,16 @@ aggregates only, never log content, paths or IDs.
   in a browser with no server, and `urollup serve` browses the same results live
   ([§7](../../../urollup-design.md#7-serving-layer-optional),
   [static HTML reports](../../../urollup-design.md#static-html-reports)).
+- **G5, reusable whole-history analysis (milestones 0.2–0.5).** One reconciled snapshot
+  supports joint day/week/month × agent/provider/model views, token and cache metrics,
+  tool calls, evidence-backed time measures and labeled list-price estimates.
+  Subsequent queries work with the original roots unavailable, using the existing
+  portable artifacts. A maintained runner and documented CLI commands replace per-session
+  scans and custom transformation scripts.
+  `uro-i6xb` owns acceptance under `uro-6kwn`; the
+  [workflow plan](plan-2026-09-20-usage-analysis-workflow.md) defines metric coverage,
+  pricing context, boundary precision and reproducibility checks.
+  G5 does not silently expand the narrower 0.1 release scope.
 
 Each goal has an acceptance bead that runs it against real local logs and records the
 result as aggregates.
@@ -160,6 +170,10 @@ The capture store lands only after the uncached engine is the correctness refere
 - [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
   diff with privacy sentinels that reject log content, paths, identifiers, prompts,
   project names and custom model names.
+- [ ] Correct the current report interface and local acceptance tooling: reject ignored
+  grouping flags and fix help (`uro-oz6w`); replace per-session aggregate rescans and
+  retain cache-write lifetimes and metric availability (`uro-qg1a`). These are fixes to
+  the existing surface, not completion of G5.
 - [ ] Bound persistent-log memory before release.
   The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
   after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary
@@ -181,6 +195,12 @@ The capture store lands only after the uncached engine is the correctness refere
   [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
 #### Milestone 0.2: Contracts, summaries, bundles and merge
+
+The [workflow plan](plan-2026-09-20-usage-analysis-workflow.md) adds G5 requirements to
+`uro-ni7m`, `uro-vgea` and `uro-cye3`: retain supported joint dimensions and coverage,
+declare unavailable dimensions, and support requery without reading live default logs.
+Request-level bundles supply evidence when a summary’s time buckets cannot answer a
+boundary exactly. Basic artifact support need not wait for every later optional measure.
 
 - [ ] Add pytest to the uv project, and author the `UsageSummary`, `BundleManifest`,
   `SourceManifest` and table record contracts with fixtures,
@@ -212,6 +232,12 @@ The capture store lands only after the uncached engine is the correctness refere
 
 #### Milestone 0.4: Prices
 
+`uro-381f` retains the input context needed by `uro-neii`: model/provider basis,
+timestamps, service tier/speed, inclusive request size and cache lifetimes.
+G5 also requires explicit historical or chosen-price-date valuation and separate
+coverage for priced, default-assumed and unpriced usage.
+Aggregate model totals alone are not sufficient pricing inputs.
+
 - [ ] Add the reviewed price table and its `PriceTable` contract, `--prices` and
   config-directory overrides, staleness diagnostics, `--require-priced` and golden
   repricing tests ([§4.5](../../../urollup-design.md#45-price-table)).
@@ -222,6 +248,12 @@ The capture store lands only after the uncached engine is the correctness refere
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
 
 #### Milestone 0.5: Full Phase 1 surface, benchmarks and parity
+
+The [workflow plan](plan-2026-09-20-usage-analysis-workflow.md), owned by `uro-6kwn`,
+connects these reports into one accepted user workflow: joint grouping (`uro-qvp1`),
+shared snapshots and artifact reuse (`uro-x8r8`), native tools/time (`uro-f2lv` with
+`uro-rwkw`) and G5 (`uro-i6xb`). Use those beads rather than creating parallel reporting
+or pricing engines.
 
 - [ ] Port metaproc’s log-processing code into the Rust adapters with provenance: format
   detection from record types, `claude-stream` and `codex-exec` captured-stream parsing,
