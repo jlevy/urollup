@@ -130,7 +130,10 @@ Cursor uses more than one ID space.
 - **Transcript folder.** When an agent JSONL exists, its directory name is the same UUID
   as `composerId`. All 76 parent transcript UUIDs on this disk also have a
   `composerData:` row.
-  935 composers have no JSONL.
+  A separate survey aggregate reported 935 composers without JSONL. These counts do not
+  reconcile: 1,022 minus 76 is 946. The existing evidence does not explain whether the
+  queries used different populations or joins; no overlap explanation is established.
+  Treat the exact missing-session count as unverified.
 - **Bubble.** One UI message or tool step is `bubbleId:<composerId>:<bubbleId>`.
   `composerData.fullConversationHeadersOnly[]` lists `{bubbleId, type, createdAt}` in
   order. Bubble `type` 1 is user; type 2 is assistant-side (text, thinking or tool).
@@ -444,7 +447,8 @@ Until Cursor documents the field, treat it as an opaque per-model counter next t
 
 `~/.cursor/chats/` is not a safe assumed default.
 An adapter that only opened `store.db` would find nothing here, and an adapter that only
-opened JSONL would miss 935 of 1,022 composers.
+opened JSONL would miss substantial composer history.
+The exact missing-session count is unresolved in the survey aggregates above.
 
 ## Recommendations
 
@@ -458,7 +462,13 @@ opened JSONL would miss 935 of 1,022 composers.
 3. **If the goal is “what did I run in Cursor?”, prefer `composerData` + `bubbleId`, and
    use JSONL only as a fallback** when a UUID has no composer row (not observed here) or
    as evidence for tool-call text.
-4. **Record both model strings** when both exist, and map `default` to Auto.
+4. **Preserve native model evidence at its recorded grain**, and map `default` to Auto.
+   Session/model costs take their `usageData` key; bubble tokens take the bubble’s own
+   `modelInfo.modelName` when present.
+   Current picker and `selectedModels[]` values remain selection metadata, not a
+   fallback for historical usage.
+   Leave missing historical model attribution unknown; the public parsers’ propagation
+   rule needs independent evidence before adoption.
    Do not invent a provider column from marketing copy; keep an explicit lookup table
    keyed on catalog id families, and leave Fable unmapped until a `claude-fable-*` (or
    similar) value is seen.
