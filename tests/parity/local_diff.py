@@ -401,3 +401,7 @@ if __name__ == "__main__":
     except (LocalDiffError, local_aggregate.LocalAggregateError) as error:
         print(f"parity-local: {error}", file=sys.stderr)
         raise SystemExit(1) from error
+    except OSError:
+        # OS exceptions carry private paths; keep launch and publication failures safe.
+        print("parity-local: operating-system operation failed", file=sys.stderr)
+        raise SystemExit(1) from None

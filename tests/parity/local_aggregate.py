@@ -350,3 +350,7 @@ if __name__ == "__main__":
     except LocalAggregateError as error:
         print(f"local aggregate: {error}", file=sys.stderr)
         raise SystemExit(1) from error
+    except OSError:
+        # OS exceptions carry private paths; keep launch and publication failures safe.
+        print("local aggregate: operating-system operation failed", file=sys.stderr)
+        raise SystemExit(1) from None

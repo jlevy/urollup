@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import compare
 import local_aggregate
 import local_diff
 
@@ -218,6 +223,43 @@ class LocalDiffTests(unittest.TestCase):
             local_diff.arguments(
                 ["--urollup", "urollup", "--ccusage-package", "tests/parity/ccusage"]
             )
+
+
+class LocalCliFailurePrivacyTests(unittest.TestCase):
+    def test_os_failures_do_not_print_private_paths_or_tracebacks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="PRIVATE_PATH_MARKER-") as directory:
+            root = Path(directory)
+            binary = root / "PRIVATE_EXECUTABLE_MARKER"
+            binary.write_bytes(b"not an executable")
+            package = root / "package"
+            ccusage = compare.native_ccusage_binary(package)
+            ccusage.parent.mkdir(parents=True)
+            ccusage.write_bytes(b"not an executable")
+            # These fixtures cannot execute or discover logs. The parity fixture fails
+            # native-binary preparation; the aggregate fixture fails process launch.
+            for script, extra in (
+                ("local_aggregate.py", []),
+                ("local_diff.py", ["--ccusage-package", str(package)]),
+            ):
+                with self.subTest(script=script):
+                    result = subprocess.run(
+                        [
+                            sys.executable, "-B", str(Path(__file__).with_name(script)),
+                            "--urollup", str(binary), "--timezone", "UTC",
+                            "--consent-local-logs", *extra,
+                        ],
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("operating-system operation failed", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertNotIn("PRIVATE_", result.stderr)
+                    self.assertNotIn(str(root), result.stderr)
 
 
 if __name__ == "__main__":
