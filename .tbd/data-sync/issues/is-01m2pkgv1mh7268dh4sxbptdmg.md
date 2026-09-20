@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 2: fast decode and scale gates"
 kind: task
 status: open
 priority: 1
-version: 23
+version: 24
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -35,7 +35,7 @@ child_order_hints:
   - is-01m2y4zmb44cb9crzfq7ezf1p0
   - is-01m2y4zp4nvy4ggpg0y94dzrbe
 created_at: 2026-09-17T02:35:51.219Z
-updated_at: 2026-09-20T04:28:40.242Z
+updated_at: 2026-09-20T05:35:12.202Z
 ---
 Finish Phase 2 of the scalable-ingestion plan: leftover typed decode and allocator work so whole-history peak can still reach 512 MiB, then wall time at most 10 s. Phase 1 row compaction is exhausted (uro-t8ws standing 653/586). The 512 MiB gate now lives here, not on more Phase 1 children. G1 (uro-d36a) waits on this bead.
 
@@ -46,3 +46,5 @@ Acceptance: outputs byte-identical to Phase 1; peak at or below 512 MiB; whole h
 ## Notes
 
 2026-09-19 audit uro-y7zm: Phase 2 owns both the 512 MiB peak and 10 s whole-history gates. Standing historical evidence remains WH 653 MiB / 17.3 s and Codex 586 MiB / 13.2 s; later quiet samples 648 / 18.2 and 573 / 14.3. Reverted uro-nuhn, uro-96vw, uro-s5vb and uro-h6iw must not be retried; uro-nzo1 is on hold for lack of a new measured hypothesis. uro-lsaz and uro-a3fo are the remaining investigation paths. CI scale wiring is missing (uro-a8fk); a green existing CI run does not execute the scale workload. Resolve audit defects and remeasure current heads before claiming acceptance.
+
+2026-09-20 readiness refresh: all R1-R11 fixes and independent implementation reviews are complete. uro-a8fk is closed: Ubuntu and macOS synthetic scale workloads execute and pass on the published stack. uro-a3fo typed Claude sidecars is implemented and closed. Earlier notes that CI wiring is missing or sidecar implementation is the next cut are historical. Next technical work is a consented exact-head representative baseline and profile under uro-lsaz; both 512 MiB and 10 s remain unmet/unproven on updated heads. Do not retry reverted cuts or held uro-nzo1 without a new measured hypothesis.

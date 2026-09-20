@@ -5,7 +5,7 @@ title: Stabilize the published PR stack against the governing memory review
 kind: task
 status: in_progress
 priority: 1
-version: 11
+version: 12
 spec_path: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md
 delegate: claude-code@spud10.local
 labels: []
@@ -18,10 +18,11 @@ child_order_hints:
   - is-01m2ygfbcmzqfh932496b7ydch
   - is-01m2yh1gk62q41mxph3mnsx2s8
   - is-01m2ymcxkb4yxschcfx5yh1vyp
+  - is-01m2ymwt5q6kphvk8asnb6q59j
 hold: null
 hold_until: null
 created_at: 2026-09-20T01:38:47.945Z
-updated_at: 2026-09-20T05:26:15.944Z
+updated_at: 2026-09-20T05:33:47.574Z
 started_at: 2026-09-20T04:16:32.594Z
 ---
 Governing review: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md. Address R1–R5, complete independent review passes and all discovered correctness fixes, propagate changes through owning PR layers, refresh specs and validation evidence, and obtain complete CI. Track performance acceptance, maintainer decisions, Cursor integration and release follow-ups explicitly; do not close unmet gates.

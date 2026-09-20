@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 48
+version: 50
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -29,10 +29,12 @@ child_order_hints:
   - is-01m2ksms2rd2kwm66zpy8p159d
   - is-01m2ksn7rykwftnqzpq1xgmys3
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-20T00:56:30.694Z
+updated_at: 2026-09-20T05:35:13.371Z
 ---
-Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools. Remaining before this epic closes: 512 MiB whole-history ingestion (uro-o6x5), consented G1 (uro-d36a), full-history QA (uro-ky6c), independent review (uro-nncx), and recorded or deferred maintainer decisions.
+Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools are implemented and independently reviewed. Remaining before this epic closes: representative 512 MiB and 10 s performance (uro-zrr0), consented G1 (uro-d36a), full-history QA (uro-ky6c), and recorded or deferred maintainer decisions and unverified provider-shape evidence. Release packaging follows acceptance.
 
 ## Notes
 
 2026-09-19 audit uro-y7zm: The published implementation stack is #4 -> #8 -> #10 -> #11 -> #12. uro-zrr0 owns BOTH the 512 MiB and 10 s gates; uro-n1cp depends on it. Then uro-d36a and uro-ky6c. Independent review uro-nncx now covers the published stack. Six maintainer decision beads and uro-89s7 remain open; packaging uro-30ef waits on acceptance. Earlier notes naming completed Phase 1 children as the next cuts are obsolete.
+
+2026-09-20 readiness refresh: independent technical review uro-nncx and all 15 implementation/planning findings are closed. PR4/8/10/11/12 have green CI; no PR has merged and there are no formal GitHub approval reviews. Milestone remains open for performance uro-zrr0, consented G1/full-history QA, maintainer policy decisions and provider-shape evidence or explicit deferral. Release packaging remains blocked on milestone acceptance.
