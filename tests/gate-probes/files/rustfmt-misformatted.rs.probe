@@ -1,0 +1,3 @@
+
+/// Gate probe: rustfmt would reformat this function.
+pub fn gate_probe_misformatted(   value : u8 )->u8{ value }

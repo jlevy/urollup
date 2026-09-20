@@ -1,0 +1,143 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "nested-null-tool-input",
+  "dialect": "claude-project",
+  "summary": "Assistant records whose tool_use input holds nested null fields named id, model, cwd, speed, costUSD, sessionId and requestId are kept.",
+  "rules": [
+    "design §2.2 Snapshot Boundary (a record is never rejected because a nested field is null)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl",
+      "lines": 6,
+      "thread": "00000000-0000-4000-8000-000700000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000700000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 8,
+          "cache_read": 10100,
+          "cache_write": 10,
+          "output": 220,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic07H1",
+        "request_id": "req_011Synthetic07H1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000700000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.500Z",
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 5000,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl:3"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic07H2",
+        "request_id": "req_011Synthetic07H2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000700000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 5100,
+        "cache_write": 10,
+        "output": 70,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl:5"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000700000001.jsonl:5"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 8,
+      "cache_read": 10100,
+      "cache_write": 10,
+      "output": 220,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 14,
+        "cache_read": 15100,
+        "cache_write": 10,
+        "output": 228,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Reject any line with a named field set to null at any depth, then deduplicate (ccusage 20.0.20)",
+      "requests": 1,
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 5000,
+        "cache_write": 0,
+        "output": 8,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": []
+}

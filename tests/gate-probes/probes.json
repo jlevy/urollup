@@ -1,0 +1,446 @@
+{
+  "$comment": "Committed gate violations run by scripts/prove-gates.mjs; see README.md beside this file.",
+  "probes": [
+    {
+      "id": "toolchain-rustc-mismatch",
+      "gate": "toolchain",
+      "violation": "rustc reports a release other than the rust-toolchain.toml pin",
+      "edits": [
+        {
+          "path": "gate-probe-rustc",
+          "create": "files/old-rustc.sh.probe",
+          "executable": true
+        }
+      ],
+      "env": {
+        "RUSTC": "./gate-probe-rustc"
+      },
+      "expect": "rustc is 1\\.80\\.0, but rust-toolchain\\.toml pins"
+    },
+    {
+      "id": "uv-too-old",
+      "gate": "uv-version",
+      "violation": "uv is older than the reviewed floor",
+      "edits": [
+        {
+          "path": "gate-probe-uv",
+          "create": "files/old-uv.sh.probe",
+          "executable": true
+        }
+      ],
+      "makeArgs": [
+        "UV=./gate-probe-uv"
+      ],
+      "expect": "uv 0\\.11\\.9 is too old"
+    },
+    {
+      "id": "supply-chain-unpinned-action",
+      "gate": "supply-chain",
+      "violation": "a workflow uses an action by tag instead of a commit SHA",
+      "edits": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "substitute": {
+            "from": "      - run: node --test scripts/check-uv-version.test.mjs\n",
+            "to": "      - uses: actions/cache@v4\n      - run: node --test scripts/check-uv-version.test.mjs\n"
+          }
+        }
+      ],
+      "expect": "actions/cache@v4 must pin an exact 40-character commit"
+    },
+    {
+      "id": "lint-policy-member-opts-out",
+      "gate": "lint-policy",
+      "violation": "a workspace member drops its [lints] table",
+      "edits": [
+        {
+          "path": "crates/urollup-core/Cargo.toml",
+          "substitute": {
+            "from": "\n[lints]\nworkspace = true\n",
+            "to": "\n"
+          }
+        }
+      ],
+      "expect": "members with no \\[lints\\] table: urollup-core"
+    },
+    {
+      "id": "fixtures-private-path",
+      "gate": "fixtures-check",
+      "violation": "a fixture record names a home directory that is not a placeholder",
+      "edits": [
+        {
+          "path": "crates/urollup-core/tests/fixtures/claude-project/timestamp-precision/projects/-Users-example-project/00000000-0000-4000-8000-000800000001.jsonl",
+          "append": "files/fixture-private-path.jsonl.probe"
+        }
+      ],
+      "expect": "a home directory that is not a placeholder"
+    },
+    {
+      "id": "fixtures-unparsable-line",
+      "gate": "fixtures-check",
+      "violation": "a fixture line does not parse and is not declared malformed or pending",
+      "edits": [
+        {
+          "path": "crates/urollup-core/tests/fixtures/codex-rollout/brief-repeated-snapshot/sessions/2026/09/02/rollout-2026-09-02T10-00-00-019f0000-0000-7000-8000-000100000001.jsonl",
+          "append": "files/fixture-unparsable-line.jsonl.probe"
+        }
+      ],
+      "expect": "does not parse as a JSON object and is not declared malformed or pending"
+    },
+    {
+      "id": "rustfmt",
+      "gate": "fmt-check",
+      "violation": "Rust code rustfmt would reformat",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/rustfmt-misformatted.rs.probe"
+        }
+      ],
+      "expect": "^Diff in .*accounting\\.rs"
+    },
+    {
+      "id": "taplo",
+      "gate": "toml-fmt-check",
+      "violation": "a TOML file taplo would reformat",
+      "edits": [
+        {
+          "path": "gate-probe.toml",
+          "create": "files/taplo-misformatted.toml.probe"
+        }
+      ],
+      "expect": "not properly formatted.*gate-probe\\.toml"
+    },
+    {
+      "id": "flowmark",
+      "gate": "docs-format-check",
+      "violation": "a Markdown file flowmark would reformat",
+      "edits": [
+        {
+          "path": "gate-probe.md",
+          "create": "files/flowmark-misformatted.md.probe"
+        }
+      ],
+      "expect": "Would reformat: .*gate-probe\\.md"
+    },
+    {
+      "id": "uv-lock-stale",
+      "gate": "uv-lock-check",
+      "violation": "pyproject.toml changes a dev dependency without relocking",
+      "edits": [
+        {
+          "path": "pyproject.toml",
+          "substitute": {
+            "from": "\"flowmark-rs==0.4.0\"]",
+            "to": "\"flowmark-rs==0.4.0\", \"strif\"]"
+          }
+        }
+      ],
+      "expect": "needs to be updated"
+    },
+    {
+      "id": "clippy-unwrap-used",
+      "gate": "clippy",
+      "violation": "unwrap() in library code",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/clippy-unwrap.rs.probe"
+        }
+      ],
+      "expect": "clippy::unwrap[-_]used"
+    },
+    {
+      "id": "clippy-pedantic",
+      "gate": "clippy",
+      "violation": "a pedantic lint (cast_possible_truncation)",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/clippy-pedantic.rs.probe"
+        }
+      ],
+      "expect": "implied by `-D clippy::pedantic`"
+    },
+    {
+      "id": "clippy-core-panic",
+      "gate": "clippy",
+      "violation": "panic! in urollup-core",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/core-panic.rs.probe"
+        }
+      ],
+      "expect": "clippy::panic"
+    },
+    {
+      "id": "missing-docs",
+      "gate": "clippy",
+      "violation": "an undocumented public function",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/missing-docs.rs.probe"
+        }
+      ],
+      "expect": "missing documentation for a function"
+    },
+    {
+      "id": "unsafe-code",
+      "gate": "clippy",
+      "violation": "an unsafe block",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/unsafe-code.rs.probe"
+        }
+      ],
+      "expect": "usage of an `unsafe` block"
+    },
+    {
+      "id": "warnings-denied",
+      "gate": "clippy",
+      "violation": "an ordinary compiler warning (dead code) in the executable",
+      "edits": [
+        {
+          "path": "crates/urollup/src/cli.rs",
+          "append": "files/warning-in-binary.rs.probe"
+        }
+      ],
+      "expect": "function `gate_probe_unused` is never used"
+    },
+    {
+      "id": "clippy-all-targets",
+      "gate": "clippy",
+      "violation": "a lint violation that exists only in an integration test",
+      "edits": [
+        {
+          "path": "crates/urollup/tests/cli_process.rs",
+          "append": "files/clippy-test-target.rs.probe"
+        }
+      ],
+      "expect": "needless_range_loop|needless-range-loop"
+    },
+    {
+      "id": "failing-test",
+      "gate": "test",
+      "violation": "a failing unit test",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/lib.rs",
+          "append": "files/failing-test.rs.probe"
+        }
+      ],
+      "expect": "gate probe: this test must fail"
+    },
+    {
+      "id": "golden-output-drift",
+      "gate": "test",
+      "violation": "the CLI golden expects output the binary does not produce",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "urollup 0.1.0\n? 0",
+            "to": "urollup 9.9.9\n? 0"
+          }
+        }
+      ],
+      "expect": "urollup 9\\.9\\.9"
+    },
+    {
+      "id": "golden-corpus-missing",
+      "gate": "test",
+      "violation": "the golden corpus is deleted",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "delete": true
+        },
+        {
+          "path": "tests/golden/e2e",
+          "delete": true
+        }
+      ],
+      "expect": "golden corpus is missing"
+    },
+    {
+      "id": "golden-skip-annotation",
+      "gate": "test",
+      "violation": "a golden block is skipped, which tryscript reports as passed",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "## Version Is Exact and on Stdout\n",
+            "to": "## Version Is Exact and on Stdout <!-- skip -->\n"
+          }
+        }
+      ],
+      "expect": "`<!-- skip -->` hides blocks"
+    },
+    {
+      "id": "golden-ambient-env",
+      "gate": "test",
+      "violation": "a golden session expands a discovery root from the invoking environment's HOME",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "  TZ: UTC\n---\n",
+            "to": "  TZ: UTC\n  CLAUDE_CONFIG_DIR: $HOME/.claude\n---\n"
+          }
+        }
+      ],
+      "expect": "env CLAUDE_CONFIG_DIR expands \\$HOME"
+    },
+    {
+      "id": "e2e-results-unknown-comparison",
+      "gate": "test",
+      "violation": "the end-to-end results config names an unsupported comparison field",
+      "edits": [
+        {
+          "path": "tests/golden/e2e.config.json",
+          "substitute": {
+            "from": "      \"compare\": \"all\"\n",
+            "to": "      \"compare\": [\"unknown\"]\n"
+          }
+        }
+      ],
+      "expect": "urollup report: compare must be \\\"all\\\" or a list of result fields"
+    },
+    {
+      "id": "golden-machine-path",
+      "gate": "test",
+      "violation": "a golden names a home directory from the recording machine",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "urollup 0.1.0\n? 0",
+            "to": "urollup 0.1.0 /Users/recorder/urollup/\n? 0"
+          }
+        }
+      ],
+      "expect": "a home directory from the recording machine"
+    },
+    {
+      "id": "golden-path-lookup",
+      "gate": "test",
+      "violation": "a golden session resolves urollup through PATH instead of $UROLLUP_BIN",
+      "edits": [
+        {
+          "path": "tests/golden/cli-surface.tryscript.md",
+          "substitute": {
+            "from": "path:\n  - $UROLLUP_BIN\n",
+            "to": "path:\n  - $TRYSCRIPT_GIT_ROOT/target/debug\n"
+          }
+        }
+      ],
+      "expect": "path must be exactly \\[\\$UROLLUP_BIN\\]"
+    },
+    {
+      "id": "rustdoc-broken-link",
+      "gate": "docs",
+      "violation": "an unresolved intra-doc link",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/lib.rs",
+          "append": "files/broken-doc-link.rs.probe"
+        }
+      ],
+      "expect": "unresolved link to `NoSuchGateProbeItem`"
+    },
+    {
+      "id": "dependency-guard-async-runtime",
+      "gate": "dependency-guard",
+      "violation": "a non-optional crate named tokio in the executable",
+      "edits": [
+        {
+          "path": "crates/gate-probe-tokio/Cargo.toml",
+          "create": "files/tokio-Cargo.toml.probe"
+        },
+        {
+          "path": "crates/gate-probe-tokio/src/lib.rs",
+          "create": "files/tokio-lib.rs.probe"
+        },
+        {
+          "path": "crates/urollup/Cargo.toml",
+          "substitute": {
+            "from": "urollup-core = { workspace = true }\n",
+            "to": "urollup-core = { workspace = true }\ntokio = { path = \"../gate-probe-tokio\" }\n"
+          }
+        },
+        {
+          "path": "Cargo.lock",
+          "substitute": {
+            "from": "[[package]]\nname = \"unicode-ident\"",
+            "to": "[[package]]\nname = \"tokio\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"unicode-ident\""
+          }
+        },
+        {
+          "path": "Cargo.lock",
+          "substitute": {
+            "from": " \"clap\",\n \"serde_json\",\n \"tempfile\",\n \"urollup-core\",\n \"zstd\",\n]",
+            "to": " \"clap\",\n \"serde_json\",\n \"tempfile\",\n \"tokio\",\n \"urollup-core\",\n \"zstd\",\n]"
+          }
+        }
+      ],
+      "expect": "urollup --no-default-features: tokio"
+    },
+    {
+      "id": "dependency-guard-cli-in-core",
+      "gate": "dependency-guard",
+      "violation": "clap as a dependency of urollup-core",
+      "edits": [
+        {
+          "path": "crates/urollup-core/Cargo.toml",
+          "substitute": {
+            "from": "[dependencies]\n",
+            "to": "[dependencies]\nclap = { version = \"4.6.6\", default-features = false, features = [\"std\"] }\n"
+          }
+        },
+        {
+          "path": "Cargo.lock",
+          "substitute": {
+            "from": "name = \"urollup-core\"\nversion = \"0.1.0\"\ndependencies = [\n",
+            "to": "name = \"urollup-core\"\nversion = \"0.1.0\"\ndependencies = [\n \"clap\",\n"
+          }
+        }
+      ],
+      "expect": "urollup-core \\(all features\\): clap"
+    },
+    {
+      "id": "msrv-newer-api",
+      "gate": "msrv",
+      "violation": "an API stabilized after the declared MSRV",
+      "edits": [
+        {
+          "path": "crates/urollup-core/src/accounting.rs",
+          "append": "files/msrv-api.rs.probe"
+        }
+      ],
+      "expect": "integer_sign_cast|cast_unsigned"
+    },
+    {
+      "id": "cargo-deny-license",
+      "gate": "audit",
+      "violation": "the MIT license is removed from the allow list, rejecting the MIT-only workspace crates",
+      "edits": [
+        {
+          "path": "deny.toml",
+          "substitute": {
+            "from": "  \"MIT\",\n",
+            "to": ""
+          }
+        }
+      ],
+      "expect": "rejected"
+    }
+  ],
+  "unprobed": {
+    "npm-audit": "Proving it needs a published npm package with a known advisory in the lock, which would itself break the supply-chain gate; npm audit's exit status is exercised on every advisory it reports.",
+    "gate-proofs": "The proof harness itself; its decision logic is unit-tested in scripts/prove-gates.test.mjs, including that a passing gate or a wrong diagnostic fails the proof."
+  }
+}

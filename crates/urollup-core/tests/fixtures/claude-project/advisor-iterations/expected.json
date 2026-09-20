@@ -1,0 +1,195 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "advisor-iterations",
+  "dialect": "claude-project",
+  "summary": "A response whose usage.iterations include an advisor_message with its own model; top-level usage equals the message iterations and excludes the advisor.",
+  "rules": [
+    "design §4.1 Measure Contracts (Claude iterations)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000600000001.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-000600000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000600000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 150005,
+          "cache_read": 248100,
+          "cache_write": 8100,
+          "output": 7770,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic06G1",
+        "request_id": "req_011Synthetic06G1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000600000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:30.000Z",
+      "tokens": {
+        "uncached_input": 150002,
+        "cache_read": 240000,
+        "cache_write": 8100,
+        "output": 7730,
+        "reasoning": null
+      },
+      "model_usage": [
+        {
+          "model": "claude-sonnet-4-5",
+          "source": "message.usage (sum of message iterations)",
+          "tokens": {
+            "uncached_input": 2,
+            "cache_read": 240000,
+            "cache_write": 8100,
+            "output": 530,
+            "reasoning": null
+          }
+        },
+        {
+          "model": "claude-opus-4-5",
+          "source": "advisor_message iteration",
+          "tokens": {
+            "uncached_input": 150000,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 7200,
+            "reasoning": null
+          }
+        }
+      ],
+      "measures": {
+        "last_iteration_context_tokens": 122701
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000600000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000600000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic06G2",
+        "request_id": "req_011Synthetic06G2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000600000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:33.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 8100,
+        "cache_write": 0,
+        "output": 40,
+        "reasoning": null
+      },
+      "model_usage": [
+        {
+          "model": "claude-sonnet-4-5",
+          "source": "message.usage",
+          "tokens": {
+            "uncached_input": 3,
+            "cache_read": 8100,
+            "cache_write": 0,
+            "output": 40,
+            "reasoning": null
+          }
+        }
+      ],
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000600000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000600000001.jsonl:4"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 150005,
+      "cache_read": 248100,
+      "cache_write": 8100,
+      "output": 7770,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Top-level message.usage only (drops the advisor model's usage)",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 248100,
+        "cache_write": 8100,
+        "output": 570,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Top-level usage plus every iteration (counts message iterations twice)",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 150010,
+        "cache_read": 496200,
+        "cache_write": 16200,
+        "output": 8340,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "One entry per advisor iteration (ccusage 20.0.20): right tokens, but 3 call rows for 2 requests",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 150005,
+        "cache_read": 248100,
+        "cache_write": 8100,
+        "output": 7770,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "last_iteration_context_tokens is the last iteration's input, cache-write and cache-read sum (1 + 700 + 122,000), kept as a context-size measure, not usage."
+  ]
+}

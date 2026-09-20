@@ -1,0 +1,206 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "btw-side-question",
+  "dialect": "claude-project",
+  "summary": "A /btw side-question transcript replays a parent message with the parent's message.id under a new requestId and different cache-read usage, then answers.",
+  "rules": [
+    "design §3.4 Claude Code copies (/btw)",
+    "design §3.4 Claude Code block records"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl",
+      "lines": 5,
+      "thread": "00000000-0000-4000-8000-000400000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-000400000001/aaside_question-0000000000040001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000400000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 36400,
+          "cache_write": 550,
+          "output": 32,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000400000001/aaside_question-0000000000040001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-000400000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl:1"
+      ],
+      "label": "aside_question",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 700,
+          "cache_write": 0,
+          "output": 30,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic04P",
+        "request_id": "req_011Synthetic04P"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000400000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.600Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 18000,
+        "cache_write": 400,
+        "output": 10,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:3",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl:1"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic04Q",
+        "request_id": "req_011Synthetic04Q"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000400000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:02.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 18400,
+        "cache_write": 150,
+        "output": 22,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:5"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic04Ans",
+        "request_id": "req_011Synthetic04Ans"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000400000001/aaside_question-0000000000040001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:33.000Z",
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 700,
+        "cache_write": 0,
+        "output": 30,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl:3"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-000400000001/subagents/agent-aaside_question-0000000000040001.jsonl:1",
+      "kind": "btw-replay",
+      "copy_of": "projects/-Users-example-project/00000000-0000-4000-8000-000400000001.jsonl:3",
+      "owner_thread": "00000000-0000-4000-8000-000400000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 10,
+      "cache_read": 37100,
+      "cache_write": 550,
+      "output": 62,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 16,
+        "cache_read": 105100,
+        "cache_write": 950,
+        "output": 76,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Deduplicate by (message.id, requestId) only",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 13,
+        "cache_read": 87100,
+        "cache_write": 550,
+        "output": 72,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Tests should also read the side-question file before the parent file: ccusage 20.0.20's daily loader double counted when a sidechain replay was seen before its parent's block records.",
+    "The side-question file name uses the labeled agent-ID form agent-a<label>-<hex>; that /btw uses the aside_question label is inferred from ccusage's notes and unverified."
+  ]
+}

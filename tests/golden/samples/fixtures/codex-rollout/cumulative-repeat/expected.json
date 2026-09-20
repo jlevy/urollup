@@ -1,0 +1,167 @@
+{
+  "$comment": "Harness sample for scripts/check-e2e-results.test.mjs, in the same urollup-fixture-expected/v1 format as the frozen corpus under crates/urollup-core/tests/fixtures; its values are the ones tests/golden/samples/outputs prints back.",
+  "format": "urollup-fixture-expected/v1",
+  "case": "cumulative-repeat",
+  "dialect": "codex-rollout",
+  "summary": "Two advancing token_count events, a repeat that does not advance the running total, and a limit-only event.",
+  "rules": [
+    "design §3.4 Codex cumulative counters",
+    "design §3.5 Limit observations"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Synthetic stand-in for a rollout with cumulative total_token_usage."
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl",
+      "lines": 6,
+      "thread": "00000000-0000-4000-8000-000000000004"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 7000,
+          "cache_read": 16000,
+          "cache_write": 0,
+          "output": 2000,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "00000000-0000-4000-8000-000000000004",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:3"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000004",
+      "owner_candidates": [],
+      "model": "example-model-b",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-12T12:00:10.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 1000,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:3"
+      ],
+      "evidence": [
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:2",
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:3"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "00000000-0000-4000-8000-000000000004",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:4"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000004",
+      "owner_candidates": [],
+      "model": "example-model-b",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-12T12:00:20.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 10000,
+        "cache_write": 0,
+        "output": 1000,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:4"
+      ],
+      "evidence": [
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:4"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:5",
+      "kind": "repeated-snapshot",
+      "copy_of": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:4",
+      "owner_thread": "00000000-0000-4000-8000-000000000004"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0,
+      "extents": 0
+    },
+    "tokens": {
+      "uncached_input": 7000,
+      "cache_read": 16000,
+      "cache_write": 0,
+      "output": 2000,
+      "reasoning": 0
+    },
+    "total_tokens": 25000
+  },
+  "diagnostics": [
+    {
+      "code": "sample.repeated_token_count",
+      "refs": [
+        "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:5"
+      ],
+      "detail": "the snapshot repeats the running total, so it adds no usage"
+    }
+  ],
+  "limit_observations": [
+    {
+      "ref": "sessions/2026/09/12/rollout-2026-09-12T12-00-00-00000000-0000-4000-8000-000000000004.jsonl:6",
+      "source": "rate_limits.primary",
+      "window_minutes": 300,
+      "utilization": 12.0,
+      "observed_at": "2026-09-12T12:00:22.000Z",
+      "observed_at_basis": "record timestamp",
+      "owner_thread": "00000000-0000-4000-8000-000000000004"
+    }
+  ],
+  "naive": [
+    {
+      "rule": "Add every total_token_usage snapshot as if it were one request's usage",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 17000,
+        "cache_read": 38000,
+        "cache_write": 0,
+        "output": 5000,
+        "reasoning": 0
+      }
+    }
+  ],
+  "notes": [
+    "A sample, not an accounting fixture; the corpus case codex-rollout/brief-repeated-snapshot is the real one."
+  ]
+}

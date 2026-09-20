@@ -1,0 +1,3 @@
+
+/// Gate probe: an unused function is a warning, and warnings are denied in the manifest.
+fn gate_probe_unused() {}

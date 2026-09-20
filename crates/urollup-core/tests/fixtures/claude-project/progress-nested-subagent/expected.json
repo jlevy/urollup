@@ -1,0 +1,277 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "progress-nested-subagent",
+  "dialect": "claude-project",
+  "summary": "A parent transcript's progress records nest subagent assistant messages; the one whose subagent file exists duplicates it, and one has no subagent file at all.",
+  "rules": [
+    "design §3.4 Claude Code copies",
+    "design §3.3 nested copies never count",
+    "design §3.2 Spawn"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl",
+      "lines": 8,
+      "thread": "00000000-0000-4000-8000-000300000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-000300000001/a0000000000030001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.meta.json",
+      "thread": "00000000-0000-4000-8000-000300000001/a0000000000030001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000300000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 16,
+          "cache_read": 4120,
+          "cache_write": 710,
+          "output": 170,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000300000001/a0000000000030001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-000300000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:2"
+      ],
+      "agent_type": "general-purpose",
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 15,
+          "cache_read": 800,
+          "cache_write": 1000,
+          "output": 65,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic03D1",
+        "request_id": "req_011Synthetic03D1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.000Z",
+      "tokens": {
+        "uncached_input": 10,
+        "cache_read": 1000,
+        "cache_write": 500,
+        "output": 80,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic03D2",
+        "request_id": "req_011Synthetic03D2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:22.000Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": 1500,
+        "cache_write": 120,
+        "output": 60,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:5"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic03D3",
+        "request_id": "req_011Synthetic03D3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000300000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:42.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 1620,
+        "cache_write": 90,
+        "output": 30,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:8"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:8"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic03S1",
+        "request_id": "req_011Synthetic03S1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000300000001/a0000000000030001",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 12,
+        "cache_read": 0,
+        "cache_write": 800,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:3"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic03S1b",
+        "request_id": "req_011Synthetic03S1b"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000300000001/a0000000000030001",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:09.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 800,
+        "cache_write": 200,
+        "output": 25,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl:3"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:3",
+      "kind": "progress-nested-message",
+      "copy_of": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001/subagents/agent-a0000000000030001.jsonl:2",
+      "owner_thread": "00000000-0000-4000-8000-000300000001/a0000000000030001"
+    },
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:6",
+      "kind": "progress-nested-message",
+      "copy_of": null,
+      "owner_thread": null
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 5,
+      "owned": 5,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 31,
+      "cache_read": 4920,
+      "cache_write": 1710,
+      "output": 235,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "claude-nested-copy-without-original",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000300000001.jsonl:6"
+      ],
+      "detail": "progress record nests msg_01Synthetic03S2 for agent a0000000000030002, whose transcript was not discovered; the nested usage is not counted"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum top-level message.usage over every assistant record (ccusage monthly and session reports)",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 31,
+        "cache_read": 4920,
+        "cache_write": 1710,
+        "output": 235,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Also sum usage nested in progress records, without deduplication",
+      "requests": 7,
+      "tokens": {
+        "uncached_input": 52,
+        "cache_read": 4920,
+        "cache_write": 3110,
+        "output": 308,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Design §3.4 calls the nested record a copy owned by the parent of the copy, which here is the subagent transcript that holds the original record.",
+    "Open question for the ledger: the progress-only message (line 6) is not counted because design §3.3 says a nested copy never counts; if the ledger instead counts an orphaned nested copy, this expectation changes."
+  ]
+}

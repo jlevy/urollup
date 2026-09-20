@@ -9,7 +9,7 @@ session logs.
 
 **First drafted**: 2026-09-13
 
-**Last updated**: 2026-09-15
+**Last updated**: 2026-09-17
 
 Sections 1 to 8 and each item in §9 carry a **Status:** line.
 **Confirmed** marks settled design that awaits no §9 decision; where a maintainer
@@ -208,6 +208,8 @@ keeps unknown values explicit, and exports results that merge exactly.
 | Uncertainty stays visible: unsupported events, missing prices, ambiguous ownership, unresolved overlap, incomplete logs and absent resource measurements | Explicit coverage fields and `unknown`, `ambiguous`, `unresolved` and `possible` values, never zero or a guess ([§4.2](#42-ownership-and-totals), [§6.4](#64-queries-output-formats-and-streams)) |
 | Compact Markdown reports and mergeable YAML usage summaries that a workflow can attach to a PR | One summary shape for a session or any aggregate, exact merge whenever the rules allow, and observation bundles as the exact fallback ([§5.2](#52-usage-summary-format), [§5.3](#53-exact-aggregation), [§5.4](#54-observation-bundles)) |
 | Contracts are versioned, validated at every read and write, and checkable by softschema without the Rust binary | Pydantic contract models compiled by softschema and mirrored by typed serde structs ([§5.6](#56-versioning-and-compatibility), [§5.7](#57-contract-authoring-and-validation)) |
+| Everyday use from the CLI is fast and friendly | A zero-argument current-session summary, discoverable help with examples, readable default tables, and diagnostics that name the flag or fix to use ([§6.1](#61-workflows-and-session-selection), [§6.3](#63-commands), [§6.4](#64-queries-output-formats-and-streams), [§6.5](#65-exit-codes)) |
+| Reports can be browsed as web pages, with or without a server | A generated self-contained HTML report file (Candidate, [§6.4](#64-queries-output-formats-and-streams)) and the optional live loopback UI ([§7](#7-serving-layer-optional)) |
 
 ### 1.4 Design Principles
 
@@ -756,6 +758,7 @@ copied histories:
   Each later usage update is a new **usage revision** of that request, and the ledger
   keeps the final one with every record as evidence, or, where a dialect cannot order
   its revisions, the one its selection rule picks.
+  The usage of the other revisions is not kept.
 - One response repeated in several files is one logical observation with several
   evidence references.
   Forked or resumed history is not newly consumed usage.
@@ -767,7 +770,9 @@ copied histories:
   Ambiguous candidates are preserved rather than fabricating a unique API-call count.
 - Conflicting observations keep diagnostics and follow a documented, source-specific
   resolution rule, never first-wins traversal order.
-  Conflicting account attributions for one request are diagnosed, not split.
+  Once an adapter records accounts, conflicting account attributions for one request
+  will be diagnosed, not split; no current adapter records one, so every request’s
+  account is unknown.
 - Observed, configured, inferred and unknown values stay distinct.
 - A copy nested inside another record never counts, and usage that never reaches local
   logs is an unobserved coverage gap, never zero ([§2.1](#21-dialects-and-discovery)).
@@ -785,14 +790,48 @@ The source reviews summarized in the
 [portable research brief](project/research/research-2026-09-13-portable-agent-usage.md)
 set these source-specific rules:
 
+- **Claude Code decoding:** a first pass reads each line’s type, `isSidechain` flag, CLI
+  version, working directory and whether it bears usage without building a JSON
+  document. Only an `assistant` line with an unsigned `message.usage.output_tokens`, or a
+  `progress` line whose nested message has one, is parsed into a document, and only its
+  accounting fields are kept.
+  The first pass reads every value as a document parse would, so a line is malformed
+  exactly when it is not valid JSON, a repeated key keeps its last value, and a null or
+  mistyped field reads as missing.
 - **Claude Code block records:** block records of one response can disagree on
   `output_tokens`, so reconciliation selects one whole record (largest `output_tokens`,
-  then last in file order, then lowest `src-` ID), adds a diagnostic when input or cache
-  fields differ, and never merges fields.
-- **Claude Code copies:** a record that replays a parent message is a copy owned by the
-  parent, not an ambiguous key: a `progress` record nesting a subagent’s assistant
-  message, a `/btw` side-question record with the parent’s `message.id` under a new
-  `requestId`, and a fork-style subagent record with a parent record’s `uuid`.
+  then highest block index, then last in file order, then lowest `src-` ID), adds a
+  diagnostic when input or cache fields differ, and never merges fields.
+- **Claude Code copies:** a record that replays another thread’s record is a copy owned
+  by that thread, never counted and never an ambiguous key.
+  A `progress` record nesting a subagent’s assistant message is always a copy.
+  A subagent record is a copy when another thread owns its `message.id`, as with a
+  `/btw` side-question record that repeats the parent’s `message.id` under a new
+  `requestId`. Any record is a copy when another thread owns its `uuid`, as with a
+  fork-style subagent record.
+- **Claude Code owners:** each `message.id` and `uuid` is owned by the first
+  original-eligible record in canonical order.
+  Original-eligible records are request records that are neither nested copies nor
+  resumed replays. The canonical order puts main-session records before subagent records,
+  then records with a timestamp before records without one, then the earliest timestamp,
+  then evidence position (`src-` ID, offset and length).
+  Discovery order and worker count never enter, so renaming session files does not move
+  ownership. The one exception is records with equal timestamps: there the `src-` ID,
+  which derives from the root-relative path, breaks the tie.
+- **Claude Code resumed sessions:** a main-session record whose `sessionId` names
+  another session is a resumed replay.
+  It is a copy, owned by the thread that owns its `uuid`, or else by the session it
+  names, and it adds a fork edge from that session to the resuming one, with a thread
+  for the named session even when its file was not discovered.
+  A replay never claims ownership, so a resuming session whose file sorts before the
+  original cannot take the original’s usage.
+- **Claude Code shared message IDs:** when records that are not replays report one
+  `message.id` with more than one model, as when a gateway reuses message IDs across
+  sessions, that message’s key is scoped to the recorded session instead of the
+  provider. Each session’s records then form their own request, and each such message
+  adds one `identity-key-conflict` occurrence that cites its records.
+  A message ID reported with one model keeps its provider-scoped key and merges across
+  files.
 - **`claude-stream`:** a capture and its transcript share `session_id` and `message.id`,
   so their requests merge by response ID.
 - **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
@@ -805,14 +844,29 @@ set these source-specific rules:
   provider limit observation, compaction estimates and context-window-full fills (zero
   input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
   in any cumulative component opens a new counter epoch with a diagnostic.
-- **Codex copied history:** a child rollout’s own records start at
-  `subagent_history_start_ordinal`, else at the first `thread_settings_applied` naming
-  the child (0.152 and later).
-  Otherwise it is inferred, in order, from turn IDs also present in the parent rollout,
-  the last foreign `session_meta` record, and turns without their own `turn_context`,
-  and the excluded usage is labeled `inferred` with a diagnostic.
-  A fork or subagent continues the parent’s running total, so the child’s counters start
-  from the inherited total.
+- **Codex decoding:** a line that contains none of the quoted relevant type tokens
+  (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
+  `thread_settings_applied`) is validated without building a document and counted as
+  skipped or malformed.
+  Every other line is read by a typed pass that borrows its strings and builds no JSON
+  document except a `rate_limits` object, with the same malformed-line, repeated-key and
+  null-field rules as Claude Code decoding.
+  Consecutive identical `rate_limits` snapshots in a rollout share one value.
+  Whether a rollout uses `token_usage_record` lines or cumulative counters is decided
+  for the whole file.
+- **Codex copied history:** usage after a `session_meta` that names another thread
+  belongs to that thread and is a copy.
+  A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
+  `thread_settings_applied` event (0.152 and later), which assigns later records to the
+  thread it names. In a rollout without `token_usage_record` lines, the copy also ends at
+  the first `turn_context` whose turn ID the copied thread’s root rollout never
+  recorded; turn IDs are matched across rollouts by 128-bit digest.
+  When such a rollout has a parent, another thread’s `session_meta` and no
+  `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
+  every copied line, skipped lines included.
+  In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
+  is a copy keyed to the copied thread’s last response ID. A fork or subagent continues
+  the parent’s running total, so the child’s counters start from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
   copied lines contribute neither usage nor times to the child; paginated forks copy
@@ -852,6 +906,18 @@ set these source-specific rules:
   unrecorded utility calls, so they are a reconciliation check on the session file,
   never an observation ([§2.6](#26-harness-captures)).
 
+Every dialect shares two reconciliation rules:
+
+- **Request-key collisions:** observations carry each request key as its derived ID plus
+  the next 64 SHA-256 bits, not as key text.
+  Keys whose 192 digest bits agree are one key, and two keys that derive one ID but
+  differ in those further bits fail with an identity-collision error.
+  Thread identities are still checked against their stored keys.
+- **Diagnostics:** the ledger keeps one diagnostic per code and subject.
+  Identical diagnostics count once, occurrences are summed, the detail is the first in
+  canonical order, and at most three evidence references are kept as samples.
+  Reports then emit one row per code for the selected subjects.
+
 ### 3.5 Purpose and Annotations
 
 **Status:** Candidate ([§9.1](#purpose-sources)); configured purpose and annotation sets
@@ -888,9 +954,11 @@ receives the same ID on every machine and in every merge order.
 - **Components:** native IDs enter keys verbatim and also remain separate fields.
   Namespace components are registry tokens such as `anthropic` or `codex`; unknown
   components are `null`.
-- **Stored keys:** keys are stored with their IDs, so a binary can re-derive IDs under
-  another supported identity version.
+- **Stored keys:** portable artifacts store keys with their IDs, so a binary can
+  re-derive IDs under another supported identity version.
   Two different keys that produce one ID are an identity-collision error.
+  The in-memory ledger keeps request keys only as digests and detects that collision
+  from further digest bits ([§3.4](#34-dialect-reconciliation-rules)).
 - **Fingerprints:** a fingerprint identifies bytes, not necessarily a logical session.
 
 | Prefix | Key, in precedence order |
@@ -1049,9 +1117,11 @@ such as thread or project, the request takes the value all candidates share or e
 explicit `ambiguous` group.
 Unknown values take the null group, so group rows still sum to the total.
 
-Observations that may be one request but share no key form a **candidate set**. Totals
-count the member with the strongest identity basis, then the lowest ID, and report the
-other members as **unresolved** usage, which is never added to totals.
+Observations that share a key but disagree on a revision-invariant field, such as a
+message ID reported with two models, are not merged: each becomes its own request, and
+together they form a **candidate set**. Totals count the member with the strongest
+identity basis, then the lowest ID, and report the other members as **unresolved**
+usage, which is never added to totals.
 
 Scope selection follows the same principle:
 
@@ -1092,8 +1162,8 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
   Null is an explicit group.
 - Percentiles are recomputed from observations or from mergeable histograms, never
   averaged across groups.
-  Query reports compute exact percentiles under the memory budget in
-  [§8.3](#uncached-engine), and approximate percentiles require recorded method and
+  Query reports compute exact percentiles in memory from the reconciled requests
+  ([§8.3](#uncached-engine)), and approximate percentiles require recorded method and
   error metadata.
 
 Branch and agent-path grouping and inferred timestamps for records without one are
@@ -1872,10 +1942,12 @@ urollup serve --project example --open
 
 ### 6.4 Queries, Output Formats and Streams
 
-**Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering));
-`--strict` semantics are Candidate ([§9.1](#strict-mode)); `--annotation-set` is
-Candidate ([§9.1](#cli-surface)) and Later (Phase 2); terminal presentation and presets
-are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
+**Status:** Confirmed ([Decision 15](#decision-15-json-as-an-output-rendering),
+[Decision 29](#decision-29-terminal-aware-color) and
+[Decision 30](#decision-30-interactive-progress)); `--strict` semantics are Candidate
+([§9.1](#strict-mode)); `--annotation-set` is Candidate ([§9.1](#cli-surface)) and Later
+(Phase 2); terminal presentation and presets other than baseline color and progress are
+Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults)).
 
 - **Queries:** every command compiles to a versioned `QuerySpec` of sources, snapshot,
   selection, time range, timezone, filters, grouping, scope, measures, ordering,
@@ -1887,17 +1959,35 @@ are Candidate ([§9.1](#report-presentation) and [§9.1](#configuration-defaults
   `--annotation-set <file>` (Phase 2) adds a named annotation set
   ([§3.5](#35-purpose-and-annotations)).
 - **Formats:** `--format` selects terminal tables, JSON, JSONL, CSV or Markdown, plus
-  `summary` and `bundle` for `export` and `merge`. JSON results carry schema version,
+  `summary` and `bundle` for `export` and `merge`, and `html` (Candidate,
+  [§9.1](#static-html-reports)).
+- **Browsable HTML reports (Candidate, [§9.1](#static-html-reports)):** `--format html`
+  with `--output <file>` writes one self-contained page: inline styles and scripts, no
+  network requests, no server, openable from a file manager and shareable like any
+  report. It renders the same `QuerySpec` results as every other format, applies the same
+  redaction profile and evidence rules, and is deterministic for one snapshot and query,
+  so it can be committed or attached to a PR. JSON results carry schema version,
   normalized query, source coverage, diagnostics, pricing version, aggregate rows and
   stable evidence references.
   JSON and CSV rows are never merge inputs ([§5.1](#51-portable-inputs-and-artifacts)).
-- **Terminal presentation (Candidate, [§9.1](#report-presentation)):** tables fit the
-  terminal width, and below 100 columns on a terminal, or with `--compact`, they keep
-  only the period or group, token totals and cost; piped output never switches layout.
-  Formatting is locale-independent, with ISO 8601 dates and no `--locale` flag, and
-  JSON, JSONL and CSV values are never formatted for display.
-  Color still appears only on a terminal ([§8.2](#82-engineering-conventions)), and
-  `--color never` or `NO_COLOR` turns it off.
+- **Terminal color (Confirmed, [Decision 29](#decision-29-terminal-aware-color)):**
+  automatic color is permitted only for human-facing output on an interactive terminal.
+  Redirected or piped output is plain and byte-stable, and machine-readable formats
+  never contain ANSI escapes.
+  `--color never` and `NO_COLOR` each disable color unconditionally, including on a
+  terminal or when another force mechanism is present.
+  `--color always` forces human-facing color, and `FORCE_COLOR` forces `auto`; machine
+  formats remain plain under both.
+- **Progress (Confirmed, [Decision 30](#decision-30-interactive-progress)):** noticeably
+  long operations show progress by default only during interactive human use.
+  Progress is rendered on stderr and cleaned up on success and error.
+  Noninteractive, redirected, piped and machine-readable workflows suppress it
+  automatically, and `--no-progress` disables it unconditionally.
+- **Other terminal presentation (Candidate, [§9.1](#report-presentation)):** tables fit
+  the terminal width, and below 100 columns on a terminal, or with `--compact`, they
+  keep only the period or group, token totals and cost; piped output never switches
+  layout. Formatting is locale-independent, with ISO 8601 dates and no `--locale` flag,
+  and JSON, JSONL and CSV values are never formatted for display.
   `--no-cost` omits amounts from tables and JSON while pricing coverage still appears.
   `--last <n>` selects the n most recent calendar periods of a calendar report,
   including the current one, in the report’s timezone and week start, and resolves to
@@ -2175,7 +2265,7 @@ installing the crate never needs Node, uv or Python:
 | `crates/urollup/assets/web/` | Built web bundle, included only by the `serve` feature; source in `web/` |
 | `contracts/`, `contracts/fixtures/` | Pydantic contract models and valid and invalid fixtures |
 | `scripts/check_contracts.py` | The contract gate behind `make contracts-check` |
-| `tests/golden/` | tryscript CLI goldens |
+| `tests/golden/` | tryscript CLI goldens, the end-to-end result checks’ configuration and their harness samples |
 | `bench/` | Benchmark generator and harness, with reference-laptop results under `bench/results/` |
 
 The engineering baseline’s
@@ -2207,11 +2297,25 @@ The choices that shape the design:
 - **Lints and CLI process:** a denied pedantic clippy floor; `clippy::panic` denied in
   the core and `clippy::arithmetic_side_effects` in token counter and money modules.
   `main` returns `ExitCode` from a `run` function with injected stdout and stderr
-  writers, color appears only on a terminal, and nothing prompts.
+  writers, automatic color appears only for human-facing output on an interactive
+  terminal, redirected and machine-readable output stays plain, either documented
+  color-disable mechanism wins unconditionally, interactive human-facing table commands
+  render a transient scan indicator on stderr with guaranteed cleanup, `--no-progress`
+  always wins, and nothing prompts.
 - **Tests and gates:** `insta` snapshots, `proptest` laws and tryscript CLI goldens in
   `tests/golden/`. `make check`, not a justfile, is the local gate and runs what CI
   runs; `make fix` formats with rustfmt, taplo and flowmark.
   Workflows use read-only permissions, SHA-pinned actions and `--locked`.
+- **Golden testing:** CLI behavior is tested in two layers over one fixture corpus,
+  transcript goldens for complete output and result checks for reconciled truth, both
+  run against a hermetic environment that can reach no real log.
+  The rules are `tbd guidelines golden-testing-guidelines` and the reference of the
+  pinned [tryscript](https://github.com/jlevy/tryscript) (`tryscript docs`); the
+  strategy is the plan’s
+  [golden and end-to-end result checks](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#golden-and-end-to-end-result-checks),
+  the audit behind it is the
+  [golden testing audit](project/research/research-2026-09-15-golden-testing-audit.md),
+  and the operating guide is `tests/golden/README.md`.
 - **Supply chain:** a 14-day release cool-off for crates, npm and PyPI packages, actions
   and toolchains, with first-party packages exempt from release age only.
   Every `deny.toml` ignore names a bead and a removal condition.
@@ -2236,15 +2340,90 @@ acceptance criteria in the plan’s
 
 #### Uncached Engine
 
-The uncached engine uses buffered streaming reads, lightweight dialect decoding, bounded
-parallelism across files, deterministic merges and compact typed records, and keeps
-source offsets instead of in-memory transcript copies.
-Discovery follows the skip rule in [§2.2](#22-snapshot-boundary).
-Runs have explicit memory and worker limits and record scan bytes, records per second,
-phase timings, peak RSS and output size.
-A ledger or exact percentile over its memory budget spills to an ephemeral external-sort
-store, and past that store’s limit the run exits 1 with a capacity diagnostic rather
-than report a partial total.
+The uncached engine reads the whole selected history on every run and keeps source
+offsets instead of in-memory transcript copies.
+Its memory grows with the number of usage-bearing records, not with log bytes.
+The
+[scalable-ingestion plan](project/specs/active/plan-2026-09-16-scalable-ingestion.md)
+records how the engine reached this shape, with dated whole-history measurements in its
+[progress section](project/specs/active/plan-2026-09-16-scalable-ingestion.md#progress).
+
+- **Discovery and selection:** discovery follows the skip rule in
+  [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
+  sources to the selected session families before any source is decoded.
+- **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
+  on bounded worker threads that take sources heaviest first from one shared queue,
+  weighting zstd files by an assumed expansion.
+  The default is `min(available_parallelism, 8)` workers.
+  `UROLLUP_JOBS` sets a count from 1 to 256; an empty value counts as unset, and any
+  other value is a usage error.
+  The CLI reads `UROLLUP_JOBS` and passes the count to the core library.
+- **Typed line decoding:** each source is read once as a stream of complete lines.
+  A typed first pass borrows strings from the line and reads only the fields accounting
+  needs, and Codex first rules lines out with a byte prefilter on relevant type tokens
+  ([§3.4](#34-dialect-reconciliation-rules)). A line that is ruled out or ignored is
+  still validated, so malformed-line counts match a full parse.
+  Typed visitors decode usage and sidecar fields and preserve native limit payloads as
+  compact JSON text; no `serde_json::Value` document is retained on the ingestion path.
+- **Compact rows:** decoded records are fixed-size rows whose size limits are
+  compile-time assertions.
+  Repeated strings are interned per source, native IDs that only join records are
+  128-bit digests, model and effort names are interned once per process, usage stores
+  eight `u32` counters with a presence mask and interns full-width overflow patterns,
+  and timestamps are compact.
+  Observation shells are at most 224 B; this excludes owned payloads.
+  Name, limit-text and overflow-pattern intern tables live until process exit; their
+  distinct-value cardinality must be measured before repeated library/server ingestion.
+  Each source’s records are freed as soon as its observations are built, and maps needed
+  only to build observations are dropped before reconciliation.
+- **Request grouping:** reconciliation sorts observations into canonical order in place
+  and removes re-reads.
+  An index-based union-find over request key IDs, whose set root is always the lowest
+  ID, links observations that share a key.
+  Groups form by sorting root and index pairs.
+  Each group builds its request, or one request per observation when the group splits on
+  a conflicting shared key, and releases its observations’ owned data before the next
+  group. Requests are stored in a vector sorted by ID, and only requests split from a
+  conflicting shared key enter the candidate-set graph.
+- **Capacity ceiling:** a shared per-agent admission counter refuses excess retained
+  observation rows during worker decode, including pending representations, and cancels
+  further work. Reconciliation also checks the observation ceiling before building
+  requests. The default budget is 25% of physical RAM, or 2 GiB when RAM cannot be read.
+  `--max-ram` / `UROLLUP_MAX_RAM` accept a byte size or a percent; `--max-rows` is an
+  exact override; when both are set, the stricter ceiling wins.
+  The byte budget is divided by the observation row size, so the row count rises as rows
+  shrink. This accounts for row shells, not payloads, intern tables, request construction
+  or the other agent’s retained ledger; it is not an RSS or physical-footprint cap.
+  Explicit byte/row budgets do not query host RAM. Default/percentage budgets use native
+  host queries; Linux host RAM does not imply a container memory allowance.
+  The CLI exits 1 with the observation count and the named budget and suggests narrower
+  `--source` roots with `--no-default-sources`. It replaced the temporary 512 MiB input
+  guard and its read budgets; per-record and sidecar size limits remain.
+  No run spills to disk.
+- **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
+  stderr after the command runs and before its output or error: the worker count, wall
+  time per phase (discovery, Claude Code ingest, Codex ingest, session index, and query
+  and render), per-agent source, observation, request, limit-observation and diagnostic
+  counts, and the total.
+  A failed command prints only the phases it finished.
+  The lines hold no paths, IDs or model names.
+  Unset, empty or `0` disables statistics, and any other value is a usage error.
+- **Determinism:** per-source results, including Claude Code string tables, merge in
+  discovery order whatever order workers finish in, and every global step sorts by
+  canonical position or ID, so output is identical for any worker count.
+  Claude Code ownership follows the canonical order in
+  [§3.4](#34-dialect-reconciliation-rules), so renaming session files does not change
+  results, apart from the equal-timestamp tie-break described there.
+  Tests ingest every fixture on 1, 2, 3, 8 and 64 workers, compare CLI JSON across
+  `UROLLUP_JOBS` values, and reverse every Claude Code fixture’s session names.
+
+Scale is gated on generated corpora rather than on private logs: `make test` includes a
+raw-bytes independence check, a footprint extrapolation bound and a `daily --all` run
+under an RSS watchdog ([scale measurement guide](project/qa/scale-measurement.md)).
+Dedicated Ubuntu and macOS CI jobs execute the release workload behind the supply-chain
+gate and archive its output.
+These small synthetic checks do not establish the 512 MiB and 10-second whole-history
+acceptance targets.
 
 #### Capture Cache
 
@@ -2310,7 +2489,7 @@ read-only snapshot input ([§5.1](#51-portable-inputs-and-artifacts)).
   separately.
 - **Scaling:** the request index adds roughly 40 bytes per request to a summary.
   Bundles grow with request count and are compressed; exact percentiles over merged
-  requests need bundles and a memory budget.
+  requests need bundles, and their memory cost is declared separately.
 
 * * *
 
@@ -2465,15 +2644,34 @@ later candidate. Cursor is the next such agent and has its own plan
 
 **Designed in:** [§2.1](#21-dialects-and-discovery), [§10.2](#102-future-enhancements).
 
+#### Static HTML Reports
+
+**Status:** Candidate.
+
+**Recommendation:** add `--format html` with `--output <file>`, writing one
+self-contained page (inline CSS and JavaScript, no network requests, no server) that
+renders the same query results as the other formats, honors the redaction profile, and
+is byte-deterministic for one snapshot and query.
+It reuses the serving layer’s rendering components where practical, so the live UI
+([§7.2](#72-web-ui)) and the static report stay consistent, but it must not pull HTTP or
+async dependencies into a default CLI build
+([Decision 21](#decision-21-serving-separability)): the renderer belongs behind the same
+optional feature boundary.
+
+**Phase:** with the web UI in Phase 2, since it shares that rendering.
+A Markdown report already covers the shareable-report need in milestone 0.5.
+
+**Links:** [§6.4](#64-queries-output-formats-and-streams), [§7.2](#72-web-ui);
+maintainer request, 2026-09-16.
+
 #### Report Presentation
 
 **Status:** Candidate.
 
 **Recommendation:** Terminal tables fit the terminal width, with essential columns below
 100 columns or with `--compact`; formatting is locale-independent with no `--locale`;
-`--color never` and `NO_COLOR` turn off terminal color; `--no-cost` omits amounts;
-`--last <n>` selects recent calendar periods as absolute bounds; and reports show the
-pooled cache-read share computed from token sums.
+`--no-cost` omits amounts; `--last <n>` selects recent calendar periods as absolute
+bounds; and reports show the pooled cache-read share computed from token sums.
 
 **Designed in:** [§6.4](#64-queries-output-formats-and-streams),
 [§6.6](#66-report-content-and-examples).
@@ -2684,7 +2882,7 @@ These decisions are confirmed by the maintainer, grouped by area:
 | Project and scope | [1](#decision-1-product-name), [2](#decision-2-mit-license), [3](#decision-3-code-reuse-and-licensing), [4](#decision-4-harness-logs-through-urollup-adapters), [5](#decision-5-qm-out-of-scope), [28](#decision-28-gemini-cli-planned-support) |
 | Capture | [6](#decision-6-data-capture-principle), [7](#decision-7-captured-records-and-strip-policies), [8](#decision-8-capture-store-and-cache), [9](#decision-9-capture-scope) |
 | Accounting and time | [10](#decision-10-recorded-usage-windows), [11](#decision-11-time-handling) |
-| CLI and output | [12](#decision-12-current-session-detection), [13](#decision-13-selection-defaults), [14](#decision-14-exit-codes), [15](#decision-15-json-as-an-output-rendering) |
+| CLI and output | [12](#decision-12-current-session-detection), [13](#decision-13-selection-defaults), [14](#decision-14-exit-codes), [15](#decision-15-json-as-an-output-rendering), [29](#decision-29-terminal-aware-color), [30](#decision-30-interactive-progress) |
 | Artifacts and contracts | [16](#decision-16-summary-and-bundle-artifacts), [17](#decision-17-request-index-on-by-default), [18](#decision-18-enforced-contract-status), [19](#decision-19-identity-keys-and-redaction), [20](#decision-20-database-input-in-phase-3) |
 | Serving | [21](#decision-21-serving-separability), [22](#decision-22-web-server-security) |
 | Engineering and release | [23](#decision-23-engineering-baseline), [24](#decision-24-dev-tooling), [25](#decision-25-contract-gate-script), [26](#decision-26-benchmarks), [27](#decision-27-release-scope) |
@@ -3124,17 +3322,28 @@ recalibrated against a consented corpus.
 
 #### Decision 27: Release Scope
 
-**Choice:** No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or
-minisign signing.
+**Choice:** The first public alpha is `0.1.0` after milestone 0.1 acceptance.
+It ships native archives for static-musl Linux x86_64 and arm64, macOS 11.0 or newer on
+Intel and Apple silicon, and Windows x86_64; crates.io packages through Cargo
+1.90-or-newer native workspace publishing; and a PyPI `urollup` Maturin
+`bindings = "bin"` wheel for exact-version `uvx` and `uv tool install` use, not a Python
+wrapper or importable module.
+No Homebrew, npm, cargo-binstall or Windows arm64 at first; no GPG or minisign signing.
 
 **Rationale:** Those channels and targets wait for demand, and build-provenance
 attestations for every archive and wheel verify releases.
 
 **Tradeoffs:** Users of those package managers install from GitHub Release archives,
 crates.io or PyPI wheels, and Windows arm64 has no prebuilt binary.
+Importable Python bindings remain a separate future artifact so they can choose their
+own API, ABI and platform matrix without coupling the standalone CLI to Python.
 
-**Confirmed:** 2026-09-14; see the plan’s
-[rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan).
+**Confirmed:** 2026-09-14; refined 2026-09-16 to fix the first release at 0.1.0, the
+macOS floor at 11.0 and the Cargo workspace-publishing baseline.
+See the plan’s
+[rollout plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md#rollout-plan)
+and the focused
+[first-release publishing plan](project/specs/active/plan-2026-09-16-first-release-publishing.md).
 
 #### Decision 28: Gemini CLI Planned Support
 
@@ -3166,6 +3375,47 @@ guarantee, so the adapter records the versions its fixtures cover.
 **Confirmed:** 2026-09-15; see [§2.1](#21-dialects-and-discovery),
 [§3.4](#34-dialect-reconciliation-rules) and the research brief’s
 [Gemini CLI dialect facts](project/research/research-2026-09-13-portable-agent-usage.md#gemini-cli-dialect-facts).
+
+#### Decision 29: Terminal-Aware Color
+
+**Choice:** Milestone 0.1 provides automatic color only for human-facing output on an
+interactive terminal.
+Redirected and piped output is plain and byte-stable, and every machine-readable format
+is free of ANSI escapes.
+`--color never` and `NO_COLOR` each disable color unconditionally, including when
+terminal detection, `--color always` or `FORCE_COLOR` would otherwise enable it.
+`--color always` forces human-facing output, while `FORCE_COLOR` forces automatic mode;
+neither can add ANSI escapes to a machine-readable format.
+
+**Rationale:** Interactive color improves scanning, while stable plain streams remain
+safe for agents, snapshots, pipes and parsers without requiring callers to remember a
+flag.
+
+**Tradeoffs:** Forced human color is available for snapshots and terminal emulators, but
+every new output format must still be classified as human-facing or machine-readable and
+tested accordingly.
+
+**Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
+[§8.2](#82-engineering-conventions).
+
+#### Decision 30: Interactive Progress
+
+**Choice:** Milestone 0.1 table commands show a transient scan indicator by default only
+during interactive human use.
+Progress renders on stderr, never stdout, and clears on both success and error.
+Noninteractive, redirected, piped and machine-readable workflows suppress it
+automatically, and `--no-progress` disables it unconditionally.
+
+**Rationale:** A person should be able to distinguish a long scan from a hung process
+without making agent, pipe, snapshot or parser output unstable.
+
+**Tradeoffs:** The milestone 0.1 commands show one transient scan status rather than
+attempting a percentage without a trustworthy denominator.
+Tests inject terminal capabilities and cover explicit success, error and real
+process-stream paths.
+
+**Confirmed:** 2026-09-16; see [§6.4](#64-queries-output-formats-and-streams) and
+[§8.2](#82-engineering-conventions).
 
 ### 10.2 Future Enhancements
 
@@ -3267,7 +3517,8 @@ Queries and output:
 | `--strict` | Exit 3 on any coverage gap, including unresolved usage | [§6.4](#64-queries-output-formats-and-streams), [§5.3](#53-exact-aggregation) | 1 (0.5), Candidate |
 | `--require-priced` | Exit 3 when any tokens are unpriced | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.4) |
 | `--compact` | Force the narrow terminal table layout | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
-| `--color` | Choose `auto` or `never` for terminal color; `NO_COLOR` also turns it off | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
+| `--color` | Choose `auto`, `always` or `never` for human-facing terminal color; `NO_COLOR` turns it off unconditionally and `FORCE_COLOR` forces automatic mode | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
+| `--no-progress` | Disable interactive progress unconditionally | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.1), Confirmed |
 | `--no-cost` | Omit amounts from tables and JSON while pricing coverage still appears | [§6.4](#64-queries-output-formats-and-streams) | 1 (0.5), Candidate |
 | `--annotation-set` | Group by a named, imported annotation set | [§3.5](#35-purpose-and-annotations) | 2, Candidate |
 | `--baseline` | Name the baseline saved JSON report for `compare` | [§6.3](#63-commands) | 2 |
@@ -3334,6 +3585,8 @@ Project documents, none of which contains private session data:
 
 - [urollup implementation plan](project/specs/active/plan-2026-09-13-urollup-cli-and-web.md):
   phases, milestones, testing strategy, performance targets and rollout
+- [urollup 0.1.0 publishing plan](project/specs/active/plan-2026-09-16-first-release-publishing.md):
+  release channels, target matrix, artifact validation and publication runbook
 - [Portable agent usage research brief](project/research/research-2026-09-13-portable-agent-usage.md):
   public-source comparisons, dialect evidence and the case for mergeable results,
   including the
@@ -3350,6 +3603,8 @@ Project documents, none of which contains private session data:
 - [Agent tool source reviews](project/research/research-2026-09-14-agent-tool-source-reviews.md):
   the detailed Codex, ccusage, Pi, agentfdr and Anthropic plugin source evidence behind
   the research brief, and where each review recommendation was applied
+- [Golden testing audit](project/research/research-2026-09-15-golden-testing-audit.md):
+  golden-harness failure modes, their resolutions and the end-to-end fixture strategy
 - [Log throughput spike](../explorations/log-throughput/README.md): the prototype behind
   the capture store measurements
 
@@ -3390,9 +3645,10 @@ A row whose design link says *Candidate* is covered only once that
 [§9.1](#91-candidate-decisions) decision is confirmed.
 The 2026-09-15 review found gaps in status line output, compact tables, color control,
 recent-period shortcuts, cost hiding, cache-hit reporting, configuration defaults and
-other agents’ logs. Candidates close the first six and set a policy for the other two,
-and [Decision 28](#decision-28-gemini-cli-planned-support) closed the agent gap for
-Gemini CLI on the same day.
+other agents’ logs. [Decision 29](#decision-29-terminal-aware-color) makes color a 0.1
+baseline; candidates address the other presentation gaps and configuration defaults, and
+[Decision 28](#decision-28-gemini-cli-planned-support) closed the agent gap for Gemini
+CLI on the same day.
 
 | Use case | ccusage 20.0.20 | urollup | Status | Design |
 | --- | --- | --- | --- | --- |
@@ -3424,7 +3680,7 @@ Gemini CLI on the same day.
 | Sort order | `--order asc\|desc` | `--sort` and `--limit` | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Terminal tables | Boxed tables with a Models column and a totals row | Terminal tables rendered from the shared report data | Covered | [§6.4](#64-queries-output-formats-and-streams) |
 | Compact and responsive tables | Narrow layout below 100 columns or with `--compact` | The same rule, with `--compact` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
-| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | Color only on a terminal; `--color never` and `NO_COLOR` turn it off | Partial: no forced color in pipes | [§8.2](#82-engineering-conventions), [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
+| Color control | `--color`, `--no-color`, `NO_COLOR` and `FORCE_COLOR` | `--color auto\|always\|never`, automatic color only for interactive human-facing output, `--color never` and `NO_COLOR` as unconditional disables, `FORCE_COLOR` for automatic mode, and no ANSI in machine formats | Covered | [Decision 29](#decision-29-terminal-aware-color), [§6.4](#64-queries-output-formats-and-streams) |
 | Locale | `--locale` removed; fixed formats | Locale-independent formatting with no `--locale` | Covered | [§6.4](#64-queries-output-formats-and-streams) (Candidate) |
 | JSON output | `--json` with per-command shapes and no output schema | JSON with schema version, normalized query, coverage and diagnostics; also JSONL, CSV and Markdown | Covered better | [§6.4](#64-queries-output-formats-and-streams), [Decision 15](#decision-15-json-as-an-output-rendering) |
 | JSON filtering | `--jq`, through an external `jq` binary | stdout carries only the requested format, so output pipes to `jq` | Covered | [§6.4](#64-queries-output-formats-and-streams) |

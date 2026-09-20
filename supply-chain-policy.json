@@ -1,0 +1,140 @@
+{
+  "$comment": "Validated by scripts/check-supply-chain.mjs (make supply-chain). The reviewed version record with publication dates and held-back releases is in SUPPLY-CHAIN-SECURITY.md.",
+  "schema": 1,
+  "minimumAgeDays": 14,
+  "exceptions": [],
+  "firstParty": [
+    {
+      "ecosystem": "npm",
+      "name": "get-tbd",
+      "reason": "Verified first-party: published from github.com/jlevy, the same authorship as this repository. The cool-off exists so a compromised upstream release is noticed by somebody else first, which does not apply to a package this project's own authors publish. Waives release age only; integrity, tarball or artifact hashes, and publication-time provenance are still verified every run. Source: github.com/jlevy/tbd.",
+      "approvedBy": "Repository maintainers in AGENTS.md and design Decision 24"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tryscript",
+      "reason": "Verified first-party: published from github.com/jlevy, the same authorship as this repository. The cool-off exists so a compromised upstream release is noticed by somebody else first, which does not apply to a package this project's own authors publish. Waives release age only; integrity, tarball or artifact hashes, and publication-time provenance are still verified every run. Source: github.com/jlevy/tryscript.",
+      "approvedBy": "Repository maintainers in AGENTS.md and design Decision 24"
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "softschema",
+      "reason": "Verified first-party: published from github.com/jlevy, the same authorship as this repository. The cool-off exists so a compromised upstream release is noticed by somebody else first, which does not apply to a package this project's own authors publish. Waives release age only; integrity, tarball or artifact hashes, and publication-time provenance are still verified every run. Source: github.com/jlevy/softschema.",
+      "approvedBy": "Repository maintainers in AGENTS.md and design Decision 24"
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "flowmark-rs",
+      "reason": "Verified first-party: published from github.com/jlevy, the same authorship as this repository. The cool-off exists so a compromised upstream release is noticed by somebody else first, which does not apply to a package this project's own authors publish. Waives release age only; integrity, tarball or artifact hashes, and publication-time provenance are still verified every run. Source: github.com/jlevy/flowmark-rs.",
+      "approvedBy": "Repository maintainers in AGENTS.md and design Decision 24"
+    }
+  ],
+  "bootstrap": {
+    "npm": [
+      {
+        "name": "get-tbd",
+        "version": "0.8.1",
+        "integrity": "sha512-UjcXKT5nD9pj8EfjWW1tm+rVtAiWyUFXfo6AdGADv+KY8iQXusoQsRxzwYJTyVTRNSY/sjGSsVIeWmazOj4NCQ==",
+        "tarball": "https://registry.npmjs.org/get-tbd/-/get-tbd-0.8.1.tgz",
+        "files": [
+          ".claude/hooks/tbd-closing-reminder.sh",
+          ".claude/scripts/tbd-session.sh",
+          ".codex/tbd-closing-reminder.sh",
+          ".codex/tbd-session.sh"
+        ],
+        "versionSource": {
+          "file": ".tbd/config.yml",
+          "key": "tbd_fallback_version",
+          "variable": "configured_fallback_version"
+        }
+      }
+    ],
+    "githubReleases": [
+      {
+        "repository": "cli/cli",
+        "tag": "v2.92.0",
+        "version": "2.92.0",
+        "requireAssetDigestsInFiles": true,
+        "files": [
+          ".claude/scripts/ensure-gh-cli.sh",
+          ".codex/ensure-gh-cli.sh"
+        ],
+        "assets": {
+          "gh_2.92.0_linux_amd64.tar.gz": "sha256:b57848131bdf0c229cd35e1f2a51aa718199858b2e728410b37e89a428943ec4",
+          "gh_2.92.0_linux_arm64.tar.gz": "sha256:c2248526dd0160c08d3fccca2332c3c1a07c15a78b23978e77735f1b5a18cfee",
+          "gh_2.92.0_macOS_amd64.zip": "sha256:ae9bb327ab0d91071bdada79f8f14034a2a0f19b0e001835a782eafa519d2af0",
+          "gh_2.92.0_macOS_arm64.zip": "sha256:b11c54f6bd7d15ed6590475079e5b2fcf36f45d3991a80041b29c9d0cc1f1d07"
+        }
+      },
+      {
+        "repository": "astral-sh/uv",
+        "tag": "0.12.1",
+        "version": "0.12.1",
+        "requireAssetDigestsInFiles": false,
+        "files": [
+          ".github/workflows/ci.yml",
+          "Makefile"
+        ],
+        "assets": {
+          "uv-x86_64-unknown-linux-gnu.tar.gz": "sha256:90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb"
+        }
+      },
+      {
+        "repository": "EmbarkStudios/cargo-deny",
+        "tag": "0.20.2",
+        "version": "0.20.2",
+        "requireAssetDigestsInFiles": true,
+        "files": [
+          "scripts/install-cargo-deny.sh"
+        ],
+        "assets": {
+          "cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz": "sha256:9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+        }
+      }
+    ],
+    "rustToolchains": [
+      {
+        "version": "1.98.0",
+        "manifest": "https://static.rust-lang.org/dist/channel-rust-1.98.0.toml",
+        "sha256": "3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a",
+        "files": [
+          "rust-toolchain.toml",
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "version": "1.85.0",
+        "manifest": "https://static.rust-lang.org/dist/channel-rust-1.85.0.toml",
+        "sha256": "009e8b5ff43f12bf644b5e5b9fd89f96453072062a450c623882f64e85405da5",
+        "files": [
+          ".github/workflows/ci.yml",
+          "Makefile"
+        ]
+      }
+    ],
+    "nodeRuntimes": [
+      {
+        "version": "24.19.0",
+        "shasums": "https://nodejs.org/dist/v24.19.0/SHASUMS256.txt",
+        "sha256": "be0629ee2bcd8e40bb856abdd3407f0762101b76bd60a36b8867f637733631c0",
+        "files": [
+          ".github/workflows/ci.yml"
+        ]
+      }
+    ],
+    "identicalFileGroups": [
+      [
+        ".claude/scripts/tbd-session.sh",
+        ".codex/tbd-session.sh"
+      ],
+      [
+        ".claude/hooks/tbd-closing-reminder.sh",
+        ".codex/tbd-closing-reminder.sh"
+      ],
+      [
+        ".claude/scripts/ensure-gh-cli.sh",
+        ".codex/ensure-gh-cli.sh"
+      ]
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "query": { "command": "report", "selection": "all", "scope": "self", "timezone": "UTC" },
+  "coverage": { "copies_excluded": 0, "limit_observations": 0, "requests_without_usage": 0, "complete": true },
+  "diagnostics": [{ "code": "sample.unexpected_note", "count": 2, "detail": "intentionally wrong harness output" }],
+  "totals": {
+    "requests": { "owned": 4, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 12, "cache_read": 160000, "cache_write": 0, "output": 1224, "reasoning": 0, "total": 161236 },
+    "unresolved": { "requests": 0, "tokens": {} },
+    "possible": { "requests": 0, "tokens": {} }
+  },
+  "breakdowns": {},
+  "sizes": { "count": 4, "p50": 40003, "p90": 40003, "p99": 40003, "max": 40003 }
+}

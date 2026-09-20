@@ -1,0 +1,208 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "revert-file",
+  "dialect": "codex-rollout",
+  "summary": "A reverted paginated thread continues in a new rollout file named with its thread and a new rollout ID, whose history_base references the retained prefix of the old file.",
+  "rules": [
+    "design §2.1 Codex file names (revert files)",
+    "design §3.3 Reconciliation (consumed usage counts)",
+    "design §3.6 src- locator (thread and rollout ID)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 paginated rollouts; revert files read from rust-v0.154.0 source"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl",
+      "lines": 14,
+      "thread": "019f0000-0000-7000-8000-000900000001",
+      "rollout_id": "019f0000-0000-7000-8000-000900000001"
+    },
+    {
+      "path": "sessions/2026/09/07/rollout-2026-09-07T12-10-00-019f0000-0000-7000-8000-000900000001_019f0000-0000-7000-8000-000900000002.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-000900000001",
+      "rollout_id": "019f0000-0000-7000-8000-000900000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000900000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 7700,
+          "cache_read": 7300,
+          "cache_write": 0,
+          "output": 950,
+          "reasoning": 340
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c09_1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000900000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-07T19:00:15.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl:6"
+      ],
+      "turn_id": "turn-c09-1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c09_2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000900000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-07T19:01:25.000Z",
+      "tokens": {
+        "uncached_input": 2500,
+        "cache_read": 3500,
+        "cache_write": 0,
+        "output": 400,
+        "reasoning": 150
+      },
+      "selected": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl:12"
+      ],
+      "evidence": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl:12"
+      ],
+      "turn_id": "turn-c09-2",
+      "reverted": true
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c09_3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000900000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-07T19:10:20.000Z",
+      "tokens": {
+        "uncached_input": 1200,
+        "cache_read": 3800,
+        "cache_write": 0,
+        "output": 250,
+        "reasoning": 90
+      },
+      "selected": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-10-00-019f0000-0000-7000-8000-000900000001_019f0000-0000-7000-8000-000900000002.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-10-00-019f0000-0000-7000-8000-000900000001_019f0000-0000-7000-8000-000900000002.jsonl:6"
+      ],
+      "turn_id": "turn-c09-3"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 7700,
+      "cache_read": 7300,
+      "cache_write": 0,
+      "output": 950,
+      "reasoning": 340
+    },
+    "total_tokens": 15950
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Keep only the last sorted path per thread (squares)",
+      "requests": 1,
+      "tokens": {
+        "uncached_input": 1200,
+        "cache_read": 3800,
+        "cache_write": 0,
+        "output": 250,
+        "reasoning": 90,
+        "total_tokens": 5250
+      }
+    },
+    {
+      "rule": "Follow history_base and re-read the retained prefix as part of the revert file",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 11700,
+        "cache_read": 7300,
+        "cache_write": 0,
+        "output": 1250,
+        "reasoning": 440,
+        "total_tokens": 20250
+      }
+    }
+  ],
+  "sources": [
+    {
+      "files": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl"
+      ],
+      "thread_id": "019f0000-0000-7000-8000-000900000001",
+      "rollout_id": "019f0000-0000-7000-8000-000900000001"
+    },
+    {
+      "files": [
+        "sessions/2026/09/07/rollout-2026-09-07T12-10-00-019f0000-0000-7000-8000-000900000001_019f0000-0000-7000-8000-000900000002.jsonl"
+      ],
+      "thread_id": "019f0000-0000-7000-8000-000900000001",
+      "rollout_id": "019f0000-0000-7000-8000-000900000002",
+      "history_base": {
+        "rollout_id": "019f0000-0000-7000-8000-000900000001",
+        "end_ordinal_exclusive": 8,
+        "end_byte_offset": 2995,
+        "through": "sessions/2026/09/07/rollout-2026-09-07T12-00-00-019f0000-0000-7000-8000-000900000001.jsonl:8"
+      }
+    }
+  ],
+  "notes": [
+    "Turn 2 was reverted from the thread's history, but its response was served and consumed, so its usage still counts; reports may label it reverted."
+  ]
+}

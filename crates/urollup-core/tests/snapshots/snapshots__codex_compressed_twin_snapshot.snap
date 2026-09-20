@@ -1,0 +1,154 @@
+---
+source: crates/urollup-core/tests/snapshots.rs
+expression: snapshot(&ingested)
+---
+ledger:
+  candidate_sets: []
+  coverage:
+    candidate_sets: 0
+    conflicting_keys: 0
+    conflicting_rereads: 0
+    copies: 0
+    copy_only_requests: 0
+    observations: 3
+    requests: 3
+    requests_without_usage: 0
+    rereads: 0
+    unresolved_requests: 0
+  diagnostics: []
+  gaps: []
+  requests:
+    - aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 769
+          offset: 2697
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-08T13:00:30Z"
+      id: req-v1-03y7r1f7g80x0q3xwq23wz984c
+      last_seen: "2026-09-08T13:00:30Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      selected_usage:
+        revision:
+          evidence:
+            length: 769
+            offset: 2697
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage: []
+          usage:
+            measures:
+              cache_read: 6500
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 420
+              provider_only: ~
+              reasoning: 160
+              uncached_input: 1500
+        rule: latest-revision
+        status: Final
+    - aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 763
+          offset: 1447
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-08T13:00:12Z"
+      id: req-v1-2kz4e1sb7tz9bn0ymhtq2cn1sf
+      last_seen: "2026-09-08T13:00:12Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      selected_usage:
+        revision:
+          evidence:
+            length: 763
+            offset: 1447
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage: []
+          usage:
+            measures:
+              cache_read: 5000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 350
+              provider_only: ~
+              reasoning: 100
+              uncached_input: 2000
+        rule: latest-revision
+        status: Final
+    - aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: medium
+      evidence:
+        - length: 765
+          offset: 4763
+          source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      first_seen: "2026-09-15T16:00:20Z"
+      id: req-v1-4tcztj9kx7kwn06n24s2egbsd0
+      last_seen: "2026-09-15T16:00:20Z"
+      model:
+        basis: Requested
+        name: gpt-5.2-codex
+      ownership:
+        owned: thr-v1-2vkw36et5c63jwxsgmbb6jmrp5
+      selected_usage:
+        revision:
+          evidence:
+            length: 765
+            offset: 4763
+            source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+          model_usage: []
+          usage:
+            measures:
+              cache_read: 8000
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: 0
+              output: 300
+              provider_only: ~
+              reasoning: 50
+              uncached_input: 1000
+        rule: latest-revision
+        status: Final
+manifest:
+  entries:
+    - changes: []
+      complete: true
+      counters:
+        blank_lines: 0
+        decoded: 10
+        malformed: 0
+        oversized: 0
+        records: 16
+        skipped: 6
+        unparsable: 0
+      cutoff:
+        complete_through: 6232
+        pending_tail: ~
+      dialect: codex-rollout
+      environment: local
+      failures: []
+      file_len: 6232
+      fingerprint: 78kw4dc91x7eydt03kz3eze8pw
+      first_malformed: ~
+      locator: 019f0000-0000-7000-8000-001000000001/019f0000-0000-7000-8000-001000000001
+      representation: Plain
+      source: src-v1-4xmqwnfqbb0ghew9p561zqkxam
+      twin: true
+  skipped_links: []

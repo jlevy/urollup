@@ -1,0 +1,347 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "archived-rename",
+  "dialect": "codex-rollout",
+  "summary": "An archived thread and its compressed spawned child renamed into flat archived_sessions/, a byte-identical copy of the parent left under sessions/, and an unrelated active thread.",
+  "rules": [
+    "design §2.1 Dialects and Discovery (archived_sessions/, local-time file names)",
+    "design §3.6 src- locator (thread and rollout ID survive archiving and compression)",
+    "design §3.2 Spawn"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 paginated rollouts; archive renames into flat archived_sessions/ as of rust-v0.154.0"
+  },
+  "files": [
+    {
+      "path": "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-001100000001"
+    },
+    {
+      "path": "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-001100000001"
+    },
+    {
+      "path": "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst",
+      "lines": 10,
+      "thread": "019f0000-0000-7000-8000-001100000002"
+    },
+    {
+      "path": "sessions/2026/09/10/rollout-2026-09-10T09-00-00-019f0000-0000-7000-8000-001100000003.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001100000003"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001100000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 5200,
+          "cache_read": 8800,
+          "cache_write": 0,
+          "output": 640,
+          "reasoning": 180
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001100000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001100000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1300,
+          "cache_read": 1200,
+          "cache_write": 0,
+          "output": 140,
+          "reasoning": 60
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001100000003",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1500,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 90,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c11_1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001100000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-09T15:00:10.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 1000,
+        "cache_write": 0,
+        "output": 200,
+        "reasoning": 50
+      },
+      "selected": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:6",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:6"
+      ],
+      "evidence": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:6",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:6"
+      ],
+      "utc_day": "2026-09-09"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c11_2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001100000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-09T15:00:40.000Z",
+      "tokens": {
+        "uncached_input": 2200,
+        "cache_read": 2800,
+        "cache_write": 0,
+        "output": 260,
+        "reasoning": 90
+      },
+      "selected": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:8",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:8"
+      ],
+      "evidence": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:8",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:8"
+      ],
+      "utc_day": "2026-09-09"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c11_3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001100000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-10T06:35:00.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 5000,
+        "cache_write": 0,
+        "output": 180,
+        "reasoning": 40
+      },
+      "selected": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:14",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:14"
+      ],
+      "evidence": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:14",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:14"
+      ],
+      "utc_day": "2026-09-10"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c11_4"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001100000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-10T06:30:30.000Z",
+      "tokens": {
+        "uncached_input": 1300,
+        "cache_read": 1200,
+        "cache_write": 0,
+        "output": 140,
+        "reasoning": 60
+      },
+      "selected": [
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst:8"
+      ],
+      "evidence": [
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst:8"
+      ],
+      "utc_day": "2026-09-10",
+      "root_turn_id": "turn-c11-p2"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c11_5"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001100000003",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-10T16:00:10.000Z",
+      "tokens": {
+        "uncached_input": 1500,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/10/rollout-2026-09-10T09-00-00-019f0000-0000-7000-8000-001100000003.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/10/rollout-2026-09-10T09-00-00-019f0000-0000-7000-8000-001100000003.jsonl:6"
+      ],
+      "utc_day": "2026-09-10"
+    }
+  ],
+  "copies": [
+    {
+      "refs": [
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst:2",
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst:3"
+      ],
+      "kind": "paginated-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-001100000001",
+      "boundary_basis": "subagent_history_start_ordinal 3"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 5,
+      "owned": 5,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 8000,
+      "cache_read": 10000,
+      "cache_write": 0,
+      "output": 870,
+      "reasoning": 240
+    },
+    "total_tokens": 18870
+  },
+  "diagnostics": [
+    {
+      "code": "codex-rollout-duplicate-location",
+      "refs": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:1",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl:1"
+      ],
+      "detail": "the same thread and rollout ID, with identical bytes, is under both archived_sessions/ and sessions/; it is one logical source"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Treat each physical path as a separate source (path-keyed dedupe misses a copy in a different layout)",
+      "requests": 8,
+      "tokens": {
+        "uncached_input": 13200,
+        "cache_read": 18800,
+        "cache_write": 0,
+        "output": 1510,
+        "reasoning": 420,
+        "total_tokens": 33510
+      }
+    }
+  ],
+  "groups": {
+    "utc_day": [
+      {
+        "day": "2026-09-09",
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 4200,
+          "cache_read": 3800,
+          "cache_write": 0,
+          "output": 460,
+          "reasoning": 140
+        }
+      },
+      {
+        "day": "2026-09-10",
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 3800,
+          "cache_read": 6200,
+          "cache_write": 0,
+          "output": 410,
+          "reasoning": 100
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "thread_id": "019f0000-0000-7000-8000-001100000001",
+      "rollout_id": "019f0000-0000-7000-8000-001100000001",
+      "locations": [
+        "archived_sessions/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl",
+        "sessions/2026/09/09/rollout-2026-09-09T08-00-00-019f0000-0000-7000-8000-001100000001.jsonl"
+      ]
+    },
+    {
+      "thread_id": "019f0000-0000-7000-8000-001100000002",
+      "rollout_id": "019f0000-0000-7000-8000-001100000002",
+      "locations": [
+        "archived_sessions/rollout-2026-09-09T23-30-00-019f0000-0000-7000-8000-001100000002.jsonl.zst"
+      ]
+    },
+    {
+      "thread_id": "019f0000-0000-7000-8000-001100000003",
+      "rollout_id": "019f0000-0000-7000-8000-001100000003",
+      "locations": [
+        "sessions/2026/09/10/rollout-2026-09-10T09-00-00-019f0000-0000-7000-8000-001100000003.jsonl"
+      ]
+    }
+  ],
+  "notes": [
+    "File names use local time (UTC-7 here): the child's name says 2026-09-09T23-30-00 while its records are on 2026-09-10 UTC, so days come from records, never names.",
+    "The parent's second turn resumes in the same file the next day, so a thread stays in its creation date directory across resumes."
+  ]
+}

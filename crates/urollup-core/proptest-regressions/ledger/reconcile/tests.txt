@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7d2ea535da6e2f84647a5318a85e4a20bc87e930ad8408195fbf0bbbce4e4f69 # shrinks to observations = [RequestObservation { evidence: EvidenceRef { source: 0, length: 10, offset: 0 }, keys: InlineList { inline: [None, None], spilled: None }, role: Original, owner: None, usage: None, model_usage: InlineList { inline: [], spilled: None }, sequence: None, invariants: InlineList { inline: [None], spilled: None }, model: None, effort: None, timestamp: None }]

@@ -1,0 +1,133 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "missing-request-id",
+  "dialect": "claude-project",
+  "summary": "Assistant records with no requestId and Bedrock-style msg_bdrk_ message IDs, one response split into two block records.",
+  "rules": [
+    "design §3.6 ID Derivation (req- key: response ID, else request ID)",
+    "design §3.4 Claude Code block records"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified. The msg_bdrk_ prefix models a Bedrock-routed session; which providers omit requestId is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl",
+      "lines": 5,
+      "thread": "00000000-0000-4000-8000-000900000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000900000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 8,
+          "cache_read": 1800,
+          "cache_write": 60,
+          "output": 117,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_bdrk_01Synthetic09A",
+        "request_id": null
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000900000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.700Z",
+      "tokens": {
+        "uncached_input": 7,
+        "cache_read": 900,
+        "cache_write": 0,
+        "output": 95,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl:3"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_bdrk_01Synthetic09B",
+        "request_id": null
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000900000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:06.000Z",
+      "tokens": {
+        "uncached_input": 1,
+        "cache_read": 900,
+        "cache_write": 60,
+        "output": 22,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl:5"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000900000001.jsonl:5"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 8,
+      "cache_read": 1800,
+      "cache_write": 60,
+      "output": 117,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record (a reader keyed on requestId cannot group them)",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 15,
+        "cache_read": 2700,
+        "cache_write": 60,
+        "output": 147,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": []
+}

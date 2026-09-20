@@ -1,0 +1,423 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "multi-limit-id",
+  "dialect": "codex-rollout",
+  "summary": "token_count rate_limits snapshots alternate between limit_id codex and codex_other, with a repeated snapshot and carried-forward plan and credit fields.",
+  "rules": [
+    "design §3.1 Entities (provider limit observations)",
+    "design §4.4 Usage Windows"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollout; the session keeps one latest snapshot and carries forward credits, individual_limit, spend_control_reached and plan_type"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl",
+      "lines": 13,
+      "thread": "019f0000-0000-7000-8000-001200000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001200000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 2500,
+          "cache_read": 12500,
+          "cache_write": 0,
+          "output": 450,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c12_1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-11T17:00:10.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 3000,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": 30
+      },
+      "selected": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:6"
+      ]
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c12_2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-11T17:00:30.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 4000,
+        "cache_write": 0,
+        "output": 210,
+        "reasoning": 70
+      },
+      "selected": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:8"
+      ]
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c12_3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-11T17:00:50.000Z",
+      "tokens": {
+        "uncached_input": 500,
+        "cache_read": 5500,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:11"
+      ],
+      "evidence": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:11"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 2500,
+      "cache_read": 12500,
+      "cache_write": 0,
+      "output": 450,
+      "reasoning": 100
+    },
+    "total_tokens": 15450
+  },
+  "diagnostics": [],
+  "limit_observations": [
+    {
+      "ref": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:7",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "limit_name": null,
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1789156800,
+      "utilization": {
+        "value": 18,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "credits": {
+        "has_credits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      },
+      "may_be_stale": [
+        "credits",
+        "spend_control_reached",
+        "plan_type"
+      ],
+      "observed_at": "2026-09-11T17:00:10.010Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 18,
+          "window_minutes": 300,
+          "resets_at": 1789156800
+        },
+        "secondary": {
+          "used_percent": 4,
+          "window_minutes": 10080,
+          "resets_at": 1789430400
+        },
+        "credits": {
+          "has_credits": true,
+          "unlimited": false,
+          "balance": "12.50"
+        },
+        "individual_limit": null,
+        "spend_control_reached": false,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:7",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "limit_name": null,
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1789430400,
+      "utilization": {
+        "value": 4,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "credits": {
+        "has_credits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      },
+      "may_be_stale": [
+        "credits",
+        "spend_control_reached",
+        "plan_type"
+      ],
+      "observed_at": "2026-09-11T17:00:10.010Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 18,
+          "window_minutes": 300,
+          "resets_at": 1789156800
+        },
+        "secondary": {
+          "used_percent": 4,
+          "window_minutes": 10080,
+          "resets_at": 1789430400
+        },
+        "credits": {
+          "has_credits": true,
+          "unlimited": false,
+          "balance": "12.50"
+        },
+        "individual_limit": null,
+        "spend_control_reached": false,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:9",
+      "merged_refs": [
+        "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:10"
+      ],
+      "source": "rate_limits",
+      "limit": "codex_other",
+      "limit_name": "synthetic-other",
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1789160400,
+      "utilization": {
+        "value": 35,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "credits": {
+        "has_credits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      },
+      "may_be_stale": [
+        "credits",
+        "spend_control_reached",
+        "plan_type"
+      ],
+      "observed_at": "2026-09-11T17:00:30.010Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "native": {
+        "limit_id": "codex_other",
+        "limit_name": "synthetic-other",
+        "primary": {
+          "used_percent": 35,
+          "window_minutes": 300,
+          "resets_at": 1789160400
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": true,
+          "unlimited": false,
+          "balance": "12.50"
+        },
+        "individual_limit": null,
+        "spend_control_reached": false,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:12",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "limit_name": null,
+      "window": "primary",
+      "window_minutes": 300,
+      "resets_at": 1789156800,
+      "utilization": {
+        "value": 19.5,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "credits": {
+        "has_credits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      },
+      "may_be_stale": [
+        "credits",
+        "spend_control_reached",
+        "plan_type"
+      ],
+      "observed_at": "2026-09-11T17:00:50.010Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 19.5,
+          "window_minutes": 300,
+          "resets_at": 1789156800
+        },
+        "secondary": {
+          "used_percent": 4.5,
+          "window_minutes": 10080,
+          "resets_at": 1789430400
+        },
+        "credits": {
+          "has_credits": true,
+          "unlimited": false,
+          "balance": "12.50"
+        },
+        "individual_limit": null,
+        "spend_control_reached": false,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    },
+    {
+      "ref": "sessions/2026/09/11/rollout-2026-09-11T10-00-00-019f0000-0000-7000-8000-001200000001.jsonl:12",
+      "merged_refs": [],
+      "source": "rate_limits",
+      "limit": "codex",
+      "limit_name": null,
+      "window": "secondary",
+      "window_minutes": 10080,
+      "resets_at": 1789430400,
+      "utilization": {
+        "value": 4.5,
+        "unit": "percent"
+      },
+      "status": null,
+      "plan_type": "pro",
+      "credits": {
+        "has_credits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      },
+      "may_be_stale": [
+        "credits",
+        "spend_control_reached",
+        "plan_type"
+      ],
+      "observed_at": "2026-09-11T17:00:50.010Z",
+      "observed_at_basis": "record-timestamp",
+      "owner_thread": "019f0000-0000-7000-8000-001200000001",
+      "native": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 19.5,
+          "window_minutes": 300,
+          "resets_at": 1789156800
+        },
+        "secondary": {
+          "used_percent": 4.5,
+          "window_minutes": 10080,
+          "resets_at": 1789430400
+        },
+        "credits": {
+          "has_credits": true,
+          "unlimited": false,
+          "balance": "12.50"
+        },
+        "individual_limit": null,
+        "spend_control_reached": false,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  ],
+  "naive": [
+    {
+      "rule": "One observation per window of every token_count snapshot, and every token_count's last_token_usage as usage",
+      "requests": 4,
+      "limit_observations": 6,
+      "tokens": {
+        "uncached_input": 3500,
+        "cache_read": 16500,
+        "cache_write": 0,
+        "output": 660,
+        "reasoning": 170,
+        "total_tokens": 20660
+      }
+    }
+  ],
+  "notes": [
+    "When one response reports several limit_id buckets, only the last reaches the rollout, so other buckets for that response are unobserved.",
+    "The codex_other snapshot has no secondary window, so it yields one observation."
+  ]
+}

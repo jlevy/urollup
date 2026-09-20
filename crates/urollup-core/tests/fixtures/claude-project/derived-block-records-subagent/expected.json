@@ -1,0 +1,110 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "derived-block-records-subagent",
+  "dialect": "claude-project",
+  "summary": "A sanitized slice of a real Claude Code session: one response written as three block records that agree, an Agent spawn, and a subagent response whose two block records disagree on output_tokens and on which optional usage fields they carry.",
+  "rules": [
+    "design §3.4 Claude Code block records",
+    "design §3.2 Relationships and the Discovery Index (spawn by toolUseId)",
+    "design §4.1 Measure Contracts (reasoning is a subset of output; cache_creation breakdown)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.270 transcripts, as the records' version field says; derived from the maintainer's own urollup session logs on 2026-09-15 through scripts/sanitize-claude-fixture.mjs, which keeps structure and usage and replaces every ID, path, name and free-text value"
+  },
+  "files": [
+    { "path": "projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl", "lines": 14, "thread": "00000000-0000-4000-8000-000000000001" },
+    { "path": "projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.jsonl", "lines": 13, "thread": "00000000-0000-4000-8000-000000000001/a0000000000000001" },
+    { "path": "projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.meta.json", "thread": "00000000-0000-4000-8000-000000000001/a0000000000000001" }
+  ],
+  "decode": { "malformed": [], "pending_tail": [] },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": { "requests": 1, "tokens": { "uncached_input": 2, "cache_read": 900721, "cache_write": 51, "output": 4218, "reasoning": 1353 } }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000001/a0000000000000001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-000000000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl:6"
+      ],
+      "agent_type": "general-purpose",
+      "own": { "requests": 1, "tokens": { "uncached_input": 2, "cache_read": 36199, "cache_write": 13471, "output": 183, "reasoning": 18 } }
+    }
+  ],
+  "requests": [
+    {
+      "key": { "message_id": "msg_01Synth10000000000000000", "request_id": "req_01Synth10000000000000000" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000001",
+      "owner_candidates": [],
+      "model": "claude-opus-5",
+      "model_basis": "served",
+      "effort": "xhigh",
+      "service_tier": "standard",
+      "speed": "standard",
+      "timestamp": "2026-09-01T10:00:54.717Z",
+      "tokens": { "uncached_input": 2, "cache_read": 900721, "cache_write": 51, "output": 4218, "reasoning": 1353 },
+      "cache_write_native": { "cache_creation_input_tokens": 51, "ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 51 },
+      "blocks": 3,
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl:6"],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl:4",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl:5",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001.jsonl:6"
+      ]
+    },
+    {
+      "key": { "message_id": "msg_01Synth20000000000000000", "request_id": "req_01Synth20000000000000000" },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-000000000001/a0000000000000001",
+      "owner_candidates": [],
+      "model": "claude-opus-5",
+      "model_basis": "served",
+      "effort": "xhigh",
+      "service_tier": "standard",
+      "speed": "standard",
+      "timestamp": "2026-09-01T10:01:06.454Z",
+      "tokens": { "uncached_input": 2, "cache_read": 36199, "cache_write": 13471, "output": 183, "reasoning": 18 },
+      "cache_write_native": { "cache_creation_input_tokens": 13471, "ephemeral_5m_input_tokens": 13471, "ephemeral_1h_input_tokens": 0 },
+      "blocks": 2,
+      "selected": ["projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.jsonl:12"],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.jsonl:11",
+        "projects/-Users-example-project/00000000-0000-4000-8000-000000000001/subagents/agent-a0000000000000001.jsonl:12"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": { "unique": 2, "owned": 2, "ambiguous": 0, "unknown": 0 },
+    "unresolved": { "requests": 0 },
+    "tokens": { "uncached_input": 4, "cache_read": 936920, "cache_write": 13522, "output": 4401, "reasoning": 1371 },
+    "cache_write_by_duration": { "5m": 13471, "1h": 51 }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record and count each as a request",
+      "requests": 5,
+      "tokens": { "uncached_input": 10, "cache_read": 2774561, "cache_write": 27095, "output": 12847, "reasoning": 4077 }
+    }
+  ],
+  "notes": [
+    "Every record carries apiBlockIndex, the content block's position in the response (0, 1, 2 in the parent and 0, 1 in the subagent), which the research briefs do not mention; block records of one response are exactly the records sharing message.id and requestId.",
+    "The parent's three block records agree on every usage field, so no diagnostic applies. The subagent's two disagree on output_tokens (10 then 183), and the earlier record omits output_tokens_details, server_tool_use, iterations and speed entirely, which is why the rule selects one whole record rather than merging fields; only output fields differ, so this is not a usage conflict either.",
+    "Reasoning tokens are recorded here as output_tokens_details.thinking_tokens, a subset of output_tokens.",
+    "The tool-result record also carries sourceToolAssistantUUID, naming the assistant record whose tool call it answers.",
+    "Records that are not messages (attachment, file-history-snapshot, last-prompt, custom-title, agent-name, mode, atis-latch, pr-link, bridge-session) are kept as they appeared, so adapters are exercised against real surrounding traffic."
+  ]
+}

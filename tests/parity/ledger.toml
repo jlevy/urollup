@@ -1,0 +1,655 @@
+schema = 1
+
+# Deltas are urollup minus ccusage 20.0.20. Omitted rule dimensions match any value,
+# while expected_matches pins the number of matrix cells a rule may explain.
+
+[[entry]]
+id = "claude-zero-token-session"
+case = "claude-project/brief-double-counting"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage preserves zero-token sessions or the comparison stops treating row presence as part of session parity."
+
+[[entry.difference]]
+report = "claude-session"
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry]]
+id = "claude-btw-session-grouping"
+case = "claude-project/btw-side-question"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage exposes the side-question as its own thread row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -700
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -30
+expected_matches = 4
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -735
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -5
+expected_matches = 4
+
+[[entry]]
+id = "claude-cache-breakdown-total"
+case = "claude-project/cache-creation-breakdown"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
+design = "docs/urollup-design.md#41-measure-contracts"
+retirement = "Remove if the tools adopt the same authoritative value when the flat cache-write count disagrees with its duration breakdown."
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = -500
+expected_matches = 10
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -500
+expected_matches = 10
+
+[[entry]]
+id = "claude-derived-subagent-session-grouping"
+case = "claude-project/derived-block-records-subagent"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage exposes subagent usage in its own session row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -36199
+expected_matches = 4
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = -13471
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -183
+expected_matches = 4
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -49855
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -2
+expected_matches = 4
+
+[[entry]]
+id = "claude-inline-sidechain-session-grouping"
+case = "claude-project/inline-sidechains"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage"
+design = "docs/urollup-design.md#32-relationships-and-the-discovery-index"
+retirement = "Remove if ccusage exposes each inline sidechain run as a child thread row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_read"
+expected_delta = -400
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_write"
+expected_delta = -700
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "output"
+expected_delta = -85
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "row"
+expected_delta = 1
+expected_matches = 8
+
+[[entry.difference]]
+report = "claude-session"
+metric = "total"
+expected_delta = -1193
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "uncached_input"
+expected_delta = -8
+expected_matches = 4
+
+[[entry]]
+id = "claude-fork-session-grouping"
+case = "claude-project/fork-subagent-uuid-replay"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage exposes fork usage in its own session row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -3150
+expected_matches = 4
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = -900
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -120
+expected_matches = 4
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -4174
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -4
+expected_matches = 4
+
+[[entry]]
+id = "claude-gateway-message-id-reuse"
+case = "claude-project/gateway-message-id-reuse"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
+design = "docs/urollup-design.md#36-analytical-identities"
+retirement = "Remove when the pinned ccusage release scopes requestless message IDs by effective session, as later commit a4b8420 does."
+
+[[entry.difference]]
+metric = "output"
+expected_delta = 40
+expected_matches = 6
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = 52
+expected_matches = 6
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = 12
+expected_matches = 6
+
+[[entry]]
+id = "claude-nested-null-filter"
+case = "claude-project/nested-null-tool-input"
+cause = "ccusage-bug"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-bugs-and-pitfalls"
+design = "docs/urollup-design.md#22-snapshot-boundary"
+retirement = "Remove when the pinned ccusage release no longer rejects a usage record because an unrelated nested field is null."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = 5100
+expected_matches = 10
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = 10
+expected_matches = 10
+
+[[entry.difference]]
+metric = "output"
+expected_delta = 212
+expected_matches = 10
+
+[[entry.difference]]
+metric = "total"
+expected_delta = 5324
+expected_matches = 10
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = 2
+expected_matches = 10
+
+[[entry]]
+id = "claude-progress-daily-double-count"
+case = "claude-project/progress-nested-subagent"
+cause = "ccusage-bug"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove when the pinned ccusage release includes the daily re-index fix from commit a4b8420."
+
+[[entry.difference]]
+report = "*-daily"
+metric = "cache_write"
+expected_delta = -600
+expected_matches = 6
+
+[[entry.difference]]
+report = "*-daily"
+metric = "output"
+expected_delta = -33
+expected_matches = 6
+
+[[entry.difference]]
+report = "*-daily"
+metric = "total"
+expected_delta = -642
+expected_matches = 6
+
+[[entry.difference]]
+report = "*-daily"
+metric = "uncached_input"
+expected_delta = -9
+expected_matches = 6
+
+[[entry]]
+id = "claude-progress-session-grouping"
+case = "claude-project/progress-nested-subagent"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage exposes the subagent in its own session row or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_read"
+expected_delta = -800
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_write"
+expected_delta = -1000
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "output"
+expected_delta = -65
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "total"
+expected_delta = -1880
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "uncached_input"
+expected_delta = -15
+expected_matches = 4
+
+[[entry]]
+id = "claude-fractional-timestamps"
+case = "claude-project/timestamp-precision"
+cause = "ccusage-bug"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-bugs-and-pitfalls"
+design = "docs/urollup-design.md#22-snapshot-boundary"
+retirement = "Remove when the pinned ccusage release accepts every valid RFC 3339 fractional-second precision."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = 4000
+expected_matches = 2
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = 8000
+expected_matches = 6
+
+[[entry.difference]]
+metric = "output"
+expected_delta = 25
+expected_matches = 2
+
+[[entry.difference]]
+metric = "output"
+expected_delta = 54
+expected_matches = 6
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = 4027
+expected_matches = 2
+
+[[entry.difference]]
+metric = "total"
+expected_delta = 8058
+expected_matches = 6
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = 2
+expected_matches = 2
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = 4
+expected_matches = 6
+
+[[entry]]
+id = "claude-workflow-session-identity"
+case = "claude-project/workflow-subagents"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
+design = "docs/urollup-design.md#32-relationships-and-the-discovery-index"
+retirement = "Remove if ccusage derives workflow thread identity and ownership from native links instead of directory position."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -1500
+expected_matches = 4
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = -1540
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -47
+expected_matches = 4
+
+[[entry.difference]]
+key = "wf_*"
+metric = "row"
+expected_delta = -1
+expected_matches = 4
+
+[[entry.difference]]
+key = "*/a*"
+metric = "row"
+expected_delta = 1
+expected_matches = 8
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -3094
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -7
+expected_matches = 4
+
+[[entry]]
+id = "codex-archived-zstd-child"
+case = "codex-rollout/archived-rename"
+cause = "unsupported"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-dialect-facts"
+design = "docs/urollup-design.md#21-dialects-and-discovery"
+retirement = "Remove when the pinned ccusage release reads compressed Codex rollouts and reports the archived child thread."
+
+[[entry.difference]]
+report = "*-daily"
+metric = "cache_read"
+expected_delta = 1200
+expected_matches = 5
+
+[[entry.difference]]
+report = "*-daily"
+metric = "output"
+expected_delta = 140
+expected_matches = 5
+
+[[entry.difference]]
+report = "codex-daily"
+metric = "reasoning"
+expected_delta = 60
+expected_matches = 3
+
+[[entry.difference]]
+report = "*-daily"
+metric = "total"
+expected_delta = 2640
+expected_matches = 5
+
+[[entry.difference]]
+report = "*-daily"
+metric = "uncached_input"
+expected_delta = 1300
+expected_matches = 5
+
+[[entry.difference]]
+report = "codex-session"
+metric = "row"
+expected_delta = 1
+expected_matches = 3
+
+[[entry]]
+id = "codex-archived-duplicate-location"
+case = "codex-rollout/archived-rename"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-codex-parsing"
+design = "docs/urollup-design.md#36-analytical-identities"
+retirement = "Remove when the pinned ccusage release keys Codex sessions by native thread and rollout identity across active and archived locations."
+
+[[entry.difference]]
+report = "codex-session"
+variant = "full"
+metric = "cache_read"
+expected_delta = -8800
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "full"
+metric = "output"
+expected_delta = -640
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "full"
+metric = "reasoning"
+expected_delta = -180
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "full"
+metric = "total"
+expected_delta = -14640
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "full"
+metric = "uncached_input"
+expected_delta = -5200
+expected_matches = 2
+
+[[entry]]
+id = "codex-session-since-path"
+case = "codex-rollout/archived-rename"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-bugs-and-pitfalls"
+design = "docs/urollup-design.md#43-time-grouping-and-percentiles"
+retirement = "Remove when the tools apply the same native-thread identity and whole-session date-selection rule to archived and active Codex files."
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+timezone = "UTC"
+metric = "cache_read"
+expected_delta = -1200
+expected_matches = 1
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+timezone = "UTC"
+metric = "output"
+expected_delta = 280
+expected_matches = 1
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+timezone = "UTC"
+metric = "reasoning"
+expected_delta = 100
+expected_matches = 1
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+timezone = "UTC"
+metric = "total"
+expected_delta = 2280
+expected_matches = 1
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+timezone = "UTC"
+metric = "uncached_input"
+expected_delta = 3200
+expected_matches = 1
+
+[[entry]]
+id = "codex-legacy-subagent-replay"
+case = "codex-rollout/legacy-subagent-prefix"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-bugs-and-pitfalls"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove when ccusage replaces value-and-burst replay heuristics with stable child-boundary and ownership evidence for these legacy rollouts."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = 3500
+expected_matches = 6
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -500
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -300
+expected_matches = 6
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = 70
+expected_matches = 4
+
+[[entry.difference]]
+metric = "row"
+expected_delta = 1
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -5500
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -800
+expected_matches = 6
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -5000
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -4000
+expected_matches = 6
+
+[[entry]]
+id = "codex-session-since-record-clipping"
+case = "codex-rollout/zst-twin"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-top-findings"
+design = "docs/urollup-design.md#43-time-grouping-and-percentiles"
+retirement = "Remove when parity can express the same record-clipped or whole-session interval on both tools."
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+metric = "cache_read"
+expected_delta = 11500
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+metric = "output"
+expected_delta = 770
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+metric = "reasoning"
+expected_delta = 260
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+metric = "total"
+expected_delta = 15770
+expected_matches = 2
+
+[[entry.difference]]
+report = "codex-session"
+variant = "since"
+metric = "uncached_input"
+expected_delta = 3500
+expected_matches = 2

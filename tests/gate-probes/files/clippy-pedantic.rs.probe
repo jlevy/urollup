@@ -1,0 +1,5 @@
+
+/// Gate probe: `clippy::cast_possible_truncation` is a pedantic lint.
+pub fn gate_probe_pedantic(value: u64) -> u8 {
+    value as u8
+}

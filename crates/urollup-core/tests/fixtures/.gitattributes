@@ -1,0 +1,2 @@
+# zstd rollouts are binary; JSONL fixtures stay LF text, including unterminated tails.
+*.zst binary

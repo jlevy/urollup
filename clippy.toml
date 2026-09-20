@@ -1,0 +1,6 @@
+# Unit tests live inside source files under #[cfg(test)], so a path-based production versus
+# test split does not work in Rust. These options preserve the production panic policy
+# without forcing test setup to use production-style recovery. They do not cover
+# integration tests under tests/, which use `expect` instead.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

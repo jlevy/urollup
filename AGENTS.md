@@ -35,34 +35,121 @@ Python tooling is development-only and pinned in `pyproject.toml`, `uv.toml` and
 - Dependencies follow a 14-day release cool-off (`exclude-newer` in `uv.toml`);
   first-party packages such as softschema are exempt.
 
+Node tooling is also development-only: `package.json` and `package-lock.json` pin
+tryscript (CLI goldens) and `@taplo/cli` (TOML formatting), and `.npmrc` disables
+lifecycle scripts. Install it with `npm ci --ignore-scripts`; make targets do this on
+demand.
+
 ## Project Status
 
-urollup is in planning; there is no product code yet, only one exploration (a Rust log
-throughput spike) under `explorations/log-throughput/`. It will be a Rust CLI and local
-read-only web UI that produces usage rollups (tokens, cost, request sizes, tools) from
-coding-agent session logs, per session or aggregated across sessions.
+urollup is in Phase 1, milestone 0.1. The Cargo workspace implements the accounting
+core, Claude Code and Codex adapters, exact session selection, and uncached `report`,
+`daily` and `sessions` commands in terminal-table and JSON formats.
+Terminal-aware color and interactive stderr progress are implemented, the fixture-backed
+ccusage reconciliation harness runs in CI, and privacy-tested local aggregate tools are
+available behind explicit consent.
+Whole-history reports run without an input-size guard.
+The ingest ceiling defaults to 25% of physical RAM (`--max-ram` / `--max-rows` /
+`UROLLUP_MAX_RAM`; 2 GiB if RAM cannot be read).
+Shared admission checks bound retained observation rows during each agent’s decode; the
+budget does not cap process RSS, physical footprint, payloads, intern tables or the
+other agent’s retained ledger.
+The remaining 0.1 implementation is the 512 MiB peak-footprint target on
+[`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
+(`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
+586 MiB; about 141 MiB over 512. Canceled leftover children: `uro-cbsg`, `uro-yvn1`,
+`uro-l3fw`, `uro-h0fw`, `uro-vsdu`, `uro-kvrb`, `uro-ibij`, `uro-b3gg`, `uro-08oj`.
+Reverted cuts also include `uro-73al`, `uro-o5c0`, `uro-mxyh`. Do not retry those.
+Tail-consume after grouping was not attempted: the peak holds every shell before
+Requests are reserved.
+Phase 1 compaction is exhausted.
+`uro-l0gd` recorded WH 653 MiB / Codex-only 586 MiB and is closed.
+The 512 MiB gate and 10 s target live on Phase 2 (`uro-zrr0`); G1 (`uro-d36a`) waits on
+that bead.
+Phase 2 children `uro-nuhn` (CompactJson numbers without `Value`; quiet WH 685
+/ 21.3 s), `uro-96vw` (process `mimalloc`; quiet WH 834 / 19.0, Codex-only 676 / 15.3),
+`uro-s5vb` (zero-copy JSON accept; quiet WH 650 / 20.7, Codex-only 583 / 15.3), and
+`uro-h6iw` (1 MiB `BufReader`; quiet WH 635 / 21.2, Codex-only 602 / 13.7) were
+reverted. Do not retry those.
+Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
+pattern. `uro-lsaz` profile: the ~7 s over 10 s is Codex worker decode, not grouping.
+A larger read window did not cut WH wall.
+Next: `uro-lsaz` profiling and current-head validation.
+The `uro-a3fo` typed-sidecar refactor is implemented; it needs integrated validation and
+measured performance evidence.
+Historical 653/586 MiB results recorded here are not measurements of the stabilized
+stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
+`uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned
+limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs (`uro-t8ws`) landed.
+Recorded maintainer decisions and independent review of the published stack remain
+before the milestone is accepted.
+Publishing is planned in
+[`plan-2026-09-16-first-release-publishing.md`](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
+and waits on that acceptance.
+There is one exploration (a Rust log throughput spike) under
+`explorations/log-throughput/`. urollup will be a Rust CLI and local read-only web UI
+that produces usage rollups (tokens, cost, request sizes, tools) from coding-agent
+session logs, per session or aggregated across sessions.
 
 The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
 decisions, open questions and the CLI flag index.
 Planning docs live under `docs/project/`:
 
-- `specs/active/`: the plan spec, with phases, milestones, testing and rollout.
+- `specs/active/`: the three active plan specs (product, scalable ingestion, first
+  release).
 - `research/`: background research briefs.
+- `reviews/`: governing reviews, including the
+  [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).
 
-The planning epic is `uro-lpow`. Run `tbd list --specs` to see beads grouped by linked
-spec.
+The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The 512 gate is
+owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
 
 ## Build & Test
 
-No build exists yet.
-The Rust workspace, `make check` gate and CI are defined in the design doc’s “Workspace
-and Crate Structure” and “Engineering Conventions” sections, and scaffolding them is the
-first Phase 1 bead.
+```bash
+make build   # debug build of the workspace
+make test    # Rust and QA-tool tests, CLI goldens and result checks
+make check   # handoff gate: everything CI enforces, fastest first
+make fix     # format Rust (rustfmt), TOML (taplo) and Markdown (flowmark)
+```
+
+`make check` is the required handoff gate; if it passes, CI should.
+It runs the toolchain and uv preflights, the supply-chain gate, the lint-policy check,
+rustfmt, taplo and flowmark checks, `uv lock --check`, clippy and tests with and without
+default features, rustdoc, the dependency guard, the MSRV build and tests, cargo-deny,
+npm audit, and `make gate-proofs`, which proves each gate fails on its committed
+violation in `tests/gate-probes/`. Each gate’s decision logic lives in a tested script
+under `scripts/`; `make help` lists the targets, and `.github/workflows/ci.yml` runs the
+same targets.
+
+A fresh machine needs these before `make check`, at the versions the Makefile pins
+(`make toolchain` and `make uv-version` say which is missing):
 
 ```bash
-uv --config-file uv.toml sync --locked                   # install pinned dev tooling
-uv --config-file uv.toml run --frozen softschema --help  # schema contract tooling
+rustup toolchain install 1.98.0 --profile minimal --component clippy,rustfmt  # rust-toolchain.toml
+rustup toolchain install 1.85.0 --profile minimal                             # MSRV
+cargo install cargo-deny --locked --version 0.20.2                            # make audit
+uv --config-file uv.toml sync --locked                                        # softschema, flowmark
+npm ci --ignore-scripts                                                       # tryscript, taplo
 ```
+
+- **CLI goldens and result checks:** sessions in `tests/golden/**/*.tryscript.md` run
+  against `target/debug/urollup` through `$UROLLUP_BIN` in a hermetic environment that
+  can reach no real log, and `make e2e-results` checks each fixture case’s reconciled
+  totals against its `expected.json`. After an intentional output change run
+  `make golden-update` and read the diff; `--update` writes what it saw, and
+  `make golden-lint` rejects machine-specific paths and non-hermetic sessions.
+  [tests/golden/README.md](tests/golden/README.md) has the session rules, the
+  fixture-to-golden mapping and the results contract; never point a golden or a check at
+  a real `~/.claude` or `~/.codex`.
+- **Serving boundary:** the `serve` feature of `crates/urollup` is default-on and empty
+  until Phase 2. HTTP, async-runtime and web-asset crates may enter only as `optional`
+  dependencies behind it; `make dependency-guard` fails if one reaches `urollup-core` or
+  a `--no-default-features` build.
+- **Dependencies:** follow [SUPPLY-CHAIN-SECURITY.md](SUPPLY-CHAIN-SECURITY.md) before
+  adding or upgrading any crate, npm package, PyPI package, action or toolchain.
+- **Ported code:** record every file adapted from another repository in
+  [PROVENANCE.md](PROVENANCE.md) with its source path and commit.
 
 ## Conventions & Patterns
 
@@ -72,3 +159,7 @@ uv --config-file uv.toml run --frozen softschema --help  # schema contract tooli
 - Specs never include time estimates, and phases stay as few as possible.
 - Never copy private session content (prompts, paths, IDs, values) from local agent logs
   into docs, fixtures or tests; fixtures are synthetic or sanitized.
+
+<!-- This document follows common-doc-guidelines.md.
+See github.com/jlevy/practical-prose and review guidelines before editing.
+-->
