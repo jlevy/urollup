@@ -158,3 +158,28 @@ fn the_first_failing_source_in_discovery_order_is_reported() {
         assert_eq!(path, expected, "{count} workers");
     }
 }
+
+#[test]
+fn claude_malformed_evidence_names_its_source_on_any_worker_count() {
+    let root = tempfile::tempdir().unwrap();
+    let projects = root.path().join("projects/example");
+    fs::create_dir_all(&projects).unwrap();
+    for session in ["first", "second"] {
+        fs::write(
+            projects.join(format!("{session}.jsonl")),
+            format!("{{\"type\":\"user\",\"sessionId\":\"{session}\"}}\n{{broken\n"),
+        )
+        .unwrap();
+    }
+    let ingested =
+        assert_worker_count_invariant(claude, &[root.path().to_owned()], "malformed").unwrap();
+    assert_eq!(ingested.manifest.entries.len(), 2);
+    let snapshots = ingested.sources.iter().map(|source| &source.snapshot);
+    for entry in ingested.manifest.entries.iter().chain(snapshots) {
+        let evidence = entry.first_malformed.expect("each source has a malformed line");
+        let source = &entry.source.as_ref().unwrap().id;
+        assert_eq!(ingested.ledger.source_table.get(evidence.source), Some(source));
+        assert_eq!(evidence.length, 7);
+        assert!(evidence.offset > 0);
+    }
+}

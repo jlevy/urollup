@@ -518,3 +518,34 @@ fn every_codex_fixture_matches_metadata_counts() {
         assert_limit_observations(&ingested.limit_observations, &expected, &name);
     }
 }
+
+#[test]
+fn claude_largest_u64_block_index_wins_equal_output_ties() {
+    let root = tempfile::tempdir().unwrap();
+    let projects = root.path().join("projects/example");
+    std::fs::create_dir_all(&projects).unwrap();
+    let mut lines = String::new();
+    for (block, input) in [(u64::MAX, 100), (1, 1)] {
+        let record = serde_json::json!({
+            "type": "assistant",
+            "sessionId": "boundary-session",
+            "requestId": "boundary-request",
+            "apiBlockIndex": block,
+            "message": {
+                "id": "boundary-message",
+                "model": "claude-test",
+                "usage": {"input_tokens": input, "output_tokens": 10}
+            }
+        });
+        lines.push_str(&record.to_string());
+        lines.push('\n');
+    }
+    std::fs::write(projects.join("boundary-session.jsonl"), lines).unwrap();
+    let ingested = ingest_root(root.path()).unwrap();
+    assert_eq!(ingested.ledger.requests.len(), 1);
+    let request = ingested.ledger.requests.values().next().unwrap();
+    let selected = request.usage.as_ref().unwrap();
+    let usage = TokenMeasures::from(selected.revision.usage);
+    assert_eq!(usage.uncached_input, Some(100));
+    assert_eq!(usage.output, Some(10));
+}

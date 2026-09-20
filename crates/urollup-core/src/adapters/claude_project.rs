@@ -986,7 +986,7 @@ fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
     models.into_iter().filter_map(|(message, first)| first.is_none().then_some(message)).collect()
 }
 
-fn normalize(corpus: Corpus, manifest: SnapshotManifest) -> Result<Ingested, AdapterError> {
+fn normalize(corpus: Corpus, mut manifest: SnapshotManifest) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for facts in &corpus.facts {
         if let (Some(id), Some(version)) = (&facts.source_id, &facts.version) {
@@ -996,6 +996,11 @@ fn normalize(corpus: Corpus, manifest: SnapshotManifest) -> Result<Ingested, Ada
     // Building the input consumes the corpus and drops every map it needed, so only the
     // input is alive while reconciliation reaches its peak.
     let input = reconcile_input(corpus)?;
+    for entry in &mut manifest.entries {
+        if let (Some(source), Some(evidence)) = (&entry.source, &mut entry.first_malformed) {
+            *evidence = stamp_ref(&input.source_table, &source.id, *evidence);
+        }
+    }
     let mut ledger = reconcile(input, &ClaudeBlockSelector)?;
     for diagnostic in &mut ledger.diagnostics {
         diagnostic.code = match diagnostic.code {
@@ -1396,7 +1401,7 @@ fn observe(
         let (usage, model_usage) = claude_usage(record, strings)?;
         observation.usage = Some(usage.into());
         observation.model_usage = model_usage.into();
-        observation.sequence = record.count(Count::BlockIndex).and_then(NativeSequence::new);
+        observation.sequence = record.count(Count::BlockIndex).map(NativeSequence::new);
         observation.model = record.model.map(|model| ModelName {
             name: strings.resolve(model).into(),
             basis: ModelBasis::Served,
@@ -1689,7 +1694,7 @@ mod tests {
 
     fn observation(offset: u64, block: u64) -> RequestObservation {
         let mut observation = RequestObservation::new(source_evidence(offset));
-        observation.sequence = NativeSequence::new(block);
+        observation.sequence = Some(NativeSequence::new(block));
         observation.usage =
             Some(TokenMeasures { output: Some(10), ..TokenMeasures::default() }.into());
         observation

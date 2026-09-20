@@ -155,11 +155,21 @@ fn rereads_ignore_request_key_order_and_duplicates() {
 }
 
 #[test]
+fn native_sequence_preserves_boundaries_and_order() {
+    let values = [0, 1, 255, 256, u64::from(u32::MAX), u64::MAX - 1, u64::MAX];
+    let sequences = values.map(NativeSequence::new);
+    assert_eq!(sequences.map(NativeSequence::get), values);
+    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(size_of::<Option<NativeSequence>>(), 9);
+    assert!(size_of::<RequestObservation>() <= 224);
+}
+
+#[test]
 fn streamed_usage_updates_collapse_into_one_request_with_revisions() {
     let mut records = Vec::new();
     for (sequence, output) in [(1, 5), (2, 9), (3, 30)] {
         let mut record = observed(0, sequence * 100, "msg_1", output);
-        record.sequence = NativeSequence::new(sequence);
+        record.sequence = Some(NativeSequence::new(sequence));
         records.push(record);
     }
     let ledger = run(records);
@@ -599,7 +609,7 @@ fn arbitrary_observation() -> impl Strategy<Value = RequestObservation> {
                 _ => OwnerEvidence::Proven(thread("t3")),
             };
             observation.usage = used.map(|(input, output)| usage(input, output));
-            observation.sequence = sequence.and_then(NativeSequence::new);
+            observation.sequence = sequence.map(NativeSequence::new);
             if let Some(session) = session {
                 observation.invariants.push(("session", format!("s{session}").into()));
             }
@@ -640,6 +650,15 @@ fn arbitrary_entity_input() -> impl Strategy<Value = ReconcileInput> {
             source_table: test_sources(),
             ..ReconcileInput::default()
         })
+}
+
+proptest! {
+    #[test]
+    fn native_sequence_round_trips_and_orders_like_u64(left in any::<u64>(), right in any::<u64>()) {
+        let compact = NativeSequence::new(left);
+        prop_assert_eq!(compact.get(), left);
+        prop_assert_eq!(compact.cmp(&NativeSequence::new(right)), left.cmp(&right));
+    }
 }
 
 proptest! {

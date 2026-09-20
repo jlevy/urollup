@@ -30,7 +30,6 @@
 //!    the others [`Counting::Unresolved`], which totals never add.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroU64;
 
 use jiff::Timestamp;
 
@@ -58,19 +57,24 @@ pub enum ObservationRole {
     Copy,
 }
 
-/// A native revision sequence stored as `n + 1` so `Option` stays 8 bytes.
+/// A native revision sequence, stored without alignment padding.
+///
+/// Big-endian bytes preserve numeric ordering across the full `u64` domain. An optional
+/// sequence takes nine bytes rather than the sixteen required by `Option<u64>`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct NativeSequence(NonZeroU64);
+pub struct NativeSequence([u8; 8]);
+
+const _: () = assert!(std::mem::size_of::<Option<NativeSequence>>() == 9);
 
 impl NativeSequence {
-    /// The sequence, or `None` if `value + 1` does not fit in `u64`.
-    pub fn new(value: u64) -> Option<Self> {
-        value.checked_add(1).and_then(NonZeroU64::new).map(Self)
+    /// Stores any recorded sequence, including zero and `u64::MAX`.
+    pub fn new(value: u64) -> Self {
+        Self(value.to_be_bytes())
     }
 
     /// The recorded sequence.
     pub fn get(self) -> u64 {
-        self.0.get().saturating_sub(1)
+        u64::from_be_bytes(self.0)
     }
 }
 
