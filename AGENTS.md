@@ -54,7 +54,7 @@ The ingest ceiling defaults to 25% of physical RAM (`--max-ram` / `--max-rows` /
 Shared admission checks bound retained observation rows during each agent’s decode; the
 budget does not cap process RSS, physical footprint, payloads, intern tables or the
 other agent’s retained ledger.
-The remaining 0.1 implementation is the 512 MiB peak-footprint target on
+The 512 MiB peak-footprint target remains open on
 [`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
 (`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
 586 MiB; about 141 MiB over 512. Canceled leftover children: `uro-cbsg`, `uro-yvn1`,
@@ -75,14 +75,16 @@ Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::f
 pattern. `uro-lsaz` profile: the ~7 s over 10 s is Codex worker decode, not grouping.
 A larger read window did not cut WH wall.
 Next: `uro-lsaz` profiling and current-head validation.
-The `uro-a3fo` typed-sidecar refactor is implemented; it needs integrated validation and
-measured performance evidence.
+The `uro-a3fo` typed-sidecar refactor passed integrated validation and technical review;
+representative performance acceptance remains open.
 Historical 653/586 MiB results recorded here are not measurements of the stabilized
 stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
 `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned
 limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs (`uro-t8ws`) landed.
-Recorded maintainer decisions and independent review of the published stack remain
-before the milestone is accepted.
+The implementation stack is merged at main `4c55617`, with all 15 hosted CI jobs green
+and technical review complete.
+Representative performance, full local QA and recorded maintainer decisions remain
+before milestone acceptance.
 Publishing is planned in
 [`plan-2026-09-16-first-release-publishing.md`](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
 and waits on that acceptance.
@@ -95,14 +97,23 @@ The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
 decisions, open questions and the CLI flag index.
 Planning docs live under `docs/project/`:
 
-- `specs/active/`: the three active plan specs (product, scalable ingestion, first
-  release).
+- `specs/active/`: product, scalable ingestion, first release and the
+  [usage-analysis workflow](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md).
 - `research/`: background research briefs.
 - `reviews/`: governing reviews, including the
   [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).
 
 The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The 512 gate is
 owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
+The complete usage-analysis workflow is `uro-6kwn`, accepted by G5 (`uro-i6xb`): joint
+calendar/agent/provider/model grouping, reusable snapshots, cache metrics, tools/time
+and list-price estimates.
+Current CLI honesty and local aggregate fixes are `uro-oz6w` and `uro-qg1a`. Reuse the
+existing artifact and pricing beads; do not create another accounting engine or treat
+independent report marginals as a reusable dataset.
+[docs/usage-analysis.md](docs/usage-analysis.md) documents implemented versus planned
+capabilities. Keep private run payloads local; approval to read logs is not approval to
+sync their contents or aggregate values to a remote tracker or repository.
 
 ## Build & Test
 
