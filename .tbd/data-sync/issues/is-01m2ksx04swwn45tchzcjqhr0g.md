@@ -5,7 +5,7 @@ title: Add --prices overrides, prices.yaml and pricing-basis reporting
 kind: task
 status: open
 priority: 1
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,9 +15,11 @@ dependencies:
     target: is-01m2ksx6f9w2rep42kwatz76k5
   - type: blocks
     target: is-01m2ksz8r23b3kmymq8g06c90a
+  - type: blocks
+    target: is-01m2yrherhddnx2j22g3xtqedr
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:37.797Z
-updated_at: 2026-09-16T00:30:52.161Z
+updated_at: 2026-09-20T06:46:49.359Z
 ---
 Milestone 0.4: user rate overrides and the recorded pricing basis. Design §4.5 and §2.1 (config directory).
 

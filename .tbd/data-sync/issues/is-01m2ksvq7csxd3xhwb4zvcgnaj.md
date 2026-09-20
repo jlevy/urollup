@@ -5,7 +5,7 @@ title: Implement the usage summary writer and reader
 kind: task
 status: open
 priority: 1
-version: 6
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m2ksyv7sj854y8xb6gh0sqyg
 parent_id: is-01m2ke45tasy262pas37jxwss5
 created_at: 2026-09-16T00:28:55.897Z
-updated_at: 2026-09-16T00:30:38.319Z
+updated_at: 2026-09-20T06:39:18.882Z
 ---
 Milestone 0.2: read and write urollup:UsageSummary/v1, with extents, the request index and mergeable measures. Design §5.2, §5.3, §5.6 and Decision 17.
 
@@ -33,3 +33,7 @@ Acceptance:
 - Writers emit explicit nulls for unknown values, quote every timestamp, and keep money as exact decimal strings; percentiles read from a merged histogram report their bucket bounds.
 - Reader version rules (§5.6): full support for known major versions at any revision up to its own; a field an older revision lacks is unknown, never zero; a newer revision may be displayed with a diagnostic but never merged or re-exported; unknown major versions exit 2.
 - Round-trip and golden tests against the design's current-session and aggregate summary examples (§5.2).
+
+## Notes
+
+Coordinate with plan-2026-09-20-usage-analysis-workflow.md and uro-x8r8. Persist supported joint dimensions, token lifetime buckets, additive cache-rate numerators/denominators and per-metric availability, with pricing/timing fields when implemented. Missing fields remain unavailable on older revisions. A 15-minute summary cannot promise exact boundaries that cut a bucket: use request-level bundle evidence or explicitly refuse/label approximation. G5 uro-i6xb owns complete workflow acceptance; do not delay basic artifact support for future optional measures.

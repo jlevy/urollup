@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 50
+version: 52
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -28,8 +28,10 @@ child_order_hints:
   - is-01m2ksmr7x9e0t324y8zfx071j
   - is-01m2ksms2rd2kwm66zpy8p159d
   - is-01m2ksn7rykwftnqzpq1xgmys3
+  - is-01m2yrfmke8j4c9je5v03s67bq
+  - is-01m2yrfn1gy2xtyxayev3rgr7t
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-20T05:35:13.371Z
+updated_at: 2026-09-20T06:36:30.639Z
 ---
 Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools are implemented and independently reviewed. Remaining before this epic closes: representative 512 MiB and 10 s performance (uro-zrr0), consented G1 (uro-d36a), full-history QA (uro-ky6c), and recorded or deferred maintainer decisions and unverified provider-shape evidence. Release packaging follows acceptance.
 

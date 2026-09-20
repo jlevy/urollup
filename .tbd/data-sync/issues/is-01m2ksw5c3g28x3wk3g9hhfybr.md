@@ -5,7 +5,7 @@ title: Add the export command with --per-session and mixed artifact input
 kind: task
 status: open
 priority: 1
-version: 3
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -15,9 +15,11 @@ dependencies:
     target: is-01m2ksw7vdr42a589qfzax9gfe
   - type: blocks
     target: is-01m2f0thng891bmbgwtjm3e1hy
+  - type: blocks
+    target: is-01m2yrhe5crqpp22w45b3243ev
 parent_id: is-01m2ke45tasy262pas37jxwss5
 created_at: 2026-09-16T00:29:10.400Z
-updated_at: 2026-09-16T00:32:03.084Z
+updated_at: 2026-09-20T06:39:19.264Z
 ---
 Milestone 0.2: the export command over the summary and bundle writers. Design §5.1, §6.3 and §6.4.
 
@@ -28,3 +30,7 @@ Acceptance:
 - --output files and bundles are published atomically; a JSON document is written only after the query completes; cancellation writes no document or completion record and publishes no file.
 - JSON and CSV report rows carry no session extents and are never merge inputs.
 - CLI goldens for each form, with exit codes per §6.5.
+
+## Notes
+
+Coordinate with plan-2026-09-20-usage-analysis-workflow.md and uro-x8r8: the documented workflow reads raw sources once, then queries saved artifacts with original roots inaccessible and no implicit default-live-root mixing. Preserve snapshot/query identity and available dimensions; ordinary report JSON remains non-mergeable. Reuse this export implementation rather than introducing another dataset format. G5 uro-i6xb verifies full workflow acceptance.

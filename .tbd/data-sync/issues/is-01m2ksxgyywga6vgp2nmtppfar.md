@@ -5,7 +5,7 @@ title: Add requests and tools commands with observed purpose and tool grouping
 kind: task
 status: open
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -13,9 +13,11 @@ labels:
 dependencies:
   - type: blocks
     target: is-01m2ksy3sr8ges0ra56f92ftxg
+  - type: blocks
+    target: is-01m2yrherhddnx2j22g3xtqedr
 parent_id: is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-16T00:29:55.029Z
-updated_at: 2026-09-16T00:30:14.315Z
+updated_at: 2026-09-20T06:37:29.744Z
 ---
 Milestone 0.5: request-level and tool-level reporting. Design §6.3, §6.4, §4.2 and §3.5.
 
