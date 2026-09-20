@@ -469,3 +469,33 @@ fn the_manifest_records_one_cutoff_per_source() {
     assert_eq!(manifest.entries.len(), 2);
     assert!(manifest.cutoff_skew().is_some(), "per-source cutoffs give the skew across files");
 }
+
+#[test]
+fn oversized_unterminated_tail_keeps_the_actual_snapshot_boundary() {
+    let dir = TempDir::new().unwrap();
+    let small = ReadOptions { max_record_bytes: 4, ..options() };
+    for length in [4, 5, 20_000] {
+        let mut bytes = Vec::from(b"{}\n" as &[u8]);
+        bytes.extend(std::iter::repeat_n(b'x', length));
+        let path = dir.path().join("input.jsonl");
+        let compressed_path = dir.path().join("input.jsonl.zst");
+        write(&path, &bytes);
+        write(&compressed_path, &compress(&bytes));
+        for files in [plain(&path), compressed(&compressed_path)] {
+            let (entry, records) = scan_with(&files, &small, &mut super::NoHooks);
+            assert_eq!(records.len(), 1);
+            assert_eq!(entry.cutoff.complete_through, 3);
+            assert_eq!(
+                entry.cutoff.pending_tail,
+                Some(PendingTail { offset: 3, length: length as u64 })
+            );
+            assert_eq!(entry.counters.oversized, u64::from(length > 4));
+            if length > 4 {
+                assert_eq!(
+                    entry.failures,
+                    [CoverageFailure::Oversized { offset: 3, length: length as u64 }]
+                );
+            }
+        }
+    }
+}

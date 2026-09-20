@@ -324,7 +324,12 @@ impl Scan {
             };
             match line {
                 Line::Eof => return Ok(()),
-                Line::Pending { length } => {
+                Line::Pending { length, oversized } => {
+                    if oversized {
+                        self.counters.oversized = self.counters.oversized.saturating_add(1);
+                        self.failures
+                            .push(CoverageFailure::Oversized { offset: self.offset, length });
+                    }
                     self.pending = Some(PendingTail { offset: self.offset, length });
                     self.offset = self.offset.saturating_add(length);
                     return Ok(());
@@ -455,7 +460,7 @@ enum Line {
     /// A newline-terminated line too long to buffer; its bytes were skipped.
     Oversized { length: u64 },
     /// Bytes after the last terminator: an unfinished tail.
-    Pending { length: u64 },
+    Pending { length: u64, oversized: bool },
 }
 
 /// Reads one line into `buffer` without its terminator, buffering at most `limit` bytes.
@@ -469,13 +474,7 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
             Err(error) => return Err(error),
         };
         if available.is_empty() {
-            return Ok(if length == 0 {
-                Line::Eof
-            } else if oversized {
-                Line::Oversized { length }
-            } else {
-                Line::Pending { length }
-            });
+            return Ok(if length == 0 { Line::Eof } else { Line::Pending { length, oversized } });
         }
         if let Some(newline) = memchr::memchr(b'\n', available) {
             if !oversized {
