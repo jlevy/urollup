@@ -48,6 +48,10 @@ in the design’s
 Queued review decisions get phase items only once confirmed
 ([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
+Cursor’s database adapter follows Phase 3 ordering under Decision 20; it is not part of
+milestone 0.1 or this plan’s Phase 2 Pi and Gemini CLI slice.
+See [plan-2026-09-19-cursor-dialect.md](plan-2026-09-19-cursor-dialect.md).
+
 ## End-to-End Acceptance Goals
 
 These goals say what “working” means for a person using urollup on real logs, beyond
