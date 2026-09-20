@@ -3,15 +3,19 @@ type: is
 id: is-01m2ymwt5q6kphvk8asnb6q59j
 title: Refresh published PR readiness audit and remaining acceptance work
 kind: task
-status: in_progress
+status: closed
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md
 labels: []
 dependencies: []
 parent_id: is-01m2y7eh0genxhf98p3h08fmn9
 created_at: 2026-09-20T05:33:47.574Z
-updated_at: 2026-09-20T05:35:57.779Z
+updated_at: 2026-09-20T05:38:10.140Z
+closed_at: 2026-09-20T05:38:10.140Z
+close_reason: Revised audit published as e295b57; exact-head run 35492015379 passed all 15 checks. Refreshed heads, mergeability, formal review records and closed finding states; corrected stale performance, documentation and milestone beads. Local rustdoc, repository-wide Markdown and uv lock checks passed. Code unchanged and unmet gates remain open.
+resolution: null
+duplicate_of: null
 ---
 Verify current GitHub heads, CI, formal reviews, stack ancestry and bead state; revise governing audit to distinguish stable implementation, merge readiness, milestone acceptance and later release work. Correct stale tracking text without closing unmet acceptance gates.
 
