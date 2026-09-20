@@ -39,6 +39,7 @@ use crate::ledger::reconcile::{
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
 use crate::selection::{Agent, agent_thread_identity};
+use crate::sources::admission::Admission;
 use crate::sources::decode::{parse_timestamp, validate_record};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
@@ -479,6 +480,8 @@ pub fn ingest_discovery(
 /// Each rollout decodes independently, and the results merge in discovery order before
 /// normalization, so the result is the same for every worker count. A failure returns
 /// the error of the first failing rollout in discovery order, as a sequential read does.
+/// Exhausting the shared admission budget instead aborts the invocation with a capacity
+/// error, taking precedence over errors from sources interrupted by that refusal.
 pub fn ingest_discovery_with_workers(
     discovery: Discovery,
     missing_is_error: bool,
@@ -494,12 +497,17 @@ pub fn ingest_discovery_with_workers(
         });
     }
 
+    let admission = Admission::new(crate::ledger::reconcile::MAX_OBSERVATIONS);
     let decoded = try_read_in_parallel(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
-        decode_source,
-    )?;
+        |source| decode_source(source, &admission),
+    );
+    if admission.stopped() {
+        return Err(admission.error().into());
+    }
+    let decoded = decoded?;
     let (entries, parsed_sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
@@ -507,7 +515,10 @@ pub fn ingest_discovery_with_workers(
 }
 
 /// Reads one rollout, independently of every other source.
-fn decode_source(source: &DiscoveredSource) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
+fn decode_source(
+    source: &DiscoveredSource,
+    admission: &Admission,
+) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
     let rollout = rollout_name(&source.locator);
     let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
     let spec = SourceSpec {
@@ -521,9 +532,10 @@ fn decode_source(source: &DiscoveredSource) -> Result<(ManifestEntry, ParsedSour
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
     let mut decoder = SourceDecoder::new(&rollout.thread_id);
-    let entry =
-        read_source(&spec, &source.files, &ReadOptions::default(), |raw| decoder.decode(raw))
-            .map_err(|source| AdapterError::Read { path, source })?;
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+        decoder.decode_with_admission(raw, Some(admission))
+    })
+    .map_err(|source| AdapterError::Read { path, source })?;
     Ok((entry, decoder.finish()))
 }
 
@@ -595,7 +607,19 @@ impl SourceDecoder {
         RecordDisposition::Skipped
     }
 
+    #[cfg(test)]
     fn decode(&mut self, raw: &RawRecord<'_>) -> RecordDisposition {
+        self.decode_with_admission(raw, None)
+    }
+
+    fn decode_with_admission(
+        &mut self,
+        raw: &RawRecord<'_>,
+        admission: Option<&Admission>,
+    ) -> RecordDisposition {
+        if admission.is_some_and(Admission::stopped) {
+            return RecordDisposition::Stop;
+        }
         if !may_be_relevant(raw.bytes) {
             // Validate without building a document: most rollout lines are content the
             // adapter skips, and allocating a JSON tree for each one only fragments the heap.
@@ -611,6 +635,17 @@ impl SourceDecoder {
         let Some(kind) = self.record_kind(line.record_type, line.payload, raw.evidence) else {
             return self.skip();
         };
+        let request_bearing = match &kind {
+            RecordKind::UsageRecord(_) => true,
+            RecordKind::Compacted(latest) => latest.is_some(),
+            RecordKind::TokenCount { usage, .. } => usage.0 != 0,
+            RecordKind::SessionMeta { .. }
+            | RecordKind::TurnContext { .. }
+            | RecordKind::ThreadSettingsApplied { .. } => false,
+        };
+        if request_bearing && admission.is_some_and(|budget| !budget.reserve()) {
+            return RecordDisposition::Stop;
+        }
         self.id.get_or_insert_with(|| raw.evidence.source.clone());
         self.records.push(ParsedRecord {
             offset: raw.evidence.offset,
@@ -1403,6 +1438,53 @@ mod tests {
         let evidence =
             EvidenceRef { source, offset: 0, length: u64::try_from(line.len()).unwrap() };
         decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+    }
+
+    #[test]
+    fn admission_does_not_charge_metadata_without_usage() {
+        let budget = crate::sources::admission::Admission::new(0);
+        let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
+        let evidence = EvidenceRef { source, offset: 0, length: 1 };
+        let mut decoder = SourceDecoder::new("one");
+        for line in [
+            r#"{"type":"compacted","payload":{}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}"#,
+        ] {
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            assert_eq!(
+                decoder.decode_with_admission(&raw, Some(&budget)),
+                RecordDisposition::Decoded
+            );
+        }
+        assert!(!budget.stopped());
+    }
+
+    #[test]
+    fn admission_charges_pending_usage_and_stops_other_decoders() {
+        for line in [
+            r#"{"type":"token_usage_record","payload":{"usage":{"input_tokens":3}}}"#,
+            r#"{"type":"compacted","payload":{"latest_token_usage_record":{"usage":{"input_tokens":3}}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3}}}}"#,
+        ] {
+            let budget = crate::sources::admission::Admission::new(1);
+            let source = AnalyticalId::parse("src-v1-00000000000000000000000000").unwrap();
+            let evidence = EvidenceRef { source, offset: 0, length: 1 };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let mut first = SourceDecoder::new("one");
+            let mut second = SourceDecoder::new("two");
+            assert_eq!(
+                first.decode_with_admission(&raw, Some(&budget)),
+                RecordDisposition::Decoded
+            );
+            assert_eq!(second.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Stop);
+            assert_eq!(first.records.len(), 1);
+            assert!(second.records.is_empty());
+            let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+            assert_eq!(
+                first.decode_with_admission(&skipped, Some(&budget)),
+                RecordDisposition::Stop
+            );
+        }
     }
 
     #[test]

@@ -230,6 +230,19 @@ tune. `reconcile` checks it before building any request: `MAX_OBSERVATIONS` is 2
 divided by the size of one request observation row, so the ceiling follows the row type
 as it shrinks, and each agent’s reconciliation is checked on its own.
 At a 288 B row the ceiling is 7,456,540 observations; whole history has about 1,003,000.
+
+Admission reserves a shared per-agent slot during decoding before retaining each
+request-bearing record, including pending usage and copies that normalization may
+subsequently discard.
+Completed workers keep their reservations until ingestion ends.
+The first refused slot cancels the invocation and reports the ceiling plus one, a lower
+bound rather than a full-input count.
+Capacity failure takes precedence once that shared budget is exhausted.
+Successful reads and ordinary source failures retain their existing ordering guarantees.
+The ceiling bounds these rows, not total process memory: line buffers, metadata,
+interned values, auxiliary ledger tables and the other agent’s ledger also consume
+memory.
+
 The CLI reports `N request observations exceed the reconciliation capacity of M compact
 rows (2 GiB); pass narrower --source roots with --no-default-sources`.
 

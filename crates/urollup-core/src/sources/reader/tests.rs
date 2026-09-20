@@ -500,3 +500,22 @@ fn oversized_unterminated_tail_keeps_the_actual_snapshot_boundary() {
     }
 }
 
+#[test]
+fn a_stopped_visitor_aborts_without_visiting_the_tail_or_returning_a_snapshot() {
+    let dir = TempDir::new().unwrap();
+    let bytes = b"{}\n{}\n{}\n";
+    let plain_path = dir.path().join("input.jsonl");
+    let compressed_path = dir.path().join("input.jsonl.zst");
+    write(&plain_path, bytes);
+    write(&compressed_path, &compress(bytes));
+    for files in [plain(&plain_path), compressed(&compressed_path)] {
+        let mut visited = 0;
+        let result = read_source(&SPEC, &files, &options(), |_| {
+            visited += 1;
+            if visited == 2 { RecordDisposition::Stop } else { RecordDisposition::Decoded }
+        });
+        assert!(matches!(result, Err(SourceReadError::VisitorStopped)));
+        assert_eq!(visited, 2);
+    }
+}
+

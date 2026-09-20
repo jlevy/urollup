@@ -42,6 +42,7 @@ use crate::ledger::scope::{
 };
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
+use crate::sources::admission::Admission;
 use crate::sources::decode::{parse_record, parse_timestamp, text, unsigned};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
@@ -505,6 +506,8 @@ pub fn ingest_discovery(
 /// Each source decodes independently, and the results merge in discovery order before
 /// normalization, so the result is the same for every worker count. A failure returns
 /// the error of the first failing source in discovery order, as a sequential read does.
+/// Exhausting the shared admission budget instead aborts the invocation with a capacity
+/// error; it takes precedence over errors from sources interrupted by that refusal.
 pub fn ingest_discovery_with_workers(
     discovery: Discovery,
     missing_is_error: bool,
@@ -520,12 +523,17 @@ pub fn ingest_discovery_with_workers(
         });
     }
 
+    let admission = Admission::new(crate::ledger::reconcile::MAX_OBSERVATIONS);
     let decoded = try_read_in_parallel(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
-        decode_source,
-    )?;
+        |source| decode_source(source, &admission),
+    );
+    if admission.stopped() {
+        return Err(admission.error().into());
+    }
+    let decoded = decoded?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
     normalize(corpus, manifest)
 }
@@ -543,7 +551,10 @@ struct DecodedSource {
 }
 
 /// Reads one transcript and its subagent sidecar, independently of every other source.
-fn decode_source(source: &DiscoveredSource) -> Result<DecodedSource, AdapterError> {
+fn decode_source(
+    source: &DiscoveredSource,
+    admission: &Admission,
+) -> Result<DecodedSource, AdapterError> {
     let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
         environment: "local",
@@ -555,9 +566,10 @@ fn decode_source(source: &DiscoveredSource) -> Result<DecodedSource, AdapterErro
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-    let entry =
-        read_source(&spec, &source.files, &ReadOptions::default(), |raw| decoder.decode(raw))
-            .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+        decoder.decode_with_admission(raw, Some(admission))
+    })
+    .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
     let SourceDecoder { thread, strings, facts, mut records, mut tool_uses } = decoder;
     // Decoding grows the vectors by doubling; release the unused tails before the records
     // wait for the other sources.
@@ -638,7 +650,19 @@ impl SourceDecoder {
         }
     }
 
+    #[cfg(test)]
     fn decode(&mut self, raw: &RawRecord<'_>) -> RecordDisposition {
+        self.decode_with_admission(raw, None)
+    }
+
+    fn decode_with_admission(
+        &mut self,
+        raw: &RawRecord<'_>,
+        admission: Option<&Admission>,
+    ) -> RecordDisposition {
+        if admission.is_some_and(Admission::stopped) {
+            return RecordDisposition::Stop;
+        }
         let facts = &mut self.facts;
         if facts.evidence.is_none() {
             facts.evidence = Some(raw.evidence.clone());
@@ -695,6 +719,9 @@ impl SourceDecoder {
             }
             LineType::Other => return RecordDisposition::Skipped,
         };
+        if request_record && admission.is_some_and(|budget| !budget.reserve()) {
+            return RecordDisposition::Stop;
+        }
         let record =
             self.record(raw.evidence, record_thread, detail, session, forced_copy, request_record);
         self.records.push(record);
@@ -1554,6 +1581,24 @@ mod tests {
     use crate::ledger::tokens::TokenMeasures;
     use crate::sources::evidence::EvidenceRef;
     use crate::sources::reader::{RawRecord, RecordDisposition};
+
+    #[test]
+    fn admission_is_shared_and_refuses_before_retaining_request_rows() {
+        let budget = crate::sources::admission::Admission::new(1);
+        let bytes =
+            br#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#;
+        let evidence = source_evidence(0);
+        let raw = RawRecord { evidence: &evidence, bytes };
+        let mut first = SourceDecoder::new("project/one.jsonl");
+        let mut second = SourceDecoder::new("project/two.jsonl");
+        assert_eq!(first.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Decoded);
+        assert_eq!(second.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Stop);
+        assert_eq!(first.records.len(), 1);
+        assert!(second.records.is_empty());
+        // Once any worker exhausts the budget, even content-only records cancel.
+        let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+        assert_eq!(first.decode_with_admission(&skipped, Some(&budget)), RecordDisposition::Stop);
+    }
 
     #[test]
     fn oversized_subagent_metadata_is_rejected_before_json_decode() {

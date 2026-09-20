@@ -79,6 +79,8 @@ impl Default for ReadOptions {
 /// What the visitor did with a record, counted per source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordDisposition {
+    /// Abort the scan without returning a partial manifest.
+    Stop,
     /// The record was decoded and used.
     Decoded,
     /// The record was deliberately not decoded, including a prefilter miss.
@@ -153,6 +155,9 @@ impl SourceSpec<'_> {
 /// Everything a scan can read partially is reported in its [`ManifestEntry`] instead.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceReadError {
+    /// The visitor refused further input; no partial snapshot is returned.
+    #[error("source visitor stopped the scan")]
+    VisitorStopped,
     /// The logical source names no file.
     #[error("logical source has neither a plain nor a compressed file")]
     NoFile,
@@ -357,6 +362,7 @@ impl Scan {
                     let disposition = visit(&RawRecord { evidence: &evidence, bytes: &buffer });
                     self.counters.records = self.counters.records.saturating_add(1);
                     match disposition {
+                        RecordDisposition::Stop => return Err(SourceReadError::VisitorStopped),
                         RecordDisposition::Decoded => {
                             self.counters.decoded = self.counters.decoded.saturating_add(1);
                         }
