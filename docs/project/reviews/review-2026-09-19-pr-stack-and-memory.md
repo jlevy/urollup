@@ -2,15 +2,16 @@
 title: PR Stack and Memory Audit
 description: Published-head validation, reproduced findings, merge order, and the remaining 0.1 acceptance work.
 date: 2026-09-19
-status: Implementation fixes validated locally; final per-layer CI and milestone acceptance pending
+status: Implementation fixes verified; milestone acceptance pending
 ---
 # PR Stack and Memory Audit
 
 The audit and follow-up review identified eleven implementation findings and four Cursor
-planning findings. R1–R11 now have local fixes on their owning branches; the stack is
-rebased and both intended coverage goldens have been reviewed.
-The full integrated handoff gate passed; final per-layer CI remains before merge
-approval. The whole-history memory and speed targets remain unproven on the updated
+planning findings. All have fixes on their owning branches, with regressions or docs
+validation as appropriate.
+The implementation stack is rebased, and both intended coverage golden changes have been
+reviewed. The full integrated handoff gate and all five implementation code revisions
+passed CI. The whole-history memory and speed targets remain unproven on the updated
 heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementation and
 validation. No maintainer decision has been accepted or silently closed.
 
@@ -43,10 +44,11 @@ R4 (`6a5d0d6`) was added afterward; that complete check is not evidence for the
 restacked tree or the new hosted scale jobs.
 
 The earlier disk-space interruption has been resolved.
-The two R11 golden updates were reviewed and committed as `2f9afa3`. Current work is
-propagation through #8/#10/#11/#12 and fresh integrated checks and CI. No new
-whole-history measurement or private-log access is claimed.
-The six policy decisions and the unverified-shape evidence remain pending; see
+Propagation and the two R11 golden updates are complete.
+The integrated `make check` on `296f12b` passed, including all 30 negative gate probes.
+Fresh CI passed on each final code revision after correcting standalone-layer
+compilation on #8 and #10. No new whole-history measurement or private-log access is
+claimed. The six policy decisions and the unverified-shape evidence remain pending; see
 [Pending Maintainer Decisions and Evidence](#pending-maintainer-decisions-and-evidence).
 
 ## Restacked Implementation Heads
@@ -54,7 +56,8 @@ The six policy decisions and the unverified-shape evidence remain pending; see
 These revisions contain the final implementation fixes, before the evidence-only review
 update on #12. The entire #12 tree equals the fully tested `296f12b` tree after the last
 restack; the subsequent commit updates only this review document.
-Final CI is reported on each PR and its linked check runs.
+All five implementation code revisions passed their hosted checks.
+This final evidence-only documentation update is checked separately by PR #12 CI.
 
 | PR | Branch | Validated code revision |
 | --- | --- | --- |
@@ -73,19 +76,36 @@ Independent review found no blocker in the conflict resolutions or configured ad
 PR11 passed 215 core tests before PR12 replay; the new PR12 test covers 18 early-refusal
 and nine exact-capacity success cases, and all 11 CLI process tests pass.
 
+## Completed Hosted Validation
+
+| PR | Checked revision | Completed checks | Run |
+| --- | --- | ---: | --- |
+| #4 | `2f9afa38acbf` | 13/13 | [CI](https://github.com/jlevy/urollup/actions/runs/35490373225) |
+| #8 | `4a8ef34cd284` | 13/13 | [CI](https://github.com/jlevy/urollup/actions/runs/35490829259) |
+| #10 | `b390982f0efb` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490829372) |
+| #11 | `e79980583d87` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490828981) |
+| #12 | `6e9b60059446` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490828838) |
+
+These runs include completed Windows goldens/results, both new POSIX scale jobs where
+present, and the negative gate proofs.
+Each PR is open, non-draft, and mergeable against its named base.
+Current `main` remains an ancestor of the stack.
+Technical review completion does not waive the recorded performance, consented QA or
+maintainer acceptance conditions.
+
 ## Local Finding Dispositions
 
-All rows describe implemented fixes validated locally; final per-layer CI is tracked
-separately. Commit IDs below preserve the original fixing commits before restacking,
-rather than naming the current published heads.
+All implementation findings below are fixed and validated locally and in hosted CI.
+Commit IDs below preserve the original fixing commits before restacking, rather than
+naming the current published heads.
 
 | Finding | Owning layer and local commit | Implemented behavior and regression evidence |
 | --- | --- | --- |
 | R1 | #10 `d16542e` | Shared admission during decode rejects over-budget retained rows and propagates cancellation; early-refusal and successful-accounting checks passed in the full local #10 gate. Row admission remains distinct from process RSS. |
 | R2 | #11 `2827da0` | Remaps Claude malformed-record evidence through the final source table before cloning snapshots; multi-source/worker regression covers both manifest and source artifacts. |
 | R3 | #11 `2827da0` | Nine-byte optional big-endian sequence preserves every `u64` and numeric order; boundary, property and adapter-total regressions cover the maximum value. |
-| R4 | #10 `6a5d0d6` | Explicit Ubuntu/macOS scale jobs wait on supply-chain, preserve pipeline failures and archive logs; config-contract regression and five mutation probes pass. Hosted workload evidence is pending. |
-| R5 | #12 `082dbd7` | Explicit budgets avoid RAM probing; native platform queries replace unbounded helper processes. Probe-selection and platform-boundary tests accompany the fix; completed Windows CI remains required. |
+| R4 | #10 `6a5d0d6` | Explicit Ubuntu/macOS scale jobs wait on supply-chain, preserve pipeline failures and archive logs; config-contract regression and five mutation probes pass. Both hosted workload jobs passed; measured evidence is recorded below. |
+| R5 | #12 `082dbd7` | Explicit budgets avoid RAM probing; native platform queries replace unbounded helper processes. Probe-selection and platform-boundary tests accompany the fix; Windows goldens/results passed on the final code revision. |
 | R6 | #4 `6b21587` | Direct Node launch of pinned tryscript preserves literal paths; 28 harness tests pass, and enabling shell interpolation makes the spaced/metacharacter child-process regression fail. |
 | R7 | #8 `7f82a56` | Local QA entrypoints emit fixed diagnostics for OS failures; 14 parity tests pass, including two synthetic executable-failure regressions that read no agent logs. |
 | R8 | #4 `bb1b7b6` | Canonicalizes keys before reread comparison; order/duplicate-key regression preserves identical-observation classification. |
@@ -133,8 +153,8 @@ token measures, sequence packing, interned names, identity grouping, and the sca
 harness. It ran synthetic reproductions and the local handoff gate.
 The original audit was focused rather than a line-by-line review of the entire 297-file
 base implementation.
-The subsequent independent passes are recorded below; `uro-nncx` remains open for final
-integrated-head verdicts and finding dispositions.
+The subsequent independent passes, final code revisions and finding dispositions are
+recorded below and in `uro-nncx`.
 
 ## Findings
 
@@ -405,28 +425,21 @@ representative record density.
 Do not repeat the reverted field/ID relocation, primitive-number, mimalloc,
 zero-copy-acceptance, or larger-read-window experiments.
 `uro-nzo1` is held. `uro-lsaz` owns profiling; the sidecar implementation tracked by
-`uro-a3fo` is now prepared locally.
-Its integration and representative measurements remain separate from implementation, and
-neither workstream yet proves the full target.
+`uro-a3fo` is integrated and validated.
+Its representative performance effect remains unmeasured; completing this refactor does
+not prove the full target.
 
 ## Remaining Work and Merge Order
 
-1. Preserve the reviewed R11 golden update `2f9afa3` while propagating the local fixes
-   bottom to top: **#4 → #8 → #10 → #11 → #12**. Record final per-layer SHAs after
-   rebasing; the historical published-head table is not current integration evidence.
-   No merge is authorized by a merely green ancestor.
-2. The integrated checks passed.
-   Obtain completed CI on each final head, including Windows goldens/results and the new
-   Ubuntu/macOS scale jobs.
-   Preserve negative-probe failures and workload artifacts.
-   The passed #10 gate on `d16542e` does not replace this step.
-   Record exact-head independent verdicts and close findings only when their acceptance
-   evidence is complete (`uro-nncx`, `uro-syzt`, `uro-jw7u`, `uro-dhek`, governed by
-   `uro-28fc`).
-3. Complete the documentation consistency pass (`uro-erqo`) against the final behavior:
-   row-budget versus process-memory limits, actual CI wiring, intern-table lifetime and
-   dated measurement provenance.
-   Follow the [technical disposition](#pending-maintainer-decisions-and-evidence) below.
+1. **Complete:** fixes and reviewed coverage goldens are propagated in order: **#4 → #8
+   → #10 → #11 → #12**. Validated revisions are recorded above.
+2. **Complete:** integrated checks, independent technical review and hosted CI passed on
+   all five code revisions, including Windows and the new Ubuntu/macOS scale jobs.
+   Review and fix dispositions are tracked under `uro-nncx` and `uro-28fc`.
+3. The documentation now distinguishes row budgets from process memory, records actual
+   CI wiring and intern-table lifetime, and separates original estimates from dated
+   measurements. `uro-erqo` remains open for fresh accepted-head whole-history
+   measurements; it must not present historical numbers as current evidence.
 4. Demonstrate the representative **512 MiB and 10-second** gates on the accepted head
    (`uro-zrr0`; `uro-n1cp` waits on it).
    Small synthetic CI workloads are regression checks, not whole-history acceptance.
