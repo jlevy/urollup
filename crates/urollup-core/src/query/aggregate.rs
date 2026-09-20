@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::accounting::totals::{ledger_totals, selection_totals};
+use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
 use crate::ledger::entities::{AccountAttribution, Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::tokens::TokenMeasures;
@@ -54,16 +54,16 @@ pub fn report(
     metadata: QueryMetadata,
     groups: &BTreeSet<GroupBy>,
 ) -> Result<ReportDocument, QueryError> {
-    let totals = aggregate_totals(sources, selected, all)?;
+    let aggregate = aggregate_totals(sources, selected, all)?;
     let requests = selected_requests(sources, selected, all);
     Ok(ReportDocument {
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
-        coverage: coverage_summary(sources, &totals)?,
+        coverage: coverage_summary(sources, &requests, aggregate.complete)?,
         diagnostics: diagnostic_summaries(sources, selected, all),
         breakdowns: breakdowns(&requests, index, groups)?,
         sizes: size_summary(&requests)?,
-        totals,
+        totals: aggregate.totals,
     })
 }
 
@@ -154,11 +154,17 @@ pub fn sessions(
     })
 }
 
+struct AggregatedTotals {
+    totals: AggregateTotals,
+    complete: bool,
+}
+
 fn aggregate_totals(
     sources: &[QuerySource<'_>],
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
-) -> Result<AggregateTotals, QueryError> {
+) -> Result<AggregatedTotals, QueryError> {
+    let mut complete = true;
     let mut requests = RequestCounts::default();
     let mut tokens = TokenMeasures::default();
     let mut unresolved_requests = 0_u64;
@@ -168,6 +174,7 @@ fn aggregate_totals(
     for source in sources {
         if all {
             let source_totals = ledger_totals(&source.ingested.ledger)?;
+            complete &= source_totals.completeness == Completeness::Complete;
             requests = add_request_counts(
                 requests,
                 RequestCounts {
@@ -185,6 +192,7 @@ fn aggregate_totals(
             unresolved_tokens = unresolved_tokens.checked_add(&source_totals.unresolved.tokens)?;
         } else {
             let source_totals = selection_totals(&source.ingested.ledger, selected)?;
+            complete &= source_totals.completeness == Completeness::Complete;
             requests = add_request_counts(
                 requests,
                 RequestCounts {
@@ -202,7 +210,7 @@ fn aggregate_totals(
             possible_tokens = possible_tokens.checked_add(&source_totals.possible.tokens)?;
         }
     }
-    Ok(AggregateTotals {
+    let totals = AggregateTotals {
         requests,
         tokens: TokenCounts::from_measures(tokens)?,
         unresolved: SideTotals {
@@ -213,14 +221,21 @@ fn aggregate_totals(
             requests: possible_requests,
             tokens: TokenCounts::from_measures(possible_tokens)?,
         },
-    })
+    };
+    Ok(AggregatedTotals { totals, complete })
 }
 
 fn coverage_summary(
     sources: &[QuerySource<'_>],
-    totals: &AggregateTotals,
+    requests: &[SelectedRequest<'_>],
+    complete: bool,
 ) -> Result<CoverageSummary, QueryError> {
-    let mut summary = CoverageSummary { complete: true, ..CoverageSummary::default() };
+    let requests_without_usage = usize_count(
+        requests.iter().filter(|selected| selected.request.usage.is_none()).count(),
+        "requests without usage",
+    )?;
+    let mut summary =
+        CoverageSummary { requests_without_usage, complete, ..CoverageSummary::default() };
     for source in sources {
         summary.copies_excluded = checked_count(
             summary.copies_excluded,
@@ -232,20 +247,6 @@ fn coverage_summary(
             usize_count(source.ingested.limit_observations.len(), "limit observations")?,
             "limit observations",
         )?;
-        summary.requests_without_usage = checked_count(
-            summary.requests_without_usage,
-            source.ingested.ledger.coverage.requests_without_usage,
-            "requests without usage",
-        )?;
-        if !source.ingested.ledger.gaps.is_empty() {
-            summary.complete = false;
-        }
-    }
-    if totals.unresolved.requests > 0
-        || totals.possible.requests > 0
-        || summary.requests_without_usage > 0
-    {
-        summary.complete = false;
     }
     Ok(summary)
 }
@@ -467,6 +468,133 @@ mod tests {
 
     fn fixture(case: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-project").join(case)
+    }
+
+    fn observation(
+        offset: u64,
+        owner: &str,
+        with_usage: bool,
+    ) -> crate::ledger::reconcile::RequestObservation {
+        use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
+        use crate::ledger::reconcile::{OwnerEvidence, RequestObservation};
+        use crate::ledger::tokens::{TokenMeasures, TokenUsage};
+        use crate::sources::evidence::EvidenceRef;
+
+        let identity = |prefix, name| {
+            IdentityKey::new(prefix, "coverage-test", vec![KeyComponent::text(name)])
+                .derive_id()
+                .unwrap()
+        };
+        let mut observation = RequestObservation::new(
+            EvidenceRef { source: identity(IdPrefix::Source, "source"), offset, length: 1 },
+            "test",
+        );
+        observation.owner = OwnerEvidence::Proven(identity(IdPrefix::Thread, owner));
+        observation.usage = with_usage.then(|| TokenUsage {
+            measures: TokenMeasures {
+                uncached_input: Some(10),
+                output: Some(1),
+                ..TokenMeasures::default()
+            },
+            native: std::collections::BTreeMap::default(),
+        });
+        observation
+    }
+
+    fn coverage_report(
+        input: crate::ledger::reconcile::ReconcileInput,
+        selected: &BTreeSet<crate::ledger::identity::AnalyticalId>,
+        all: bool,
+    ) -> crate::query::ReportDocument {
+        use crate::adapters::Ingested;
+        use crate::ledger::reconcile::{LatestRevision, reconcile};
+        let ingested =
+            Ingested { ledger: reconcile(input, &LatestRevision).unwrap(), ..Ingested::default() };
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
+        report(
+            &[QuerySource { agent: Agent::Claude, ingested: &ingested }],
+            &SessionIndex::default(),
+            selected,
+            all,
+            QueryMetadata::new("report", "test", Scope::SelfOnly, &timezone),
+            &BTreeSet::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn copy_only_requests_do_not_make_counted_usage_incomplete() {
+        use crate::ledger::reconcile::{ObservationRole, ReconcileInput};
+        let original = observation(0, "one", true);
+        let mut copy = observation(1, "one", true);
+        copy.role = ObservationRole::Copy;
+        let report = coverage_report(
+            ReconcileInput { requests: vec![original, copy], ..ReconcileInput::default() },
+            &BTreeSet::new(),
+            true,
+        );
+        assert_eq!(report.totals.requests.owned, 1);
+        assert_eq!(report.totals.tokens.uncached_input, Some(10));
+        assert_eq!(report.coverage.copies_excluded, 1);
+        assert_eq!(report.coverage.requests_without_usage, 0);
+        assert!(report.coverage.complete);
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| diagnostic.code == "copy-without-original")
+        );
+    }
+
+    #[test]
+    fn missing_usage_is_counted_only_inside_the_report_selection() {
+        use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput};
+        let healthy = observation(0, "one", true);
+        let OwnerEvidence::Proven(owner) = healthy.owner.clone() else { unreachable!() };
+        let input = ReconcileInput {
+            requests: vec![healthy, observation(1, "two", false)],
+            ..ReconcileInput::default()
+        };
+        let all = coverage_report(input.clone(), &BTreeSet::new(), true);
+        assert_eq!(all.coverage.requests_without_usage, 1);
+        assert!(!all.coverage.complete);
+        let selected = coverage_report(input, &BTreeSet::from([owner]), false);
+        assert_eq!(selected.totals.requests.owned, 1);
+        assert_eq!(selected.coverage.requests_without_usage, 0);
+        assert!(selected.coverage.complete);
+    }
+
+    #[test]
+    fn selected_completeness_respects_gap_scope_and_unresolved_usage() {
+        use crate::ledger::coverage::{CoverageGap, UnobservedReason};
+        use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput};
+        let first = observation(0, "one", true);
+        let second = observation(1, "two", true);
+        let OwnerEvidence::Proven(first_owner) = first.owner.clone() else { unreachable!() };
+        let OwnerEvidence::Proven(second_owner) = second.owner.clone() else { unreachable!() };
+        let input = ReconcileInput {
+            requests: vec![first.clone(), second],
+            gaps: vec![CoverageGap {
+                reason: UnobservedReason::EphemeralThread,
+                thread: Some(second_owner.clone()),
+                evidence: vec![],
+            }],
+            ..ReconcileInput::default()
+        };
+        assert!(
+            coverage_report(input.clone(), &BTreeSet::from([first_owner.clone()]), false)
+                .coverage
+                .complete
+        );
+        assert!(!coverage_report(input, &BTreeSet::from([second_owner]), false).coverage.complete);
+        let mut one = first;
+        let mut two = observation(2, "one", true);
+        one.candidate_tokens.insert("possible-duplicate".to_owned());
+        two.candidate_tokens.insert("possible-duplicate".to_owned());
+        let unresolved = coverage_report(
+            ReconcileInput { requests: vec![one, two], ..ReconcileInput::default() },
+            &BTreeSet::from([first_owner]),
+            false,
+        );
+        assert_eq!(unresolved.coverage.requests_without_usage, 0);
+        assert!(!unresolved.coverage.complete);
     }
 
     #[test]
