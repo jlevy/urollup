@@ -5,7 +5,7 @@ title: "Spec: Cursor dialect with model and provider facets"
 kind: epic
 status: open
 priority: 2
-version: 10
+version: 11
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 labels: []
 dependencies: []
@@ -20,15 +20,15 @@ child_order_hints:
   - is-01m2y1rrq5qkqz1vd10tb4qcjr
   - is-01m2y50zntpg0bavafh8547sfb
 created_at: 2026-09-19T23:59:02.962Z
-updated_at: 2026-09-20T00:58:20.841Z
+updated_at: 2026-09-20T05:01:38.595Z
 ---
-Add Cursor as a urollup agent with first-class model and provider facets. Dedicated plan: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Not milestone 0.1, not Phase 2 Pi/Gemini, not under uro-n1cp.
+Add Cursor as a urollup agent with first-class model and provider facets under docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Implementation belongs no earlier than the product Phase 3 database-input work under confirmed Decision 20, with uro-3fbc also complete. An earlier database adapter requires an explicit confirmed exception; it is outside milestone 0.1 and Phase 2 Pi/Gemini.
 
-Phase 0 facts are locked from research-2026-09-19-cursor-agent-logs.md (uro-890b). Authoritative store is state.vscdb (composerData/bubbleId). JSONL is a thin export. Usage is partial (sometimes costInCents; tokenCount often zero; no cache). Token-level reconciliation is not supportable from local files. Discovery is opt-in; default urollup finds none of this.
+The existing single-installation research identifies state.vscdb composerData/bubbleId as its useful store and JSONL as a thin export. These local storage observations were not independently re-surveyed during the PR audit. The stated JSONL coverage aggregates are unreconciled and must not supply an exact missing-session total. Usage is partial: local token/cache evidence does not support Claude-grade reconciliation. Discovery remains opt-in.
 
-Facet contract: agent=cursor; model=catalog/native id (selectedModels.modelId else modelName); provider=inferred vendor (Grok/Composer→cursor, claude-*→anthropic, …), never a stored column. --group-by provider is required.
+Facet contract: agent=cursor. A usageData key labels that session/model cost only; a bubble modelInfo.modelName labels that bubble usage. Current selectedModels and picker state remain selection metadata, never a fallback for historical usage. Unattributed historical usage and its provider remain unknown. Provider inference uses a versioned mapping from the historically attributed model, never an invented stored column. --group-by provider is required.
 
-Parented under the product epic uro-2pp9 as later planned work.
+Cursor current-session detection and its unsupported-dialect diagnostic are planned, not implemented. Establish an exact signal before adding either. PR14 review fixes c8befd9 and beads uro-g7da/uro-6unm/uro-oxnw/uro-1vfu govern these corrections; uro-knnz retains implementation-dependent link and integration validation.
 
 ## Notes
 
