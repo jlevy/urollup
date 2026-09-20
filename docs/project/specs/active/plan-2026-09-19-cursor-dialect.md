@@ -45,9 +45,10 @@ Gemini CLI.
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)).
 - Attribute every counted composer as **agent** `cursor`, never as Claude Code or Codex,
   even when the inferred vendor is Anthropic, OpenAI, or Cursor itself.
-- Record **model** as the catalog or native identifier: `selectedModels[].modelId` when
-  present, otherwise the picker `modelName`. `--group-by model` distinguishes Opus,
-  Grok, GPT, and other catalog families.
+- Record **model** from evidence attached to the usage being counted: the `usageData`
+  key for a per-model session cost, or the bubble’s own `modelInfo.modelName` for bubble
+  usage. Current session `selectedModels[]` and picker values describe selections, not
+  historical usage. `--group-by model` leaves unattributed usage unknown.
   Map stored `default` to Auto.
   Leave Fable unmapped until a `claude-fable-*` or similar value is seen.
 - Record **provider** as the inferred vendor from a versioned catalog-family table
@@ -88,10 +89,10 @@ Gemini CLI.
 - Assuming `~/.cursor/chats/` or `store.db`. Both were absent on the surveyed install.
 - Planning an adapter on `agentKv` without a binary decoder.
 - A generic SQLite input feature.
-  [Decision 20](../../../urollup-design.md#decision-20-database-input-in-phase-3) still
-  defers that to Phase 3 for agents whose usage lives only in a third-party database.
-  A named Cursor adapter that reads Cursor’s own `composerData` / `bubbleId` keys is in
-  scope here; a general database reader is not.
+  [Decision 20](../../../urollup-design.md#decision-20-database-input-in-phase-3) defers
+  database input, including named external adapters, to Phase 3. This plan’s named
+  Cursor adapter follows that ordering.
+  Earlier implementation requires an explicit confirmed exception to Decision 20.
 - Collapsing Cursor into one model bucket, or using `cursor` as a `--group-by model`
   value.
 - Assigning provider `cursor` to every request.
@@ -169,7 +170,7 @@ values from that disk.
 | **Absent here** | `~/.cursor/chats/` and `store.db`. Third-party maps still document that layer for Agents Window / CLI. |
 | **Not a decoder target** | `agentKv` (197,010 keys; sampled rows are not useful JSON at this version). |
 | **Not usage** | `conversation-search.db` (titles and bodies), workspace `state.vscdb` `composer.composerData` (UI pointers), AgentStores (mailbox / sync), `ai-code-tracking.db` (code-hash provenance), `agent-tools/*.txt` (tool dumps), `state.vscdb.backup`. |
-| **Session id** | `composerId` UUID. JSONL folder name matches when a transcript exists. All 76 parent JSONL UUIDs had a `composerData` row; 935 composers had no JSONL. |
+| **Session id** | `composerId` UUID. JSONL folder name matches when a transcript exists. All 76 parent JSONL UUIDs had a `composerData` row. The brief’s separate count of 935 composers without JSONL is unreconciled; do not derive an exact missing-session total from these aggregates. |
 | **Turn / request ids** | Bubbles list on `fullConversationHeadersOnly`. Some bubbles carry `requestId` and `usageUuid`. JSONL has `{role, message}` and `turn_ended` lines, no request id. |
 | **Modes** | `unifiedMode` / `isAgentic`: `agent`, `chat`, and rare `multitask` / `plan` / `background`. |
 | **Subagents** | JSONL `subagents/`, `composerHeaders.isSubagent`, parent `subComposerIds`. |
@@ -201,10 +202,25 @@ honest coverage for missing tokens.
 | --- | --- | --- |
 | **Agent** | `cursor` | Cursor is the coding-agent surface, the same role as `claude` and `codex`. Selection (`--agent cursor`), `QuerySource.agent`, and summary `properties.agent` use this token. |
 | **Dialect** | One registry token for the state-store owner (`composerData` / `bubbleId`), with JSONL as the same session when the folder UUID matches. Do not emit a second session from JSONL. A `store.db` dialect waits until that tree is seen. | A dialect is one format written by one agent ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)). The brief names the stores, not a urollup token; Phase 1 picks the token. |
-| **Model** | Catalog or native id: `selectedModels[].modelId` when present, else `modelName`. Keep the other string as a native field when both exist. Map `default` to Auto. Placeholder and picker-effort labels stay as observed. No served provider API id exists in these files. | `--group-by model` must split catalog families. The token `cursor` is never a model value. Claude and Codex record a provider model id; Cursor records Cursor’s own catalog and picker spellings. |
+| **Model** | Use the model field attached to the measured record: `usageData` key for session/model cost, bubble `modelInfo.modelName` for bubble tokens. Preserve current session `selectedModels[]` and picker `modelName` separately as selection metadata. Do not use them to relabel historical usage. Map `default` to Auto; absent historical attribution stays unknown. | `--group-by model` must split catalog families. The token `cursor` is never a model value. Claude and Codex record a provider model id; Cursor records Cursor’s own catalog and picker spellings. |
 | **Provider** | Inferred vendor from the catalog-family table, `Basis::Inferred`, with a diagnostic. Never invent a column. Auto and unmapped families (including Fable until seen) stay unknown. | This is the existing identity and price-table meaning of provider. Cursor is the first agent that multiplexes vendors, so provider becomes a request field and a `--group-by` dimension rather than an adapter constant. |
 | **Account** | Observed stable account identifier, else unknown | Same rule as Claude and Codex: never guess from model or subscription ([§2.1 Projects and Accounts](../../../urollup-design.md#projects-and-accounts)). |
 | **Effort** | Recorded thinking or effort field, else omitted. Picker labels often encode effort (`-high-thinking`, `-xhigh-fast`); do not parse those suffixes into `Request.effort` unless a later brief shows a separate field. | Same as `Request.effort` today. |
+
+Historical model attribution follows the grain of each measurement:
+
+- A `usageData` entry names the model for that session/model cost only.
+  Do not apply its cost or model to individual bubbles without a recorded join.
+- A bubble’s own `modelInfo.modelName` labels its recorded tokens.
+  If absent, leave the model unknown.
+  Public readers’ user-to-assistant propagation rule needs a versioned fixture and
+  explicit evidence before this adapter adopts it.
+- `modelConfig.selectedModels[]` may list multiple selections, and the composer’s picker
+  may have changed. Neither supplies a historical fallback, even when the current list
+  has only one item. Normalize picker and catalog spellings only through an explicit,
+  versioned mapping; preserve the native label and attribution basis.
+- Provider inference follows the model attributed to that measurement.
+  An unknown historical model also leaves its provider unknown.
 
 `--group-by provider` is required for this dialect.
 `--group-by agent` is useful in mixed Claude, Codex, and Cursor reports and is already
@@ -311,13 +327,15 @@ Unknown keys stay verbatim in capture and become stubs on export.
 
 ### Current Session
 
-Until Cursor `--current` lands, a detected Cursor session in this process exits 2 with
-an unsupported-dialect diagnostic, the same 0.1 behavior as Pi.
-The implementation maps any later exact environment or hook signal onto
-`CurrentEnvironment` and `Agent::Cursor`. `--latest` stays the only heuristic and is
-never implicit ([§6.2](../../../urollup-design.md#62-current-session-detection)). Hooks
-(`stop`, `preToolUse`, `postToolUse`, `afterAgentResponse`) are a capture path, not a
-historical store; public notes say a `stop` payload may include `conversation_id` and
+The current implementation detects Claude Code, Codex, and Pi; it has no Cursor signal
+or Cursor-specific unsupported-dialect diagnostic.
+Planned behavior: once an exact Cursor environment or hook signal is established, map it
+onto `CurrentEnvironment` and `Agent::Cursor`. If selection remains unsupported at that
+point, exit 2 with an unsupported-dialect diagnostic, as for Pi.
+`--latest` stays the only heuristic and is never implicit
+([§6.2](../../../urollup-design.md#62-current-session-detection)). Hooks (`stop`,
+`preToolUse`, `postToolUse`, `afterAgentResponse`) are a capture path, not a historical
+store; public notes say a `stop` payload may include `conversation_id` and
 `transcript_path` and still lacks token usage.
 
 ### CLI and Reports
@@ -352,7 +370,9 @@ There is no Phase 2 in this plan.
   provider column.
 - [x] Record the first-fixture Cursor version: 3.21.13 on the surveyed Mac.
 
-No adapter work starts before `uro-3fbc` closes.
+Adapter implementation waits for `uro-3fbc` and the product’s Phase 3 database-input
+work under Decision 20. Research completion alone does not authorize an earlier database
+adapter.
 
 ### Phase 1: Facets, Adapter, and Fixtures
 
@@ -372,8 +392,10 @@ No adapter work starts before `uro-3fbc` closes.
   goldens under `tests/golden/e2e/<dialect>/`, and result checks.
   Derive fixture shapes from the brief or a structure-only sanitizer; never copy a real
   Cursor file into the tree.
-- [ ] Implement `--current` from an exact signal, or keep the exit-2 diagnostic with a
-  test if none exists.
+- [ ] Establish an exact Cursor signal before implementing detection.
+  If detection precedes selection support, add and test the exit-2 unsupported-dialect
+  diagnostic. Without an exact signal, document that Cursor current-session detection is
+  absent.
 - [ ] Record a design decision (Cursor planned support) in
   [`docs/urollup-design.md`](../../../urollup-design.md) §2.1, §3.4, and §10.1,
   including opt-in discovery and the usage gap, and keep the one-line pointers in the
@@ -385,7 +407,9 @@ No adapter work starts before `uro-3fbc` closes.
 
 - **Unit tests** cover opt-in discovery precedence, facet mapping (agent, catalog /
   native model, inferred provider, effort, account), `composerId` dedup, and zero-heavy
-  `tokenCount`.
+  `tokenCount`. Model cases include a changed current picker, multiple selected models,
+  disagreement between bubble and session metadata, and missing bubble model; historical
+  usage must keep its own attribution or remain unknown.
 - **Goldens and result checks** follow
   [tests/golden/README.md](../../../../tests/golden/README.md): hermetic `HOME`, empty
   roots for every other agent, canaries in the opt-in Cursor locations the adapter
@@ -397,10 +421,12 @@ No adapter work starts before `uro-3fbc` closes.
 
 ## Rollout Plan
 
-Implementation is a later enhancement of the product epic, not a 0.1 or Phase 2
-checklist item. It may start once `uro-3fbc` is closed and must not land in the 0.1.0
-alpha ([first-release publishing](plan-2026-09-16-first-release-publishing.md)). It does
-not wait on the 512 MiB ingest gate.
+Implementation belongs no earlier than the product’s Phase 3 database-input work, with
+`uro-3fbc` also complete.
+A confirmed exception to Decision 20 is required to change that ordering.
+It must not land in the 0.1.0 alpha
+([first-release publishing](plan-2026-09-16-first-release-publishing.md)). This plan
+does not change the 512 MiB ingest gate or other product acceptance dependencies.
 
 Ship behind opt-in discovery: users without a Cursor override or `--source` see no
 change, including users who have a 4 GiB `state.vscdb`. `--agent cursor` with no
