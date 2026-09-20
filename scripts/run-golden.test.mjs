@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { countProblem, goldenTreeIsDirty, parseArgs, parseSummary } from "./run-golden.mjs";
+import { countProblem, goldenTreeIsDirty, parseArgs, parseSummary, spawnTryscript } from "./run-golden.mjs";
 
 test("runner arguments separate tryscript flags, their values, sessions and runner options", () => {
   const options = parseArgs(["--update", "--filter", "Report", "--allow-dirty", "tests/golden/e2e/claude-project/a.tryscript.md"]);
@@ -42,4 +45,29 @@ test("the update guard reads git's unstaged golden changes and admits when it ca
   assert.equal(goldenTreeIsDirty("/repo", git(128)), undefined);
   assert.equal(goldenTreeIsDirty("/repo", git(null, new Error("ENOENT"))), undefined);
   assert.deepEqual(calls[0].slice(0, 4), ["git", "diff", "--quiet", "--"]);
+});
+
+// No .bin shell shim exists in this fixture: the locked JavaScript entrypoint must
+// run directly, preserving both the executable path and each argument on Windows.
+test("tryscript launches without interpreting spaces or shell metacharacters", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "golden path & literal-"));
+  try {
+    const entrypoint = path.join(root, "node_modules", "tryscript", "dist", "bin.mjs");
+    mkdirSync(path.dirname(entrypoint), { recursive: true });
+    writeFileSync(entrypoint, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+    const args = ["run", path.join(root, "session with spaces & literal.tryscript.md")];
+    const child = spawnTryscript(root, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const status = await new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(JSON.parse(stdout), args);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

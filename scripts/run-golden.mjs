@@ -102,6 +102,12 @@ export function goldenTreeIsDirty(root, run = spawnSync) {
   return result.status === 1;
 }
 
+/** Launch the locked tryscript package directly, without a platform shell shim. */
+export function spawnTryscript(root, args, options) {
+  const entrypoint = path.join(root, "node_modules", "tryscript", "dist", "bin.mjs");
+  return spawn(process.execPath, [entrypoint, ...args], { ...options, shell: false });
+}
+
 function preflightBinary() {
   const exe = process.platform === "win32" ? ".exe" : "";
   const targetDir = process.env.CARGO_TARGET_DIR ? path.resolve(ROOT, process.env.CARGO_TARGET_DIR) : path.join(ROOT, "target");
@@ -162,13 +168,12 @@ async function main() {
     console.log(`run-golden: hermetic environment with HOME at ${golden.dirs.home}`);
     // Resolved from the locked tree rather than from PATH, so the harness cannot run a
     // tryscript nobody pinned. Run from tests/golden so its tryscript.config.mjs applies.
-    const tryscript = path.join(ROOT, "node_modules", ".bin", `tryscript${process.platform === "win32" ? ".cmd" : ""}`);
+    // Node accepts the package entrypoint and paths as literal arguments on Windows too.
     // Forward slashes even on Windows: these are globs for tryscript, not paths for the OS.
     const files = sessions.map((file) => path.join(ROOT, file).split(path.sep).join("/"));
-    const child = spawn(tryscript, ["run", ...options.flags, ...files], {
+    const child = spawnTryscript(ROOT, ["run", ...options.flags, ...files], {
       cwd: path.join(ROOT, CORPUS),
       stdio: ["ignore", "pipe", "inherit"],
-      shell: process.platform === "win32",
       env: golden.env,
     });
     child.stdout.on("data", (chunk) => {
@@ -177,7 +182,7 @@ async function main() {
     });
     status = await new Promise((resolve) => {
       child.on("error", (error) => {
-        console.error(`run-golden: could not run ${tryscript}: ${error.message}`);
+        console.error(`run-golden: could not run the pinned tryscript package: ${error.message}`);
         console.error("run-golden: install the locked Node tools with `npm ci --ignore-scripts`");
         resolve(1);
       });
