@@ -3,7 +3,7 @@ title: "Scalable Whole-History Ingestion"
 description: Replace urollup's retain-everything ingestion with bounded parallel family decoding into a compact global ledger, so whole-history reports over tens of gigabytes of Claude Code and Codex logs run in seconds within a few hundred MiB.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Active; Phase 1 compaction exhausted at 586/653 MiB; 512 MiB and 10 s live on Phase 2 (`uro-zrr0`)
+status: Active; implementation stack merged; representative 512 MiB and 10 s acceptance remains on Phase 2 (`uro-zrr0`)
 ---
 # Feature: Scalable Whole-History Ingestion
 
@@ -28,6 +28,12 @@ independent architecture review, whose findings are incorporated here.
 
 The [governing PR review](../../reviews/review-2026-09-19-pr-stack-and-memory.md) tracks
 stabilization findings, validation evidence and remaining merge conditions.
+The implementation stack is now merged at main `4c55617`; historical measurements below
+describe their named revisions, not acceptance of the merged head.
+Representative performance and full-history QA remain open.
+The [usage-analysis workflow plan](plan-2026-09-20-usage-analysis-workflow.md) owns
+multi-view reuse and G5. Decode improvements here and avoiding repeated decoding there
+are complementary; neither substitutes for the other’s acceptance tests.
 
 ## Goals
 

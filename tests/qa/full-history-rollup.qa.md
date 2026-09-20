@@ -3,7 +3,7 @@ title: Full-History Rollup QA
 description: Manual end-to-end validation that urollup rolls up the whole local Claude Code and Codex history on a real machine, fast and within its memory bound, with correct per-project, per-session and resumed-history totals.
 date: 2026-09-16
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Active; ready to run now that the input guard is removed
+status: Active manual checklist; full acceptance pending, maintained workflow runner planned
 ---
 # QA Playbook: Full-History Rollup
 
@@ -24,6 +24,42 @@ history and recording.
 > be a committed fixture.
 > An agent can follow these steps, evaluate each checkpoint, and share results with a
 > human as it progresses.
+
+* * *
+
+## Execution Modes and Workflow Follow-Up
+
+This is a manual investigative checklist.
+The
+[usage-analysis workflow plan](../../docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md)
+tracks a maintained runner under G5 (`uro-i6xb`); `uro-ky6c` continues to own 0.1
+full-history acceptance.
+Do not copy a session-specific scratch driver into the product as a second accounting or
+measurement engine.
+
+- **Exploratory live run:** commands may observe different source boundaries.
+  Record input growth and host contention.
+  Complete-day comparisons are useful partial evidence, but they do not prove
+  immutable-snapshot determinism or external parity.
+- **Acceptance run:** compare all views and worker counts against the same recorded,
+  reproducible input boundary.
+  Use the accepted revision’s release binary and record build mode, workers, timezone,
+  cache state, host load and measurement definitions.
+  If that boundary cannot be reproduced, leave determinism and affected checks pending.
+- **Result organization:** retain private reports, source manifests and diagnostics in
+  an ignored local run directory.
+  Separate immutable snapshot/query metadata from wall timings.
+  Record every check as pass, fail or not run.
+  Publishing any aggregate needs authorization for the destination and payload; consent
+  to read logs does not grant it.
+
+`make e2e-local` currently calls a per-session loop in `local_aggregate.py`; `uro-qg1a`
+must replace it with bounded shared queries and preserve cache lifetimes and unknown
+metric fields. Do not use that loop as the whole-history performance recipe.
+Reuse `run-rss-watchdog.py` and the existing scale measurement helpers in the maintained
+runner. Build time, input scans, saved-artifact loading, query rendering and optional
+postprocessing are measured separately.
+First execution does not establish a cold cache.
 
 * * *
 
