@@ -295,7 +295,9 @@ fn format_byte_budget(bytes: u64) -> String {
 fn linux_physical_memory() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in text.lines() {
-        let rest = line.strip_prefix("MemTotal:")?;
+        let Some(rest) = line.strip_prefix("MemTotal:") else {
+            continue;
+        };
         let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
         return kib.checked_mul(1024);
     }
