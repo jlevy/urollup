@@ -15,6 +15,62 @@ passed CI. The whole-history memory and speed targets remain unproven on the upd
 heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementation and
 validation. No maintainer decision has been accepted or silently closed.
 
+## Revised Readiness Snapshot: 2026-09-20 UTC
+
+Remote refs, PR checks, review records and synchronized beads were refreshed at
+published head `2cce34a113e766c4cbab33c12254a8e09a7c78d5` before this audit-only update.
+The code tree is unchanged from the integrated `296f12b` tree that passed `make check`;
+the intervening top-layer changes are confined to this review document.
+All five implementation PRs are open, non-draft and mergeable against their named bases.
+Fetched `main` is `5cf994b20409`; every stack layer includes it and none needs a rebase.
+No PR has been merged.
+
+| PR | In Place and Validated | Published Baseline | Readiness |
+| --- | --- | --- | --- |
+| [#4](https://github.com/jlevy/urollup/pull/4) | Claude/Codex accounting, exact selection, uncached reports, fixtures and corrected deduplication/counter/tail/coverage behavior | `2f9afa38acbf`; 13 checks green | Implementation reviewed; first merge layer |
+| [#8](https://github.com/jlevy/urollup/pull/8) | Terminal color/progress, local acceptance tools and privacy-safe failures | `4a8ef34cd284`; 13 checks green | Implementation reviewed; follows #4 |
+| [#10](https://github.com/jlevy/urollup/pull/10) | Parallel typed ingestion, bounded decode admission, Ubuntu/macOS synthetic scale gates | `b390982f0efb`; 15 distinct checks green | Implementation reviewed; follows #8; representative performance still open |
+| [#11](https://github.com/jlevy/urollup/pull/11) | Compact rows, full-domain sequence values, remapped source evidence and typed Claude sidecars | `e79980583d87`; 15 distinct checks green | Implementation reviewed; follows #10 |
+| [#12](https://github.com/jlevy/urollup/pull/12) | RAM-relative row budget, explicit-budget precedence and native RAM queries | `2cce34a113e7`; 15 checks green | Implementation reviewed; follows #11 |
+| [#14](https://github.com/jlevy/urollup/pull/14) | Cursor research and plan with four review corrections | `c8befd9be545`; local docs checks passed | Integrate after the implementation stack; current main base has no hosted workflow |
+
+The GitHub rollup contains two successful runs of the same 15 checks for #10 and #11;
+that is 30 successful check records per PR, not 30 distinct gates.
+All eleven implementation findings, four Cursor planning findings and three independent
+technical review passes are closed in beads.
+GitHub still records zero formal reviews and zero inline review threads on all six PRs.
+The completed agent reviews documented here are not GitHub approval reviews.
+
+The implementation stack is ready for an ordered code merge on the evidence recorded
+here. This does not accept milestone 0.1 or authorize release: the representative
+performance target, consented QA and maintainer decisions remain open.
+After each merge, refresh the next PR’s base and CI; do not treat today’s mergeability
+as evidence for a changed base.
+
+## Next Work in Execution Order
+
+| Step | Work and Exit Condition | Tracking |
+| --- | --- | --- |
+| 1 | Record acceptance or explicit deferral of the six policy choices below and the unverified Claude-shape claims. Apply any accepted behavior changes with regression coverage before milestone acceptance. | `uro-mzvt`, `uro-wt2q`, `uro-je0v`, `uro-xpd0`, `uro-c7ro`, `uro-01xj`, `uro-89s7` |
+| 2 | With explicit local-log consent, measure release `sessions`, `daily` and `report` on an exact accepted head. Retain only aggregates; distinguish physical footprint from RSS and compare one/eight workers. Profile the remaining gap and demonstrate both 512 MiB peak and at most 10 seconds. | `uro-zrr0`, `uro-lsaz`, `uro-erqo` |
+| 3 | After the performance gate, complete project G1 and full-history parity/coverage QA, explaining residuals and recording a privacy-safe acceptance report. | `uro-d36a`, `uro-ky6c`, `uro-n8h5` |
+| 4 | Land code in order #4 → #8 → #10 → #11 → #12 when the maintainer chooses to merge; separately rebase #14, resolve the product-plan conflict and validate its implementation-dependent links and docs CI. Code landing may precede milestone acceptance. | `uro-28fc`, `uro-knnz` |
+| 5 | After milestone acceptance, implement native release builds, publishing, provenance, release documentation and installation/release rehearsal. | `uro-30ef` and its children |
+
+Steps 1 and 2 can proceed independently.
+The next technical investigation is a fresh baseline and profile under `uro-lsaz`, not
+another unmeasured representation rewrite.
+The typed-sidecar work `uro-a3fo` is complete; its effect on the representative corpus
+is still unmeasured.
+Do not retry the explicitly reverted experiments or held `uro-nzo1` without a new
+measured hypothesis.
+Later contracts/export, capture, pricing, web UI, caching and additional adapters remain
+roadmap work rather than newly discovered defects in this 0.1 stack.
+
+Build cleanup `uro-tkzg` is complete: obsolete gate-proof and archived probe outputs
+were moved with `trash`; current binaries, source trees and validation evidence were
+preserved. The cleanup is not a memory-performance result.
+
 ## Stabilization Control
 
 This is the governing review for the published stack.
@@ -30,7 +86,7 @@ A bead stays open until its acceptance conditions are demonstrated.
 | Compact representations | `uro-ww39`, `uro-u6in` | Multi-source provenance and full-domain sequence regressions |
 | CI and RAM probing | `uro-a8fk`, `uro-qvy0` | Measured CI workload and completed cross-platform tests |
 | Independent review | `uro-nncx`, `uro-syzt`, `uro-jw7u`, `uro-dhek` | Scope and exact-head verdicts; every finding has a disposition |
-| Performance acceptance | `uro-zrr0`, `uro-lsaz`, `uro-a3fo` | Representative 512 MiB / 10 s evidence, with documented methodology |
+| Performance acceptance | `uro-zrr0`, `uro-lsaz` | Representative 512 MiB / 10 s evidence, with documented methodology; typed-sidecar bead `uro-a3fo` is complete |
 | Final consistency and integration | `uro-erqo`, `uro-knnz` | Specs match implemented behavior; Cursor docs integrate separately |
 | Milestone acceptance | `uro-d36a`, `uro-ky6c`, `uro-n8h5` | Consented aggregate validation and explicit maintainer decisions |
 
@@ -57,7 +113,9 @@ These revisions contain the final implementation fixes, before the evidence-only
 update on #12. The entire #12 tree equals the fully tested `296f12b` tree after the last
 restack; the subsequent commit updates only this review document.
 All five implementation code revisions passed their hosted checks.
-This final evidence-only documentation update is checked separately by PR #12 CI.
+The subsequent evidence-only update `2cce34a` also passed all 15 PR #12 checks.
+The revised readiness snapshot above records that verified published baseline; CI for
+any later audit-only commit is recorded on the PR itself.
 
 | PR | Branch | Validated code revision |
 | --- | --- | --- |
@@ -84,7 +142,7 @@ and nine exact-capacity success cases, and all 11 CLI process tests pass.
 | #8 | `4a8ef34cd284` | 13/13 | [CI](https://github.com/jlevy/urollup/actions/runs/35490829259) |
 | #10 | `b390982f0efb` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490829372) |
 | #11 | `e79980583d87` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490828981) |
-| #12 | `6e9b60059446` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35490828838) |
+| #12 | `2cce34a113e7` | 15/15 | [CI](https://github.com/jlevy/urollup/actions/runs/35491260104) |
 
 These runs include completed Windows goldens/results, both new POSIX scale jobs where
 present, and the negative gate proofs.
@@ -369,9 +427,9 @@ separate requirements.
   containing 21,253 usage records under the watchdog at 52.7 MiB sampled RSS.
 
 These checks are useful regression evidence.
-They do not prove the maintainer corpus fits within 512 MiB, or establish an integrated
-verdict for the updated stack.
-The newer #10 gate result and its exact scope are recorded in the status addendum.
+They do not prove the maintainer corpus fits within 512 MiB. Integrated validation of
+the fixes and newer hosted results are recorded above; that validation supersedes the
+original audit snapshot for implementation readiness.
 
 The historical standing whole-history measurement is **653 MiB / 17.3 s**, with a repeat
 at 661 MiB / 18.6 s; Codex-only is **586 MiB / 13.2 s**. A later quiet profile recorded
