@@ -195,3 +195,40 @@ fn invalid_stats_variable_is_a_usage_error() {
         assert!(stderr.starts_with("error: UROLLUP_STATS must be 1"), "{stderr}");
     }
 }
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn percent_budget_works_without_helper_programs_and_keeps_home_untouched() {
+    let home = tempfile::tempdir().expect("isolated HOME");
+    let source = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../urollup-core/tests/fixtures/claude-project/workflow-subagents"
+    );
+    // An explicit percent requires real RAM discovery: falling back to 2 GiB would
+    // fail this command. No shell/helper executable is available through PATH.
+    let output = Command::new(env!("CARGO_BIN_EXE_urollup"))
+        .args([
+            "report",
+            "--source",
+            source,
+            "--no-default-sources",
+            "--format",
+            "json",
+            "--max-ram",
+            "25%",
+        ])
+        .env("PATH", home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("APPDATA", home.path())
+        .env("LOCALAPPDATA", home.path())
+        .env("NO_COLOR", "1")
+        .env_remove("UROLLUP_JOBS")
+        .env_remove("UROLLUP_STATS")
+        .env_remove("UROLLUP_MAX_RAM")
+        .output()
+        .expect("the urollup binary runs");
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!output.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(home.path()).expect("HOME remains readable").count(), 0);
+}

@@ -371,7 +371,7 @@ impl Corpus {
             args.max_ram.as_deref(),
             args.max_rows,
             std::env::var_os(MAX_RAM_VARIABLE).as_deref(),
-            physical_memory_bytes(),
+            physical_memory_bytes,
         )?;
         stats.workers = Some(workers);
         let environment = DiscoveryEnvironment::from_process();
@@ -480,7 +480,7 @@ fn ingest_capacity(
     max_ram: Option<&str>,
     max_rows: Option<u64>,
     env_max_ram: Option<&OsStr>,
-    physical_ram: Option<u64>,
+    physical_ram: impl FnOnce() -> Option<u64>,
 ) -> Result<ObservationCapacity, Failure> {
     let ram =
         if let Some(text) = max_ram {
@@ -498,6 +498,10 @@ fn ingest_capacity(
         } else {
             None
         };
+    let physical_ram = match (ram, max_rows) {
+        (Some(RamBudget::Percent(_)), _) | (None, None) => physical_ram(),
+        (Some(RamBudget::Bytes(_)), _) | (None, Some(_)) => None,
+    };
     resolve_capacity(ram, max_rows, physical_ram).map_err(|error| Failure::usage(error.to_string()))
 }
 
@@ -1905,27 +1909,43 @@ mod tests {
     }
 
     #[test]
+    fn explicit_capacity_does_not_probe_physical_memory() {
+        for (ram, rows, env) in [
+            (None, Some(10), None),
+            (Some("1G"), None, None),
+            (Some("1G"), Some(10), None),
+            (None, None, Some(OsStr::new("512M"))),
+            (Some("1G"), None, Some(OsStr::new("25%"))),
+        ] {
+            let capacity = ingest_capacity(ram, rows, env, || {
+                panic!("explicit capacity must not invoke a potentially slow RAM probe")
+            });
+            assert!(capacity.is_ok());
+        }
+    }
+
+    #[test]
     fn ingest_capacity_defaults_to_25_percent_or_2_gib_fallback() {
-        let fallback = ingest_capacity(None, None, None, None).unwrap();
+        let fallback = ingest_capacity(None, None, None, || None).unwrap();
         assert_eq!(fallback.label(), "2 GiB");
-        let ram = ingest_capacity(None, None, None, Some(32 << 30)).unwrap();
+        let ram = ingest_capacity(None, None, None, || Some(32 << 30)).unwrap();
         assert_eq!(ram.label(), "25% of RAM (8 GiB)");
     }
 
     #[test]
     fn ingest_capacity_parses_sizes_percents_and_prefers_the_stricter_control() {
-        let eight = ingest_capacity(Some("8G"), None, None, Some(32 << 30)).unwrap();
+        let eight = ingest_capacity(Some("8G"), None, None, || Some(32 << 30)).unwrap();
         assert_eq!(eight.label(), "8 GiB");
-        let rows = ingest_capacity(Some("8G"), Some(10), None, Some(32 << 30)).unwrap();
+        let rows = ingest_capacity(Some("8G"), Some(10), None, || Some(32 << 30)).unwrap();
         assert_eq!(rows.label(), "10 rows");
-        let override_rows = ingest_capacity(None, Some(10), None, Some(32 << 30)).unwrap();
+        let override_rows = ingest_capacity(None, Some(10), None, || Some(32 << 30)).unwrap();
         assert_eq!(override_rows.label(), "10 rows");
         let flag_beats_env =
-            ingest_capacity(Some("1G"), None, Some(OsStr::new("8G")), None).unwrap();
+            ingest_capacity(Some("1G"), None, Some(OsStr::new("8G")), || None).unwrap();
         assert_eq!(flag_beats_env.label(), "1 GiB");
-        let env = ingest_capacity(None, None, Some(OsStr::new("512M")), None).unwrap();
+        let env = ingest_capacity(None, None, Some(OsStr::new("512M")), || None).unwrap();
         assert_eq!(env.label(), "512 MiB");
-        let unknown_percent = ingest_capacity(Some("25%"), None, None, None).unwrap_err();
+        let unknown_percent = ingest_capacity(Some("25%"), None, None, || None).unwrap_err();
         assert_eq!(unknown_percent.exit, Exit::Usage);
         assert!(unknown_percent.message.contains("physical RAM is unknown"), "{unknown_percent:?}");
     }

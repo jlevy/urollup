@@ -304,29 +304,75 @@ fn linux_physical_memory() -> Option<u64> {
     None
 }
 
+// Native queries avoid invoking shells or CIM providers, which can hang or write
+// profile/cache files even for a read-only usage report.
 #[cfg(target_os = "macos")]
+#[expect(unsafe_code, reason = "read-only sysctl with a fixed, checked output buffer")]
 fn macos_physical_memory() -> Option<u64> {
-    let output = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output().ok()?;
-    if !output.status.success() {
-        return None;
+    use std::ffi::{c_char, c_int, c_void};
+
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *mut c_void,
+            newlen: usize,
+        ) -> c_int;
     }
-    std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
+
+    let mut bytes = 0_u64;
+    let mut length = size_of::<u64>();
+    // SAFETY: the name is NUL-terminated; both output pointers refer to live,
+    // aligned, exclusively borrowed storage. The supplied length is that storage's
+    // size. A null newp and zero newlen request no mutation. sysctlbyname retains
+    // no pointers. The SDK declares hw.memsize as a 64-bit byte count.
+    let result = unsafe {
+        sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut bytes).cast(),
+            &raw mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (result == 0 && length == size_of::<u64>() && bytes > 0).then_some(bytes)
 }
 
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "read-only Windows query with a fixed ABI buffer")]
 fn windows_physical_memory() -> Option<u64> {
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    // MEMORYSTATUSEX from the Windows SDK: two DWORDs followed by seven DWORDLONGs.
+    // https://learn.microsoft.com/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex
+    #[repr(C)]
+    #[derive(Default)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
     }
-    std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
+    const _: () = assert!(size_of::<MemoryStatusEx>() == 64);
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+
+    let mut status = MemoryStatusEx {
+        length: u32::try_from(size_of::<MemoryStatusEx>()).ok()?,
+        ..MemoryStatusEx::default()
+    };
+    // SAFETY: repr(C) matches the SDK layout; length describes the whole initialized,
+    // aligned buffer. The API writes only that buffer and retains no pointer.
+    // extern "system" supplies the Windows calling convention; BOOL is a 32-bit int.
+    let result = unsafe { GlobalMemoryStatusEx(&raw mut status) };
+    (result != 0 && status.total_phys > 0).then_some(status.total_phys)
 }
 
 #[cfg(test)]
