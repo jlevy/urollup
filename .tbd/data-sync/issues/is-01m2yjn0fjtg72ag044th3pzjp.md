@@ -5,12 +5,16 @@ title: Define Cursor historical model attribution precedence
 kind: bug
 status: in_progress
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 labels: []
 dependencies: []
 parent_id: is-01m2y50zntpg0bavafh8547sfb
 created_at: 2026-09-20T04:54:34.737Z
-updated_at: 2026-09-20T04:54:55.832Z
+updated_at: 2026-09-20T04:57:35.516Z
 ---
 Define historical attribution using bubble or usageData model evidence at its own grain, not the current session selectedModels list; unknown when no historical evidence exists.
+
+## Notes
+
+Implemented in cursor-dialect c8befd9. Historical usage model attribution uses its own usageData key or bubble model field; current selections are metadata, absent historical model/provider remain unknown, and regression fixture cases are specified. Pinned Flowmark auto/check passes. Awaiting parent integration/review.
