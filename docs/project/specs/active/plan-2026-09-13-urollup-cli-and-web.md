@@ -48,6 +48,10 @@ in the design’s
 Queued review decisions get phase items only once confirmed
 ([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
+Cursor is a later dialect, not part of milestone 0.1 or this plan’s Phase 2 Pi and
+Gemini CLI slice; see
+[plan-2026-09-19-cursor-dialect.md](plan-2026-09-19-cursor-dialect.md).
+
 ## Implementation Plan
 
 ### Phase 1: Accounting core and useful uncached CLI

@@ -400,6 +400,9 @@ gives each dialect’s fields, counters and linkage.
   [ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
   lists. Each would be a new dialect added by the candidate policy in
   [§9.1](#additional-agent-adapters).
+  Cursor is planned separately, with model and provider as first-class facets, in
+  [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md);
+  it is not a milestone 0.1 or Phase 2 Pi and Gemini item.
 
 #### Source Manifest
 
@@ -2457,7 +2460,8 @@ database input ([Decision 20](#decision-20-database-input-in-phase-3)). ccusage�
 adapters are format-fact sources under
 [Decision 3](#decision-3-code-reuse-and-licensing).
 Maintainer use is the selection rule that admitted Gemini CLI, and it applies to any
-later candidate.
+later candidate. Cursor is the next such agent and has its own plan
+([plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md)).
 
 **Designed in:** [§2.1](#21-dialects-and-discovery), [§10.2](#102-future-enhancements).
 
@@ -3183,6 +3187,7 @@ guarantee, so the adapter records the versions its fixtures cover.
 | Anomaly detectors ported from agentfdr | Later, if confirmed | [§9.2](#anomaly-detectors) |
 | `urollup mcp` stdio server with read-only query tools | Later, if confirmed | [§9.1](#mcp-surface) |
 | Adapters for agents beyond these four, such as the rest that ccusage reads, one tested dialect at a time | Later, if confirmed; SQLite-backed agents no earlier than Phase 3 | [§2.1](#21-dialects-and-discovery), [§9.1](#additional-agent-adapters) |
+| Cursor dialect with model and provider facets | Later; dedicated plan, not milestone 0.1 or Phase 2 | [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md) |
 | Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§9.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |
