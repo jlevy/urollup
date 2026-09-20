@@ -5,7 +5,7 @@ title: Complete independent review of the published 0.1 PR stack
 kind: task
 status: open
 priority: 1
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -13,13 +13,15 @@ labels:
 dependencies:
   - type: blocks
     target: is-01m2ke36qgfvdvnhw7c7v5esm6
+  - type: blocks
+    target: is-01m2y7eh0genxhf98p3h08fmn9
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 child_order_hints:
   - is-01m2y531btc3e1bhdzf9jgs8va
   - is-01m2y5322tye7s92w68jvznt0a
   - is-01m2y532pmqjwkr8kx8nqx6tsk
 created_at: 2026-09-16T18:47:27.418Z
-updated_at: 2026-09-20T00:57:35.698Z
+updated_at: 2026-09-20T04:24:07.629Z
 ---
 PR #4 has comprehensive automated validation and reviewed design inputs, but no durable independent full implementation review. Review in focused passes: (1) ledger, reconciliation, identity and accounting invariants; (2) source readers, adapters, selection, CLI and output contracts; (3) fixture and golden harnesses, CI, supply-chain gates, privacy and operational portability; then perform an end-to-end integration pass. Record findings with file and line evidence, fix or track every actionable item, rerun the required gates, and update the PR review-status section.
 
