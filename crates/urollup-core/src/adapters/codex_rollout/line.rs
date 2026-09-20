@@ -6,8 +6,8 @@
 //! A record's type is only known once its `type` field is read, which may follow its
 //! payload, so the payload fields of every kind are read.
 //!
-//! The pass is exact with respect to [`parse_record`](crate::sources::decode::parse_record)
-//! followed by the document path helpers the adapter used before it:
+//! The pass is exact with respect to parsing a `serde_json::Value` document followed by
+//! the document path helpers:
 //!
 //! - Every value, kept or ignored, is read through `deserialize_any`, the path a
 //!   `serde_json::Value` takes, so a line fails here exactly when it fails to parse as a

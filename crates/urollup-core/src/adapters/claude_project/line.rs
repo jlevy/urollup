@@ -5,8 +5,8 @@
 //! needs the rest. [`LineHead::read`] reads those fields, and whether the line bears
 //! usage, without building a JSON document or allocating for the fields it ignores.
 //!
-//! The pass is exact with respect to [`parse_record`](crate::sources::decode::parse_record)
-//! followed by the adapter's path helpers:
+//! The pass is exact with respect to parsing a `serde_json::Value` document followed by
+//! the adapter's path helpers:
 //!
 //! - Every value, kept or ignored, is read through `deserialize_any`, the path a
 //!   `serde_json::Value` takes, so a line fails here exactly when it fails to parse as a
@@ -300,6 +300,44 @@ impl<'de> Visitor<'de> for Text {
 
     fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
         Ok(Some(Cow::Owned(value.to_owned())))
+    }
+}
+
+/// Launch metadata retained from a subagent sidecar; other values are only validated.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(super) struct SubagentMetadata {
+    pub(super) tool_use_id: Option<String>,
+    pub(super) agent_type: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SubagentMetadata {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(Self::default())
+    }
+}
+
+impl<'de> Visitor<'de> for SubagentMetadata {
+    type Value = Self;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(Self::default(), [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<Self, A::Error> {
+        while let Some(key) = map.next_key_seed(Text)? {
+            match key.as_deref() {
+                Some("toolUseId") => {
+                    self.tool_use_id = map.next_value_seed(Text)?.map(Cow::into_owned);
+                }
+                Some("agentType") => {
+                    self.agent_type = map.next_value_seed(Text)?.map(Cow::into_owned);
+                }
+                _ => map.next_value_seed(Skip)?,
+            }
+        }
+        Ok(self)
     }
 }
 
@@ -1186,7 +1224,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        AdvisorFields, LineHead, LineType, MessageFields, RecordFields, UsageBody, UsageCounts,
+        AdvisorFields, LineHead, LineType, MessageFields, RecordFields, SubagentMetadata,
+        UsageBody, UsageCounts,
     };
     use crate::sources::decode::{parse_record, text, unsigned};
 
@@ -1543,8 +1582,37 @@ mod tests {
         prop_oneof![1 => leaf(), 20 => fields].boxed()
     }
 
+    fn sidecar() -> BoxedStrategy<String> {
+        let entries = prop_oneof![
+            leaf().prop_map(|value| ("toolUseId", value)),
+            leaf().prop_map(|value| ("toolUse\\u0049d", value)),
+            leaf().prop_map(|value| ("agentType", value)),
+            leaf().prop_map(|value| ("ignored", value)),
+        ];
+        prop_oneof![1 => leaf(), 6 => object(entries.boxed(), 0..8)].boxed()
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        #[test]
+        fn generated_sidecars_read_as_documents_read_them(
+            sidecar in sidecar(),
+            cut in any::<prop::sample::Index>(),
+            truncate in prop::bool::weighted(0.1),
+        ) {
+            let bytes = sidecar.as_bytes();
+            let bytes = if truncate { &bytes[..cut.index(bytes.len() + 1)] } else { bytes };
+            let expected = parse_record(bytes).map(|value| SubagentMetadata {
+                tool_use_id: text(&value, &["toolUseId"]).map(str::to_owned),
+                agent_type: text(&value, &["agentType"]).map(str::to_owned),
+            });
+            let actual = serde_json::from_slice::<SubagentMetadata>(bytes);
+            prop_assert_eq!(actual.is_ok(), expected.is_ok(), "{}", sidecar);
+            if let (Ok(actual), Ok(expected)) = (actual, expected) {
+                prop_assert_eq!(actual, expected);
+            }
+        }
 
         #[test]
         fn generated_lines_read_as_documents_read_them(

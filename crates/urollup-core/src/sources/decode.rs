@@ -32,14 +32,15 @@ pub struct MalformedRecord {
     pub message: String,
 }
 
-/// Parses one record's bytes as JSON.
-pub fn parse_record(bytes: &[u8]) -> Result<Value, MalformedRecord> {
+/// Parses one record's bytes as JSON for differential test oracles.
+#[cfg(test)]
+pub(crate) fn parse_record(bytes: &[u8]) -> Result<Value, MalformedRecord> {
     serde_json::from_slice(bytes).map_err(|error| MalformedRecord { message: error.to_string() })
 }
 
 /// Checks that one record's bytes are valid JSON without building a document.
 ///
-/// It fails exactly when [`parse_record`] would: every value is read through
+/// It fails exactly when parsing a `serde_json::Value` would: every value is read through
 /// `deserialize_any`, the path a document takes, so invalid UTF-8 or escapes in any string,
 /// a number out of range, nesting past the recursion limit and trailing characters are all
 /// rejected. `serde::de::IgnoredAny` would not do, because `serde_json` skips it without

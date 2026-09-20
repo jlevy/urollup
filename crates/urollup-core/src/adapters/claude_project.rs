@@ -25,7 +25,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use serde_json::Value;
 
-use self::line::{LineHead, LineType, RecordFields, UsageBody};
+use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
 use super::{AdapterError, Ingested};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
@@ -44,7 +44,7 @@ use crate::ledger::scope::{
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::admission::Admission;
-use crate::sources::decode::{parse_timestamp, text};
+use crate::sources::decode::parse_timestamp;
 use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
@@ -595,8 +595,8 @@ fn decode_source(
         if let (Some(identity), Some(meta)) = (entry.source.as_ref(), read_subagent_meta(&path)?) {
             subagent_meta = Some(SubagentMeta {
                 child: thread,
-                tool_use: text(&meta, &["toolUseId"]).map(digest),
-                agent_type: text(&meta, &["agentType"]).map(str::to_owned),
+                tool_use: meta.tool_use_id.as_deref().map(digest),
+                agent_type: meta.agent_type,
                 source_id: identity.id.clone(),
                 evidence: EvidenceRef::new(0, 0, 0),
             });
@@ -605,14 +605,14 @@ fn decode_source(
     Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
 }
 
-fn read_subagent_meta(transcript: &Path) -> Result<Option<Value>, AdapterError> {
+fn read_subagent_meta(transcript: &Path) -> Result<Option<SubagentMetadata>, AdapterError> {
     read_subagent_meta_with_limit(transcript, MAX_SUBAGENT_META_BYTES)
 }
 
 fn read_subagent_meta_with_limit(
     transcript: &Path,
     max_sidecar_bytes: u64,
-) -> Result<Option<Value>, AdapterError> {
+) -> Result<Option<SubagentMetadata>, AdapterError> {
     let transcript = if transcript.extension() == Some(std::ffi::OsStr::new("zst")) {
         transcript.with_extension("")
     } else {
@@ -1675,6 +1675,48 @@ mod tests {
         // Once any worker exhausts the budget, even content-only records cancel.
         let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
         assert_eq!(first.decode_with_admission(&skipped, Some(&budget)), RecordDisposition::Stop);
+    }
+
+    #[test]
+    fn subagent_sidecars_preserve_lenient_fields_and_validate_ignored_values() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("agent-example.jsonl");
+        let path = transcript.with_extension("meta.json");
+        assert!(read_subagent_meta_with_limit(&transcript, 4096).unwrap().is_none());
+        let cases: &[&[u8]] = &[
+            br#"{"toolUseId":"tool-1","agentType":"worker","ignored":{"content":[null,1]}}"#,
+            br#"{"toolUseId":"first","toolUseId":"last","agentType":"worker","agentType":false}"#,
+            br#"{"toolUseId":{},"agentType":[],"toolUseId":"last"}"#,
+            br#"{"toolUseId":null,"agentType":42}"#,
+            br#"{"toolUse\u0049d":"escaped\tvalue","agentType":"wo\u0072ker"}"#,
+            b"null",
+            b"[]",
+            b"42",
+            br#""text""#,
+            br#"{"ignored":"\ud800"}"#,
+            br#"{"ignored":1e400}"#,
+            br#"{"toolUseId":"valid"} false"#,
+            b"{",
+            &[0xff],
+        ];
+        for bytes in cases {
+            fs::write(&path, bytes).unwrap();
+            let expected = serde_json::from_slice::<Value>(bytes).map(|value| {
+                (
+                    crate::sources::decode::text(&value, &["toolUseId"]).map(str::to_owned),
+                    crate::sources::decode::text(&value, &["agentType"]).map(str::to_owned),
+                )
+            });
+            let maximum = u64::try_from(bytes.len()).unwrap();
+            let actual = read_subagent_meta_with_limit(&transcript, maximum).map(|value| {
+                let value = value.unwrap();
+                (value.tool_use_id, value.agent_type)
+            });
+            assert_eq!(actual.is_ok(), expected.is_ok(), "{bytes:?}");
+            if let (Ok(actual), Ok(expected)) = (actual, expected) {
+                assert_eq!(actual, expected, "{bytes:?}");
+            }
+        }
     }
 
     #[test]
