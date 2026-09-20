@@ -499,7 +499,7 @@ mod tests {
     ) -> crate::ledger::reconcile::RequestObservation {
         use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
         use crate::ledger::reconcile::{OwnerEvidence, RequestObservation};
-        use crate::ledger::tokens::{TokenMeasures, TokenUsage};
+        use crate::ledger::tokens::TokenMeasures;
         use crate::sources::evidence::EvidenceRef;
 
         let identity = |prefix, name| {
@@ -507,18 +507,15 @@ mod tests {
                 .derive_id()
                 .unwrap()
         };
-        let mut observation = RequestObservation::new(
-            EvidenceRef { source: identity(IdPrefix::Source, "source"), offset, length: 1 },
-            "test",
-        );
+        let mut observation = RequestObservation::new(EvidenceRef {
+            source: identity(IdPrefix::Source, "source"),
+            offset,
+            length: 1,
+        });
         observation.owner = OwnerEvidence::Proven(identity(IdPrefix::Thread, owner));
-        observation.usage = with_usage.then(|| TokenUsage {
-            measures: TokenMeasures {
-                uncached_input: Some(10),
-                output: Some(1),
-                ..TokenMeasures::default()
-            },
-            native: std::collections::BTreeMap::default(),
+        observation.usage = with_usage.then(|| {
+            TokenMeasures { uncached_input: Some(10), output: Some(1), ..TokenMeasures::default() }
+                .into()
         });
         observation
     }
@@ -586,7 +583,9 @@ mod tests {
     #[test]
     fn selected_completeness_respects_gap_scope_and_unresolved_usage() {
         use crate::ledger::coverage::{CoverageGap, UnobservedReason};
+        use crate::ledger::identity::KeyComponent;
         use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput};
+        use crate::ledger::scope::tests::PROVIDER_RESPONSE;
         let first = observation(0, "one", true);
         let second = observation(1, "two", true);
         let OwnerEvidence::Proven(first_owner) = first.owner.clone() else { unreachable!() };
@@ -608,8 +607,15 @@ mod tests {
         assert!(!coverage_report(input, &BTreeSet::from([second_owner]), false).coverage.complete);
         let mut one = first;
         let mut two = observation(2, "one", true);
-        one.candidate_tokens.insert("possible-duplicate".to_owned());
-        two.candidate_tokens.insert("possible-duplicate".to_owned());
+        let shared = PROVIDER_RESPONSE
+            .key(vec![KeyComponent::text("anthropic"), KeyComponent::text("possible-duplicate")])
+            .unwrap()
+            .derive()
+            .unwrap();
+        one.keys.push(shared.clone());
+        two.keys.push(shared);
+        one.invariants.push(("session", "one".into()));
+        two.invariants.push(("session", "two".into()));
         let unresolved = coverage_report(
             ReconcileInput { requests: vec![one, two], ..ReconcileInput::default() },
             &BTreeSet::from([first_owner]),

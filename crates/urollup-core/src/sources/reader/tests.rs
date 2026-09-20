@@ -518,4 +518,3 @@ fn a_stopped_visitor_aborts_without_visiting_the_tail_or_returning_a_snapshot() 
         assert_eq!(visited, 2);
     }
 }
-
