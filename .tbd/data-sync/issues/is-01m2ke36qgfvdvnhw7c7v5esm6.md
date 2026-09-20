@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 47
+version: 48
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -29,10 +29,10 @@ child_order_hints:
   - is-01m2ksms2rd2kwm66zpy8p159d
   - is-01m2ksn7rykwftnqzpq1xgmys3
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-19T16:36:01.264Z
+updated_at: 2026-09-20T00:56:30.694Z
 ---
 Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools. Remaining before this epic closes: 512 MiB whole-history ingestion (uro-o6x5), consented G1 (uro-d36a), full-history QA (uro-ky6c), independent review (uro-nncx), and recorded or deferred maintainer decisions.
 
 ## Notes
 
-2026-09-19: Remaining 0.1 implementation is uro-n1cp 512 MiB via uro-q1ik, uro-g7pi, uro-as4a (not uro-zrr0). Then uro-d36a and uro-ky6c. Parallel: uro-nncx and P2 decision beads. Packaging uro-30ef waits on this epic.
+2026-09-19 audit uro-y7zm: The published implementation stack is #4 -> #8 -> #10 -> #11 -> #12. uro-zrr0 owns BOTH the 512 MiB and 10 s gates; uro-n1cp depends on it. Then uro-d36a and uro-ky6c. Independent review uro-nncx now covers the published stack. Six maintainer decision beads and uro-89s7 remain open; packaging uro-30ef waits on acceptance. Earlier notes naming completed Phase 1 children as the next cuts are obsolete.
