@@ -132,6 +132,17 @@ fn codes(ledger: &super::Ledger) -> Vec<DiagnosticCode> {
 }
 
 #[test]
+fn rereads_ignore_request_key_order_and_duplicates() {
+    let mut original = observed(0, 10, "msg_1", 7);
+    original.keys.push(digest_key("t1", "digest_1"));
+    let mut reread = original.clone();
+    reread.keys.reverse();
+    reread.keys.push(reread.keys[0].clone());
+    let expected = run(vec![original.clone(), original.clone()]);
+    assert_eq!(run(vec![original, reread]), expected);
+}
+
+#[test]
 fn streamed_usage_updates_collapse_into_one_request_with_revisions() {
     let mut records = Vec::new();
     for (sequence, output) in [(1, 5), (2, 9), (3, 30)] {

@@ -812,6 +812,11 @@ fn dedupe_rereads(
     diagnostics: &mut Vec<Diagnostic>,
     coverage: &mut ReconcileCoverage,
 ) -> Vec<RequestObservation> {
+    // Key order and repeated keys do not change the content of a record.
+    for observation in &mut observations {
+        observation.keys.sort();
+        observation.keys.dedup();
+    }
     observations.sort();
     let before = observations.len();
     observations.dedup();
@@ -844,9 +849,7 @@ fn resolve_identities(
     registry: &mut IdentityRegistry,
 ) -> Result<Vec<Resolved>, ReconcileError> {
     let mut resolved = Vec::with_capacity(observations.len());
-    for mut observation in observations {
-        observation.keys.sort();
-        observation.keys.dedup();
+    for observation in observations {
         let mut keys = Vec::with_capacity(observation.keys.len());
         for key in &observation.keys {
             if key.key.prefix != IdPrefix::Request {
