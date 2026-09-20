@@ -35,8 +35,8 @@ Reasoning      820
 Total tokens   43,000
 
 COVERAGE
-Status partial  Copies excluded 5  Limit observations 0
-Unresolved 0  Possible 0  Requests without usage 1
+Status complete  Copies excluded 5  Limit observations 0
+Unresolved 0  Possible 0  Requests without usage 0
 
 REQUEST SIZES (inclusive input tokens)
 Count 8  p50 3,500  p90 9,000  p99 9,000  max 9,000
@@ -81,8 +81,8 @@ $ urollup report --all --format json --timezone UTC
   "coverage": {
     "copies_excluded": 5,
     "limit_observations": 0,
-    "requests_without_usage": 1,
-    "complete": false
+    "requests_without_usage": 0,
+    "complete": true
   },
   "diagnostics": [
     {
