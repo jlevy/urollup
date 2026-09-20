@@ -13,9 +13,9 @@ urollup must report on the whole local history by default.
 On the maintainer’s machine that history is about 2.7 GB of Claude Code logs in 2,920
 files and 19 GB of Codex rollouts in 9,900 files (12 GB active and 7 GB archived, the
 archive reached through a symlink), and Codex grows by up to about 1 GB a day.
-The milestone 0.1 engine cannot read it: two unguarded runs grew a single process past
-20 GB and stalled the machine, and the temporary 512 MiB input guard that followed made
-`urollup sessions`, `daily` and `report --all` refuse the default corpus.
+The engine at the start of this plan could not read it: two unguarded runs grew a single
+process past 20 GB and stalled the machine, and the temporary 512 MiB input guard that
+followed made `urollup sessions`, `daily` and `report --all` refuse the default corpus.
 The guard prevented a crash; it did not make urollup usable.
 
 This plan replaces the ingestion and reconciliation data model rather than tuning it.
@@ -26,12 +26,15 @@ each, and never on raw log bytes.
 The design was drafted from measurements and then reviewed in two rounds by an
 independent architecture review, whose findings are incorporated here.
 
+The [governing PR review](../../reviews/review-2026-09-19-pr-stack-and-memory.md) tracks
+stabilization findings, validation evidence and remaining merge conditions.
+
 ## Goals
 
 - Whole-history `sessions`, `daily` and `report --all` succeed on the maintainer’s
   corpus with no input-size refusal.
 - Peak physical footprint is independent of raw log bytes and stays at or below 512 MiB
-  for that corpus, with about 300 MB expected.
+  for that corpus; the original estimate of about 300 MB was not achieved.
 - Whole-history wall time is at most 25 seconds after Phase 1 and at most 10 seconds
   after Phase 2 on the reference laptop (Apple M1 Pro, 10 cores, 32 GiB).
 - Output is byte-identical for any worker count and invariant under source file
@@ -45,8 +48,9 @@ independent architecture review, whose findings are incorporated here.
 ## Non-Goals
 
 - Spill to disk or external sort.
-  At the measured ratios a 25% RAM default covers tens of millions of observations on a
-  32 GiB host, hundreds of gigabytes of Codex logs.
+  The row budget bounds admitted observations; it does not guarantee that an arbitrary
+  corpus fits process memory.
+  Record density and retained payloads must be measured.
 - A `--since` or `--project` filter, the capture cache or incremental reads.
   Whole history in seconds removes the need for this milestone, and time filters remain
   query-time features.
@@ -191,19 +195,25 @@ flowchart LR
 
 ### Compact Data Structures
 
-Sizes are approximate and guarded by `const` assertions.
+These are as-built shell sizes and compile-time bounds, excluding owned allocations.
+The original proposal used 72 B measures and observation/request bounds of 256 B.
 
-| Type | Contents | Size |
+| Type | Representation | Size or bound |
 | --- | --- | ---: |
-| `Evidence` | source `u32`, length `u32`, offset `u64` | 16 B |
-| `KeyDigest` | SHA-256 bytes 0–15 as `u128` ID, bytes 16–23 as a check, kind, precedence, basis | 32 B |
-| `Measures` | eight `u64` token measures with a presence mask | 72 B |
-| `Obs` | evidence, one or two key digests, measures, timestamp, sequence, thread, interned model and effort, role and owner flags, uuid digest, optional advisor components and message ID | ≤ 256 B |
-| `Req` | ID digest and basis, counting, ownership, first and last seen, interned model and effort, measures, selected evidence, evidence range, copy count, advisor components | ≤ 256 B |
-| `LimitRow` | evidence, owner IDs, interned name and window, native fields as compact JSON text | about 250 B |
+| `EvidenceRef` | source index, length and offset | 16 B |
+| `Measures` | eight compact counters and presence mask; full-width overflow values interned | 36 B, including `Option` |
+| `RequestObservation` | compact observations with optional owned payloads | ≤ 224 B |
+| `Request` | compact request and evidence references | ≤ 216 B |
+| `ProviderLimitObservation` | compact fields and references to interned native text | ≤ 128 B |
+| `Option<NativeSequence>` | presence tag and eight big-endian bytes, preserving all `u64` values | 9 B |
 
-Every evidence reference is kept in a flat side table, about 10 MB for the corpus.
-Models, efforts and native thread IDs are interned per corpus.
+Per-source string tables are released with their source data.
+Names, native limit text and overflow-measure patterns use process-lifetime intern
+tables; their heap storage is additional to these row sizes.
+Evidence arrays, strings, maps and allocator overhead also remain outside the shell
+bounds.
+Repeated ingestion or a long-lived server needs separate cardinality and lifetime
+measurements.
 
 Key digests are the existing identity contract: workers write RFC 8785 canonical JSON
 into a reused buffer and hash it with SHA-256, and a property test pins the helper to
@@ -214,29 +224,41 @@ Reports print no `req-` IDs, so public ID text is derived only where needed.
 
 ### Memory Model
 
-Peak footprint is roughly 230 B per Claude observation, 150 B per Codex observation, 230
-B per request, 16 B per evidence reference, about 1 KB per source, about 500 B per
-thread, and one line buffer plus pending rows per worker.
-For the maintainer’s corpus that is about 300 MB, reached while observations and
-requests coexist during request construction, and about 170 MB during queries.
-A 100 GB Codex corpus would peak at about 700 MB.
+The original model estimated about 300 MB peak and 170 MB during queries for the
+reference corpus, using 230 B per Claude observation, 150 B per Codex observation and
+230 B per request. Its 100 GB Codex extrapolation was about 700 MB. These were design
+estimates, not measured acceptance results; the dated measurements in
+[Progress](#progress) show the higher observed footprint.
+No fresh private-corpus benchmark is recorded here.
 
-Raw bytes never accumulate: skipped lines allocate nothing, the reader buffer is per
-source, and limits collapse while streaming.
-A hard per-agent observation ceiling exits 1 with a capacity diagnostic that names the
-row count and the budget and suggests `--source`; it does not grow unbounded.
-The default budget is 25% of physical RAM (about 8 GiB on a 32 GiB host).
-If physical RAM cannot be read, the budget falls back to 2 GiB so CI and containers stay
-bounded.
-`--max-ram` (or `UROLLUP_MAX_RAM`) accepts a byte size (`512M`, `8G`, `8GiB`) or
-a percent (`25%`). `--max-rows N` is an exact row-count override.
-When both are set, the stricter (smaller) ceiling wins.
-`reconcile` checks the ceiling before building any request: the byte budget is divided
-by the size of one `RequestObservation` row, so the row count follows the row type as it
-shrinks, and each agent’s reconciliation is checked on its own.
-At a 224 B row, 8 GiB is about 38 million observations; whole history has about
-1,003,000. The CLI reports `N request observations exceed the reconciliation capacity of
-M compact rows (<budget>); pass narrower --source roots with --no-default-sources`.
+The reader reuses bounded line buffers.
+A shared admission counter per agent reserves retained observation rows during decode,
+including pending representations; exceeding it cancels further work and reports a
+capacity error. Reconciliation retains a second ceiling check before request
+construction. The default byte budget is 25% of physical RAM, with a 2 GiB fallback when
+the default host query fails.
+`--max-ram` (or `UROLLUP_MAX_RAM`) accepts a byte size or percentage; `--max-rows`
+supplies an exact row count.
+The flag overrides the environment value, and when a RAM budget and row count are both
+supplied, the smaller ceiling wins.
+Explicit byte/row limits avoid host probing.
+An explicitly requested percentage fails if physical RAM is unknown; only the default
+uses the fallback. Native RAM queries do not impose a container allowance.
+
+The byte budget is divided by `size_of::<RequestObservation>()`. At 224 B, 8 GiB admits
+about 38 million row shells, but that arithmetic says nothing about whether their
+payloads and final ledger fit in memory.
+Payloads, intern tables, request construction, source/thread tables and the other
+agent’s retained ledger are additional.
+The budget is not a process RSS or physical-footprint limit.
+The CLI capacity diagnostic names the row count and budget and suggests narrower
+`--source` roots with `--no-default-sources`.
+
+Acceptance still requires exact-head measurements of `sessions`, `daily` and `report`,
+with corpus type/density, worker count and machine load recorded.
+Keep sampled watchdog RSS, OS maximum RSS and macOS physical footprint distinct.
+The historical tables below retain their original conditions and must not be relabeled
+as current-head evidence.
 
 Admission reserves a shared per-agent slot during decoding before retaining each
 request-bearing record, including pending usage and copies that normalization may
@@ -519,11 +541,13 @@ Compact `Measures` (`uro-7w0u`) stores counters that fit in `u32` inline and int
 overflow above `u32::MAX`. `Option<Measures>` fell from 72 B to 36 B, the observation
 shell from 264 B to 232 B, and `Request` from 248 B to 216 B. Quiet remasure: Codex-only
 645 MiB (660064 KiB) / 14.0 s and whole history 770 MiB (788704 KiB) / 18.1 s. Packing
-`sequence` (`uro-24ua`) stores `n + 1` in `Option<NativeSequence>` so the field is 8 B.
-The shell is 224 B. A same-session A/B against `uro-7w0u` was Codex-only 614 MiB (628608
-KiB) / 14.5 s versus 631 MiB (646416 KiB), and whole history 768 MiB (786656 KiB) / 17.5
-s versus 778 MiB (797008 KiB). Dropping the unused key-spill pointer (`uro-o5c0`) kept
-two inline slots and interned a 3+ tail.
+The original `sequence` cut (`uro-24ua`) stored `n + 1` in an 8 B
+`Option<NativeSequence>`. Audit fix R3 replaces it with a 9 B full-domain representation
+without increasing the 224 B observation shell; the following A/B measurements describe
+the original cut. The shell is 224 B. A same-session A/B against `uro-7w0u` was
+Codex-only 614 MiB (628608 KiB) / 14.5 s versus 631 MiB (646416 KiB), and whole history
+768 MiB (786656 KiB) / 17.5 s versus 778 MiB (797008 KiB). Dropping the unused key-spill
+pointer (`uro-o5c0`) kept two inline slots and interned a 3+ tail.
 The shell compiled at 216 B and tests stayed green.
 Peak did not fall: a same-session A/B was whole history 786 MiB (805072 KiB) versus 733
 MiB (750480 KiB) for `uro-24ua` at the same load, and other `uro-o5c0` WH samples were

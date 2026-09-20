@@ -79,9 +79,10 @@ Whole-history `sessions`, `daily` and `report --all` runs now complete on large 
 corpora: sources decode on parallel workers into compact rows, so memory follows the
 number of usage records rather than log bytes.
 The temporary 512 MiB input guard is gone; a compact-row ceiling (default 25% of
-physical RAM, or 2 GiB when RAM cannot be read) exits with a capacity error instead of
-growing without bound.
-`--max-ram` and `--max-rows` set the budget.
+physical RAM, or 2 GiB when RAM cannot be read) rejects excess retained observations
+during decode. `--max-ram` and `--max-rows` set this per-agent row budget; it is not a
+whole-process RSS or physical-footprint limit.
+Payloads, intern tables and the other agent’s retained ledger consume additional memory.
 The
 [scalable-ingestion plan](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
 records dated measurements and the remaining memory work.

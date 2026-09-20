@@ -169,7 +169,8 @@ class EvaluateDailyGateTest(unittest.TestCase):
         )
         self.assertFalse(outcome.ok)
         self.assertIn("refused", outcome.message)
-        self.assertIn("2 GiB", outcome.message)
+        self.assertIn("configured compact-row capacity", outcome.message)
+        self.assertNotIn("2 GiB", outcome.message)
         self.assertIn("--daily-gate-mib", outcome.message)
 
     def test_reports_watchdog_kill_clearly(self) -> None:

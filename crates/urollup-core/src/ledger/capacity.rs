@@ -1,6 +1,8 @@
 //! Per-agent observation-row ceiling derived from a RAM budget.
 //!
-//! Reconciliation refuses more compact rows than this ceiling. The default is 25% of
+//! Decode admission bounds retained request-bearing rows; reconciliation checks again
+//! before request construction. This is a row-shell budget, not a process memory cap.
+//! The default is 25% of
 //! physical RAM, falling back to 2 GiB when RAM cannot be read. `--max-ram` and
 //! `UROLLUP_MAX_RAM` parse a byte size or a percent; `--max-rows` is an exact count.
 
@@ -10,7 +12,7 @@ use std::sync::OnceLock;
 
 use super::reconcile::RequestObservation;
 
-/// Bytes used when physical RAM cannot be read, so CI and containers stay bounded.
+/// Row-shell budget used when the default physical RAM query fails.
 pub const FALLBACK_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Default share of physical RAM used as the ingest budget.

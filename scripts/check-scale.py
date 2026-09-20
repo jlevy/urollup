@@ -202,14 +202,13 @@ def evaluate_daily_gate(run: Any, watchdog_limit_mib: int) -> GateOutcome:
     """Judges the `daily --all` watchdog gate (Phase 2's third scale gate).
 
     `run` is a `measure_scale.RunResult`; refusal is reported as a distinct, explained
-    failure rather than folded into a generic non-zero-exit message, since the engine's
-    512 MiB input-size guard (`crates/urollup/src/cli.rs`) is expected to disappear in a
-    parallel change and this failure mode should stay legible either way.
+    failure rather than folded into a generic non-zero-exit message. The engine's
+    configurable per-agent row ceiling is distinct from this external RSS watchdog.
     """
     if run.refused:
         return GateOutcome(
             False,
-            "engine refused the input at its 2 GiB compact-row capacity ceiling: "
+            "engine refused the input at its configured compact-row capacity ceiling: "
             f"{run.error}; lower --daily-gate-mib so the generated corpus stays well "
             "under that limit",
         )
@@ -252,7 +251,7 @@ def run_independence_check(binary: Path, args: argparse.Namespace) -> tuple[Gate
                 GateOutcome(
                     False,
                     f"engine refused the independence check's {label!r} corpus at "
-                    f"its 2 GiB compact-row capacity ceiling: {run['error']}",
+                    f"its configured compact-row capacity ceiling: {run['error']}",
                 ),
                 result,
             )
@@ -315,7 +314,7 @@ def run_extrapolation_check(binary: Path, args: argparse.Namespace) -> tuple[Gat
                 GateOutcome(
                     False,
                     f"engine refused the {point['input_mib']} MiB extrapolation corpus "
-                    f"at its 2 GiB compact-row capacity ceiling: {run.error}",
+                    f"at its configured compact-row capacity ceiling: {run.error}",
                 ),
                 {"points": points},
             )

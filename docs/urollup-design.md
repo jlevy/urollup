@@ -2348,7 +2348,7 @@ records how the engine reached this shape, with dated whole-history measurements
 - **Discovery and selection:** discovery follows the skip rule in
   [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
   sources to the selected session families before any source is decoded.
-- **Parallel decoding:** Claude Code sources, then Codex sources, decode independently
+- **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
   weighting zstd files by an assumed expansion.
   The default is `min(available_parallelism, 8)` workers.
@@ -2360,13 +2360,17 @@ records how the engine reached this shape, with dated whole-history measurements
   needs, and Codex first rules lines out with a byte prefilter on relevant type tokens
   ([§3.4](#34-dialect-reconciliation-rules)). A line that is ruled out or ignored is
   still validated, so malformed-line counts match a full parse.
-  Only a usage-bearing Claude Code line and a Codex `rate_limits` object are built as
-  JSON documents, and no document outlives its line.
+  Typed visitors decode usage and sidecar fields and preserve native limit payloads as
+  compact JSON text; no `serde_json::Value` document is retained on the ingestion path.
 - **Compact rows:** decoded records are fixed-size rows whose size limits are
   compile-time assertions.
   Repeated strings are interned per source, native IDs that only join records are
-  128-bit digests, model and effort names are interned once per process, usage is eight
-  counters with a presence mask, and timestamps are compact.
+  128-bit digests, model and effort names are interned once per process, usage stores
+  eight `u32` counters with a presence mask and interns full-width overflow patterns,
+  and timestamps are compact.
+  Observation shells are at most 224 B; this excludes owned payloads.
+  Name, limit-text and overflow-pattern intern tables live until process exit; their
+  distinct-value cardinality must be measured before repeated library/server ingestion.
   Each source’s records are freed as soon as its observations are built, and maps needed
   only to build observations are dropped before reconciliation.
 - **Request grouping:** reconciliation sorts observations into canonical order in place
@@ -2378,15 +2382,20 @@ records how the engine reached this shape, with dated whole-history measurements
   a conflicting shared key, and releases its observations’ owned data before the next
   group. Requests are stored in a vector sorted by ID, and only requests split from a
   conflicting shared key enter the candidate-set graph.
-- **Capacity ceiling:** each agent’s reconciliation refuses more request observations
-  than fit in the ingest budget, checked before any request is built.
-  The default budget is 25% of physical RAM, or 2 GiB when RAM cannot be read.
+- **Capacity ceiling:** a shared per-agent admission counter refuses excess retained
+  observation rows during worker decode, including pending representations, and cancels
+  further work. Reconciliation also checks the observation ceiling before building
+  requests. The default budget is 25% of physical RAM, or 2 GiB when RAM cannot be read.
   `--max-ram` / `UROLLUP_MAX_RAM` accept a byte size or a percent; `--max-rows` is an
   exact override; when both are set, the stricter ceiling wins.
   The byte budget is divided by the observation row size, so the row count rises as rows
-  shrink. The CLI exits 1 with the observation count and the named budget and suggests
-  narrower `--source` roots with `--no-default-sources`. It replaced the temporary 512
-  MiB input guard and its read budgets; per-record and sidecar size limits remain.
+  shrink. This accounts for row shells, not payloads, intern tables, request construction
+  or the other agent’s retained ledger; it is not an RSS or physical-footprint cap.
+  Explicit byte/row budgets do not query host RAM. Default/percentage budgets use native
+  host queries; Linux host RAM does not imply a container memory allowance.
+  The CLI exits 1 with the observation count and the named budget and suggests narrower
+  `--source` roots with `--no-default-sources`. It replaced the temporary 512 MiB input
+  guard and its read budgets; per-record and sidecar size limits remain.
   No run spills to disk.
 - **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
   stderr after the command runs and before its output or error: the worker count, wall
@@ -2408,6 +2417,10 @@ records how the engine reached this shape, with dated whole-history measurements
 Scale is gated on generated corpora rather than on private logs: `make test` includes a
 raw-bytes independence check, a footprint extrapolation bound and a `daily --all` run
 under an RSS watchdog ([scale measurement guide](project/qa/scale-measurement.md)).
+Dedicated Ubuntu and macOS CI jobs execute the release workload behind the supply-chain
+gate and archive its output.
+These small synthetic checks do not establish the 512 MiB and 10-second whole-history
+acceptance targets.
 
 #### Capture Cache
 

@@ -14,8 +14,9 @@ size"). Each measured run is additionally wrapped in `scripts/run-rss-watchdog.p
 kill switch, so a regression that grows without bound is terminated instead of
 exhausting the machine.
 
-The engine has no input-size limit. A corpus large enough to hit its internal 2 GiB
-compact-row ceiling is reported as a clean refusal rather than treated as a crash.
+The engine has no input-size limit. Exceeding its configurable per-agent observation-row
+ceiling is reported as a clean refusal rather than treated as a crash. That admission
+budget is not a process RSS or physical-footprint limit.
 
 A final section runs the raw-bytes-independence check: two small corpora with
 identical usage records (same seed, same session/rollout counts) but very different

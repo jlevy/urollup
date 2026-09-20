@@ -51,6 +51,9 @@ available behind explicit consent.
 Whole-history reports run without an input-size guard.
 The ingest ceiling defaults to 25% of physical RAM (`--max-ram` / `--max-rows` /
 `UROLLUP_MAX_RAM`; 2 GiB if RAM cannot be read).
+Shared admission checks bound retained observation rows during each agent’s decode; the
+budget does not cap process RSS, physical footprint, payloads, intern tables or the
+other agent’s retained ledger.
 The remaining 0.1 implementation is the 512 MiB peak-footprint target on
 [`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
 (`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
@@ -71,10 +74,13 @@ reverted. Do not retry those.
 Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
 pattern. `uro-lsaz` profile: the ~7 s over 10 s is Codex worker decode, not grouping.
 A larger read window did not cut WH wall.
-Next ready: `uro-lsaz` or `uro-a3fo`. `EvidenceRef` is 16 bytes and worker line buffers
-are bounded (`uro-as4a`, `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence`
-(`uro-24ua`), interned limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs
-(`uro-t8ws`) landed.
+Next: `uro-lsaz` profiling and current-head validation.
+The `uro-a3fo` typed-sidecar refactor is implemented; it needs integrated validation and
+measured performance evidence.
+Historical 653/586 MiB results recorded here are not measurements of the stabilized
+stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
+`uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned
+limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs (`uro-t8ws`) landed.
 Recorded maintainer decisions and independent review of the published stack remain
 before the milestone is accepted.
 Publishing is planned in
@@ -92,8 +98,10 @@ Planning docs live under `docs/project/`:
 - `specs/active/`: the three active plan specs (product, scalable ingestion, first
   release).
 - `research/`: background research briefs.
+- `reviews/`: governing reviews, including the
+  [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).
 
-The product epic is `uro-2pp9`; current implementation is `uro-t8ws`. The 512 gate is
+The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The 512 gate is
 owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
 
 ## Build & Test
@@ -151,3 +159,7 @@ npm ci --ignore-scripts                                                       # 
 - Specs never include time estimates, and phases stay as few as possible.
 - Never copy private session content (prompts, paths, IDs, values) from local agent logs
   into docs, fixtures or tests; fixtures are synthetic or sanitized.
+
+<!-- This document follows common-doc-guidelines.md.
+See github.com/jlevy/practical-prose and review guidelines before editing.
+-->

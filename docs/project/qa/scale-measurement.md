@@ -146,7 +146,9 @@ Useful flags:
 - `--sizes-mib 32,64,128` — a custom size list.
   A corpus above the engine’s compact-row ceiling (default 25% of RAM, or 2 GiB when RAM
   cannot be read) is reported as a clean refusal (the row’s status column reads
-  `refused`), not treated as a crash; synthetic corpora of a few GB are far below it.
+  `refused`), not treated as a crash.
+  This is an observation-row admission limit, not a process-memory cap; corpus bytes
+  alone do not establish headroom.
 - `--watchdog-limit-mib` — the kill-switch limit (default 2048 MiB); lower it if you
   want to catch a regression sooner rather than let it run to the OS limit.
 - `--skip-independence` — skip the raw-bytes independence check, e.g. for a quick
@@ -178,7 +180,10 @@ the data model actually reduced the bytes-per-input-MiB ratio the
 
 `scripts/check-scale.py` turns three of the plan’s
 [Phase 2](../specs/active/plan-2026-09-16-scalable-ingestion.md#phase-2-fast-decode-and-scale-gates)
-requirements into pass/fail assertions, run by `make scale-gate` (part of `make test`):
+requirements into pass/fail assertions, run by `make scale-gate` (part of `make test`).
+Dedicated Ubuntu/macOS CI jobs execute the release workload after the supply-chain gate
+and archive `scale-gate.log`, retaining failure status through the logging pipeline.
+These are small synthetic regression checks, not whole-history acceptance:
 
 1. **Raw-bytes independence.** Two corpora with identical usage records but very
    different content padding must have peak-memory footprints within
@@ -211,9 +216,9 @@ machine.
 
 If the engine refuses a corpus at its compact-row capacity ceiling, the refusal is
 reported as its own clearly labeled failure, not folded into a generic non-zero-exit
-message.
-The gate’s default corpus sizes are orders of magnitude below that ceiling, so a
-refusal means the ceiling or the row size regressed, not that the gate itself is broken.
+message. When a run refuses a corpus, inspect the diagnostic’s actual budget and
+environment before attributing it to a regression.
+Explicit overrides can intentionally make even a small corpus exceed the row ceiling.
 
 ### Calibrated thresholds
 
@@ -239,8 +244,11 @@ not to pin the current engine’s numbers exactly.
 **These numbers are from macOS (`/usr/bin/time -l`, “peak memory footprint”).** Linux’s
 `/usr/bin/time -v` reports “Maximum resident set size” instead, a different (typically
 larger) accounting that does not exclude the same categories of pages.
-If CI runs on Linux, recalibrate there before trusting the defaults; do not assume the
-macOS numbers transfer.
+CI now runs both platforms.
+Retain each job’s measurements and validate its thresholds against that platform’s
+accounting; the historical macOS calibration is not Linux calibration.
+The watchdog separately samples aggregate process-group RSS, so its peak can miss short
+spikes and must not be equated with either OS peak metric.
 
 ### Recalibrating
 
