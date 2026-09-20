@@ -5,7 +5,7 @@ title: "Spec: Cursor dialect with model and provider facets"
 kind: epic
 status: open
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 labels: []
 dependencies: []
@@ -19,10 +19,16 @@ child_order_hints:
   - is-01m2y1rhynxj8zrnp4368g534e
   - is-01m2y1rrq5qkqz1vd10tb4qcjr
 created_at: 2026-09-19T23:59:02.962Z
-updated_at: 2026-09-19T23:59:32.067Z
+updated_at: 2026-09-20T00:05:54.746Z
 ---
-Add Cursor as a urollup agent with first-class model and provider facets. Dedicated plan: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Not milestone 0.1, not Phase 2 Pi/Gemini, not under uro-n1cp. Implementation waits on locked format facts from the Cursor research brief.
+Add Cursor as a urollup agent with first-class model and provider facets. Dedicated plan: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Not milestone 0.1, not Phase 2 Pi/Gemini, not under uro-n1cp.
 
-Facet contract: agent=cursor (surface); model=recorded native/served identifier (never the token cursor); provider=model vendor (anthropic, openai, xai, …), never cursor. --group-by provider is required.
+Phase 0 facts are locked from research-2026-09-19-cursor-agent-logs.md (uro-890b). Authoritative store is state.vscdb (composerData/bubbleId). JSONL is a thin export. Usage is partial (sometimes costInCents; tokenCount often zero; no cache). Token-level reconciliation is not supportable from local files. Discovery is opt-in; default urollup finds none of this.
+
+Facet contract: agent=cursor; model=catalog/native id (selectedModels.modelId else modelName); provider=inferred vendor (Grok/Composer→cursor, claude-*→anthropic, …), never a stored column. --group-by provider is required.
 
 Parented under the product epic uro-2pp9 as later planned work.
+
+## Notes
+
+Reconciled the plan spec with research-2026-09-19-cursor-agent-logs.md (uro-890b, closed). Phase 0 facts are locked in the spec. Goals downgraded: no Claude-grade per-request tokens/cache; discovery is opt-in (not default); model is catalog/native id, not a served provider API id; provider is inferred (including cursor for Grok/Composer). Product-plan G2 now says opted-in Cursor sessions and notes the usage gap. Design one-liners did not contradict. No adapter. No ingest-capacity Rust. uro-3fbc remains the Phase 0 gate (checklist items are checked in the spec).

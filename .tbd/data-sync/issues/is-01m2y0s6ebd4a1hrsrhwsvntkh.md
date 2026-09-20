@@ -3,9 +3,9 @@ type: is
 id: is-01m2y0s6ebd4a1hrsrhwsvntkh
 title: Replace the 2 GiB ingest fuse with a RAM-relative ceiling
 kind: task
-status: in_progress
+status: closed
 priority: 1
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -13,7 +13,11 @@ labels:
 dependencies: []
 parent_id: is-01m2p3evvpmcn8cf59wc1196f6
 created_at: 2026-09-19T23:42:17.545Z
-updated_at: 2026-09-19T23:42:26.596Z
+updated_at: 2026-09-20T00:07:52.731Z
+closed_at: 2026-09-20T00:07:52.730Z
+close_reason: Landed --max-ram/--max-rows with 25% RAM default and 2 GiB fallback; PR https://github.com/jlevy/urollup/pull/12
+resolution: null
+duplicate_of: null
 ---
 User-facing ingest capacity replaces the fixed 2 GiB compact-row ceiling.
 
