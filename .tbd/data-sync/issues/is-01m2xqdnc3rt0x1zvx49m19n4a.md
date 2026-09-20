@@ -3,9 +3,9 @@ type: is
 id: is-01m2xqdnc3rt0x1zvx49m19n4a
 title: Parse Claude sidecars without Value; confine parse_record to tests
 kind: task
-status: in_progress
+status: closed
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -16,7 +16,11 @@ dependencies:
     target: is-01m2x8aq4skat5vmx2y97th32e
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 created_at: 2026-09-19T20:58:42.433Z
-updated_at: 2026-09-20T04:29:54.754Z
+updated_at: 2026-09-20T05:17:04.586Z
+closed_at: 2026-09-20T05:17:04.586Z
+close_reason: Fixed in PR11 at e79980583d8763ede11e85cea3958f7990d5f8d1; all 15 final hosted checks passed. Independent review and provenance, full-u64 sequence, worker invariance and typed-sidecar oracle regressions passed. No whole-history performance target is claimed.
+resolution: null
+duplicate_of: null
 ---
 Phase 2 leftover off the usage-line hot path but still on ingest. read_subagent_meta / read_subagent_meta_with_limit in crates/urollup-core/src/adapters/claude_project.rs parse the sidecar as serde_json::Value. sources/decode.rs::parse_record still builds a full document.
 
