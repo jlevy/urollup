@@ -1,0 +1,193 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "zst-twin",
+  "dialect": "codex-rollout",
+  "summary": "A rollout's .jsonl.zst and a plain .jsonl with the same thread and rollout ID, where the plain file was decompressed on resume and appended to.",
+  "rules": [
+    "design §2.2 Snapshot Boundary (a .jsonl and its .jsonl.zst twin are one logical source)",
+    "design §3.3 Reconciliation (one response repeated in several files)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollout; compression is the default-off local_thread_store_compression feature (zstd level 3)"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-001000000001",
+      "representation": "plain"
+    },
+    {
+      "path": "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
+      "lines": 10,
+      "thread": "019f0000-0000-7000-8000-001000000001",
+      "representation": "zstd"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001000000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 4500,
+          "cache_read": 19500,
+          "cache_write": 0,
+          "output": 1070,
+          "reasoning": 310
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c10_1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-08T13:00:12.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 5000,
+        "cache_write": 0,
+        "output": 350,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:6",
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:6",
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst:6"
+      ],
+      "turn_id": "turn-c10-1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c10_2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-08T13:00:30.000Z",
+      "tokens": {
+        "uncached_input": 1500,
+        "cache_read": 6500,
+        "cache_write": 0,
+        "output": 420,
+        "reasoning": 160
+      },
+      "selected": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:8",
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:8",
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst:8"
+      ],
+      "turn_id": "turn-c10-1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c10_3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-15T16:00:20.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 50
+      },
+      "selected": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:14"
+      ],
+      "evidence": [
+        "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl:14"
+      ],
+      "turn_id": "turn-c10-2"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 4500,
+      "cache_read": 19500,
+      "cache_write": 0,
+      "output": 1070,
+      "reasoning": 310
+    },
+    "total_tokens": 25070
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Treat each physical file as a source and sum every token_usage_record",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 8000,
+        "cache_read": 31000,
+        "cache_write": 0,
+        "output": 1840,
+        "reasoning": 570,
+        "total_tokens": 40840
+      }
+    }
+  ],
+  "sources": [
+    {
+      "thread_id": "019f0000-0000-7000-8000-001000000001",
+      "rollout_id": "019f0000-0000-7000-8000-001000000001",
+      "representations": [
+        {
+          "path": "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
+          "lines": 10
+        },
+        {
+          "path": "sessions/2026/09/08/rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl",
+          "lines": 16
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Codex itself lets a plain file hide its compressed sibling during discovery; urollup reads both as one logical source and reconciles by response ID.",
+    "The .zst member was written with zstd level 3, as Codex compresses."
+  ]
+}

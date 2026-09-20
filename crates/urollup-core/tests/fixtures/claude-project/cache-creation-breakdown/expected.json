@@ -1,0 +1,198 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "cache-creation-breakdown",
+  "dialect": "claude-project",
+  "summary": "A cache_creation 5-minute and 1-hour breakdown that disagrees with cache_creation_input_tokens, one that agrees, and a record with only the flat count.",
+  "rules": [
+    "design §4.1 Measure Contracts (cache_creation breakdown)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl",
+      "lines": 6,
+      "thread": "00000000-0000-4000-8000-001200000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001200000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 6,
+          "cache_read": 14000,
+          "cache_write": 9700,
+          "output": 115,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic12M1",
+        "request_id": "req_011Synthetic12M1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 0,
+        "cache_write": 5000,
+        "output": 60,
+        "reasoning": null
+      },
+      "cache_write_native": {
+        "cache_creation_input_tokens": 5000,
+        "ephemeral_5m_input_tokens": 3000,
+        "ephemeral_1h_input_tokens": 2500
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic12M2",
+        "request_id": "req_011Synthetic12M2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:01:02.000Z",
+      "tokens": {
+        "uncached_input": 1,
+        "cache_read": 5000,
+        "cache_write": 4000,
+        "output": 30,
+        "reasoning": null
+      },
+      "cache_write_native": {
+        "cache_creation_input_tokens": 4000,
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 4000
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic12M3",
+        "request_id": "req_011Synthetic12M3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001200000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:02:02.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 9000,
+        "cache_write": 700,
+        "output": 25,
+        "reasoning": null
+      },
+      "cache_write_native": {
+        "cache_creation_input_tokens": 700,
+        "ephemeral_5m_input_tokens": null,
+        "ephemeral_1h_input_tokens": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:6"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:6"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 6,
+      "cache_read": 14000,
+      "cache_write": 9700,
+      "output": 115,
+      "reasoning": null
+    },
+    "cache_write_by_duration": {
+      "5m": 3000,
+      "1h": 6500,
+      "unrecorded": 700
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "claude-cache-creation-breakdown-mismatch",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001200000001.jsonl:2"
+      ],
+      "detail": "cache_creation_input_tokens 5000, but ephemeral_5m_input_tokens 3000 plus ephemeral_1h_input_tokens 2500 is 5500; both native values are kept"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Prefer the breakdown whenever it exists (ccusage 20.0.20)",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 14000,
+        "cache_write": 10200,
+        "output": 115,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Flat count only, priced at the 5-minute rate: tokens match, but 6,500 1-hour writes are mispriced",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 14000,
+        "cache_write": 9700,
+        "output": 115,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Open question for the ledger: design §4.1 keeps both native values with a diagnostic but does not say which feeds the cache_write total when they disagree; this expectation uses the flat cache_creation_input_tokens and reports the breakdown separately."
+  ]
+}

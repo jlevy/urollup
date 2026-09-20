@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "query": { "command": "report", "selection": "all", "scope": "self", "timezone": "UTC" },
+  "coverage": { "copies_excluded": 1, "limit_observations": 1, "requests_without_usage": 0, "complete": true },
+  "diagnostics": [
+    {
+      "code": "sample.repeated_token_count",
+      "count": 1,
+      "detail": "the snapshot repeats the running total, so it adds no usage"
+    }
+  ],
+  "totals": {
+    "requests": { "owned": 2, "ambiguous": 0, "unknown": 0 },
+    "tokens": { "uncached_input": 7000, "cache_read": 16000, "cache_write": 0, "output": 2000, "reasoning": 0, "total": 25000 },
+    "unresolved": { "requests": 0, "tokens": {} },
+    "possible": { "requests": 0, "tokens": {} }
+  },
+  "breakdowns": {},
+  "sizes": { "count": 2, "p50": 9000, "p90": 14000, "p99": 14000, "max": 14000 }
+}

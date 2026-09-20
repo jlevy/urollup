@@ -1,0 +1,19 @@
+# taplo owns TOML formatting (rust-lint-format-rules). `make fix` formats and `make check`
+# verifies with the locked @taplo/cli from package-lock.json.
+include = ["**/*.toml"]
+exclude = [
+  ".claude/worktrees/**",
+  "attic/**",
+  "explorations/**",
+  "node_modules/**",
+  "target/**",
+  ".venv/**",
+  ".tbd/**",
+]
+
+[formatting]
+column_width = 100
+indent_string = "  "
+align_comments = false
+array_auto_collapse = false
+reorder_keys = false

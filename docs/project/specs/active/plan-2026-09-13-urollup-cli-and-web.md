@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Draft
+status: Active; milestone 0.1 functional core is complete and whole-history reports run without an input-size guard; remaining 0.1 implementation is the 512 MiB peak (uro-n1cp), then G1 and full-history QA (uro-d36a, uro-ky6c), maintainer decisions, and independent review
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -48,6 +48,46 @@ in the design’s
 Queued review decisions get phase items only once confirmed
 ([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
+## End-to-End Acceptance Goals
+
+These goals say what “working” means for a person using urollup on real logs, beyond
+each milestone’s checklist.
+Every one is tested on the maintainer’s own machine, and any committed artifact records
+aggregates only, never log content, paths or IDs.
+
+- **G1, this project’s sessions (milestone 0.1).** `urollup report --current` inside a
+  session of this repository, `urollup sessions` and `urollup daily` roll up every
+  Claude Code session for this project, including its many subagent sessions, with
+  subagent usage attributed to its parent under `--scope descendants`, no session or
+  request counted twice, explicit coverage for anything unread, and a non-zero exit only
+  on real errors. Token totals per session and per day reconcile against pinned ccusage,
+  with every difference explained in the ledger
+  ([ccusage reconciliation harness](#ccusage-reconciliation-harness)).
+- **G2, all recent local sessions (milestones 0.1 and 0.5).** `urollup daily --all` and
+  `urollup sessions --all` roll up every recent session on the machine across projects:
+  Claude Code and Codex in 0.1, captured streams in 0.5, and Pi and Gemini CLI when
+  their adapters land.
+  Grouping by project, account, model and effort works across agents, archived and
+  compressed rollouts are included, and unsupported dialects appear as explicit coverage
+  gaps rather than silence.
+- **G3, friendly from the CLI (0.1, polished through 0.5).** The common case takes no
+  flags and one command.
+  Help lists the commands with examples, default tables are readable at terminal width,
+  automatic color appears only for interactive human-facing output, redirected and piped
+  output is stable plain text, machine-readable formats contain no ANSI escapes, the CLI
+  and environment disable mechanisms always win, diagnostics name the flag or fix to
+  use, and table commands show a cleanly removed stderr scan indicator only during
+  interactive human use, with `--no-progress` as an unconditional disable.
+  Exit codes follow [§6.5](../../../urollup-design.md#65-exit-codes), nothing prompts,
+  and a small report meets the [performance targets](#performance-targets).
+- **G4, browsable web reports (Phase 2).** A generated self-contained HTML report opens
+  in a browser with no server, and `urollup serve` browses the same results live
+  ([§7](../../../urollup-design.md#7-serving-layer-optional),
+  [static HTML reports](../../../urollup-design.md#static-html-reports)).
+
+Each goal has an acceptance bead that runs it against real local logs and records the
+result as aggregates.
+
 ## Implementation Plan
 
 ### Phase 1: Accounting core and useful uncached CLI
@@ -57,49 +97,88 @@ The capture store lands only after the uncached engine is the correctness refere
 
 #### Milestone 0.1: Uncached Claude Code and Codex reports
 
-- [ ] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
+- [x] Scaffold a minimal repository to the engineering baseline: workspace, toolchain
   pin, lint and format configuration, supply-chain policy, `make check` and `make fix`,
   the npm dev project for tryscript, and the CI jobs those gates need; prove each gate
   fails on a committed violation
   ([§8.1](../../../urollup-design.md#81-workspace-and-crate-structure),
   [§8.2](../../../urollup-design.md#82-engineering-conventions)).
-- [ ] Freeze public sanitized fixtures, including the research brief’s
+- [x] Freeze public sanitized fixtures, including the research brief’s
   [double-counting cases](../../research/research-2026-09-13-portable-agent-usage.md#synthetic-double-counting-example)
   ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
   [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules)).
-- [ ] Implement analytical identities, the normalized ledger, reconciliation, ownership
+- [x] Implement analytical identities, the normalized ledger, reconciliation, ownership
   status and coverage, with collision detection and re-derivation from stored keys
   ([§3.1](../../../urollup-design.md#31-entities),
   [§3.3](../../../urollup-design.md#33-reconciliation),
   [§3.4](../../../urollup-design.md#34-dialect-reconciliation-rules),
   [§3.6](../../../urollup-design.md#36-analytical-identities),
   [§4.2](../../../urollup-design.md#42-ownership-and-totals)).
-- [ ] Implement the `claude-project` and `codex-rollout` adapters with default
+- [x] Implement the `claude-project` and `codex-rollout` adapters with default
   discovery, override variables, snapshot manifests, source links and provider limit
   observations; document unsupported fields and the agent versions each fixture covers
   ([§2.1](../../../urollup-design.md#21-dialects-and-discovery),
   [§2.2](../../../urollup-design.md#22-snapshot-boundary),
   [§4.4](../../../urollup-design.md#44-usage-windows)).
-- [ ] Implement `--current` environment detection, `--session`, `--all`, and the
+- [x] Implement `--current` environment detection, `--session`, `--all`, and the
   discovery index and hierarchy crawler behind `--scope`; a detected Pi session exits 2
   with an unsupported-dialect diagnostic
   ([§6.1](../../../urollup-design.md#61-workflows-and-session-selection),
   [§6.2](../../../urollup-design.md#62-current-session-detection),
   [§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index)).
-- [ ] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
-  account, model and effort grouping, request sizes, deterministic output and CLI
-  goldens; list-price estimates wait for 0.4
+- [x] Add `report`, `daily` and `sessions` in table and JSON formats, with project,
+  account, model and effort grouping, request sizes, deterministic output, and the
+  [end-to-end goldens and result checks](#golden-and-end-to-end-result-checks) on every
+  fixture case; list-price estimates wait for 0.4
   ([§6.3](../../../urollup-design.md#63-commands),
   [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams),
   [§6.5](../../../urollup-design.md#65-exit-codes),
   [§4.1](../../../urollup-design.md#41-measure-contracts),
   [§4.3](../../../urollup-design.md#43-time-grouping-and-percentiles)).
-- [ ] Add the [ccusage reconciliation harness](#ccusage-reconciliation-harness) for
-  token totals: pinned ccusage, per-day and per-session token comparison on the
-  `claude-project` and `codex-rollout` fixtures in CI, the explained-differences ledger,
-  and the privacy-tested local aggregate diff script
+- [x] Add the fixture-backed
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness) for token totals:
+  pinned ccusage, per-day and per-session token comparison on the `claude-project` and
+  `codex-rollout` fixtures in CI, and the explained-differences ledger
   ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
+- [x] Add terminal-aware color as a 0.1 baseline: enable it automatically only for
+  human-facing output on an interactive terminal; keep redirected, piped and
+  machine-readable output free of ANSI escapes; and make `--color never` and `NO_COLOR`
+  unconditional disables.
+  Test automatic color with injected destination capabilities, plain redirected output,
+  both disable mechanisms, real process streams and every machine-readable format
+  ([Decision 29](../../../urollup-design.md#decision-29-terminal-aware-color),
+  [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
+- [x] Add a scan indicator for table commands as a 0.1 baseline: enable it by default
+  only during interactive human use, render it on stderr without contaminating stdout,
+  suppress it for non-TTY, redirected, piped and machine-readable workflows, and make
+  `--no-progress` an unconditional disable.
+  Test injected-terminal default-on, pipe and non-TTY default-off, `--no-progress`,
+  machine stdout without ANSI or control sequences, and cleanup on both success and
+  error ([Decision 30](../../../urollup-design.md#decision-30-interactive-progress),
+  [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams)).
+- [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
+  diff with privacy sentinels that reject log content, paths, identifiers, prompts,
+  project names and custom model names.
+- [ ] Bound persistent-log memory before release.
+  The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
+  after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary
+  512 MiB input guard made `--all` refuse the default corpus.
+  Done so far: exact selectors and `--current` narrow discovery to the selected session
+  families before decoding; adapters decode on bounded parallel workers into compact
+  rows; and the input guard is replaced by a RAM-relative compact-row capacity ceiling
+  (default 25% of physical RAM, 2 GiB fallback), so whole-history `sessions`, `daily`
+  and `report --all` complete
+  ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
+  [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining on that
+  plan: meet the 512 MiB peak and the `bench-1g` peak-RSS target, without spilling to
+  disk. Claude two-pass re-decode (`uro-l3fw`) raised the peak and was reverted.
+  ([performance targets](#performance-targets)).
+- [ ] Run the consented real-log acceptance checks, including the
+  [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md), and review
+  the resulting aggregates without committing log content, paths or identifiers
+  ([end-to-end acceptance goals](#end-to-end-acceptance-goals),
+  [ccusage reconciliation harness](#ccusage-reconciliation-harness)).
 
 #### Milestone 0.2: Contracts, summaries, bundles and merge
 
@@ -176,8 +255,8 @@ The capture store lands only after the uncached engine is the correctness refere
   [existing implementations](../../research/research-2026-09-13-portable-agent-usage.md#existing-implementations),
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)).
 - [ ] If the candidates are confirmed, add the `statusline` session segment and the
-  report presentation options: responsive and `--compact` tables, `--color`,
-  `--no-cost`, `--last` and the pooled cache-read share
+  remaining report presentation options: responsive and `--compact` tables, `--no-cost`,
+  `--last` and the pooled cache-read share
   ([§6.8](../../../urollup-design.md#68-status-line),
   [statusline command](../../../urollup-design.md#statusline-command),
   [report presentation](../../../urollup-design.md#report-presentation)).
@@ -256,6 +335,7 @@ Each area tests the rules in these design sections:
 | Surfaces | [§6.2](../../../urollup-design.md#62-current-session-detection), [§6.4](../../../urollup-design.md#64-queries-output-formats-and-streams), [§6.5](../../../urollup-design.md#65-exit-codes), [§7.2](../../../urollup-design.md#72-web-ui) |
 | Web security | [§7.3](../../../urollup-design.md#73-security-controls) |
 | Parity | [§1.5](../../../urollup-design.md#15-non-goals), [§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage) |
+| Goldens and end-to-end results | [§6.3](../../../urollup-design.md#63-commands)–[§6.5](../../../urollup-design.md#65-exit-codes), [§4.2](../../../urollup-design.md#42-ownership-and-totals), [§8.2](../../../urollup-design.md#82-engineering-conventions) |
 
 - **Accounting:** golden fixtures and conservation and property tests cover streaming
   updates, synthetic messages, repeated imports, request IDs spanning files, forked
@@ -327,6 +407,67 @@ Each area tests the rules in these design sections:
 - **Parity:** the [ccusage reconciliation harness](#ccusage-reconciliation-harness) runs
   pinned ccusage and urollup on the same inputs and fails on any difference that the
   explained-differences ledger does not cite.
+- **Goldens and end-to-end results:** the
+  [golden and end-to-end result checks](#golden-and-end-to-end-result-checks) record
+  every command’s complete output per fixture case and check each case’s reconciled
+  totals against its committed truth.
+
+### Golden and end-to-end result checks
+
+CLI behavior is tested in two complementary layers over one fixture corpus, following
+`tbd guidelines golden-testing-guidelines` and the pinned tryscript 0.2.1. The
+[golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
+records what each rule cost when it was missing, and
+[tests/golden/README.md](../../../../tests/golden/README.md) is the operating guide.
+
+- **Transcript goldens (tryscript).** End-to-end sessions run the built binary through
+  `$UROLLUP_BIN` and record complete stdout, stderr and exit status for `report`,
+  `daily` and `sessions` in table and JSON form, plus the exit-code contract
+  ([§6.5](../../../urollup-design.md#65-exit-codes)): usage errors and undetected
+  sessions exit 2, `--strict` coverage gaps exit 3, and a runtime failure exits 1.
+  Sessions show whole outputs; extracting one value with `grep` or `jq` is refused,
+  since it turns a session test back into a unit test.
+- **Final-result checks.** `scripts/check-e2e-results.mjs` runs each command’s JSON
+  output per case and compares unique requests, token categories, ownership counts,
+  excluded copies, limit observations and diagnostics with the case’s `expected.json`,
+  failing with a field-by-field diff and printing the naive-sum overcount for context
+  ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
+  [§4.2](../../../urollup-design.md#42-ownership-and-totals)). Rollup rows must sum to
+  the report’s totals, and each command runs twice and must print identical bytes.
+  The checker’s own decision logic is unit-tested on synthetic outputs and sample cases
+  in `tests/golden/samples/`.
+- **Isolation.** Discovery is never inherited: runs get an allowlisted environment with
+  a hermetic `HOME`, `XDG_*` and `UROLLUP_CAPTURE_DIR` in a temporary root, the case’s
+  roots named by `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `PI_CODING_AGENT_SESSION_DIR`,
+  empty roots for every other agent, `--no-default-sources` with `--source` where a
+  session tests explicit inputs, and a fixed `--timezone`. Canary logs sit in every
+  default root under that `HOME`, so a run that reads defaults prints a token the lint
+  and the checker refuse, and a write into that `HOME` fails the run.
+  The [ccusage reconciliation harness](#ccusage-reconciliation-harness) isolates its
+  runs the same way over the same fixture roots.
+- **Mapping.** One case directory,
+  `crates/urollup-core/tests/fixtures/<dialect>/<case>/`, maps to one session,
+  `tests/golden/e2e/<dialect>/<case>.tryscript.md`, and to one automatic result check.
+  A new dialect case gets its golden from
+  `node scripts/new-e2e-golden.mjs <dialect>/<case>` followed by
+  `run-golden.mjs --expand` and a line-by-line review; a case without a golden fails
+  once `report` exists, and a golden without a case always fails.
+- **Pending states.** While a command is still a scaffold stub or the corpus has not
+  landed, the run reports `PENDING` with the bead that unblocks it, never silent
+  success, and the entry fails the run as soon as its blocker is gone, so the checks
+  start with the first build that can produce results.
+- **Real-log realism.** Fixture cases become realistic through a structure-only
+  sanitizer, `scripts/sanitize-claude-fixture.mjs`, which derives a case from a local
+  session by keeping record types, keys, nesting, ordering and usage numbers while
+  replacing every string value, identifier and path with a consistent synthetic
+  stand-in, reviewed before commit.
+  A consented local corpus is never committed: it is checked in place with
+  `check-e2e-results.mjs --fixtures <dir>`, and `make e2e-local` prints aggregates alone
+  under the same privacy rules as
+  [the local ccusage diff](#ccusage-reconciliation-harness), including its sentinel
+  test. That mode is also how an [acceptance goal](#end-to-end-acceptance-goals) run on
+  real local logs is checked and recorded; the automated goldens and result checks never
+  read a real log, which is what the hermetic `HOME` and its canaries enforce.
 
 ### ccusage reconciliation harness
 
@@ -368,7 +509,9 @@ lists the use cases the harness measures.
     commit, with the same version check.
   - Updating the pin is a pull request that moves to the latest release past the
     cool-off, reruns every case and retires the ledger entries that stop matching.
-- **Isolated, deterministic runs:**
+- **Isolated, deterministic runs:** the same rules as the
+  [golden and end-to-end result checks](#golden-and-end-to-end-result-checks), over the
+  same fixture roots.
   - Both tools read a temporary copy of the same fixture roots.
     `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` point at an empty directory, and
     `CLAUDE_CONFIG_DIR` and `CODEX_HOME` point at the copy.
@@ -536,39 +679,53 @@ Binaries with the embedded UI are published only after fixture, packaged-binary,
 feature-matrix and Testing Strategy release checks pass, and dependencies are pinned
 under the supply-chain policy as crates and frontend tools are chosen.
 
-Release mechanics follow the baseline’s
+Release mechanics follow the focused
+[0.1.0 publishing and distribution plan](plan-2026-09-16-first-release-publishing.md),
+which owns the end-to-end setup, artifact contract, rehearsal, publication sequence,
+post-publish validation and recovery steps, and the baseline’s
 [targets, channels and versioning](../../research/research-2026-09-13-rust-cli-engineering-baseline.md#targets-channels-and-versioning),
 within the confirmed
 [release scope](../../../urollup-design.md#decision-27-release-scope):
 
 - **Targets:** static musl Linux x86_64 and arm64, macOS arm64 and x86_64, and Windows
   x86_64, each built and smoke-tested on a native runner.
+  Both macOS architectures support macOS 11.0 or newer, enforced in the build and
+  verified on the packaged binary.
   The musl build is benchmarked before choosing a global allocator; Windows arm64 waits
   for demand.
 - **Channels:** one `release.yml` publishes from a protected `release` environment to
   GitHub Release archives with `SHA256SUMS` (the channel the cloud skill pins),
-  crates.io `urollup-core` and `urollup` in one invocation, and PyPI binary wheels.
-  Registries use trusted publishing, except a short-lived scoped token for the first
-  crates.io upload. A dispatch dry run skips only upload, and reruns skip identical
-  artifacts and fail on different bytes under one version.
+  crates.io `urollup-core` and `urollup` through pinned Cargo 1.90-or-newer native
+  workspace publication, and a PyPI `urollup` binary wheel built with Maturin
+  `bindings = "bin"` for exact-version `uvx` and persistent `uv tool install` use.
+  Registries use trusted publishing, except a shortest-expiry token restricted to the
+  `publish-new` endpoint and the exact two crate names for the first crates.io upload.
+  A dispatch dry run skips only upload, and reruns skip identical artifacts and fail on
+  different bytes under one version.
   Homebrew, npm and cargo-binstall wait for demand.
-  `urollup` and `urollup-core` were unregistered on crates.io and PyPI on 2026-09-13.
+  Importable Python bindings are a separate future artifact and do not make the CLI
+  Python-dependent. `urollup` and `urollup-core` were unregistered on crates.io and PyPI
+  on 2026-09-13; only the real `urollup` binary package is published to PyPI in the
+  first release, rather than an empty placeholder for a possible bindings package.
 - **Verification:** `--locked` builds from the tagged commit, with a build-provenance
   attestation for every archive and wheel; no GPG or minisign signature.
 - **Versioning:** SemVer from `[workspace.package] version`, checked against the tag by
   `build.rs`. Before 1.0, a minor release may change CLI or JSON contracts; report,
   bundle, query and identity contracts carry their own versions, recorded in
   `CHANGELOG.md` ([§5.6](../../../urollup-design.md#56-versioning-and-compatibility)).
+  The first public alpha is `0.1.0` immediately after milestone 0.1 local acceptance;
+  later Phase 1 milestones ship as subsequent pre-1.0 releases rather than delaying the
+  first release.
 
 ## Decisions
 
 The design doc records every decision and open question:
 
-- **Confirmed:** 28 decisions, each with its choice, rationale, tradeoffs and date, in
+- **Confirmed:** 30 decisions, each with its choice, rationale, tradeoffs and date, in
   [§10.1](../../../urollup-design.md#101-design-decisions), the newest being
-  [Gemini CLI planned support](../../../urollup-design.md#decision-28-gemini-cli-planned-support)
-  on 2026-09-15.
-- **Candidate:** 14 proposed decisions already reflected in the design, pending
+  [interactive progress](../../../urollup-design.md#decision-30-interactive-progress) on
+  2026-09-16.
+- **Candidate:** 15 proposed decisions already reflected in the design, pending
   maintainer confirmation, in [§9.1](../../../urollup-design.md#91-candidate-decisions),
   including five from the 2026-09-15
   [ccusage use-case coverage](../../../urollup-design.md#106-ccusage-use-case-coverage)
@@ -582,6 +739,8 @@ The design doc records every decision and open question:
 ## References
 
 - [urollup design specification](../../../urollup-design.md)
+- [urollup 0.1.0 publishing plan](plan-2026-09-16-first-release-publishing.md)
+- [Scalable whole-history ingestion plan](plan-2026-09-16-scalable-ingestion.md)
 - [Portable research brief](../../research/research-2026-09-13-portable-agent-usage.md),
   including its
   [ccusage feature inventory](../../research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
@@ -589,6 +748,7 @@ The design doc records every decision and open question:
 - [squares code review](../../research/research-2026-09-14-squares-code-review.md) and
   [metaproc and qm review](../../research/research-2026-09-14-metaproc-code-review.md)
 - [Agent tool source reviews](../../research/research-2026-09-14-agent-tool-source-reviews.md)
+- [Golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
 - [Log throughput spike](../../../../explorations/log-throughput/README.md)
 - [fdu](https://github.com/jlevy/fdu) and
   [flowmark-rs](https://github.com/jlevy/flowmark-rs), the reference Rust repositories

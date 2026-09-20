@@ -1,0 +1,203 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "compaction-and-context-full",
+  "dialect": "codex-rollout",
+  "summary": "A compaction estimate (last_token_usage with only total_tokens) and a context-window-full fill that zeroes cumulative components, around three real responses.",
+  "rules": [
+    "design §3.4 Codex counters (estimates and fills are diagnostics; a decrease opens an epoch)",
+    "design §4.1 Measure Contracts (recorded totals are recomputed)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 legacy rollout; estimate and fill semantics read from rust-v0.154.0 source"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-000400000001"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-000400000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 49000,
+          "cache_read": 141000,
+          "cache_write": 0,
+          "output": 4400,
+          "reasoning": 1700
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000400000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:4"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000400000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T19:00:30.000Z",
+      "tokens": {
+        "uncached_input": 20000,
+        "cache_read": 100000,
+        "cache_write": 0,
+        "output": 2000,
+        "reasoning": 800
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:4"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000400000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:7"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000400000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T19:01:40.000Z",
+      "tokens": {
+        "uncached_input": 27000,
+        "cache_read": 3000,
+        "cache_write": 0,
+        "output": 1500,
+        "reasoning": 600
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:7"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:7"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-000400000001",
+        "counter_epoch": 2,
+        "event": "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:15"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-000400000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-03T19:06:30.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 38000,
+        "cache_write": 0,
+        "output": 900,
+        "reasoning": 300
+      },
+      "selected": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:15"
+      ],
+      "evidence": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:15"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 49000,
+      "cache_read": 141000,
+      "cache_write": 0,
+      "output": 4400,
+      "reasoning": 1700
+    },
+    "total_tokens": 194400
+  },
+  "diagnostics": [
+    {
+      "code": "codex-estimate-compaction",
+      "refs": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:6"
+      ],
+      "detail": "last_token_usage holds only total_tokens 3200 after compaction and the running total is unchanged"
+    },
+    {
+      "code": "codex-estimate-context-window-fill",
+      "refs": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:11"
+      ],
+      "detail": "total_token_usage is the 272000-token window with zero components; last_token_usage holds only the 118500-token fill"
+    },
+    {
+      "code": "codex-counter-epoch-reset",
+      "refs": [
+        "sessions/2026/09/03/rollout-2026-09-03T12-00-00-019f0000-0000-7000-8000-000400000001.jsonl:11"
+      ],
+      "detail": "the fill zeroes cumulative input, cached, output and reasoning components, so epoch 2 starts at the fill"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum last_token_usage of every token_count event",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 49000,
+        "cache_read": 141000,
+        "cache_write": 0,
+        "output": 4400,
+        "reasoning": 1700,
+        "total_tokens": 316100
+      }
+    },
+    {
+      "rule": "Last cumulative total_tokens (Codex's SQLite tokens_used)",
+      "requests": null,
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 38000,
+        "cache_write": 0,
+        "output": 900,
+        "reasoning": 300,
+        "total_tokens": 312900
+      }
+    }
+  ],
+  "notes": [
+    "Line 15's running total_tokens (312900) is not its components' sum because the fill set it to the window; the recorded-total check applies to the request's last_token_usage, which is consistent, not to the running total.",
+    "Naive component sums match here because estimates and fills have zero components; the overcount shows in total_tokens."
+  ]
+}

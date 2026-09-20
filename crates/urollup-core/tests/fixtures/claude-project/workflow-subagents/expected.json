@@ -1,0 +1,302 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "workflow-subagents",
+  "dialect": "claude-project",
+  "summary": "A subagent spawns a workflow subagent stored under subagents/workflows/<workflow>/, linked by its .meta.json toolUseId to a call inside the first subagent.",
+  "rules": [
+    "design §3.2 Relationships and the Discovery Index (subagents/workflows/)",
+    "design §4.2 Ownership and Totals (descendants scope)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified. agentfdr and ccusage read subagents/workflows/; the research brief's inspected logs contained none, so this layout is unverified locally."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001100000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001100000001/a0000000000110001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.meta.json",
+      "thread": "00000000-0000-4000-8000-001100000001/a0000000000110001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/workflows/wf_synthetic_1101/agent-a0000000000110002.jsonl",
+      "lines": 2,
+      "thread": "00000000-0000-4000-8000-001100000001/a0000000000110002"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/workflows/wf_synthetic_1101/agent-a0000000000110002.meta.json",
+      "thread": "00000000-0000-4000-8000-001100000001/a0000000000110002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001100000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 650,
+          "cache_write": 630,
+          "output": 70,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 5,
+        "tokens": {
+          "uncached_input": 21,
+          "cache_read": 2150,
+          "cache_write": 4370,
+          "output": 181,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001100000001/a0000000000110001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-001100000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl:2"
+      ],
+      "agent_type": "general-purpose",
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 7,
+          "cache_read": 1500,
+          "cache_write": 1540,
+          "output": 47,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 16,
+          "cache_read": 1500,
+          "cache_write": 3740,
+          "output": 111,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001100000001/a0000000000110002",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-001100000001/a0000000000110001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/workflows/wf_synthetic_1101/agent-a0000000000110002.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl:2"
+      ],
+      "agent_type": "workflow-subagent",
+      "workflow": "wf_synthetic_1101",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 9,
+          "cache_read": 0,
+          "cache_write": 2200,
+          "output": 64,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 9,
+          "cache_read": 0,
+          "cache_write": 2200,
+          "output": 64,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic11L1",
+        "request_id": "req_011Synthetic11L1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001100000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:02.000Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": 0,
+        "cache_write": 600,
+        "output": 50,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic11L2",
+        "request_id": "req_011Synthetic11L2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001100000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:03:02.000Z",
+      "tokens": {
+        "uncached_input": 1,
+        "cache_read": 650,
+        "cache_write": 30,
+        "output": 20,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic11A1",
+        "request_id": "req_011Synthetic11A1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001100000001/a0000000000110001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 0,
+        "cache_write": 1500,
+        "output": 35,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic11A2",
+        "request_id": "req_011Synthetic11A2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001100000001/a0000000000110001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:02:02.000Z",
+      "tokens": {
+        "uncached_input": 1,
+        "cache_read": 1500,
+        "cache_write": 40,
+        "output": 12,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/agent-a0000000000110001.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic11B1",
+        "request_id": "req_011Synthetic11B1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001100000001/a0000000000110002",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-01T10:00:40.000Z",
+      "tokens": {
+        "uncached_input": 9,
+        "cache_read": 0,
+        "cache_write": 2200,
+        "output": 64,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/workflows/wf_synthetic_1101/agent-a0000000000110002.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001100000001/subagents/workflows/wf_synthetic_1101/agent-a0000000000110002.jsonl:2"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 5,
+      "owned": 5,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 21,
+      "cache_read": 2150,
+      "cache_write": 4370,
+      "output": 181,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Group by path-derived session (ccusage 20.0.20 names the workflow file's session after its workflow directory)",
+      "requests": 5,
+      "sessions": 2,
+      "tokens": {
+        "uncached_input": 21,
+        "cache_read": 2150,
+        "cache_write": 4370,
+        "output": 181,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": []
+}

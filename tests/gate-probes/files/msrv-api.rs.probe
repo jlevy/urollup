@@ -1,0 +1,5 @@
+
+/// Gate probe: `i32::cast_unsigned` is stable only since Rust 1.87, above the 1.85 MSRV.
+pub fn gate_probe_msrv(value: i32) -> u32 {
+    value.cast_unsigned()
+}

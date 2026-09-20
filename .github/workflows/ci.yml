@@ -1,0 +1,302 @@
+# Adapted from fdu `.github/workflows/ci.yml` at afbb2ee; see PROVENANCE.md.
+#
+# Every job maps to `make` targets that `make check` runs locally, so a CI failure is a
+# confirmation rather than a discovery. Actions are pinned by commit SHA (the trailing
+# comment names the reviewed release), checkouts do not persist credentials, no job writes
+# a reusable cache, and every job waits for the supply-chain provenance gate.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  NPM_CONFIG_IGNORE_SCRIPTS: "true"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  supply-chain:
+    name: Supply-chain provenance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - run: node --test scripts/check-supply-chain.test.mjs
+      - run: node --test scripts/check-uv-version.test.mjs
+      - run: node scripts/check-supply-chain.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  fmt:
+    name: Format (Rust and TOML)
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - run: npm ci --ignore-scripts
+      - run: make fmt-check
+      - run: make toml-fmt-check
+
+  clippy:
+    name: Lint (clippy and lint policy)
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - run: make lint-policy
+      # Frozen fixtures are public test data: they must parse, match their expected.json
+      # and stay synthetic, whatever the checkout's line endings.
+      - run: make fixtures-check
+      - run: make clippy
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: supply-chain
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - if: runner.os != 'Windows'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: npm ci --ignore-scripts
+      # Direct commands rather than make targets: the Windows runner's shell is PowerShell.
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked --workspace --no-default-features
+      - name: Test the POSIX manual-QA support tools
+        if: runner.os != 'Windows'
+        run: make qa-tool-tests
+      - name: Build the CLI for golden tests
+        run: cargo build --locked --workspace
+      # The harness decides what a hermetic, complete golden run is; test it on every platform.
+      - name: Test the golden and end-to-end harness
+        run: node --test scripts/golden-env.test.mjs scripts/check-golden-invocations.test.mjs scripts/run-golden.test.mjs scripts/new-e2e-golden.test.mjs scripts/check-e2e-results.test.mjs
+      - name: Check the golden corpus is hermetic and resolves urollup only from the build under test
+        run: node scripts/check-golden-invocations.mjs
+      - name: Check committed goldens name no machine
+        run: node scripts/check-portability.mjs
+      - name: Compare the CLI golden contract
+        run: node scripts/run-golden.mjs
+      - name: Check reconciled results on every fixture case
+        run: node scripts/check-e2e-results.mjs
+
+  scale:
+    name: Synthetic scale (${{ matrix.os }})
+    needs: supply-chain
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      # Execute the synthetic workload against a fresh release build; helper unit tests
+      # alone cannot detect a resource regression. Preserve the producer's exit status.
+      - name: Measure the synthetic scale gates
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p target
+          make scale-gate 2>&1 | tee target/scale-gate.log
+      - name: Upload scale measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scale-gate-${{ matrix.os }}
+          path: target/scale-gate.log
+          if-no-files-found: error
+
+  parity:
+    name: ccusage fixture parity
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: npm ci --ignore-scripts
+        working-directory: tests/parity/ccusage
+      - run: make parity
+      - name: Upload regenerated per-case reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ccusage-parity
+          path: target/parity/
+          if-no-files-found: error
+
+  docs:
+    name: Docs, Markdown and uv lock
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      # This pin is the floor the repository builds against: uv releases older than it
+      # cannot parse the relative `exclude-newer` in uv.toml. `UV_MIN_VERSION` in the
+      # Makefile guards local builds; the supply-chain policy keeps the two identical.
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: make docs
+      - run: make uv-version
+      - run: make uv-lock-check
+      - run: make docs-format-check
+
+  dependency-guard:
+    name: Serve feature boundary and dependency guard
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      # `cargo build -p urollup --no-default-features`, then fail if urollup-core or that
+      # build's tree holds an HTTP or async-runtime crate (design §7.1, Decision 21).
+      - run: make dependency-guard
+      - run: cargo test --locked -p urollup --no-default-features
+
+  msrv:
+    name: MSRV (1.85)
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.85.0
+      # Compile success alone misses behavioral and test-only MSRV regressions.
+      - run: make msrv MSRV=1.85.0
+
+  deny:
+    name: Dependency audit
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - run: npm ci --ignore-scripts
+      - name: Install the reviewed cargo-deny release
+        run: |
+          scripts/install-cargo-deny.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: make audit
+      - run: make npm-audit
+
+  gate-proofs:
+    name: Gate proofs
+    needs: supply-chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.85.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Install the reviewed cargo-deny release
+        run: |
+          scripts/install-cargo-deny.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Every gate runs against its committed violation in a scratch copy and must fail
+      # with the expected diagnostic; a probe whose tool is missing fails, never skips.
+      - run: make gate-proofs

@@ -1,0 +1,239 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "gateway-message-id-reuse",
+  "dialect": "claude-project",
+  "summary": "A gateway writes one message.id without requestId in two sessions for different responses, while a copied transcript replays one of them with its original sessionId.",
+  "rules": [
+    "design §3.6 Identity Basis and Linking (conflicting shared keys)",
+    "design §9.1 Conflicting Shared Keys (Candidate)",
+    "design §4.2 Ownership and Totals",
+    "design §3.2 Fork (copied sessionId)"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. The first release that writes this shape is unverified. Gateway message-ID reuse is modeled on ccusage commit a4b8420 (#1661)."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001300000001.jsonl",
+      "lines": 2,
+      "thread": "00000000-0000-4000-8000-001300000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001300000002.jsonl",
+      "lines": 2,
+      "thread": "00000000-0000-4000-8000-001300000002"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001300000003"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001300000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 12,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 40,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001300000002",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 30,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 90,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001300000003",
+      "kind": "session",
+      "parent": "00000000-0000-4000-8000-001300000001",
+      "relationship": "fork",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:2"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 15,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_gw_000001",
+        "request_id": null
+      },
+      "identity_basis": "ambiguous",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001300000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-03T09:00:04.000Z",
+      "tokens": {
+        "uncached_input": 12,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_gw_000001",
+        "request_id": null
+      },
+      "identity_basis": "ambiguous",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001300000002",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-03T14:00:05.000Z",
+      "tokens": {
+        "uncached_input": 30,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000002.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000002.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_gw_000002",
+        "request_id": null
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001300000003",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-03T16:00:03.000Z",
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 15,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:4"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001300000003.jsonl:2",
+      "kind": "resume-replay",
+      "copy_of": "projects/-Users-example-project/00000000-0000-4000-8000-001300000001.jsonl:2",
+      "owner_thread": "00000000-0000-4000-8000-001300000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 47,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 145,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "identity-key-conflict",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001300000002.jsonl:2"
+      ],
+      "detail": "msg_gw_000001 without requestId appears in two sessions with different models, timestamps and content, so the key is ambiguous and the observations are not merged"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 59,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 185,
+        "reasoning": null
+      }
+    },
+    {
+      "rule": "Deduplicate by message.id across sessions, keeping the largest total (ccusage 20.0.20)",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 35,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 105,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "The two observations of the reused ID disagree on revision-invariant fields, so they are distinct requests with ambiguous identity basis; each is owned by the one session that holds it.",
+    "The copy in the third session keeps the first session's sessionId and uuid, so it collapses into that request as a copy, as ccusage's fix keeps copied transcripts collapsing.",
+    "Conflicting Shared Keys is a Candidate decision (design §9.1); these expectations follow its recommendation."
+  ]
+}

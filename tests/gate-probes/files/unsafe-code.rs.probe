@@ -1,0 +1,6 @@
+
+/// Gate probe: `unsafe_code` is denied by the workspace lint floor.
+pub fn gate_probe_unsafe() -> u8 {
+    // SAFETY: u8 has no invalid bit patterns; the lint, not soundness, is under test.
+    unsafe { std::mem::zeroed() }
+}

@@ -1,0 +1,22 @@
+{
+  "$comment": "Read by scripts/check-e2e-results.mjs; see tests/golden/README.md. A pending entry is a ratchet: the checker fails once its blocker is gone and the entry is still here.",
+  "fixturesRoot": "crates/urollup-core/tests/fixtures",
+  "goldenRoot": "tests/golden/e2e",
+  "commands": [
+    {
+      "name": "report",
+      "args": ["report", "--all", "--format", "json", "--timezone", "UTC"],
+      "compare": "all"
+    },
+    {
+      "name": "daily",
+      "args": ["daily", "--all", "--format", "json", "--timezone", "UTC"],
+      "compare": ["requests", "ownership", "tokens"]
+    },
+    {
+      "name": "sessions",
+      "args": ["sessions", "--all", "--format", "json", "--timezone", "UTC"],
+      "compare": ["requests", "ownership", "tokens"]
+    }
+  ]
+}

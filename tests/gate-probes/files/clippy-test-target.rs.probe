@@ -1,0 +1,12 @@
+
+/// Gate probe: lint violations in integration tests fail only because clippy runs with
+/// `--all-targets`.
+#[test]
+fn gate_probe_needless_range_loop() {
+    let values = [1_u8, 2, 3];
+    let mut total = 0_u32;
+    for index in 0..values.len() {
+        total += u32::from(values[index]);
+    }
+    assert_eq!(total, 6);
+}

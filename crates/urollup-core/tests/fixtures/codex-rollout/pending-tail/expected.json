@@ -1,0 +1,162 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "pending-tail",
+  "dialect": "codex-rollout",
+  "summary": "A rollout with a malformed interior line and an unfinished last line: the interior line is corruption, the last is a pending tail, and usage comes from complete records only.",
+  "rules": [
+    "design §2.2 Snapshot Boundary (pending tails, counted malformed lines)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollout; Codex itself skips malformed lines"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl",
+      "lines": 11,
+      "thread": "019f0000-0000-7000-8000-001400000001"
+    }
+  ],
+  "decode": {
+    "malformed": [
+      "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:8"
+    ],
+    "pending_tail": [
+      "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:11"
+    ]
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001400000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 1900,
+          "cache_read": 5100,
+          "cache_write": 0,
+          "output": 270,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c14_1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001400000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-12T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 120,
+        "reasoning": 40
+      },
+      "selected": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:6"
+      ]
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c14_2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001400000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-12T10:00:20.000Z",
+      "tokens": {
+        "uncached_input": 900,
+        "cache_read": 3100,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": 60
+      },
+      "selected": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:9"
+      ],
+      "evidence": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:9"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 1900,
+      "cache_read": 5100,
+      "cache_write": 0,
+      "output": 270,
+      "reasoning": 100
+    },
+    "total_tokens": 7270
+  },
+  "diagnostics": [
+    {
+      "code": "malformed-line",
+      "refs": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:8"
+      ],
+      "detail": "interior line does not parse; counted per source, not fatal"
+    },
+    {
+      "code": "pending-tail",
+      "refs": [
+        "sessions/2026/09/12/rollout-2026-09-12T03-00-00-019f0000-0000-7000-8000-001400000001.jsonl:11"
+      ],
+      "detail": "the last line has no newline and is incomplete; it is pending, outside the snapshot's complete records, and not corruption"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Strict reader that fails the whole rollout on its first bad line",
+      "requests": 0,
+      "tokens": {
+        "uncached_input": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 0,
+        "reasoning": 0
+      }
+    },
+    {
+      "rule": "Lenient reader that silently skips both lines: right tokens, no malformed count or pending extent",
+      "requests": 2,
+      "tokens": {
+        "uncached_input": 1900,
+        "cache_read": 5100,
+        "cache_write": 0,
+        "output": 270,
+        "reasoning": 100
+      }
+    }
+  ],
+  "notes": []
+}

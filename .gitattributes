@@ -1,0 +1,4 @@
+# LF everywhere, including Windows checkouts: CLI goldens, probe files and future JSONL
+# fixtures and embedded skill text must be byte-identical on every platform (engineering
+# baseline, Repository and Toolchain).
+* text=auto eol=lf
