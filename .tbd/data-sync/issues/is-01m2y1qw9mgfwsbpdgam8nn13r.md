@@ -5,7 +5,7 @@ title: "Spec: Cursor dialect with model and provider facets"
 kind: epic
 status: open
 priority: 2
-version: 11
+version: 12
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 labels: []
 dependencies: []
@@ -19,8 +19,9 @@ child_order_hints:
   - is-01m2y1rhynxj8zrnp4368g534e
   - is-01m2y1rrq5qkqz1vd10tb4qcjr
   - is-01m2y50zntpg0bavafh8547sfb
+  - is-01m2ysxx8r7vgcrsx7fcs99fph
 created_at: 2026-09-19T23:59:02.962Z
-updated_at: 2026-09-20T05:01:38.595Z
+updated_at: 2026-09-20T07:01:46.388Z
 ---
 Add Cursor as a urollup agent with first-class model and provider facets under docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Implementation belongs no earlier than the product Phase 3 database-input work under confirmed Decision 20, with uro-3fbc also complete. An earlier database adapter requires an explicit confirmed exception; it is outside milestone 0.1 and Phase 2 Pi/Gemini.
 
