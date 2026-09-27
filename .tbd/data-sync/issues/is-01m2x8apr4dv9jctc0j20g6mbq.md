@@ -5,17 +5,18 @@ title: Profile whole-history decode throughput and measured regressions
 kind: task
 status: in_progress
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels:
   - performance
+  - follow-up
 dependencies: []
-parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
+parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 hold: null
 hold_until: null
 created_at: 2026-09-19T16:34:56.899Z
-updated_at: 2026-09-27T07:16:40.433Z
+updated_at: 2026-09-27T07:36:32.463Z
 started_at: 2026-09-19T21:07:49.244Z
 ---
 Profile-led throughput follow-up under the 2026-09-27 policy. There is no fixed 10-second whole-history release target. Record raw bytes, observations, command phases, load and cache conditions; improve measured bottlenecks without changing accounting or raising peak footprint. The historical profile found Codex worker decode dominant. Retain regression review against equivalent corpora; do not retry reverted zero-copy acceptance, larger BufReader, primitive-number or mimalloc changes without a new measured hypothesis. Release acceptance remains on uro-zrr0, with density-scale evidence uro-z1h1 and process-wide safety uro-6pi8.
