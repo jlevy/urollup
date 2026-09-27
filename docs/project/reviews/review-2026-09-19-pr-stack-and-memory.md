@@ -13,7 +13,23 @@ The implementation stack is rebased, and both intended coverage golden changes h
 reviewed. The full integrated handoff gate and all five implementation code revisions
 passed CI. The whole-history memory and speed targets remain unproven on the updated
 heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementation and
-validation. No maintainer decision has been accepted or silently closed.
+validation. The dated snapshots below preserve the decisions and evidence available at
+the time; subsequent accepted policy is recorded separately.
+
+## Accepted Scale Policy: 2026-09-27
+
+The maintainer approved the
+[revised memory and scale policy](../specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27).
+It retires the representative 512 MiB/10-second gates cited in this audit, without
+claiming they were met or closing performance acceptance.
+`uro-zrr0` now requires conservative process-wide admission (`uro-6pi8`), density-scale
+proofs and a 100 GiB projection within 25% of reference-machine RAM (`uro-z1h1`), plus
+representative evidence (`uro-erqo`). G1, full QA and publishing still depend on it.
+The current row-shell ceiling is not a process-wide safety guarantee.
+Hybrid spill (`uro-924y`) and profile-led throughput optimization (`uro-lsaz`) are
+follow-ups. Existing synthetic regression limits remain.
+No other maintainer policy decision is settled by this change, and no new private
+measurements are published here.
 
 ## Revised Readiness Snapshot: 2026-09-20 UTC
 
@@ -52,14 +68,14 @@ as evidence for a changed base.
 | Step | Work and Exit Condition | Tracking |
 | --- | --- | --- |
 | 1 | Record acceptance or explicit deferral of the six policy choices below and the unverified Claude-shape claims. Apply any accepted behavior changes with regression coverage before milestone acceptance. | `uro-mzvt`, `uro-wt2q`, `uro-je0v`, `uro-xpd0`, `uro-c7ro`, `uro-01xj`, `uro-89s7` |
-| 2 | With explicit local-log consent, measure release `sessions`, `daily` and `report` on an exact accepted head. Retain only aggregates; distinguish physical footprint from RSS and compare one/eight workers. Profile the remaining gap and demonstrate both 512 MiB peak and at most 10 seconds. | `uro-zrr0`, `uro-lsaz`, `uro-erqo` |
+| 2 | Implement process-wide admission and demonstrate the accepted memory/scale policy. Measure release `sessions`, `daily` and `report` on the accepted head, distinguish footprint from RSS, and compare one/eight workers. Keep private evidence local unless publication is authorized. | `uro-zrr0`, `uro-6pi8`, `uro-z1h1`, `uro-erqo` |
 | 3 | After the performance gate, complete project G1 and full-history parity/coverage QA, explaining residuals and recording a privacy-safe acceptance report. | `uro-d36a`, `uro-ky6c`, `uro-n8h5` |
 | 4 | Land code in order #4 → #8 → #10 → #11 → #12 when the maintainer chooses to merge; separately rebase #14, resolve the product-plan conflict and validate its implementation-dependent links and docs CI. Code landing may precede milestone acceptance. | `uro-28fc`, `uro-knnz` |
 | 5 | After milestone acceptance, implement native release builds, publishing, provenance, release documentation and installation/release rehearsal. | `uro-30ef` and its children |
 
 Steps 1 and 2 can proceed independently.
-The next technical investigation is a fresh baseline and profile under `uro-lsaz`, not
-another unmeasured representation rewrite.
+The next release work is process-wide safety and density-scale validation.
+Profiling under `uro-lsaz` is a throughput follow-up.
 The typed-sidecar work `uro-a3fo` is complete; its effect on the representative corpus
 is still unmeasured.
 Do not retry the explicitly reverted experiments or held `uro-nzo1` without a new
@@ -86,7 +102,7 @@ A bead stays open until its acceptance conditions are demonstrated.
 | Compact representations | `uro-ww39`, `uro-u6in` | Multi-source provenance and full-domain sequence regressions |
 | CI and RAM probing | `uro-a8fk`, `uro-qvy0` | Measured CI workload and completed cross-platform tests |
 | Independent review | `uro-nncx`, `uro-syzt`, `uro-jw7u`, `uro-dhek` | Scope and exact-head verdicts; every finding has a disposition |
-| Performance acceptance | `uro-zrr0`, `uro-lsaz` | Representative 512 MiB / 10 s evidence, with documented methodology; typed-sidecar bead `uro-a3fo` is complete |
+| Performance acceptance | `uro-zrr0`, `uro-6pi8`, `uro-z1h1`, `uro-erqo` | Process-wide safety, density-scale envelope and representative evidence under the accepted 2026-09-27 policy |
 | Final consistency and integration | `uro-erqo`, `uro-knnz` | Specs match implemented behavior; Cursor docs integrate separately |
 | Milestone acceptance | `uro-d36a`, `uro-ky6c`, `uro-n8h5` | Consented aggregate validation and explicit maintainer decisions |
 
@@ -478,8 +494,8 @@ row sizes do not establish bounded lifetime or total memory.
 Scope or measure those tables before claiming support for a long-lived process.
 Linux RAM detection reads host `MemTotal`, not a container memory limit.
 
-The 512 MiB target should be pursued from measurements of live allocation ownership and
-representative record density.
+The revised scale policy requires measurements of live allocation ownership and
+representative record density, with conservative admission across the complete process.
 Do not repeat the reverted field/ID relocation, primitive-number, mimalloc,
 zero-copy-acceptance, or larger-read-window experiments.
 `uro-nzo1` is held. `uro-lsaz` owns profiling; the sidecar implementation tracked by
@@ -498,7 +514,7 @@ not prove the full target.
    CI wiring and intern-table lifetime, and separates original estimates from dated
    measurements. `uro-erqo` remains open for fresh accepted-head whole-history
    measurements; it must not present historical numbers as current evidence.
-4. Demonstrate the representative **512 MiB and 10-second** gates on the accepted head
+4. Demonstrate the **accepted memory and scale policy** on the accepted head
    (`uro-zrr0`; `uro-n1cp` waits on it).
    Small synthetic CI workloads are regression checks, not whole-history acceptance.
    Then run separately consented G1 (`uro-d36a`) and full-history QA (`uro-ky6c`),

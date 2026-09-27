@@ -54,29 +54,37 @@ The ingest ceiling defaults to 25% of physical RAM (`--max-ram` / `--max-rows` /
 Shared admission checks bound retained observation rows during each agent’s decode; the
 budget does not cap process RSS, physical footprint, payloads, intern tables or the
 other agent’s retained ledger.
-The 512 MiB peak-footprint target remains open on
+The accepted memory and scale policy lives on
 [`plan-2026-09-16-scalable-ingestion.md`](docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md)
-(`uro-n1cp`: field and ID relocation have run out at whole history 653 MiB / Codex-only
-586 MiB; about 141 MiB over 512. Canceled leftover children: `uro-cbsg`, `uro-yvn1`,
-`uro-l3fw`, `uro-h0fw`, `uro-vsdu`, `uro-kvrb`, `uro-ibij`, `uro-b3gg`, `uro-08oj`.
-Reverted cuts also include `uro-73al`, `uro-o5c0`, `uro-mxyh`. Do not retry those.
+(`uro-zrr0`). The maintainer retired the representative 512 MiB and 10-second release
+gates on 2026-09-27. Require manageable whole-process memory, density-based scaling to a
+projected 100 GiB within 25% of reference-machine RAM, and safe early refusal for dense
+over-budget histories.
+Raw input larger than RAM must stream successfully within the validated retained-state
+envelope. Process-wide admission (`uro-6pi8`), scale proofs (`uro-z1h1`) and
+representative evidence (`uro-erqo`) remain required before G1. The current row-shell
+budget is not that process-wide safety mechanism.
+Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
+follow-ups, not 0.1 blockers.
+Keep the existing small synthetic regression limits.
+Phase 1 field and ID compaction is exhausted.
+Canceled children: `uro-cbsg`, `uro-yvn1`, `uro-l3fw`, `uro-h0fw`, `uro-vsdu`,
+`uro-kvrb`, `uro-ibij`, `uro-b3gg`, `uro-08oj`. Reverted cuts also include `uro-73al`,
+`uro-o5c0`, `uro-mxyh`. Do not retry those.
 Tail-consume after grouping was not attempted: the peak holds every shell before
 Requests are reserved.
-Phase 1 compaction is exhausted.
-`uro-l0gd` recorded WH 653 MiB / Codex-only 586 MiB and is closed.
-The 512 MiB gate and 10 s target live on Phase 2 (`uro-zrr0`); G1 (`uro-d36a`) waits on
-that bead.
-Phase 2 children `uro-nuhn` (CompactJson numbers without `Value`; quiet WH 685
-/ 21.3 s), `uro-96vw` (process `mimalloc`; quiet WH 834 / 19.0, Codex-only 676 / 15.3),
+`uro-l0gd` recorded historical measurements and is closed.
+Phase 2 children `uro-nuhn` (CompactJson numbers without `Value`; quiet WH 685 / 21.3
+s), `uro-96vw` (process `mimalloc`; quiet WH 834 / 19.0, Codex-only 676 / 15.3),
 `uro-s5vb` (zero-copy JSON accept; quiet WH 650 / 20.7, Codex-only 583 / 15.3), and
 `uro-h6iw` (1 MiB `BufReader`; quiet WH 635 / 21.2, Codex-only 602 / 13.7) were
 reverted. Do not retry those.
 Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
-pattern. `uro-lsaz` profile: the ~7 s over 10 s is Codex worker decode, not grouping.
+pattern. The historical `uro-lsaz` profile found Codex worker decode dominant.
 A larger read window did not cut WH wall.
-Next: `uro-lsaz` profiling and current-head validation.
-The `uro-a3fo` typed-sidecar refactor passed integrated validation and technical review;
-representative performance acceptance remains open.
+Next: process-wide safety and scale validation under `uro-zrr0`. The `uro-a3fo`
+typed-sidecar refactor passed integrated validation and technical review; representative
+performance acceptance remains open.
 Historical 653/586 MiB results recorded here are not measurements of the stabilized
 stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
 `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned
@@ -103,8 +111,8 @@ Planning docs live under `docs/project/`:
 - `reviews/`: governing reviews, including the
   [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).
 
-The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The 512 gate is
-owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
+The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The revised scale
+gate is owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
 The complete usage-analysis workflow is `uro-6kwn`, accepted by G5 (`uro-i6xb`): joint
 calendar/agent/provider/model grouping, reusable snapshots, cache metrics, tools/time
 and list-price estimates.
