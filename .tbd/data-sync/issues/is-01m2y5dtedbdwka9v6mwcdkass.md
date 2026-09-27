@@ -5,7 +5,7 @@ title: Reconcile memory-budget docs and remeasure current accepted heads
 kind: task
 status: in_progress
 priority: 2
-version: 6
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels: []
@@ -18,10 +18,10 @@ parent_id: is-01m2pkgva22qd452me3cdjc1fq
 hold: null
 hold_until: null
 created_at: 2026-09-20T01:03:27.691Z
-updated_at: 2026-09-27T07:16:39.369Z
+updated_at: 2026-09-27T07:23:21.900Z
 started_at: 2026-09-20T04:28:39.754Z
 ---
-Documentation consistency fixes are implemented: row admission is distinguished from process RSS, CI scale execution is accurately described, and process-global intern-table lifetime is documented. Remaining work is a consented exact-commit table for sessions, daily and report, distinguishing sampled RSS, maximum RSS and physical footprint, loaded versus quiet runs and synthetic versus real corpora. Do not use historical 653/586 MiB measurements as current-head evidence. Track intern-table cardinality/lifetime before repeated library/server use.
+Documentation consistency distinguishes row admission from process RSS, actual CI scale execution, and process-global intern-table lifetime. Under the approved 2026-09-27 memory policy, retain local accepted-head evidence for sessions, daily and report, distinguishing sampled RSS, maximum RSS and physical footprint, host contention/cache state and synthetic versus real corpora. Exploratory live runs completed in the review session, but source growth means they do not establish immutable-boundary worker parity or full acceptance. Preserve evidence outside disposable scratch; no private values are published. Remaining: exact reproducible input-boundary one/eight-worker equivalence, complete representative evidence, and validation of the revised process-wide budget after uro-6pi8 lands. The old 512 MiB/10-second gates are retired. Historical measurements are not current-head evidence.
 
 ## Notes
 

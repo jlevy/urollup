@@ -5,7 +5,7 @@ title: Stabilize the published PR stack against the governing memory review
 kind: task
 status: in_progress
 priority: 1
-version: 13
+version: 14
 spec_path: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md
 delegate: claude-code@spud10.local
 labels: []
@@ -23,7 +23,7 @@ child_order_hints:
 hold: null
 hold_until: null
 created_at: 2026-09-20T01:38:47.945Z
-updated_at: 2026-09-20T05:40:24.296Z
+updated_at: 2026-09-27T07:25:15.174Z
 started_at: 2026-09-20T04:16:32.594Z
 ---
 Governing review: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md. Address R1–R5, complete independent review passes and all discovered correctness fixes, propagate changes through owning PR layers, refresh specs and validation evidence, and obtain complete CI. Track performance acceptance, maintainer decisions, Cursor integration and release follow-ups explicitly; do not close unmet gates.
@@ -31,3 +31,5 @@ Governing review: docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md.
 ## Notes
 
 Code stability checkpoint reached. All 11 implementation findings and four Cursor planning findings are fixed and closed; three independent technical review passes and their umbrella are closed. PR4 and PR8 each passed 13 hosted checks; PR10 and PR11 each passed 15. Final PR12 head 2cce34a113e766c4cbab33c12254a8e09a7c78d5 passed all 15 checks: https://github.com/jlevy/urollup/actions/runs/35491260104. Full integrated make check passed all 30 negative gate probes. Governing review and PR descriptions record exact revisions and measured synthetic evidence. Cleanup uro-tkzg stages only verified obsolete build artifacts with trash. Remaining gates are intentionally open: uro-zrr0 for representative 512 MiB/10 s acceptance, uro-erqo for fresh accepted-head whole-history measurements, consented G1/full-history QA, six maintainer decisions and unverified Claude shapes, uro-knnz for Cursor integration after the implementation stack, then release packaging. No new private-log access or maintainer decision acceptance was assumed; no PRs were merged.
+
+2026-09-27: Maintainer approved retiring representative 512 MiB and 10-second release thresholds. Current uro-zrr0 gate instead requires conservative process-wide admission (uro-6pi8), density-scale and 100 GiB projection proofs (uro-z1h1), and representative evidence (uro-erqo). Hybrid spill uro-924y and throughput tuning are follow-ups. The implementation stack is merged at main 4c55617. This policy change does not accept G1, full-history accounting/parity QA, other maintainer policy choices or publishing. Private evidence stays local.
