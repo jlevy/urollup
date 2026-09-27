@@ -1,25 +1,24 @@
 ---
 type: is
 id: is-01m2x8apr4dv9jctc0j20g6mbq
-title: Cut whole-history wall time to 10 seconds
+title: Profile whole-history decode throughput and measured regressions
 kind: task
 status: in_progress
-priority: 1
-version: 7
+priority: 2
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels:
-  - milestone-0.1
   - performance
 dependencies: []
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 hold: null
 hold_until: null
 created_at: 2026-09-19T16:34:56.899Z
-updated_at: 2026-09-20T00:58:52.378Z
+updated_at: 2026-09-27T07:16:40.433Z
 started_at: 2026-09-19T21:07:49.244Z
 ---
-Profile-led Phase 2 work to meet the 10 s whole-history target while uro-zrr0 also owns the unmet 512 MiB target. This work no longer waits for uro-n1cp to close. Standing historical baseline is WH 653 MiB / 17.3 s; later quiet profile 648 MiB / 18.2 s with Codex ingest 13.5 s. Measure first and change only what profiling identifies. Reject changes that regress accounting, peak or wall time. Do not retry reverted zero-copy acceptance, 1 MiB BufReader, primitive-number rewrite or mimalloc cuts. Acceptance: release sessions, daily and report over the representative corpus at most 10 s with the required peak; one and eight workers preserve output; current CI scale gates actually run; record only privacy-safe aggregates.
+Profile-led throughput follow-up under the 2026-09-27 policy. There is no fixed 10-second whole-history release target. Record raw bytes, observations, command phases, load and cache conditions; improve measured bottlenecks without changing accounting or raising peak footprint. The historical profile found Codex worker decode dominant. Retain regression review against equivalent corpora; do not retry reverted zero-copy acceptance, larger BufReader, primitive-number or mimalloc changes without a new measured hypothesis. Release acceptance remains on uro-zrr0, with density-scale evidence uro-z1h1 and process-wide safety uro-6pi8.
 
 ## Notes
 

@@ -5,19 +5,19 @@ title: Check Claude usage numbers without Value::from
 kind: task
 status: open
 priority: 1
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
-  - milestone-0.1
   - performance
   - memory
+  - follow-up
 dependencies:
   - type: blocks
     target: is-01m2x8aq4skat5vmx2y97th32e
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 hold: paused
 created_at: 2026-09-19T20:58:42.069Z
-updated_at: 2026-09-20T00:56:31.739Z
+updated_at: 2026-09-27T07:16:40.895Z
 ---
 Phase 2 leftover on the Claude usage-line path. UnsignedAt and unsigned helpers in crates/urollup-core/src/adapters/claude_project/line.rs wrap each number in Value::from before the same check parse_record would apply. Implement the unsigned/number predicate on i64/u64/f64 directly so UsageBody stays document-free.
 

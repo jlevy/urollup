@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 1: whole history works"
 kind: task
 status: in_progress
 priority: 0
-version: 57
+version: 58
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -41,20 +41,9 @@ child_order_hints:
   - is-01m2xm3qa0jxax4tsdx8m93kgc
   - is-01m2xny7rtfamywg0z6b1qxbpq
 created_at: 2026-09-17T02:35:50.945Z
-updated_at: 2026-09-19T20:58:51.305Z
+updated_at: 2026-09-27T07:16:40.004Z
 ---
-Finish Phase 1 of the scalable-ingestion plan: leftover Value decode and compact evidence refs so default whole-history sessions, daily and report --all stay at or below 512 MiB peak footprint on the maintainer corpus.
-
-Already landed: the owner-map fix, in-place compact rows, bounded workers, guard removal, the 2 GiB compact-row ceiling, UROLLUP_STATS, the native session field, worker-count identity tests, Ingested::release_discovery (uro-brar), Claude per-record interned IDs (uro-hw2q), and worker-side Codex observe (uro-ecol). Whole history completes in about 22 s at 861 MiB.
-
-Remaining children:
-- uro-q1ik: Claude SourceDecoder::decode must not call parse_record after LineHead
-- uro-g7pi: Codex RateLimitsSeed must not build Map<String, Value>
-- uro-as4a: EvidenceRef 40 B → 16 B source index
-- uro-l3fw, uro-1sm8: contingencies if those three miss 512 MiB
-- uro-l0gd: privacy-safe RSS after each cut; closes this bead at ≤512 MiB
-
-Acceptance: make check; whole history exits 0 in at most 25 s at no more than 512 MiB; one and eight workers give identical JSON.
+Compact streaming ingestion is merged, with bounded workers, exact selectors, compact observation/request rows, interned IDs/limits, worker line-buffer bounds and typed decoding. The maintainer retired the historical 512 MiB/25-second Phase 1 acceptance targets on 2026-09-27; do not add field-shrink tasks merely to reach them or retry the documented reverted experiments. Keep this phase open pending the revised Phase 2 safety and scale gate uro-zrr0 and recorded whole-history/worker-parity acceptance. Historical notes below describe prior targets and measurements, not current requirements.
 
 ## Notes
 

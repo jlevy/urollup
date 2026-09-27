@@ -5,15 +5,15 @@ title: Clear leftover Value helpers off the decode path
 kind: task
 status: open
 priority: 2
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
-  - milestone-0.1
   - performance
+  - follow-up
 dependencies: []
 parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 created_at: 2026-09-19T16:34:57.304Z
-updated_at: 2026-09-19T20:58:51.984Z
+updated_at: 2026-09-27T07:16:40.907Z
 ---
 Phase 2 leftover after Phase 1 typed bodies. parse_record in sources/decode.rs still builds a Value; Claude read_subagent_meta still parses the sidecar as Value; Claude line.rs number checks still go through Value::from. None of these should be on the usage-line hot path after the Phase 1 Claude/Codex beads. This bead removes or confines what remains, and keeps parse_record only as a test oracle if still needed.
 
