@@ -54,6 +54,12 @@ is not confused with a publishable release:
 The local alpha can be installed and exercised before packaging machinery exists.
 Publication begins only after both the product-acceptance and packaging-rehearsal gates
 pass; neither gate is evidence for the other.
+The maintainer-approved
+[memory and scale policy](plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+replaces the representative 512 MiB/10-second blockers.
+`uro-zrr0` still gates G1 on process-wide admission safety, density-based scale evidence
+and representative QA. Retiring those thresholds does not close the release gate.
+Hybrid spill is a follow-up.
 The [whole-history analysis workflow](plan-2026-09-20-usage-analysis-workflow.md) is G5
 across milestones 0.2–0.5. Cache-hit request metrics, tool/time reports and list-price
 valuation must not be advertised as completed 0.1 features.

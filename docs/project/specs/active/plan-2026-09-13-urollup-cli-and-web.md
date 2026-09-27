@@ -185,9 +185,13 @@ The capture store lands only after the uncached engine is the correctness refere
   and `report --all` complete
   ([§3.2](../../../urollup-design.md#32-relationships-and-the-discovery-index),
   [uncached engine](../../../urollup-design.md#uncached-engine)). Remaining on that
-  plan: meet the 512 MiB peak and the `bench-1g` peak-RSS target, without spilling to
-  disk. Claude two-pass re-decode (`uro-l3fw`) raised the peak and was reverted.
-  ([performance targets](#performance-targets)).
+  plan: conservative process-wide admission (`uro-6pi8`), measured density scaling and a
+  100 GiB projection within 25% of reference-machine RAM (`uro-z1h1`), plus
+  representative evidence (`uro-erqo`). The
+  [accepted scale policy](plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+  retires the representative 512 MiB/10-second gates; small synthetic regression gates
+  remain. Hybrid spill (`uro-924y`) is a follow-up; 0.1 must refuse safely before dense
+  retained state exhausts memory.
 - [ ] Run the consented real-log acceptance checks, including the
   [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md), and review
   the resulting aggregates without committing log content, paths or identifiers
@@ -663,6 +667,11 @@ The harness grows with the milestones:
 
 Performance gates are proposed targets, not measured claims; correctness comes first,
 and targets change here only with recorded results.
+The maintainer-approved
+[2026-09-27 scale policy](plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+governs whole-history release acceptance.
+The fixed `bench-1g` targets below apply only to that synthetic workload; they are not
+limits on arbitrary real histories.
 Gated commands write no capture entries
 ([Decision 26](../../../urollup-design.md#decision-26-benchmarks),
 [§8.3](../../../urollup-design.md#83-execution-and-performance)).

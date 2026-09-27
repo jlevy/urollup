@@ -12,6 +12,11 @@ input size, using a synthetic corpus rather than anyone’s real Claude Code or 
 logs. It supports the
 [scalable ingestion plan](../specs/active/plan-2026-09-16-scalable-ingestion.md), whose
 Memory Model and Phase 2 testing strategy this tooling exists to validate.
+The maintainer-approved
+[2026-09-27 policy](../specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+requires additional density-scale and process-wide safety evidence (`uro-z1h1`,
+`uro-6pi8`). The current scripts provide regression checks; their small input sweep
+alone does not prove the 100 GiB operating envelope or bounded process memory.
 
 Two scripts do the work:
 
@@ -179,7 +184,7 @@ the data model actually reduced the bytes-per-input-MiB ratio the
 ## CI scale gate
 
 `scripts/check-scale.py` turns three of the plan’s
-[Phase 2](../specs/active/plan-2026-09-16-scalable-ingestion.md#phase-2-fast-decode-and-scale-gates)
+[Phase 2](../specs/active/plan-2026-09-16-scalable-ingestion.md#phase-2-process-wide-safety-and-scale-gates)
 requirements into pass/fail assertions, run by `make scale-gate` (part of `make test`).
 Dedicated Ubuntu/macOS CI jobs execute the release workload after the supply-chain gate
 and archive `scale-gate.log`, retaining failure status through the logging pipeline.
@@ -197,8 +202,9 @@ These are small synthetic regression checks, not whole-history acceptance:
    (`--extrapolation-intercept-ceiling-mib`) must stay under calibrated ceilings.
 3. **`daily --all` under the RSS watchdog at 512 MiB.** A smoke test — a generated
    corpus (`--daily-gate-mib`, default 32 MiB) run through `daily --all` under
-   `scripts/run-rss-watchdog.py` with a 512 MiB kill switch, matching the plan’s
-   whole-history footprint goal.
+   `scripts/run-rss-watchdog.py` with a 512 MiB kill switch.
+   This fixed synthetic regression bound remains; it is not the whole-history footprint
+   goal.
 
 Run it directly, or through the Make target that builds the release binary it needs:
 

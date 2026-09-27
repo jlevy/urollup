@@ -11,10 +11,9 @@ Manual QA playbook for urollup’s default whole-history reports on a machine wi
 real corpus of Claude Code and Codex logs.
 
 **Purpose:** prove that `sessions`, `daily` and `report --all` read the entire local
-history without an input-size limit, finish in seconds within a few hundred MiB, and
-produce totals that are internally consistent, deterministic, correct for individual
-sessions and projects, and not double counted or dropped across resumed and forked
-sessions.
+history without an input-size limit, keep whole-process memory manageable, and produce
+totals that are internally consistent, deterministic, correct for individual sessions
+and projects, and not double counted or dropped across resumed and forked sessions.
 
 **Estimated time:** about 45 minutes: 5 for setup, 5 for whole-history runs, 10 for
 invariants and determinism, 15 for project and session cross-checks, and 10 for resumed
@@ -87,7 +86,7 @@ First execution does not establish a cold cache.
 
 **Next steps:**
 
-1. Finish Phase 1 of the
+1. Finish process-wide safety and scale validation in Phase 2 of the
    [scalable ingestion plan](../../docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md).
 2. Run Phases 1–8 of this playbook and record results in a dated QA report.
 
@@ -99,14 +98,19 @@ First execution does not establish a cold cache.
   default locations, and the maintainer’s consent to read it.
 - The pinned Rust toolchain, uv and npm dependencies from [AGENTS.md](../../AGENTS.md),
   `jq`, and `make parity` run once so the pinned ccusage 20.0.20 binary is installed.
-- At least 3 GB of free disk and no heavy memory users running, such as other agents
-  building or testing.
+- A mounted, writable external scratch volume with space for builds and bounded test
+  inputs, plus a private persistent evidence directory outside disposable scratch.
+  Stop disk-heavy work if the scratch volume is unavailable.
+- Normal memory pressure and no competing heavy builds or test runs.
 
 **Privacy rules:**
 
-- Keep every capture under the ignored `target/qa/full-history/` directory.
-- The dated QA report records only aggregate counts, timings, footprints, deltas and
-  pass or fail results.
+- Keep captures in the private evidence directory named by `QA`, outside the repository
+  and disposable scratch.
+  Do not publish captures or derived measurements without separate authorization for the
+  destination and payload.
+- An authorized shared QA report records only permitted aggregate counts, timings,
+  footprints, deltas and pass or fail results.
   Name this repository as `urollup`; name other repositories `Repo A`, `Repo B` and
   `Repo C`. Never record paths, session IDs, prompts or custom model names.
 
@@ -129,40 +133,57 @@ First execution does not establish a cold cache.
 
 ```bash
 git rev-parse --short HEAD
+df -h /Volumes/spud-ext1
+mount | awk '$3 == "/Volumes/spud-ext1" { found = 1 } END { exit !found }' || exit 1
+test -d /Volumes/spud-ext1 && test -w /Volumes/spud-ext1 || exit 1
+export QA_SCRATCH=/Volumes/spud-ext1/agent-scratch/urollup-full-history-qa
+export TMPDIR="$QA_SCRATCH/tmp"
+export CARGO_TARGET_DIR="$QA_SCRATCH/target"
+export UV_CACHE_DIR="$QA_SCRATCH/uv-cache"
+: "${QA:?Set QA to a private persistent evidence directory outside disposable scratch}"
+umask 077
+mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$UV_CACHE_DIR" "$QA"
 cargo build --locked --release --workspace
-df -h ~ | tail -1
 memory_pressure | tail -1
-mkdir -p target/qa/full-history
-export UR=target/release/urollup
-export QA=target/qa/full-history
+export UR="$CARGO_TARGET_DIR/release/urollup"
+export QA_RAM_MIB=$(( $(sysctl -n hw.memsize) / 1048576 ))
+export QA_WATCHDOG_MIB=$(( QA_RAM_MIB / 4 ))
 export CCUSAGE=tests/parity/ccusage/node_modules/@ccusage/ccusage-darwin-arm64/bin/ccusage
 export UROLLUP_STATS=1
 unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID UROLLUP_JOBS
 measure() {
   local name=$1; shift
   uv --config-file uv.toml run --frozen python scripts/run-rss-watchdog.py \
-    --limit-mib 1024 --report "$QA/$name.watchdog.json" -- \
+    --limit-mib "$QA_WATCHDOG_MIB" --report "$QA/$name.watchdog.json" -- \
     /usr/bin/time -l "$@" > "$QA/$name.json" 2> "$QA/$name.stderr"
   local status=$?
   printf '%s exit=%s wall=%ss footprint=%sMiB\n' "$name" "$status" \
     "$(awk '$2 == "real" {print $1; exit}' "$QA/$name.stderr")" \
     "$(awk '/peak memory footprint/ {printf "%.1f", $1 / 1048576}' "$QA/$name.stderr")"
+  return "$status"
 }
 ```
 
-Always measure the freshly built `target/release/urollup`, never an installed copy.
-`/usr/bin/time -l` reports **peak memory footprint**, which includes compressed pages
-and is the number this playbook records.
-The watchdog’s 1 GiB RSS limit is only a kill switch, because RSS omits compressed
-memory on macOS. `UROLLUP_STATS=1` adds `stats:` lines to each run’s stderr file with
-phase wall times, the worker count, and source, observation, request, limit-observation
-and diagnostic counts per agent; they contain no paths, IDs or model names, so the dated
-report may quote them.
+Verify that `df` identifies the mounted external volume before creating scratch files;
+give each worktree its own `QA_SCRATCH` path.
+Always measure the freshly built `$CARGO_TARGET_DIR/release/urollup`, never an installed
+copy. `/usr/bin/time -l` reports **peak memory footprint**, which includes compressed
+pages and is the number this playbook records.
+The watchdog’s RAM-relative RSS limit is only a kill switch, because RSS omits
+compressed memory on macOS. Lower it if available machine headroom requires that, record
+the limit, and stop if memory pressure reaches warning or critical.
+Passing the watchdog does not establish the physical-footprint or runtime-admission
+checks. `UROLLUP_STATS=1` adds `stats:` lines to each run’s stderr file with phase wall
+times, the worker count, and source, observation, request, limit-observation and
+diagnostic counts per agent.
+They contain no paths, IDs or model names, but publication still requires authorization
+for the aggregate values.
 
 **Verify:**
 
 - [ ] The release build succeeds.
-- [ ] At least 3 GB of disk is free, and `memory_pressure` reports a normal level.
+- [ ] External scratch has enough free disk for the planned run, and `memory_pressure`
+  reports a normal level.
 - [ ] `"$CCUSAGE" --version` prints `ccusage 20.0.20`.
 
 **Troubleshooting:**
@@ -197,14 +218,21 @@ measure report "$UR" report --all --group-by project,model --format json --no-pr
 for name in sessions daily report; do jq empty "$QA/$name.json" && echo "$name valid"; done
 ```
 
-**Expected output:** three lines like `sessions exit=0 wall=8.42s footprint=301.5MiB`,
+**Expected output:** three measurement lines with `exit=0`, wall time and footprint,
 then three `valid` lines.
+The numeric values are measurements, not fixed targets.
 
 **Verify:**
 
 - [ ] Every command exits 0; none prints a reconciliation capacity error.
-- [ ] Wall time is at most 25 s after plan Phase 1 and at most 10 s after plan Phase 2.
-- [ ] Peak footprint is at most 512 MiB for every command.
+- [ ] Wall time and throughput are recorded with input density, load and cache state;
+  regressions against equivalent workloads are explained.
+- [ ] Peak physical footprint for each complete invocation is at most 25% of physical
+  RAM, and machine memory pressure stays normal.
+- [ ] The process-wide safety and density-scale checks in the
+  [accepted policy](../../docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+  are recorded separately (`uro-6pi8`, `uro-z1h1`). Success on this reference corpus
+  alone does not prove them or establish a measured 100 GiB result.
 - [ ] No watchdog report has `"killed_for_rss": true`.
 - [ ] `jq '.coverage.limit_observations' "$QA/report.json"` is greater than 0 and
   `jq '.diagnostics | length' "$QA/report.json"` is at most 30.
@@ -220,8 +248,8 @@ then three `valid` lines.
   Rerun on a single project root and compare its `stats:` lines to find the phase that
   grows.
 - **Issue:** a run is much slower the first time.
-  **Fix:** record the first run as cold and rerun once for a warm time; the thresholds
-  apply to the warm run.
+  **Fix:** record its observed cache/load conditions and rerun once for comparison.
+  First execution alone does not prove a cold filesystem cache.
 
 ### 2.2 Row Counts
 
@@ -351,7 +379,7 @@ Choose a recent main transcript of this repository with no `subagents` directory
 records whose `sessionId` differs from the file name.
 
 ```bash
-export SESSION_FILE=~/.claude/projects/"$CLAUDE_DIR"/<session-id>.jsonl
+export SESSION_FILE=~/.claude/projects/"$CLAUDE_DIR"/'<session-id>.jsonl'
 stem=$(basename "$SESSION_FILE" .jsonl)
 jq -s --arg s "$stem" '[.[] | select(.type == "assistant" and .message.usage.output_tokens != null and ((.sessionId // $s) == $s) and (.isSidechain != true) and ((.message.model != "<synthetic>") or (.requestId != null)))] | group_by(.message.id) | map(sort_by(.message.usage.output_tokens, (.apiBlockIndex // -1)) | last) | {requests: length, uncached_input: (map(.message.usage.input_tokens // 0) | add), cache_read: (map(.message.usage.cache_read_input_tokens // 0) | add), cache_write: (map(.message.usage.cache_creation_input_tokens // 0) | add), output: (map(.message.usage.output_tokens) | add)}' "$SESSION_FILE"
 "$UR" report --session "$SESSION_FILE" --scope self --format json --no-progress | jq '{requests: .totals.requests.owned, tokens: .totals.tokens}'
@@ -370,7 +398,7 @@ the file.
 Choose a recent rollout of this repository without `forked_from_id` in its first line.
 
 ```bash
-export ROLLOUT=<path-to-rollout.jsonl>
+export ROLLOUT='<path-to-rollout.jsonl>'
 jq -sc '[.[] | select(.type == "event_msg" and .payload.type == "token_count" and .payload.info.total_token_usage != null)] | last | .payload.info.total_token_usage | {uncached_input: (.input_tokens - .cached_input_tokens), cache_read: .cached_input_tokens, output: .output_tokens, reasoning: .reasoning_output_tokens, total: .total_tokens}' "$ROLLOUT"
 "$UR" report --session "$ROLLOUT" --scope self --format json --no-progress | jq -c '{tokens: (.totals.tokens | {uncached_input, cache_read, output, reasoning, total}), diagnostics: [.diagnostics[].code]}'
 ```
@@ -407,8 +435,8 @@ For one resumed file, find its original session, the foreign `sessionId` its rep
 records carry, and copy both transcripts into a scratch root under two naming orders.
 
 ```bash
-export RESUMED=<resumed-session.jsonl>
-export ORIGINAL=<original-session.jsonl>
+export RESUMED='<resumed-session.jsonl>'
+export ORIGINAL='<original-session.jsonl>'
 work=$(mktemp -d "$QA/resume.XXXX")
 mkdir -p "$work/forward/projects/p" "$work/reverse/projects/p"
 cp "$ORIGINAL" "$RESUMED" "$work/forward/projects/p/"
@@ -490,9 +518,11 @@ rows to ccusage on the native `session` field.
 
 ### 8.1 Write the Dated Report
 
-Create `docs/project/qa/qa-report-YYYY-MM-DD-full-history.md` with the commit, corpus
-volume, wall times and footprints, invariant and determinism results, per-project and
+Create a dated report in the private evidence directory with the commit, corpus volume,
+wall times and footprints, invariant and determinism results, per-project and
 hand-summed deltas, resumed and forked results, and parity residuals.
+After separate publication authorization, put only approved evidence in
+`docs/project/qa/qa-report-YYYY-MM-DD-full-history.md`.
 
 **Verify:**
 
@@ -502,10 +532,10 @@ hand-summed deltas, resumed and forked results, and parity residuals.
 
 ### 8.2 Clean Up
 
-```bash
-rm -rf target/qa/full-history
-git status --short
-```
+Preserve the private evidence directory.
+Retire only verified disposable scratch after checking that no run or worktree still
+uses it; follow the local recoverable-cleanup policy.
+Run `git status --short` to inspect repository changes.
 
 **Verify:**
 
@@ -513,8 +543,11 @@ git status --short
 
 ## Success Criteria
 
-- [ ] Whole-history `sessions`, `daily` and `report --all` exit 0 within the wall-time
-  threshold at no more than 512 MiB peak footprint.
+- [ ] Whole-history `sessions`, `daily` and `report --all` exit 0 with normal memory
+  pressure and peak physical footprint within 25% of physical RAM.
+- [ ] Density scaling, the conservative 100 GiB projection, raw-byte independence and
+  process-wide capacity refusal satisfy the accepted policy; timings and regressions are
+  recorded without a fixed whole-history deadline.
 - [ ] Totals agree across daily, report, sessions and project breakdowns.
 - [ ] Output is byte-identical across reruns and worker counts.
 - [ ] Four projects match ccusage or differ only by ledgered behaviors.
