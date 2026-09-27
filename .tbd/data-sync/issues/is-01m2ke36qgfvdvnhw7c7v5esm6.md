@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 53
+version: 54
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -32,9 +32,9 @@ child_order_hints:
   - is-01m2yrfn1gy2xtyxayev3rgr7t
   - is-01m3jd1gd0n3w6ck4kj09kat05
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-27T21:41:21.439Z
+updated_at: 2026-09-27T21:46:56.842Z
 ---
-Uncached Claude Code and Codex reports: adapters, ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools are implemented and independently reviewed. Remaining before this epic closes: representative 512 MiB and 10 s performance (uro-zrr0), consented G1 (uro-d36a), full-history QA (uro-ky6c), and recorded or deferred maintainer decisions and unverified provider-shape evidence. Release packaging follows acceptance.
+Uncached Claude Code and Codex reports are implemented and merged at main 4c55617: adapters, compact ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools. Independent technical review is complete. The current assessment is usable source-built developer-alpha quality, not yet accepted for public 0.1 release. Remaining: CLI honesty uro-oz6w; reliable aggregate QA uro-qg1a; process-wide memory admission uro-6pi8, density-based scaling proofs uro-z1h1 and representative accepted-head evidence uro-erqo under uro-zrr0; consented G1 uro-d36a; full-history QA uro-ky6c; and recorded or explicitly deferred maintainer decisions and unverified provider-shape evidence. The representative 512 MiB and 10-second gates were retired on 2026-09-27. Require manageable whole-process memory, a conservative 100 GiB projection within 25% of reference-machine RAM, raw-byte streaming within the retained-state envelope, and safe early refusal for dense over-budget inputs. Existing small synthetic limits remain. Hybrid spill and further decode optimization are follow-ups. Release packaging and candidate rehearsal uro-30ef follow milestone acceptance. PR 15 explains the readiness assessment and broader analytics roadmap; it does not implement or accept these remaining requirements.
 
 ## Notes
 
