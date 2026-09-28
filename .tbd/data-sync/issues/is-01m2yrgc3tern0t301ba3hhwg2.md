@@ -5,7 +5,7 @@ title: Retain pricing context and expose cache-request metrics with coverage
 kind: feature
 status: open
 priority: 1
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies:
@@ -17,10 +17,10 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2yrezrf530kbz15erhh7hw6
 created_at: 2026-09-20T06:36:54.265Z
-updated_at: 2026-09-28T04:00:33.754Z
+updated_at: 2026-09-28T04:02:37.934Z
 ---
 R4 and cache contract: retain provider/billing-channel basis, exact model and served/requested basis, request timestamps, service tier/speed from recorded fields, inclusive input and cache lifetimes. Retain unknowns, conflicting lifetime diagnostics and reasoning as output subset. Report counted requests with positive/zero/unknown cache reads and writes; one request can read and write, not separate cache API calls. Expose token-read share and request-hit share with distinct observed populations, additive numerators/denominators and availability counts. No model-config inference for historical tier. Synthetic fixtures verify all fields survive reconciliation and cover missing/partial data; serialization ownership remains uro-ni7m/uro-vgea and pricing ownership uro-neii.
 
 ## Notes
 
-Preserve multi-model/advisor usage components for pricing at each component model rate. Cache-hit request populations must retain their declared distinct-request scope and must not be reconstructed by summing overlapping per-model request counts.
+Preserve multi-model/advisor usage components for pricing at each component model rate. Cache-hit request populations retain distinct-request scope and cannot be reconstructed by summing overlapping per-model counts. Alpha pricing review: verify Codex input normalization before applying rates. Current normalize_input subtracts cache reads but then adds cache writes as a disjoint category; official Responses usage pricing subtracts both cached and cache-write tokens from inclusive input. Primary source: https://developers.openai.com/api/docs/guides/prompt-caching#monitor-cache-performance (fetched 2026-09-28). Confirm native Codex cache_write_input_tokens mapping, add a nonzero-write synthetic regression, and correct normalization if the mapping preserves inclusive input. No private history values informed this finding. Do not mark cost rollups accepted until date/tier/context/provider assumptions are explicit.
