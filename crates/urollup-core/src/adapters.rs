@@ -59,6 +59,16 @@ impl Ingested {
 /// A persistent-log adapter could not produce a normalized result.
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
+    /// An explicit Codex fork boundary cannot safely classify a usage record.
+    #[error(
+        "cannot establish Codex copied-history boundary for thread {thread}: {reason}; inspect that rollout's metadata before retrying"
+    )]
+    InvalidCodexHistoryBoundary {
+        /// Native thread ID identifying the affected rollout.
+        thread: String,
+        /// The missing or invalid evidence, without source payload content.
+        reason: &'static str,
+    },
     /// A declared root does not exist.
     #[error("source root does not exist: {0}")]
     MissingRoot(PathBuf),

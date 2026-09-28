@@ -20,7 +20,8 @@
 //!   not an object has no fields. Usage objects are the exception the document helpers
 //!   made: a `usage`, `latest_token_usage_record`, `total_token_usage` or
 //!   `last_token_usage` key is present whatever its value, with no counts when the value
-//!   is not an object.
+//!   is not an object. An explicit history boundary preserves invalid values as a
+//!   distinct state, since treating them as absent would change request ownership.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -87,6 +88,15 @@ pub(super) struct Line<'a> {
     pub(super) payload: Payload<'a>,
 }
 
+/// A declared history boundary must not disappear when its value is invalid.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum HistoryBoundary {
+    #[default]
+    Missing,
+    Ordinal(u64),
+    Invalid,
+}
+
 /// The fields of a record's `payload` that any relevant record kind reads.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Payload<'a> {
@@ -99,7 +109,7 @@ pub(super) struct Payload<'a> {
     pub(super) cwd: Option<Cow<'a, str>>,
     pub(super) parent_thread_id: Option<Cow<'a, str>>,
     pub(super) forked_from_id: Option<Cow<'a, str>>,
-    pub(super) subagent_history_start_ordinal: Option<u64>,
+    pub(super) subagent_history_start_ordinal: HistoryBoundary,
     pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) model: Option<Cow<'a, str>>,
     pub(super) effort: Option<Cow<'a, str>>,
@@ -362,7 +372,8 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 }
                 PayloadField::ForkedFromId => payload.forked_from_id = map.next_value_seed(Text)?,
                 PayloadField::SubagentHistoryStartOrdinal => {
-                    payload.subagent_history_start_ordinal = map.next_value_seed(Unsigned)?;
+                    payload.subagent_history_start_ordinal =
+                        map.next_value_seed(HistoryBoundarySeed)?;
                 }
                 PayloadField::TurnId => payload.turn_id = map.next_value_seed(Text)?,
                 PayloadField::Model => payload.model = map.next_value_seed(Text)?,
@@ -706,6 +717,36 @@ impl<'de> Visitor<'de> for Text {
     }
 }
 
+struct HistoryBoundarySeed;
+
+any_value_seed!(HistoryBoundarySeed);
+
+impl<'de> Visitor<'de> for HistoryBoundarySeed {
+    type Value = HistoryBoundary;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(HistoryBoundary::Invalid, [bool, str, map]);
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok(HistoryBoundary::Missing)
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(HistoryBoundary::Ordinal(value))
+    }
+
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(u64::try_from(value).map_or(HistoryBoundary::Invalid, HistoryBoundary::Ordinal))
+    }
+
+    fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(HistoryBoundary::Invalid)
+    }
+}
+
 /// Reads an unsigned integer value as [`unsigned`] reads it from a document.
 struct Unsigned;
 
@@ -743,7 +784,9 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::Value;
 
-    use super::{DecodedLimits, EventType, Line, Payload, RecordType, UsageFields};
+    use super::{
+        DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
+    };
     use crate::adapters::codex_rollout::CodexUsage;
     use crate::sources::decode::{parse_record, text, unsigned};
 
@@ -804,10 +847,13 @@ mod tests {
                 cwd: owned(payload, "cwd"),
                 parent_thread_id: owned(payload, "parent_thread_id"),
                 forked_from_id: owned(payload, "forked_from_id"),
-                subagent_history_start_ordinal: unsigned(
-                    payload,
-                    &["subagent_history_start_ordinal"],
-                ),
+                subagent_history_start_ordinal: match payload.get("subagent_history_start_ordinal")
+                {
+                    None | Some(Value::Null) => HistoryBoundary::Missing,
+                    Some(value) => {
+                        value.as_u64().map_or(HistoryBoundary::Invalid, HistoryBoundary::Ordinal)
+                    }
+                },
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
                 effort: owned(payload, "effort"),
