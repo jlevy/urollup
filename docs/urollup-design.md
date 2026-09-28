@@ -887,9 +887,20 @@ set these source-specific rules:
   belongs to that thread and is a copy.
   A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
   `thread_settings_applied` event (0.152 and later), which assigns later records to the
-  thread it names. In a rollout without `token_usage_record` lines, the copy also ends at
-  the first `turn_context` whose turn ID the copied thread’s root rollout never
-  recorded; turn IDs are matched across rollouts by 128-bit digest.
+  thread it names. An explicit ordinal boundary also identifies an inherited prefix
+  without an embedded parent session header; direct records, compacted usage copies and
+  cumulative counters use that ownership consistently.
+  Invalid boundary metadata and unpositioned usage fail ingestion rather than silently
+  becoming child originals.
+  A prefix without a known parent remains unowned copy evidence, never child usage.
+  Requests seen only as copies are excluded from counted totals and make whole-history
+  coverage incomplete; a selected owner’s copy-only requests also make its coverage
+  incomplete. A child cumulative counter needs its inherited baseline unless its first
+  total equals its last-request usage, establishing a zero baseline for that counter
+  epoch. The parent’s latest total is not a substitute for its total at the fork.
+  In a rollout without `token_usage_record` lines, the copy also ends at the first
+  `turn_context` whose turn ID the copied thread’s root rollout never recorded; turn IDs
+  are matched across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.
@@ -898,8 +909,10 @@ set these source-specific rules:
   the parent’s running total, so the child’s counters start from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
-  copied lines contribute neither usage nor times to the child; paginated forks copy
-  nothing and reference the parent’s file.
+  copied lines contribute neither usage nor times to the child.
+  A paginated history can reference a parent file rather than embed its records;
+  declaring a boundary alone does not establish a counter baseline or prove that any
+  copied usage records were present.
 - **`codex-exec`:** `turn.completed.usage` is the thread’s cumulative total: after
   `codex exec resume` it includes earlier runs, it has no `total_tokens`, it excludes
   subagents, and failed or interrupted turns report none.

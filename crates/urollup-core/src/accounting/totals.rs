@@ -65,6 +65,8 @@ pub enum PartialReason {
     PossibleUsage,
     /// Usage is known to exist but was not observed.
     UnobservedGap,
+    /// Usage appears only in copies with no reconciled original.
+    CopyWithoutOriginal,
 }
 
 /// Whether totals cover everything they describe.
@@ -133,6 +135,9 @@ pub fn ledger_totals(ledger: &Ledger) -> Result<LedgerTotals, TokenOverflow> {
     if totals.unresolved.requests > 0 {
         reasons.insert(PartialReason::UnresolvedUsage);
     }
+    if totals.copy_only.requests > 0 {
+        reasons.insert(PartialReason::CopyWithoutOriginal);
+    }
     if !ledger.gaps.is_empty() {
         reasons.insert(PartialReason::UnobservedGap);
     }
@@ -199,7 +204,9 @@ pub fn selection_totals(
             Counting::Unresolved { .. } => {
                 reasons.insert(PartialReason::UnresolvedUsage);
             }
-            Counting::CopyOnly => {}
+            Counting::CopyOnly => {
+                reasons.insert(PartialReason::CopyWithoutOriginal);
+            }
         }
     }
     if totals.counted.requests_without_usage > 0 {
