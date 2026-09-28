@@ -61,6 +61,13 @@ grouping and output options.
 Version 0.1 does not yet provide date-range filters, weekly or monthly commands, price
 and cost calculation, compact or responsive tables, or status-line and block views.
 Those ccusage-style workflows remain planned rather than implied by the current CLI.
+Each command rereads the logs.
+Multiple `report --group-by` dimensions produce separate breakdowns; combined
+calendar-by-model queries are not implemented.
+Cache-read tokens and cache writes by recorded lifetime are available, but cache-hit
+request counts, tool counts, usage durations and list-price estimates are not.
+The [usage analysis guide](docs/usage-analysis.md) explains the current commands, cache
+semantics and the planned reusable workflow.
 
 For the 0.1.0 terminal contract, automatic color is limited to interactive human-facing
 output and can always be disabled with `--color never` or `NO_COLOR`; `--color always`
@@ -88,13 +95,18 @@ The
 records dated measurements and the remaining memory work.
 Whole-history results still need acceptance under the
 [full-history QA playbook](tests/qa/full-history-rollup.qa.md).
-Recorded maintainer decisions and independent implementation review also remain before
-the milestone is accepted, after which packaging implementation and rehearsal can begin.
+The implementation stack is merged into `main`, and its technical review is complete.
+Representative performance acceptance, full local QA and recorded maintainer decisions
+remain before milestone acceptance, after which packaging implementation and rehearsal
+can begin. The complete analysis workflow is tracked separately as G5 in the
+[workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md).
 
 ## Documentation
 
 | Doc | Purpose |
 | --- | --- |
+| [Usage analysis guide](docs/usage-analysis.md) | Current commands, cache accounting, list-price semantics and supported versus planned analysis |
+| [Whole-history workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md) | Shared snapshots, joint grouping, cache/pricing evidence, tools/time and G5 acceptance |
 | [Design specification](docs/urollup-design.md) | Goals, layers, interfaces, decisions, glossary and CLI flag index |
 | [Implementation plan](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Product phases, milestones, tests, performance targets and rollout |
 | [0.1.0 publishing plan](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md) | Release channels, target matrix, artifact validation and publication runbook |

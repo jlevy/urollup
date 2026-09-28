@@ -1,9 +1,9 @@
 ---
 title: "Scalable Whole-History Ingestion"
-description: Replace urollup's retain-everything ingestion with bounded parallel family decoding into a compact global ledger, so whole-history reports over tens of gigabytes of Claude Code and Codex logs run in seconds within a few hundred MiB.
+description: Stream whole-history agent logs into a compact ledger, with density-aware scale validation and conservative process-wide memory admission for histories larger than RAM.
 author: Joshua Levy with LLM assistance
 date: 2026-09-16
-status: Active; Phase 1 compaction exhausted at 586/653 MiB; 512 MiB and 10 s live on Phase 2 (`uro-zrr0`)
+status: Active; compact engine merged; process-wide safety and practical scale acceptance remain on Phase 2 (`uro-zrr0`)
 ---
 # Feature: Scalable Whole-History Ingestion
 
@@ -21,22 +21,31 @@ The guard prevented a crash; it did not make urollup usable.
 This plan replaces the ingestion and reconciliation data model rather than tuning it.
 Families of related sources decode in parallel into compact typed rows, one global pass
 reconciles those rows, and reports read a compact ledger.
-Peak memory then depends on the number of usage-bearing records, at a few hundred bytes
-each, and never on raw log bytes.
+Peak memory depends primarily on usage-bearing records and retained identity state.
+Raw transcript bytes are streamed; record density, payload cardinality and
+reconciliation overhead determine how much history fits in memory.
 The design was drafted from measurements and then reviewed in two rounds by an
 independent architecture review, whose findings are incorporated here.
 
 The [governing PR review](../../reviews/review-2026-09-19-pr-stack-and-memory.md) tracks
 stabilization findings, validation evidence and remaining merge conditions.
+The implementation stack is now merged at main `4c55617`; historical measurements below
+describe their named revisions, not acceptance of the merged head.
+Representative performance and full-history QA remain open.
+The [usage-analysis workflow plan](plan-2026-09-20-usage-analysis-workflow.md) owns
+multi-view reuse and G5. Decode improvements here and avoiding repeated decoding there
+are complementary; neither substitutes for the other’s acceptance tests.
 
 ## Goals
 
 - Whole-history `sessions`, `daily` and `report --all` succeed on the maintainer’s
   corpus with no input-size refusal.
-- Peak physical footprint is independent of raw log bytes and stays at or below 512 MiB
-  for that corpus; the original estimate of about 300 MB was not achieved.
-- Whole-history wall time is at most 25 seconds after Phase 1 and at most 10 seconds
-  after Phase 2 on the reference laptop (Apple M1 Pro, 10 cores, 32 GiB).
+- Whole-process memory remains manageable on the reference laptop (Apple M1 Pro, 10
+  cores, 32 GiB), with the measurable envelope below.
+- Demonstrate linear retained-state growth and a conservative projection for 100 GiB
+  histories at representative record densities; raw input may exceed physical RAM.
+- Record throughput and phase timings and investigate regressions against equivalent
+  workloads. There is no fixed whole-history wall-time threshold.
 - Output is byte-identical for any worker count and invariant under source file
   renaming.
 - Accounting semantics are preserved and proven against the current engine on every
@@ -47,16 +56,70 @@ stabilization findings, validation evidence and remaining merge conditions.
 
 ## Non-Goals
 
-- Spill to disk or external sort.
-  The row budget bounds admitted observations; it does not guarantee that an arbitrary
-  corpus fits process memory.
-  Record density and retained payloads must be measured.
+- Automatic spill or external sort in milestone 0.1. Dense histories that exceed the
+  validated memory budget must fail early and clearly.
+  Completing those histories through hybrid spill is tracked in `uro-924y`.
 - A `--since` or `--project` filter, the capture cache or incremental reads.
-  Whole history in seconds removes the need for this milestone, and time filters remain
-  query-time features.
+  Reusable artifacts and incremental caching have existing owners in `uro-6kwn` and
+  `uro-xm48`; they avoid repeated decode but do not replace memory-safety acceptance.
 - Candidate-token sets, lineage links, tool actions, gaps and account attribution, none
   of which any adapter produces today.
   They return with their first real producer.
+
+## Accepted Scale and Memory Policy: 2026-09-27
+
+The maintainer approved replacing the representative 512 MiB and 10-second release gates
+with practical memory and scale acceptance.
+Those old thresholds are retired, not achieved.
+The dated experiments below remain useful evidence for avoiding ineffective changes.
+Fixed limits on small synthetic CI workloads remain regression checks.
+
+Milestone 0.1 keeps the compact in-memory reconciliation path.
+Phase 2 (`uro-zrr0`) requires all of the following before G1 and release acceptance:
+
+| Check | Acceptance |
+| --- | --- |
+| Reference history | Release `sessions`, `daily` and `report` complete with correct output, normal machine memory pressure and peak physical footprint no greater than 25% of physical RAM (8 GiB on the reference laptop). Measure complete invocations, including both agents, reconciliation and rendering. |
+| Observation scaling | Measure at least three increasing unique-observation counts for Claude-heavy, Codex-heavy and mixed histories. Include distinct IDs, high-cardinality limit payloads and long session families. The measured envelope must be consistent with linear retained-state growth; explain any departure before acceptance. |
+| Raw-byte independence | At fixed observations and accounting metadata, padding ignored transcript content changes peak memory by less than the existing 64 MiB regression allowance. Prove streaming of input larger than an enforced process allowance using synthetic logs and bounded generation. |
+| 100 GiB operating envelope | Use measured observation density and an upper linear envelope across measured counts, with an explicit margin for uncertainty, to project each command at 100 GiB. The projection must fit within 25% of reference-machine RAM. Label this a projection until a full-size run is measured; a single footprint/raw-byte ratio is insufficient. |
+| Capacity safety | One conservative invocation-wide budget covers both agent ledgers and peak construction overlap. Dense over-budget inputs fail before exhausting memory, with an actionable error and no partial successful report. Low-budget, high-cardinality and combined-agent tests demonstrate the boundary. |
+| Correctness and regressions | Fixture accounting, one/eight-worker output equality on a reproducible input boundary, and existing synthetic CI gates pass. Record wall time, throughput, worker count, load and cache state; investigate regressions against equivalent workloads under the main plan’s regression policy. |
+
+G1 and the complete accounting/parity QA playbook follow this Phase 2 gate and remain
+separate Phase 3 release requirements.
+
+Physical footprint, OS maximum RSS and sampled watchdog RSS are different metrics.
+Use physical footprint for macOS acceptance and record RSS separately; a watchdog is a
+last-resort test kill switch, not proof of the runtime budget.
+Select its limit with machine headroom before a run, and stop on warning or critical
+memory pressure. A watchdog kill fails acceptance.
+For other platforms, document the available peak metric and any enforcement limits.
+
+`uro-6pi8` owns process-wide admission, `uro-z1h1` owns scale proofs, and `uro-erqo`
+owns representative accepted-head evidence.
+The current per-agent row-shell ceiling does not satisfy the capacity-safety check.
+Reserve for pending rows, variable payloads, intern tables, source/thread metadata,
+worker buffers, key graphs, request construction and already retained ledgers, with
+headroom for allocator overhead.
+Account for process/container allowances where available, and document fallback and
+explicit overrides. Preserve `--max-rows` as a separate row ceiling and document the
+change in `--max-ram` semantics when implementation lands.
+
+Input bytes can exceed RAM because transcript content is streamed.
+Completion when the retained reconciliation state itself exceeds the budget is a
+separate follow-up (`uro-924y`): keep the in-memory path and spill compact partitioned
+or sorted runs when needed.
+The design must preserve global ownership and identity links across partitions, exact
+accounting and ordering, while bounding merge memory and handling disk-full,
+cancellation, privacy and cleanup.
+No spill implementation is claimed by this decision.
+
+Keep private-corpus captures and derived measurements local unless their publication is
+separately authorized.
+Public evidence uses synthetic or sanitized corpora.
+Record local evidence outside disposable scratch; shared beads may record completion
+status without copying private values.
 
 ## Background
 
@@ -229,7 +292,8 @@ reference corpus, using 230 B per Claude observation, 150 B per Codex observatio
 230 B per request. Its 100 GB Codex extrapolation was about 700 MB. These were design
 estimates, not measured acceptance results; the dated measurements in
 [Progress](#progress) show the higher observed footprint.
-No fresh private-corpus benchmark is recorded here.
+Private-corpus evidence is retained locally; this document records no new private
+measurements.
 
 The reader reuses bounded line buffers.
 A shared admission counter per agent reserves retained observation rows during decode,
@@ -345,8 +409,9 @@ stats: total seconds=17.986
 ```
 
 A failed command prints only the phases it finished.
-The lines hold phase names, wall times and counts, never paths, IDs or model names, so
-QA reports may quote them.
+The lines hold phase names, wall times and counts, never paths, IDs or model names.
+Quoting private-corpus values in a shared QA report still requires publication
+authorization.
 
 ## Implementation Plan
 
@@ -383,8 +448,9 @@ QA reports may quote them.
 - [x] Bound reused worker line buffers (`uro-1sm8`). After each line, capacity above 256
   KiB is released. A release `sessions --all` after that step peaked at 793 MiB (811,568
   KiB) in 20.3 s.
-- [ ] Meet the 512 MiB whole-history peak (`uro-n1cp`, now waiting on Phase 2). A
-  two-pass Claude re-decode (`uro-l3fw`) peaked at 929–946 MiB and was reverted.
+- [ ] Complete acceptance under the revised Phase 2 gate (`uro-n1cp` waits on
+  `uro-zrr0`). The following experiments targeted the retired 512 MiB goal.
+  A two-pass Claude re-decode (`uro-l3fw`) peaked at 929–946 MiB and was reverted.
   Shell-field shrinks are exhausted (`uro-o5c0` reverted).
   Codex intern-lifetime reorder (`uro-mxyh`) raised the peak and was reverted.
   Compact Codex limit rows (`uro-4h93`) interned names, windows and native JSON.
@@ -393,26 +459,28 @@ QA reports may quote them.
   Field and ID relocation have run out.
   Tail-consume after grouping was not implemented: the peak holds every shell before
   Requests are reserved, and `shrink_to_fit` of that remainder reallocs while the table
-  is still live. The 512 cut queue is empty.
-  The 512 MiB gate now lives on Phase 2 (`uro-zrr0`). `uro-l0gd` recorded the standing
-  remasure and is closed.
+  is still live. Do not reopen these cuts solely to reach the retired target.
+  `uro-l0gd` recorded the standing remeasurement and is closed.
 
-Acceptance: `make check` passes; whole-history `sessions`, `daily` and `report --all` on
-the maintainer’s corpus exit 0 in at most 25 seconds at no more than 512 MiB peak
-footprint; one and eight workers give identical JSON.
+Acceptance: `make check` passes; whole-history commands and one/eight-worker identity
+meet the [accepted policy](#accepted-scale-and-memory-policy-2026-09-27).
 
-### Phase 2: Fast Decode and Scale Gates
+### Phase 2: Process-Wide Safety and Scale Gates
 
-- [ ] Meet 512 MiB and 10 s on the leftover typed-decode / allocator path (`uro-zrr0`).
-  Phase 1 row compaction is exhausted; do not start more shell-field cuts.
+- [ ] Enforce conservative process-wide admission (`uro-6pi8`).
+- [ ] Prove density scaling, raw-byte independence and the projected 100 GiB envelope
+  (`uro-z1h1`); record representative evidence (`uro-erqo`).
+- [ ] Accept the complete revised policy (`uro-zrr0`). Phase 1 row compaction is
+  exhausted; further optimization requires a measured benefit.
 - [x] Write Codex `CompactJson` numbers without `Value` (`uro-nuhn`); quiet WH rose to
   685 MiB / 21.3 s; reverted.
-- [ ] Check Claude usage numbers without `Value::from` (`uro-nzo1`).
-- [ ] Parse Claude sidecars without `Value`; confine `parse_record` to tests
+- [ ] Follow-up only: check Claude usage numbers without `Value::from` (`uro-nzo1`, held
+  pending a different measured hypothesis).
+- [x] Parse Claude sidecars without `Value`; confine `parse_record` to tests
   (`uro-a3fo`).
 - [x] Measure a process allocator for whole-history RSS (`uro-96vw`); quiet WH rose to
   834 MiB / 19.0 s and Codex-only to 676 MiB / 15.3 s; reverted.
-- [ ] Cut whole-history wall time to at most 10 seconds (`uro-lsaz`). Profile
+- [ ] Follow-up only: profile and improve decode throughput (`uro-lsaz`). Profile
   (2026-09-19): Codex ingest is 74% of quiet WH 18.2 s; remaining worker time is kernel
   read and `Line::read`.
 - [x] Skip the full JSON walk on Codex lines the type prefilter rejects (`uro-s5vb`);
@@ -421,8 +489,8 @@ footprint; one and eight workers give identical JSON.
 - [x] Enlarge the sequential read window (`uro-h6iw`); 1 MiB `BufReader` left quiet WH
   at 635 MiB / 21.2 s and Codex-only at 602 MiB / 13.7 s; WH wall and Codex peak rose;
   reverted.
-- [ ] Clear leftover `Value` helpers off the decode path (`uro-6gwt`) after the
-  file-level children above.
+- [ ] Follow-up only: clear leftover `Value` helpers off the decode path (`uro-6gwt`)
+  after the file-level children above, when measurements justify the change.
 - [x] Add a streaming synthetic corpus generator that writes families from fixture
   templates into a temporary directory under a byte cap, with part of Codex
   zstd-compressed.
@@ -431,8 +499,8 @@ footprint; one and eight workers give identical JSON.
   bound, and `daily --all` on the generated corpus under the watchdog at 512 MiB in
   `make test`.
 
-Acceptance: outputs are byte-identical to Phase 1; whole history takes at most 10
-seconds; the scale gates pass in CI.
+Acceptance: outputs preserve Phase 1 accounting; all checks in the accepted policy pass.
+Hybrid spill (`uro-924y`) is a follow-up and does not block 0.1.
 
 ### Phase 3: Acceptance and Cleanup
 
@@ -440,7 +508,7 @@ seconds; the scale gates pass in CI.
   one whole-history run joined on the native `session` field.
 - [ ] Execute the
   [full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md) on this
-  machine and commit a privacy-safe dated QA report (`uro-ky6c`).
+  machine and retain a dated QA report (`uro-ky6c`); publish only authorized evidence.
 - [ ] Update any leftover wording in design §3.4 and §8.3, the main implementation plan
   and the README after that report.
 
@@ -448,6 +516,10 @@ Acceptance: the QA playbook passes, and milestone 0.1 local acceptance is record
 without an input-size limitation.
 
 ### Progress
+
+The dated experiments and old acceptance language in this section are historical.
+The [2026-09-27 policy](#accepted-scale-and-memory-policy-2026-09-27) governs current
+release work; no historical 512 MiB or 10-second gate remains active.
 
 Implementation compacts the existing engine in place rather than building a second
 engine beside it. The [Approach](#approach) above describes the original design; the
@@ -679,9 +751,9 @@ block this work. Publishing (`uro-30ef`) waits on the 0.1 epic.
 ## Rollout Plan
 
 Each phase lands as a stacked pull request with `make check` green.
-The input-size guard is already gone on this branch; Phase 1 still has to meet the 512
-MiB peak. Reinstall the developer binary after each phase.
-The 0.1.0 release waits for Phase 3.
+The input-size guard is gone; process-wide safety and scale acceptance remain open.
+Reinstall the developer binary after each implementation phase.
+The 0.1.0 release waits for the revised Phase 2 gate and Phase 3 QA.
 
 ## Open Questions
 
@@ -708,9 +780,9 @@ otherwise.
 - [Portable agent usage research](../../research/research-2026-09-13-portable-agent-usage.md)
   on local log volume and throughput
 - [Full-history QA playbook](../../../../tests/qa/full-history-rollup.qa.md)
-- Beads `uro-o6x5` (scalable whole-history ingestion), `uro-n1cp` (Phase 1, 512 MiB),
-  `uro-as4a` / `uro-l3fw` / `uro-1sm8` (remaining 512 cuts), `uro-zrr0` (Phase 2, 10 s),
-  and `uro-sn1e` (owner-map ordering bug)
+- Beads `uro-o6x5` (scalable ingestion), `uro-zrr0` (release scale acceptance),
+  `uro-6pi8` (process-wide safety), `uro-z1h1` (density scaling), `uro-erqo`
+  (representative evidence), and `uro-924y` (hybrid spill follow-up)
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

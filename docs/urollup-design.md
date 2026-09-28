@@ -1095,6 +1095,17 @@ An `unitemized` measure for source totals that exceed reconciled requests, and e
 time measures, are queued review decisions ([§9.2](#unitemized-usage) and
 [§9.2](#extended-time-measures)).
 
+**Planned analysis coverage:** Each optional metric needs an observed population and an
+unknown population alongside its known sum.
+Request-accounting completeness alone does not prove complete cache or timing evidence.
+Cache-read tokens and requests with positive cache reads are separate measures; a model
+request can both read and write cache.
+Hit-rate numerators and denominators must survive aggregation, and percentages are
+recomputed rather than averaged.
+Keep 5-minute, 1-hour and unspecified-lifetime cache writes disjoint.
+The [workflow plan](project/specs/active/plan-2026-09-20-usage-analysis-workflow.md)
+owns these implementation requirements and G5 acceptance.
+
 ### 4.2 Ownership and Totals
 
 **Status:** Candidate ([§9.1](#ownership-in-totals)); scope defaults are Confirmed
@@ -1157,6 +1168,13 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
 - Groups include time bucket, agent and dialect, account, project, session or thread,
   model, effort, purpose, tool category, and any independent thread property.
   Null is an explicit group.
+- Planned joint queries group by a tuple such as calendar month × agent × provider ×
+  model. Agent, attributed provider and billing channel are distinct dimensions; provider
+  carries an observed, explicitly mapped or unknown basis.
+  Independent one-dimensional breakdowns are labeled as such.
+  A summary whose bucket boundaries do not align with a requested calendar boundary must
+  use finer bundle evidence or report its precision limit; it cannot promise exact
+  rebucketing.
 - Percentiles are recomputed from observations or from mergeable histograms, never
   averaged across groups.
   Query reports compute exact percentiles in memory from the reconciled requests
@@ -1271,6 +1289,15 @@ Updates and overrides:
   override file’s fingerprint.
 - A staleness diagnostic appears when a report window ends more than 90 days after the
   table review date, because that release cannot know later price changes.
+
+The planned G5 workflow also supports a chosen price-table date applied as a
+counterfactual across history.
+Reports must distinguish that valuation from historical rates at each request date and
+retain the table version, currency, assumptions and unpriced coverage.
+Matching requires request-level context or an equivalent lossless pricing partition
+before aggregation; per-model lifetime totals alone cannot recover date, service-tier or
+context-band differences.
+This is part of the Candidate pricing policy in §4.5, not an implemented 0.1 feature.
 
 ### 4.6 Accounts and Plans (Later)
 
@@ -2397,6 +2424,13 @@ records how the engine reached this shape, with dated whole-history measurements
   `--source` roots with `--no-default-sources`. It replaced the temporary 512 MiB input
   guard and its read budgets; per-record and sidecar size limits remain.
   No run spills to disk.
+  Before 0.1 acceptance, `uro-6pi8` must replace this incomplete estimate with
+  conservative process-wide admission covering both agents and peak construction
+  overlap. This is planned work, not current enforcement.
+  The
+  [accepted scale policy](project/specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+  requires safe early refusal for over-budget retained state; hybrid spill (`uro-924y`)
+  is a follow-up for completing those histories.
 - **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
   stderr after the command runs and before its output or error: the worker count, wall
   time per phase (discovery, Claude Code ingest, Codex ingest, session index, and query
@@ -2419,8 +2453,11 @@ raw-bytes independence check, a footprint extrapolation bound and a `daily --all
 under an RSS watchdog ([scale measurement guide](project/qa/scale-measurement.md)).
 Dedicated Ubuntu and macOS CI jobs execute the release workload behind the supply-chain
 gate and archive its output.
-These small synthetic checks do not establish the 512 MiB and 10-second whole-history
-acceptance targets.
+These small synthetic checks do not establish representative whole-history acceptance.
+That requires measured observation-density scaling, a conservative 100 GiB projection
+within 25% of reference-machine RAM, and process-wide capacity safety under the accepted
+scale policy. Raw bytes can exceed RAM because transcript content is streamed; retained
+usage records and identity state still have to fit the validated budget.
 
 #### Capture Cache
 
