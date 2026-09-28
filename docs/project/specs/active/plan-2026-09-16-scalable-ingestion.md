@@ -32,6 +32,11 @@ stabilization findings, validation evidence and remaining merge conditions.
 The implementation stack is now merged at main `4c55617`; historical measurements below
 describe their named revisions, not acceptance of the merged head.
 Representative performance and full-history QA remain open.
+The accounting correction under `uro-kpbp` handles paginated inherited prefixes without
+foreign session headers, including copies whose parent identity is missing.
+Copy-only usage stays excluded and makes whole-history coverage incomplete.
+Synthetic fork tests and exploratory real-history runs exercise the correction;
+accepted-head QA and process-wide memory admission remain release requirements.
 The [usage-analysis workflow plan](plan-2026-09-20-usage-analysis-workflow.md) owns
 multi-view reuse and G5. Decode improvements here and avoiding repeated decoding there
 are complementary; neither substitutes for the other’s acceptance tests.

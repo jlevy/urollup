@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_only_requests_do_not_make_counted_usage_incomplete() {
+    fn copy_only_requests_are_excluded_and_make_coverage_incomplete() {
         use crate::ledger::reconcile::{ObservationRole, ReconcileInput};
         let original = observation(0, "one", true);
         let mut copy = observation(1, "one", true);
@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(report.totals.tokens.uncached_input, Some(10));
         assert_eq!(report.coverage.copies_excluded, 1);
         assert_eq!(report.coverage.requests_without_usage, 0);
-        assert!(report.coverage.complete);
+        assert!(!report.coverage.complete);
         assert!(
             report.diagnostics.iter().any(|diagnostic| diagnostic.code == "copy-without-original")
         );
