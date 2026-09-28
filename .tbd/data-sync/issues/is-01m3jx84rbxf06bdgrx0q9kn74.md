@@ -5,7 +5,7 @@ title: Fix Codex paginated fork prefix double counting before alpha acceptance
 kind: bug
 status: in_progress
 priority: 1
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 delegate: claude-code@spud10.local
 labels: []
@@ -20,11 +20,11 @@ parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 hold: null
 hold_until: null
 created_at: 2026-09-28T02:24:36.105Z
-updated_at: 2026-09-28T03:44:48.397Z
+updated_at: 2026-09-28T03:52:35.419Z
 started_at: 2026-09-28T03:07:43.460Z
 ---
 Confirmed at main runtime 4c55617 / docs head 04a3fdd with a synthetic five-line two-file reproduction. Parent cumulative usage is 100 tokens. Child has its own session_meta, parent_thread_id/forked_from_id, history_mode=paginated, multi_agent_version=v2, subagent_history_start_ordinal=3, a copied 100-token token_count at ordinal 1, then cumulative 120 / last 20 at ordinal 3. No foreign session_meta is embedded. Expected parent 100 plus child 20 = combined 120 and two requests. Actual sessions reports parent 100 plus child 120 = report 220 and three requests, copies_excluded=0, coverage.complete=true, no diagnostics. In codex_rollout::observe_parsed_source, active_thread starts at file_thread; native_boundary only switches back to file_thread at/after the boundary. Without a foreign SessionMeta, the pre-boundary prefix never becomes inherited/copy state. Honor explicit paginated boundaries and seed the counter baseline without counting inherited usage as child originals. Prove combined/self totals, one/eight-worker and source-order parity; cover parent-present and parent-missing cases, direct/counter paths, resets and malformed/missing boundary evidence. Preserve conservative uncertainty rather than claiming complete totals when ownership cannot be established. Private-history discrepancies motivated investigation but this bead contains only synthetic values and code reasoning. Re-run private full-history Codex parity after fixing; not every comparator residual has been explained.
 
 ## Notes
 
-Implementation remains uncommitted on codex/codex-fork-accounting above PR15. Eight synthetic regression tests and Rust workspace tests pass; intermediate all-target clippy passed. Release validation safely refused an unresolved copied-history ownership case, producing no partial JSON. An explicit prefix boundary can establish inherited context without providing a usable parent identity; do not assume that a root-looking session ID or vscode source proves original ownership. Need a deliberate report policy for excluded unowned copies and incomplete coverage versus hard refusal, and corresponding tests. Full make check and accepted private-history validation remain outstanding. Do not mark accepted or merge-ready. No private identifiers, payloads or aggregate values are recorded here.
+Progress: paginated prefix ownership now supports absent parent identity without inventing child ownership. Counter, direct and compacted paths retain copies; known inherited counters seed child deltas. Copy-only requests keep diagnostics, never contribute to totals, and make whole-history completeness partial. Eight synthetic regressions include 1/8-worker, source-order, reset, parent-present/absent, unowned-prefix and missing-baseline coverage. Workspace tests and all-target clippy passed before the final tightened missing-baseline guard; its regression matrix also passes. Corrected release completed private full-history report, sessions and daily commands under watchdog; within-view token arithmetic passes. Cross-view live deltas are not snapshot proof and still need investigation/controlled validation. Full make check is currently running in external validation copy (exec session 35201); do not restart without checking it. Runtime changes remain uncommitted, no PR yet, no alpha acceptance. Private payloads and aggregate values remain outside the repository.
