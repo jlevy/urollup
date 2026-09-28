@@ -208,6 +208,44 @@ Build time and postprocessing time stay separate.
 
 ## Implementation Plan
 
+### Core CLI delivery slice: 2026-09-27
+
+The maintainer requested a reliable, landable Claude Code and Codex CLI, with clean
+rollups and an agent reporting skill, before additional adapters or a full web UI. This
+delivery slice crosses existing milestone boundaries without declaring the full G5
+pricing, tool and time workflow complete.
+Existing artifact and accounting owners retain their contracts.
+
+| Layer | Deliverable and acceptance | Existing owners |
+| --- | --- | --- |
+| Plan | Current PR inventory, explicit scope and dependency order; no private usage evidence published | `uro-aakb`, PR #15 |
+| Accounting | Paginated Codex fork prefixes count once; unknown ownership preserves known agent; unsupported grouping fails clearly | `uro-kpbp`, `uro-gop8`, `uro-oz6w` |
+| Safety | Invocation-wide conservative admission, safe dense-history refusal, raw input larger than RAM, measured density scaling | `uro-6pi8`, `uro-z1h1`, `uro-erqo` |
+| Queries and artifacts | Joint calendar, agent, provider, model and project views over one reconciliation; reusable summaries/bundles; explicit unavailable dimensions and metric coverage | `uro-qvp1`, `uro-ni7m`, `uro-vgea`, `uro-cye3`, `uro-x8r8` |
+| Reporting and acceptance | Bounded local QA workflow and a CLI-backed skill; text and optional pivot/hierarchy presentations consume the same query results | `uro-qg1a`, `uro-jpmf`, `uro-d36a`, `uro-ky6c` |
+
+Create implementation PRs in dependency order above PR #15, splitting a layer when its
+independently testable concerns warrant separate review.
+Each PR must contain its regressions and documentation, name its beads and immediate
+base, and pass the handoff gate and hosted CI at the published head.
+Do not label a planned layer merge-ready or close an umbrella bead for a partial slice.
+Keep the broader compare/check requirements in `uro-jpmf` distinct from the initial
+reporting skill.
+
+Acceptance requires exact synthetic fork and mixed-agent totals, worker-order
+determinism, cross-view consistency, artifact-only queries without live roots, and an
+explained private-history comparison after the accounting fix.
+Green existing fixtures alone do not establish trustworthy Codex totals.
+Unknown metrics remain unknown; token classes retain cache lifetimes and reasoning
+subset semantics.
+
+Additional adapters, a web server, persistent caching, hybrid spill and advanced
+pricing/tool/time analysis are outside this delivery slice.
+Release publication and PR merges remain separate maintainer actions.
+Pending accounting-policy choices require recorded decisions, not inferred acceptance.
+
+### Broader workflow
+
 One workstream, delivered through the existing milestones.
 Existing artifact, pricing and report owners retain their scopes.
 `uro-gtu4` owns this planning/documentation pass, not completion of the unchecked

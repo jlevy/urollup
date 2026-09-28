@@ -16,6 +16,41 @@ heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementati
 validation. The dated snapshots below preserve the decisions and evidence available at
 the time; subsequent accepted policy is recorded separately.
 
+## Current PR Landscape: 2026-09-27 Pacific
+
+GitHub’s open and merged PR inventory was checked on 2026-09-28 UTC. The earlier
+implementation stack is merged into main `4c55617`; its dated readiness tables below are
+historical, not a current merge queue.
+
+| PRs | Current disposition | Action |
+| --- | --- | --- |
+| #1, #2, #3 | Setup, plan and design merged | No outstanding PR work |
+| #5, #6, #7 | Parity research, source reviews and Gemini plan merged | Research is not adapter implementation |
+| #4 → #8 → #10 → #11 → #12 | Accounting, terminal UX and ingestion stack merged | Follow-up correctness and safety work belongs in new layers |
+| [#15](https://github.com/jlevy/urollup/pull/15) | Open against main; head `04a3fdd` has 15 successful checks | Planning foundation for the core CLI delivery stack |
+| [#14](https://github.com/jlevy/urollup/pull/14) | Open against main; head `20a89be` has 15 successful checks | Independent Cursor plan; outside the core CLI critical path |
+
+Both open PRs were reported mergeable at inspection time.
+That is a GitHub mergeability result, not a new technical approval or alpha acceptance.
+Neither has a formal GitHub review recorded.
+They overlap in `docs/urollup-design.md` and the product milestone plan; recheck those
+files and CI when either base changes.
+Cursor does not depend on the new CLI implementation and should not be stacked into its
+critical path merely to combine the open PRs.
+No merge, branch deletion or worktree cleanup was performed.
+Local historical implementation and agent branches remain; an old branch name is not
+evidence of outstanding work, and an unmerged local commit needs inspection before any
+cleanup decision.
+
+The
+[core CLI delivery slice](../specs/active/plan-2026-09-20-usage-analysis-workflow.md#core-cli-delivery-slice-2026-09-27)
+owns the new dependency order and scope.
+The first runtime blocker is `uro-kpbp`: a synthetic paginated fork with parent usage
+100 and child usage 20 reports 220 instead of 120. Existing green CI does not cover that
+shape.
+Correctness, process-wide safety and whole-history acceptance remain open; the CLI
+is not yet accepted as a trustworthy public alpha.
+
 ## Accepted Scale Policy: 2026-09-27
 
 The maintainer approved the
