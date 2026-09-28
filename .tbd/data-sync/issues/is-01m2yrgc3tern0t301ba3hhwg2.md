@@ -3,10 +3,11 @@ type: is
 id: is-01m2yrgc3tern0t301ba3hhwg2
 title: Retain pricing context and expose cache-request metrics with coverage
 kind: feature
-status: open
+status: in_progress
 priority: 1
-version: 6
+version: 7
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
+delegate: claude-code@spud10.local
 labels: []
 dependencies:
   - type: blocks
@@ -16,8 +17,11 @@ dependencies:
   - type: blocks
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2yrezrf530kbz15erhh7hw6
+hold: null
+hold_until: null
 created_at: 2026-09-20T06:36:54.265Z
-updated_at: 2026-09-28T04:02:37.934Z
+updated_at: 2026-09-28T04:05:43.797Z
+started_at: 2026-09-28T04:05:43.795Z
 ---
 R4 and cache contract: retain provider/billing-channel basis, exact model and served/requested basis, request timestamps, service tier/speed from recorded fields, inclusive input and cache lifetimes. Retain unknowns, conflicting lifetime diagnostics and reasoning as output subset. Report counted requests with positive/zero/unknown cache reads and writes; one request can read and write, not separate cache API calls. Expose token-read share and request-hit share with distinct observed populations, additive numerators/denominators and availability counts. No model-config inference for historical tier. Synthetic fixtures verify all fields survive reconciliation and cover missing/partial data; serialization ownership remains uro-ni7m/uro-vgea and pricing ownership uro-neii.
 
