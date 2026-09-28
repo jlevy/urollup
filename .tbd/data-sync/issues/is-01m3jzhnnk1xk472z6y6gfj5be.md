@@ -5,7 +5,7 @@ title: Organize core CLI delivery scope and merge stack
 kind: task
 status: in_progress
 priority: 1
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 delegate: claude-code@spud10.local
 labels: []
@@ -14,10 +14,10 @@ parent_id: is-01m2yrezrf530kbz15erhh7hw6
 hold: null
 hold_until: null
 created_at: 2026-09-28T03:04:45.490Z
-updated_at: 2026-09-28T03:45:40.345Z
+updated_at: 2026-09-28T04:00:34.096Z
 started_at: 2026-09-28T03:04:59.752Z
 ---
-Own the core CLI delivery slice and current PR inventory. PR15 is the plan foundation; prior implementation PRs 4,8,10,11,12 are merged; PR14 Cursor is independent and outside scope. Plan runtime layers for accounting correctness (kpbp,gop8,oz6w), process-wide safety and scale (6pi8,z1h1,erqo), joint queries and existing artifacts (qvp1,ni7m,vgea,cye3,x8r8), bounded QA and reporting skill (qg1a,jpmf,d36a,ky6c). Verify actual GitHub stack bases, layer-specific checks and published-head CI. Preserve historical branches and private evidence; do not merge or publish. Completion requires the mapped plan and actual implemented layers, not only a proposed stack.
+Own the frozen alpha delivery slice and merge stack: reliable per-session and whole-machine Codex/Claude usage and supported cost rollups with explicit incomplete and unpriced coverage. PR15 is the planning foundation; prior implementation PRs 4,8,10,11,12 are merged; PR14 Cursor stays independent and outside scope. Required layers: accounting correctness and CLI honesty (kpbp,gop8,oz6w), process-wide memory safety and scale validation (6pi8,z1h1,erqo), pricing context/table/matcher (381f,wuby,neii), bounded local QA and acceptance (qg1a,d36a,ky6c). Broader joint-query artifacts, reporting skill, UI, additional adapters and optional optimization are deferred by the maintainer scope freeze; their beads remain open but do not block this alpha slice. Verify actual GitHub bases, layer-specific review, full make check, end-to-end private evidence and hosted CI on published heads. Preserve historical branches and private evidence. Prepare mergeable PRs, but do not merge or publish releases.
 
 ## Notes
 
