@@ -5,7 +5,7 @@ title: Implement joint calendar, agent, provider and model grouping
 kind: feature
 status: open
 priority: 1
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies:
@@ -15,9 +15,11 @@ dependencies:
     target: is-01m2yrherhddnx2j22g3xtqedr
   - type: blocks
     target: is-01m2y1r66p1rgzn4qqcyt61krw
+  - type: blocks
+    target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2yrezrf530kbz15erhh7hw6
 created_at: 2026-09-20T06:36:53.463Z
-updated_at: 2026-09-20T06:46:50.871Z
+updated_at: 2026-09-28T03:09:04.806Z
 ---
 Implement the Joint grouping and metric coverage contract. One grouping tuple supports local day/week/month crossed with agent/provider/model; explicit timezone and week-start, null/ambiguous groups and metric coverage survive. Label existing independent breakdowns separately. Provider has observed/mapped/unknown basis and versioned mappings; agent is not provider and billing channel is separate. Test DST, non-hour offsets, week/month boundaries, absent metadata and joint-to-marginal reconciliation. Own generic facets now; later Cursor bead uro-2qxq should reuse them without pulling database ingestion earlier.
 
