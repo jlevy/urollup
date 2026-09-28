@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 54
+version: 56
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -31,10 +31,11 @@ child_order_hints:
   - is-01m2yrfmke8j4c9je5v03s67bq
   - is-01m2yrfn1gy2xtyxayev3rgr7t
   - is-01m3jd1gd0n3w6ck4kj09kat05
+  - is-01m3jx84rbxf06bdgrx0q9kn74
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-27T21:46:56.842Z
+updated_at: 2026-09-28T02:25:35.687Z
 ---
-Uncached Claude Code and Codex reports are implemented and merged at main 4c55617: adapters, compact ledger, exact selection, report / daily / sessions, goldens, ccusage fixture parity, terminal color and progress, and local acceptance tools. Independent technical review is complete. The current assessment is usable source-built developer-alpha quality, not yet accepted for public 0.1 release. Remaining: CLI honesty uro-oz6w; reliable aggregate QA uro-qg1a; process-wide memory admission uro-6pi8, density-based scaling proofs uro-z1h1 and representative accepted-head evidence uro-erqo under uro-zrr0; consented G1 uro-d36a; full-history QA uro-ky6c; and recorded or explicitly deferred maintainer decisions and unverified provider-shape evidence. The representative 512 MiB and 10-second gates were retired on 2026-09-27. Require manageable whole-process memory, a conservative 100 GiB projection within 25% of reference-machine RAM, raw-byte streaming within the retained-state envelope, and safe early refusal for dense over-budget inputs. Existing small synthetic limits remain. Hybrid spill and further decode optimization are follow-ups. Release packaging and candidate rehearsal uro-30ef follow milestone acceptance. PR 15 explains the readiness assessment and broader analytics roadmap; it does not implement or accept these remaining requirements.
+The uncached Claude Code and Codex reporting engine is merged at main 4c55617, with completed technical review and green automated checks. Current real-history QA found a confirmed Codex paginated-fork double count (uro-kpbp): an entirely synthetic parent=100, child-own=20 case reports 220 instead of 120, with complete coverage and no diagnostics. Do not treat whole-history Codex totals as trustworthy or accept the public alpha until fixed and revalidated. Claude exploratory use has stronger independent-comparison evidence, with private results retained locally. Other remaining work: CLI honesty uro-oz6w; aggregate QA uro-qg1a; process-wide memory admission uro-6pi8, density scale proofs uro-z1h1 and accepted-head evidence uro-erqo under uro-zrr0; G1 uro-d36a; full-history QA uro-ky6c; recorded or deferred maintainer policies and unverified provider shapes. The representative 512 MiB and 10-second gates were retired on 2026-09-27. Require manageable whole-process memory, a conservative 100 GiB projection within 25% of reference-machine RAM, raw-byte streaming within the retained-state envelope and safe early refusal for dense histories. Small synthetic regression limits remain. Spill and further decode optimization are follow-ups. Release packaging uro-30ef follows acceptance. Green CI and documentation plans do not constitute release acceptance.
 
 ## Notes
 
