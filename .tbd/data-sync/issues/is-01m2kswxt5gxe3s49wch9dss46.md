@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 9
+version: 10
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-09-28T07:12:42.906Z
+updated_at: 2026-09-28T07:13:43.417Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -37,4 +37,4 @@ Acceptance:
 
 ## Notes
 
-In progress on codex/alpha-pricing-context. Added dependency-free exact nonnegative Decimal with checked arithmetic and string-only serde, category pricing with known priced/unpriced token populations and unknown-count labels, and validated offline exact-key rate indexing. Matcher covers half-open dates, highest whole-request context bands, unknown context size, all provider/channel/model/tier/speed/geography dimensions, and overlap rejection. Added request-level valuation from recorded context with explicit supplied-default labels, optional chosen price date, per-model advisor components (no parent-total double charge), missing-usage and conflicting-context handling. Added CostTotals with separate currencies and disjoint priced/default-assumed/partial/unpriced request populations; failed accumulation leaves totals unchanged. Thirteen core pricing tests pass. Earlier workspace tests and all-target all-feature lint passed before the cost-aggregation addition; final expanded validation ongoing. Six ingestion/context integration tests passed before latest additions for missing-date, counterfactual-date, and unknown-provider handling. No bundled real rate table, metadata provenance/override parser, default-policy approval, cache lifetime assumption labels, or CLI output integration yet. Full make check and accepted-head private QA remain required; no pricing PR or alpha acceptance.
+In progress, uncommitted on codex/alpha-pricing-context. Implemented dependency-free exact Decimal (checked arithmetic, string-only serde), disjoint category pricing with priced/unpriced/unknown coverage, validated exact-key offline rate index (half-open dates, highest context band, overlap rejection), conservative unknown-context-size handling, per-request/model valuation with explicit supplied-default labels and optional chosen date, and currency-separated CostTotals with disjoint request coverage and atomic overflow failure. Thirteen core accounting tests and all six ingestion/context integration tests pass, including advisor components priced once, missing date versus explicit counterfactual date, custom providers left unmatched, missing usage, and conflicting originals. Workspace tests passed before the final cost-totals addition; all-target all-feature clippy passed after it. Final integration tests passed on current source. No bundled reviewed rates, provenance/override document parser, accepted default-policy data, cache lifetime assumption labels, source-reported-cost output, or CLI report integration yet. Malformed recorded dimensions, Codex no-turn context, cache metrics, full make check, memory safety/scale proofs and accepted-head private QA remain required. No pricing PR or alpha acceptance.
