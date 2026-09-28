@@ -3,9 +3,9 @@ type: is
 id: is-01m2kswxt5gxe3s49wch9dss46
 title: "Implement price matching: dates, tiers, context bands and cache-write durations"
 kind: task
-status: open
+status: in_progress
 priority: 1
-version: 7
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-09-28T04:00:33.764Z
+updated_at: 2026-09-28T07:12:42.906Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -37,4 +37,4 @@ Acceptance:
 
 ## Notes
 
-Whole-history workflow plan plan-2026-09-20-usage-analysis-workflow.md adds explicit historical-at-request-date versus chosen-price-date counterfactual valuation. Preserve model/provider/channel basis, service tier/speed, context band and cache lifetimes before aggregation; missing usage has unknown monetary value. Price each request or a lossless pricing partition with exact decimals. Report priced/default-assumed/unpriced populations and unknown coverage; do not equate list price with subscriptions. Input evidence is owned by uro-381f; G5 uro-i6xb verifies the workflow. Existing Candidate pricing policy is not silently accepted.
+In progress on codex/alpha-pricing-context. Added dependency-free exact nonnegative Decimal with checked arithmetic and string-only serde, category pricing with known priced/unpriced token populations and unknown-count labels, and validated offline exact-key rate indexing. Matcher covers half-open dates, highest whole-request context bands, unknown context size, all provider/channel/model/tier/speed/geography dimensions, and overlap rejection. Added request-level valuation from recorded context with explicit supplied-default labels, optional chosen price date, per-model advisor components (no parent-total double charge), missing-usage and conflicting-context handling. Added CostTotals with separate currencies and disjoint priced/default-assumed/partial/unpriced request populations; failed accumulation leaves totals unchanged. Thirteen core pricing tests pass. Earlier workspace tests and all-target all-feature lint passed before the cost-aggregation addition; final expanded validation ongoing. Six ingestion/context integration tests passed before latest additions for missing-date, counterfactual-date, and unknown-provider handling. No bundled real rate table, metadata provenance/override parser, default-policy approval, cache lifetime assumption labels, or CLI output integration yet. Full make check and accepted-head private QA remain required; no pricing PR or alpha acceptance.
