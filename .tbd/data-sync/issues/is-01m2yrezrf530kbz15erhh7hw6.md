@@ -5,7 +5,7 @@ title: "Spec: Clean whole-history usage analysis and list-price estimates"
 kind: epic
 status: open
 priority: 1
-version: 9
+version: 10
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies: []
@@ -19,7 +19,8 @@ child_order_hints:
   - is-01m2yrherhddnx2j22g3xtqedr
   - is-01m3jwwpp0h7j5azt28c75zcsj
   - is-01m3jzhnnk1xk472z6y6gfj5be
+  - is-01m3na5hvvbrsrgtrn2v6w4jye
 created_at: 2026-09-20T06:36:08.846Z
-updated_at: 2026-09-28T03:04:45.490Z
+updated_at: 2026-09-29T00:48:51.578Z
 ---
 Deliver G5 in the linked plan: one reconciled snapshot, reusable artifacts, joint calendar/agent/provider/model grouping, cache metrics, tools and time, and explicit list-price estimates. Reuse existing summary/bundle and pricing work. Acceptance requires documented commands and a maintained runner without bespoke scripts. Full workflow remains milestone 0.5; this does not silently expand the 0.1 release scope.

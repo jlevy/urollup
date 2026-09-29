@@ -5,14 +5,16 @@ title: Run multiple usage views from one snapshot and reusable artifacts
 kind: feature
 status: open
 priority: 1
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies:
   - type: blocks
     target: is-01m2yrherhddnx2j22g3xtqedr
+  - type: blocks
+    target: is-01m3na5hvvbrsrgtrn2v6w4jye
 parent_id: is-01m2yrezrf530kbz15erhh7hw6
 created_at: 2026-09-20T06:37:29.130Z
-updated_at: 2026-09-28T04:00:33.379Z
+updated_at: 2026-09-29T00:48:51.578Z
 ---
 R2: expose shared-corpus library query execution and a documented CLI workflow over existing UsageSummary/BundleManifest artifacts. Decode/reconcile raw input once for an analysis run, independent of number of views/sessions. Later queries read only the named saved artifact when default sources are disabled; test with original roots unavailable. Persist snapshot/query identity, pricing context, dimensions and per-metric availability via existing schema owners; do not treat marginal JSON as a mergeable dataset. For calendar boundaries cutting 15-minute summary buckets, use request-level bundle evidence or explicitly refuse/label approximation. Keep benchmark wall-clock metadata separate from deterministic content. No new scratch database or Phase 3 cache dependency.
