@@ -3,9 +3,9 @@ type: is
 id: is-01m4fsve6qyh1655009mcb1vk3
 title: "Address PR #18 reviews A, B, C: compressed sources, unreadable-source reporting and Codex usage"
 kind: task
-status: open
+status: closed
 priority: 1
-version: 17
+version: 18
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels: []
 dependencies: []
@@ -27,6 +27,10 @@ child_order_hints:
   - is-01m4fsw5vksxqm25q85dfbb340
   - is-01m4fsw66p7f1f040vkas2a5tr
 created_at: 2026-10-09T07:43:12.597Z
-updated_at: 2026-10-09T07:43:37.173Z
+updated_at: 2026-10-09T08:24:14.783Z
+closed_at: 2026-10-09T08:24:14.781Z
+close_reason: "PR #18 reviews A, B, C addressed at caa9d1f; disposition replies posted (issuecomment-6077247624, -6077248020, -6077248312). A9 deferred and left open as uro-pny9; follow-up uro-zd3m filed from C1."
+resolution: null
+duplicate_of: null
 ---
 Address senior review A (https://github.com/jlevy/urollup/pull/18#pullrequestreview-5467179374), correctness review B (https://github.com/jlevy/urollup/pull/18#pullrequestreview-5467213761) and security review C (https://github.com/jlevy/urollup/pull/18#pullrequestreview-5467177624) of PR #18, all pinned at 2d6a1d3e82100d605e20886e5de22af42b924081. Coordinator design decisions 1-9 reconcile A1/A2/A3/A6, B1/B2/B3 and C1/C2/C3.
