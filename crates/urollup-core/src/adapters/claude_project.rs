@@ -29,10 +29,12 @@ use self::line::{LineHead, LineType};
 use super::{AdapterError, Ingested};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
-    RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, ModelUsage,
+    ProviderLimitObservation, Relationship, RelationshipKind, SourceArtifact, SourceCapability,
+    Thread,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
+use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
     ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation, RevisionChoice,
     RevisionSelector, reconcile,
@@ -297,8 +299,8 @@ struct RecordExtras {
 
 /// A record's `quotaLimits` object, already in the form a limit observation keeps.
 struct QuotaLimits {
-    limit_name: Option<Box<str>>,
-    native: Box<str>,
+    limit_name: Option<Name>,
+    native: Arc<str>,
 }
 
 #[derive(Clone, Debug)]
@@ -792,8 +794,8 @@ fn quota_limits(value: &Value) -> Option<QuotaLimits> {
     let quota = value.get("quotaLimits").and_then(Value::as_object)?;
     let sorted: BTreeMap<&String, &Value> = quota.iter().collect();
     Some(QuotaLimits {
-        limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(Box::from),
-        native: serde_json::to_string(&sorted).unwrap_or_default().into_boxed_str(),
+        limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(Name::new),
+        native: serde_json::to_string(&sorted).unwrap_or_default().into(),
     })
 }
 
@@ -1357,7 +1359,10 @@ fn append_limits(
         return Ok(());
     }
     let owner_thread = ids.get(&record.native_owner()).cloned();
-    let observed_at = record.timestamp.map(RecordTime::get).map_or(Basis::Unknown, Basis::Observed);
+    let observed_at = record
+        .timestamp
+        .map(|time| CompactTimestamp::from(time.get()))
+        .map_or(Basis::Unknown, Basis::Observed);
     if let Some(quota) = &extras.quota {
         let owner_request = record
             .message
@@ -1367,12 +1372,12 @@ fn append_limits(
             .map(|key| key.key.derive_id())
             .transpose()?;
         limits.push(ProviderLimitObservation {
-            limit_name: quota.limit_name.as_deref().map(str::to_owned),
+            limit_name: quota.limit_name,
             window: None,
             observed_at: observed_at.clone(),
             owner_thread: owner_thread.clone(),
             owner_request,
-            native: quota.native.clone(),
+            native: Arc::clone(&quota.native),
             evidence: evidence.clone(),
         });
     }
@@ -1383,7 +1388,7 @@ fn append_limits(
             observed_at,
             owner_thread,
             owner_request: None,
-            native: serde_json::json!({ "text": &**message }).to_string().into_boxed_str(),
+            native: serde_json::json!({ "text": &**message }).to_string().into(),
             evidence: evidence.clone(),
         });
     }

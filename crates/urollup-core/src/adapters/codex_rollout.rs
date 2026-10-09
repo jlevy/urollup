@@ -11,6 +11,9 @@
 //!   value.
 //! - Session metadata is summarized per rollout while it decodes, and each rollout's
 //!   records are freed as soon as its observations are built.
+//! - Limit observations share one copy of each distinct snapshot text. The copy is made
+//!   while observations are built rather than shared with the decoded record, so no
+//!   long-lived text pins memory that decoding frees.
 
 mod line;
 
@@ -345,7 +348,7 @@ impl<'a> CountReader<'a> {
 /// One `rate_limits` object: its limit name, the windows it reports, and its fields as
 /// sorted compact JSON. Consecutive identical snapshots in a rollout share one value.
 struct RateLimits {
-    limit_name: Option<String>,
+    limit_name: Option<Name>,
     windows: Vec<&'static str>,
     native: String,
 }
@@ -726,7 +729,7 @@ fn rate_limits(
     }
     let name = |key: &str| object.get(key).and_then(Value::as_str);
     let limits = Arc::new(RateLimits {
-        limit_name: name("limit_id").or_else(|| name("limit_name")).map(str::to_owned),
+        limit_name: name("limit_id").or_else(|| name("limit_name")).map(Name::new),
         windows: ["primary", "secondary"]
             .into_iter()
             .filter(|window| object.get(*window).is_some_and(|value| !value.is_null()))
@@ -853,6 +856,7 @@ fn normalize(
     }
     let mut copied_regions = 0_u64;
     let mut limit_observations = Vec::new();
+    let mut limit_texts = LimitTexts::default();
     let mut known_turns = KnownTurns::new();
     for source in &sources {
         if source.metas.root == Some(true) {
@@ -971,6 +975,7 @@ fn normalize(
                             strings.resolve(active_thread),
                             &thread_ids,
                             &mut previous_limits,
+                            &mut limit_texts,
                             &mut limit_observations,
                         );
                     }
@@ -1074,6 +1079,7 @@ fn normalize(
         }
     }
 
+    drop(limit_texts);
     let mut ledger = reconcile(
         ReconcileInput {
             threads: threads.into_values().collect(),
@@ -1203,36 +1209,61 @@ fn counter_observation(
     Ok(observation)
 }
 
+/// The stream a limit observation collapses within: owner thread, limit name and window.
+type LimitStream = (Option<AnalyticalId>, Option<Name>, &'static str);
+
+/// One shared copy of each snapshot text that limit observations carry.
+///
+/// Rate limits are account-wide, so rollouts that run at the same time record the same
+/// snapshots, and each snapshot reports up to two windows: a whole Codex history has
+/// about a third as many distinct texts as limit observations. A text is copied out of
+/// its decoded record rather than shared with it. Sharing the decoder's copy measured
+/// worse: the long-lived texts stayed scattered through the memory that decoding frees
+/// and kept its pages in the footprint. The table is dropped before reconciliation, and
+/// the observations keep the texts.
+#[derive(Default)]
+struct LimitTexts(HashSet<Arc<str>>);
+
+impl LimitTexts {
+    /// The shared copy of `text`, made on its first use.
+    fn share(&mut self, text: &str) -> Arc<str> {
+        if let Some(shared) = self.0.get(text) {
+            return Arc::clone(shared);
+        }
+        let shared: Arc<str> = text.into();
+        self.0.insert(Arc::clone(&shared));
+        shared
+    }
+}
+
 /// Emits one limit observation per reported window, skipping a snapshot identical to the
 /// previous one in the same stream of this rollout: owner thread, limit and window.
-/// The stream a limit observation collapses within: owner thread, limit name and window.
-type LimitStream = (Option<AnalyticalId>, Option<String>, &'static str);
-
 fn append_limits(
     record: &RecordView,
     limits: &Arc<RateLimits>,
     owner: &str,
     thread_ids: &BTreeMap<String, AnalyticalId>,
     previous: &mut BTreeMap<LimitStream, Arc<RateLimits>>,
+    texts: &mut LimitTexts,
     observations: &mut Vec<ProviderLimitObservation>,
 ) {
     let owner_thread = thread_ids.get(owner).cloned();
+    let mut native = None;
     for window in &limits.windows {
-        let stream = (owner_thread.clone(), limits.limit_name.clone(), *window);
+        let stream = (owner_thread.clone(), limits.limit_name, *window);
         let repeated = previous.get(&stream).is_some_and(|last| last.native == limits.native);
         previous.insert(stream, Arc::clone(limits));
         if repeated {
             continue;
         }
+        let native = native.get_or_insert_with(|| texts.share(&limits.native));
         observations.push(ProviderLimitObservation {
-            limit_name: limits.limit_name.clone(),
-            window: Some((*window).to_owned()),
-            observed_at: record
-                .timestamp
-                .map_or(Basis::Unknown, |time| Basis::Observed(time.get())),
+            limit_name: limits.limit_name,
+            window: Some(Name::new(window)),
+            observed_at: record.timestamp.map_or(Basis::Unknown, Basis::Observed),
             owner_thread: owner_thread.clone(),
             owner_request: None,
-            native: limits.native.as_str().into(),
+            native: Arc::clone(native),
             evidence: record.evidence.clone(),
         });
     }
@@ -1387,6 +1418,7 @@ fn rollout_name(locator: &str) -> RolloutName {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::sync::Arc;
 
@@ -1398,6 +1430,7 @@ mod tests {
     };
     use crate::ledger::diagnostics::DiagnosticCode;
     use crate::ledger::identity::AnalyticalId;
+    use crate::ledger::names::Name;
     use crate::sources::evidence::EvidenceRef;
     use crate::sources::reader::{RawRecord, RecordDisposition};
 
@@ -1461,6 +1494,45 @@ mod tests {
         assert_eq!(copied.occurrences, 4);
         assert_eq!(copied.evidence.len(), 2, "only relevant copied records retain evidence");
         assert_eq!(ingested.manifest.entries[0].counters.skipped, 2);
+    }
+
+    #[test]
+    fn limit_observations_share_one_copy_of_each_snapshot_text() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        // Two rollouts record one account-wide snapshot and a third a later one; each
+        // snapshot reports two windows.
+        for (index, used) in [(1, 5), (2, 5), (3, 6)] {
+            let thread = format!("00000000-0000-7000-8000-00000000000{index}");
+            let lines = [
+                serde_json::json!({"type": "session_meta", "payload": {"id": thread}}),
+                serde_json::json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "primary": {"used_percent": used},
+                            "secondary": {"used_percent": 1}
+                        }
+                    }
+                }),
+            ];
+            let rollout =
+                sessions.join(format!("rollout-2026-09-16T12-00-0{index}-{thread}.jsonl"));
+            fs::write(rollout, lines.map(|line| format!("{line}\n")).concat()).unwrap();
+        }
+
+        let ingested = ingest_root(home.path()).unwrap();
+        let texts: BTreeSet<_> = ingested
+            .limit_observations
+            .iter()
+            .map(|observation| Arc::as_ptr(&observation.native).cast::<u8>().addr())
+            .collect();
+
+        assert_eq!(ingested.limit_observations.len(), 6);
+        assert_eq!(texts.len(), 2, "one allocation per distinct snapshot text");
     }
 
     #[test]
@@ -1581,7 +1653,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &repeat));
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(first.windows, ["primary"]);
-        assert_eq!(first.limit_name.as_deref(), Some("codex"));
+        assert_eq!(first.limit_name.map(Name::as_str), Some("codex"));
     }
 
     #[test]

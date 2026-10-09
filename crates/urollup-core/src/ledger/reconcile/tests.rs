@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use jiff::Timestamp;
 use proptest::prelude::*;
 
 use super::{
@@ -10,10 +11,11 @@ use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, sele
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::DiagnosticCode;
 use crate::ledger::entities::{
-    Basis, Confidence, Counting, Ownership, ProviderLimitObservation, Relationship,
-    RelationshipKind, RevisionStatus, Thread, ToolAction,
+    Basis, CompactTimestamp, Confidence, Counting, Ownership, ProviderLimitObservation,
+    Relationship, RelationshipKind, RevisionStatus, Thread, ToolAction,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity};
+use crate::ledger::names::Name;
 use crate::ledger::scope::tests::{PROVIDER_RESPONSE, THREAD_DIGEST};
 use crate::ledger::scope::{DerivedKey, IdentityBasis, ScopedKey};
 use crate::ledger::tokens::{Measures, TokenMeasures};
@@ -113,12 +115,12 @@ fn relationship_observation(from: u8, to: u8, src: u8, offset: u64, proven: bool
 
 fn limit_observation(stream: u8, src: u8, offset: u64, value: u8) -> ProviderLimitObservation {
     ProviderLimitObservation {
-        limit_name: Some(format!("limit-{stream}")),
-        window: Some("primary".to_owned()),
+        limit_name: Some(Name::from(format!("limit-{stream}"))),
+        window: Some(Name::new("primary")),
         observed_at: Basis::Unknown,
         owner_thread: Some(thread(&format!("t{stream}"))),
         owner_request: None,
-        native: serde_json::json!({ "used_percent": value }).to_string().into_boxed_str(),
+        native: serde_json::json!({ "used_percent": value }).to_string().into(),
         evidence: evidence(src, offset),
     }
 }
@@ -527,6 +529,98 @@ fn only_consecutive_identical_limit_snapshots_collapse() {
             .collect::<Vec<_>>(),
         vec![0, 20, 30]
     );
+}
+
+/// Limit observations drawn from a few values of every field, so sort ties, re-reads and
+/// repeated snapshots are common. Names and native texts are chosen so that their text
+/// order differs from their order of first use, and each row allocates its own text.
+fn arbitrary_limit_observation() -> impl Strategy<Value = ProviderLimitObservation> {
+    (
+        (0u8..2, 0u64..4),
+        prop::option::of(0u8..2),
+        prop::option::of(prop_oneof![Just("secondary"), Just("primary"), Just("")]),
+        prop::option::of(prop_oneof![Just("codex_b"), Just("codex"), Just("codex_a")]),
+        (0u8..4, -2i64..2, prop_oneof![Just(0), Just(1), Just(999_999_999)]),
+        0u8..12,
+    )
+        .prop_map(
+            |((src, slot), owner, window, limit_name, (basis, second, nanosecond), value)| {
+                let time = CompactTimestamp::from(Timestamp::new(second, nanosecond).unwrap());
+                ProviderLimitObservation {
+                    limit_name: limit_name.map(Name::new),
+                    window: window.map(Name::new),
+                    observed_at: match basis {
+                        0 => Basis::Unknown,
+                        1 => Basis::Observed(time),
+                        2 => Basis::Configured(time),
+                        _ => Basis::Inferred(time),
+                    },
+                    owner_thread: owner.map(|owner| thread(&format!("t{owner}"))),
+                    owner_request: None,
+                    native: serde_json::json!({ "used_percent": value }).to_string().into(),
+                    evidence: evidence(src, slot * 10),
+                }
+            },
+        )
+}
+
+/// Limit reconciliation as it was before rows held interned names, compact timestamps and
+/// shared text: a stable sort by an owned key of strings and full timestamps, then the
+/// consecutive-duplicate collapse into a new vector.
+fn owned_key_limit_reconciliation(
+    mut observations: Vec<ProviderLimitObservation>,
+) -> Vec<ProviderLimitObservation> {
+    let text = |name: Option<Name>| name.map(|name| name.as_str().to_owned());
+    observations.sort_by_cached_key(|observation| {
+        let observed_at: Basis<Timestamp> = match &observation.observed_at {
+            Basis::Observed(time) => Basis::Observed(time.get()),
+            Basis::Configured(time) => Basis::Configured(time.get()),
+            Basis::Inferred(time) => Basis::Inferred(time.get()),
+            Basis::Unknown => Basis::Unknown,
+        };
+        (
+            observation.evidence.clone(),
+            observation.owner_thread.clone(),
+            observation.owner_request.clone(),
+            text(observation.limit_name),
+            text(observation.window),
+            observed_at,
+            observation.native.to_string(),
+        )
+    });
+    observations.dedup();
+    let mut reconciled = Vec::with_capacity(observations.len());
+    let mut previous = BTreeMap::new();
+    for observation in observations {
+        let stream = (
+            observation.evidence.source.clone(),
+            observation.owner_thread.clone(),
+            observation.owner_request.clone(),
+            text(observation.limit_name),
+            text(observation.window),
+        );
+        let signature = observation.native.to_string();
+        if previous.get(&stream) != Some(&signature) {
+            reconciled.push(observation);
+        }
+        previous.insert(stream, signature);
+    }
+    reconciled
+}
+
+proptest! {
+    #[test]
+    fn limit_reconciliation_matches_the_owned_key_algorithm(
+        observations in prop::collection::vec(arbitrary_limit_observation(), 0..32),
+    ) {
+        let expected = owned_key_limit_reconciliation(observations.clone());
+        let ledger = reconcile(
+            ReconcileInput { limit_observations: observations, ..ReconcileInput::default() },
+            &LatestRevision,
+        )
+        .unwrap();
+        prop_assert_eq!(ledger.limit_observations, expected);
+    }
 }
 
 /// Observations drawn from a small universe, so keys, copies, conflicts and rereads

@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use jiff::Timestamp;
 
@@ -515,25 +516,36 @@ pub struct ToolAction {
 }
 
 /// A usage-limit record as the source wrote it (design §3.1).
+///
+/// A whole Codex history keeps over a hundred thousand of these until its run ends. Rate
+/// limits are account-wide, so many rows across threads and windows repeat one snapshot:
+/// names are interned, time is compact, and an adapter can give every row that carries
+/// one native text the same allocation of it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderLimitObservation {
     /// The native limit name, such as a Codex `limit_id` or Claude `rateLimitType`.
-    pub limit_name: Option<String>,
+    pub limit_name: Option<Name>,
     /// The native window label, such as Codex `primary` or `secondary`.
-    pub window: Option<String>,
+    pub window: Option<Name>,
     /// When the limit was observed; unknown for sources without a record timestamp.
-    pub observed_at: Basis<Timestamp>,
+    pub observed_at: Basis<CompactTimestamp>,
     /// The owning thread, when proven.
     pub owner_thread: Option<AnalyticalId>,
     /// The owning request, when proven.
     pub owner_request: Option<AnalyticalId>,
     /// Native field names and values verbatim, including window length, reset time,
     /// utilization in its native unit, plan, credit and overage fields, as one compact
-    /// JSON object with sorted keys.
-    pub native: Box<str>,
+    /// JSON object with sorted keys. Equality and order are those of the text.
+    pub native: Arc<str>,
     /// The record.
     pub evidence: EvidenceRef,
 }
+
+// 128 bytes, down from 168 plus three owned strings per row: a 40-byte evidence
+// reference, two 17-byte owner IDs, a 16-byte shared native text, a 16-byte timestamp
+// with its basis and two 8-byte interned names make 122 bytes, padded to 8-byte alignment.
+// A whole Codex history's 136,618 rows take 17 MiB inline instead of 22 MiB.
+const _: () = assert!(std::mem::size_of::<ProviderLimitObservation>() <= 128);
 
 #[cfg(test)]
 mod tests {

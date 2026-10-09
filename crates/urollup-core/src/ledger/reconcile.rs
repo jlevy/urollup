@@ -30,8 +30,7 @@
 //!    the others [`Counting::Unresolved`], which totals never add.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-use jiff::Timestamp;
+use std::sync::Arc;
 
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
@@ -724,20 +723,21 @@ fn reconcile_limit_observations(
         observation.owner_request =
             observation.owner_request.as_ref().map(|owner| canonical_id(owner, request_ids));
     }
-    observations.sort_by_cached_key(limit_sort_key);
+    // The sort key is every field, so observations that compare equal are identical, and
+    // an in-place unstable sort gives the stable sort's result without cloning a key per
+    // row.
+    observations.sort_unstable_by(|left, right| limit_sort_key(left).cmp(&limit_sort_key(right)));
     observations.dedup();
-    let mut reconciled: Vec<ProviderLimitObservation> = Vec::with_capacity(observations.len());
-    let mut previous: BTreeMap<LimitStreamKey, Box<str>> = BTreeMap::new();
-    for observation in observations {
-        let stream = limit_stream_key(&observation);
-        let signature = observation.native.clone();
-        let repeated = previous.get(&stream) == Some(&signature);
-        if !repeated {
-            reconciled.push(observation);
-        }
-        previous.insert(stream, signature);
-    }
-    Ok(reconciled)
+    let mut previous: BTreeMap<LimitStreamKey, Arc<str>> = BTreeMap::new();
+    observations.retain(|observation| {
+        let signature = Arc::clone(&observation.native);
+        let repeated = previous
+            .insert(limit_stream_key(observation), signature)
+            .is_some_and(|last| last == observation.native);
+        !repeated
+    });
+    observations.shrink_to_fit();
+    Ok(observations)
 }
 
 fn canonical_thread_ids(
@@ -874,16 +874,18 @@ fn diagnose_entity_conflicts(
 }
 
 type LimitStreamKey =
-    (AnalyticalId, Option<AnalyticalId>, Option<AnalyticalId>, Option<String>, Option<String>);
+    (AnalyticalId, Option<AnalyticalId>, Option<AnalyticalId>, Option<Name>, Option<Name>);
 
-type LimitSortKey = (
-    EvidenceRef,
-    Option<AnalyticalId>,
-    Option<AnalyticalId>,
-    Option<String>,
-    Option<String>,
-    Basis<Timestamp>,
-    Box<str>,
+/// A limit observation's canonical order, borrowed so sorting copies nothing; the native
+/// fields compare as text.
+type LimitSortKey<'a> = (
+    &'a EvidenceRef,
+    &'a Option<AnalyticalId>,
+    &'a Option<AnalyticalId>,
+    Option<Name>,
+    Option<Name>,
+    &'a Basis<CompactTimestamp>,
+    &'a str,
 );
 
 fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
@@ -891,20 +893,20 @@ fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
         observation.evidence.source.clone(),
         observation.owner_thread.clone(),
         observation.owner_request.clone(),
-        observation.limit_name.clone(),
-        observation.window.clone(),
+        observation.limit_name,
+        observation.window,
     )
 }
 
-fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey {
+fn limit_sort_key(observation: &ProviderLimitObservation) -> LimitSortKey<'_> {
     (
-        observation.evidence.clone(),
-        observation.owner_thread.clone(),
-        observation.owner_request.clone(),
-        observation.limit_name.clone(),
-        observation.window.clone(),
-        observation.observed_at.clone(),
-        observation.native.clone(),
+        &observation.evidence,
+        &observation.owner_thread,
+        &observation.owner_request,
+        observation.limit_name,
+        observation.window,
+        &observation.observed_at,
+        &observation.native,
     )
 }
 

@@ -9,6 +9,7 @@ use urollup_core::adapters::AdapterError;
 use urollup_core::adapters::claude_project::ingest_root;
 use urollup_core::adapters::codex_rollout::ingest_root as ingest_codex;
 use urollup_core::ledger::entities::{Confidence, ProviderLimitObservation, RelationshipKind};
+use urollup_core::ledger::names::Name;
 use urollup_core::ledger::scope::IdentityBasis;
 use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex};
@@ -46,11 +47,15 @@ fn assert_limit_observations(actual: &[ProviderLimitObservation], expected: &Val
     assert_eq!(actual.len(), expected.len(), "{name}: limit observations");
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         assert_eq!(
-            actual.limit_name.as_deref(),
+            actual.limit_name.map(Name::as_str),
             expected["limit"].as_str(),
             "{name}: limit {index}"
         );
-        assert_eq!(actual.window.as_deref(), expected["window"].as_str(), "{name}: window {index}");
+        assert_eq!(
+            actual.window.map(Name::as_str),
+            expected["window"].as_str(),
+            "{name}: window {index}"
+        );
         let native: Value = serde_json::from_str(&actual.native).expect("native fields are JSON");
         assert_eq!(native, expected["native"], "{name}: native limit fields {index}");
     }
