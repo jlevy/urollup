@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::ledger::admission::CapacityError;
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{ProviderLimitObservation, Relationship, SourceArtifact, Thread};
@@ -175,6 +176,10 @@ pub enum AdapterError {
     /// Request observations could not be reconciled.
     #[error(transparent)]
     Reconcile(#[from] ReconcileError),
+    /// Process-wide memory admission refused the invocation. A row-ceiling refusal
+    /// converts to [`ReconcileError::CapacityExceeded`] instead, which keeps its message.
+    #[error(transparent)]
+    Capacity(CapacityError),
     /// Normalized token arithmetic overflowed.
     #[error(transparent)]
     Tokens(#[from] crate::ledger::tokens::TokenOverflow),
@@ -184,4 +189,17 @@ pub enum AdapterError {
     /// A source-decoding worker thread panicked.
     #[error(transparent)]
     Worker(#[from] crate::sources::parallel::ParallelReadError),
+}
+
+impl From<CapacityError> for AdapterError {
+    fn from(error: CapacityError) -> Self {
+        match error {
+            CapacityError::Rows { observations, maximum, limit, .. } => {
+                Self::Reconcile(ReconcileError::CapacityExceeded { observations, maximum, limit })
+            }
+            error @ (CapacityError::Memory { .. } | CapacityError::BelowFloor { .. }) => {
+                Self::Capacity(error)
+            }
+        }
+    }
 }

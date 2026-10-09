@@ -25,6 +25,7 @@ use self::line::{
     DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
 };
 use super::{AdapterError, Ingested};
+use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
@@ -42,7 +43,6 @@ use crate::ledger::reconcile::{
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
 use crate::selection::{Agent, agent_thread_identity};
-use crate::sources::admission::Admission;
 use crate::sources::decode::{parse_timestamp, validate_record};
 use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::sources::manifest::{ManifestEntry, Representation, SnapshotManifest};
@@ -594,7 +594,7 @@ pub fn ingest_discovery_with_capacity(
         });
     }
 
-    let admission = Admission::new(capacity);
+    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
     let thread_ids = Arc::new(thread_ids_from_locators(
         discovery.sources.iter().map(|source| source.locator.as_str()),
     )?);
@@ -604,8 +604,8 @@ pub fn ingest_discovery_with_capacity(
         |source| source_weight(&source.files),
         |source| decode_rollout(source, &thread_ids, &admission),
     );
-    if admission.stopped() {
-        return Err(admission.error().into());
+    if let Some(refusal) = admission.refusal() {
+        return Err(refusal.into());
     }
     let decoded = decoded?;
     let (entries, rollouts): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
@@ -617,7 +617,7 @@ pub fn ingest_discovery_with_capacity(
 /// Reads one rollout, independently of every other source.
 fn decode_source(
     source: &DiscoveredSource,
-    admission: &Admission,
+    admission: &MemoryAdmission,
 ) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
     let rollout = rollout_name(&source.locator);
     let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
@@ -736,9 +736,9 @@ impl SourceDecoder {
     fn decode_with_admission(
         &mut self,
         raw: &RawRecord<'_>,
-        admission: Option<&Admission>,
+        admission: Option<&MemoryAdmission>,
     ) -> RecordDisposition {
-        if admission.is_some_and(Admission::stopped) {
+        if admission.is_some_and(MemoryAdmission::stopped) {
             return RecordDisposition::Stop;
         }
         if !may_be_relevant(raw.bytes) {
@@ -764,7 +764,7 @@ impl SourceDecoder {
             | RecordKind::TurnContext { .. }
             | RecordKind::ThreadSettingsApplied { .. } => false,
         };
-        if request_bearing && admission.is_some_and(|budget| !budget.reserve()) {
+        if request_bearing && admission.is_some_and(|budget| !budget.reserve_row(Agent::Codex)) {
             return RecordDisposition::Stop;
         }
         // The `src-` ID lives on the manifest entry; evidence carries a local index.
@@ -1112,7 +1112,7 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) ->
 fn decode_rollout(
     source: &DiscoveredSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
-    admission: &Admission,
+    admission: &MemoryAdmission,
 ) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
     let (entry, parsed) = decode_source(source, admission)?;
     // Only a rollout without usage records may infer where a legacy copied prefix ends
@@ -2207,9 +2207,8 @@ mod tests {
 
     #[test]
     fn admission_does_not_charge_metadata_without_usage() {
-        let budget = crate::sources::admission::Admission::new(
-            &crate::ledger::capacity::ObservationCapacity::from_rows(0),
-        );
+        let budget = crate::ledger::admission::MemoryAdmission::unlimited()
+            .with_row_ceiling(crate::ledger::capacity::ObservationCapacity::from_rows(0));
         let evidence = EvidenceRef::new(0, 0, 1);
         let mut decoder = SourceDecoder::new("one");
         for line in [
@@ -2232,9 +2231,8 @@ mod tests {
             r#"{"type":"compacted","payload":{"latest_token_usage_record":{"usage":{"input_tokens":3}}}}"#,
             r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3}}}}"#,
         ] {
-            let budget = crate::sources::admission::Admission::new(
-                &crate::ledger::capacity::ObservationCapacity::from_rows(1),
-            );
+            let budget = crate::ledger::admission::MemoryAdmission::unlimited()
+                .with_row_ceiling(crate::ledger::capacity::ObservationCapacity::from_rows(1));
             let evidence = EvidenceRef::new(0, 0, 1);
             let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
             let mut first = SourceDecoder::new("one");

@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
 use super::{AdapterError, Ingested};
+use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
@@ -44,7 +45,6 @@ use crate::ledger::scope::{
 };
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, agent_thread_identity};
-use crate::sources::admission::Admission;
 use crate::sources::decode::parse_timestamp;
 use crate::sources::evidence::{EvidenceRef, SourceTable};
 use crate::sources::manifest::{
@@ -552,15 +552,15 @@ pub fn ingest_discovery_with_capacity(
         });
     }
 
-    let admission = Admission::new(capacity);
+    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
     let decoded = try_read_in_parallel(
         &discovery.sources,
         workers,
         |source| source_weight(&source.files),
         |source| decode_source(source, &admission),
     );
-    if admission.stopped() {
-        return Err(admission.error().into());
+    if let Some(refusal) = admission.refusal() {
+        return Err(refusal.into());
     }
     let decoded = decoded?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
@@ -582,7 +582,7 @@ struct DecodedSource {
 /// Reads one transcript and its subagent sidecar, independently of every other source.
 fn decode_source(
     source: &DiscoveredSource,
-    admission: &Admission,
+    admission: &MemoryAdmission,
 ) -> Result<DecodedSource, AdapterError> {
     let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
@@ -694,9 +694,9 @@ impl SourceDecoder {
     fn decode_with_admission(
         &mut self,
         raw: &RawRecord<'_>,
-        admission: Option<&Admission>,
+        admission: Option<&MemoryAdmission>,
     ) -> RecordDisposition {
-        if admission.is_some_and(Admission::stopped) {
+        if admission.is_some_and(MemoryAdmission::stopped) {
             return RecordDisposition::Stop;
         }
         let facts = &mut self.facts;
@@ -751,7 +751,7 @@ impl SourceDecoder {
             }
             LineType::Other => return RecordDisposition::Skipped,
         };
-        if request_record && admission.is_some_and(|budget| !budget.reserve()) {
+        if request_record && admission.is_some_and(|budget| !budget.reserve_row(Agent::Claude)) {
             return RecordDisposition::Stop;
         }
         let record =
@@ -1692,9 +1692,8 @@ mod tests {
 
     #[test]
     fn admission_is_shared_and_refuses_before_retaining_request_rows() {
-        let budget = crate::sources::admission::Admission::new(
-            &crate::ledger::capacity::ObservationCapacity::from_rows(1),
-        );
+        let budget = crate::ledger::admission::MemoryAdmission::unlimited()
+            .with_row_ceiling(crate::ledger::capacity::ObservationCapacity::from_rows(1));
         let bytes =
             br#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#;
         let evidence = source_evidence(0);

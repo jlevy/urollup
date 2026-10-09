@@ -347,8 +347,8 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slice 1 (budget source) implemented, nothing
-wired into ingestion yet.
+**Status:** design accepted (2026-10-09); slices 1 and 2 (budget source and ledger)
+implemented, with only the row ceiling wired into ingestion.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -990,6 +990,25 @@ Choices made while implementing, where this design left room:
   print one decimal (`15.6 GiB`). A percent without a known size is the new
   `RamBudgetError::UnknownEffectiveMemory`, whose text no longer suggests `--max-rows`;
   the row-ceiling error text is unchanged until slice 7.
+- **Ledger (slice 2).** `ledger::admission::MemoryAdmission` keeps `E` in one atomic
+  counter whose limit is `⌊(B − F) / H⌋`, with `H` an exact ratio (3/2), so the check
+  needs no floating point.
+  Three lifetimes share the counter: holds (`Hold::Discovery`, `Hold::Ledger` per agent
+  and `Hold::SessionIndex`), set only at checkpoints; charges until exit, for process
+  interns; and the current phase’s charges, which each `checkpoint` replaces with its
+  exact estimate. `commit` releases the agent’s phase charges and discovery hold and
+  holds its ledger. A checkpoint also resets the large-record permit’s high-water charge,
+  which is how the permit and worker slots are released when decode ends.
+  Checkpoint refusals print `F + H × E`, the whole-process estimate compared with `B`;
+  phases read `cataloging discovered sources`, `reading Codex rollouts`, `building Codex
+  observations`, `reconciling Codex requests`, `finalizing the Codex ledger`, `indexing
+  Codex sessions` and `querying and rendering the output`. A budget below `F + H × b`
+  refuses with `the memory budget of … is below the … that one
+  decoding worker needs; raise --max-ram`. The adapters’ row admission now runs on a
+  `MemoryAdmission` with an unlimited byte budget and the row ceiling, one per ingest
+  call; public ingest signatures and the CLI are unchanged, and a row refusal still
+  converts to `ReconcileError::CapacityExceeded`, so its message is the same.
+  Memory refusals reach callers as the new `AdapterError::Capacity`.
 
 ### Parallelism and Determinism
 
