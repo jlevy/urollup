@@ -2375,6 +2375,10 @@ records how the engine reached this shape, with dated whole-history measurements
 - **Discovery and selection:** discovery follows the skip rule in
   [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
   sources to the selected session families before any source is decoded.
+  A Codex family is read from each rollout’s first record, from any file of the source
+  under the reader’s rules; a rollout with no readable first record stays in every
+  narrowed selection, so ingest reads it or reports it as incomplete.
+  Identifying the dialect of a `--source` directory likewise skips files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
   weighting compressed files by an assumed expansion.

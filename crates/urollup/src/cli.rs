@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
-use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -29,7 +28,6 @@ use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
     derive_agent_thread_id,
 };
-use urollup_core::sources::manifest::Representation;
 use urollup_core::sources::parallel;
 use urollup_core::sources::reader::{self, ReadOptions};
 use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
@@ -609,6 +607,8 @@ struct CatalogSource {
     native_selector: OsString,
     analytical_selector: String,
     paths: Vec<PathBuf>,
+    /// Whether no file of the source had a readable header, so its family is unknown.
+    unread: bool,
 }
 
 impl CatalogSource {
@@ -701,7 +701,11 @@ fn retain_catalog_families(
     discovery.sources = std::mem::take(&mut discovery.sources)
         .into_iter()
         .zip(catalog)
-        .filter_map(|(source, catalog)| selected.contains(&catalog.family).then_some(source))
+        // A source whose header could not be read may belong to any family, so it is left
+        // for ingest, which reads it or reports it as incomplete.
+        .filter_map(|(source, catalog)| {
+            (catalog.unread || selected.contains(&catalog.family)).then_some(source)
+        })
         .collect();
 }
 
@@ -738,6 +742,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
         native_selector,
         analytical_selector,
         paths: source_paths(source),
+        unread: false,
     })
 }
 
@@ -747,12 +752,12 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
     for source in &discovery.sources {
         let thread = codex_thread_from_locator(&source.locator);
         adjacency.entry(thread.clone()).or_default();
-        let links = read_codex_session_links(source)?;
-        for linked in &links {
+        let links = read_codex_session_links(source);
+        for linked in links.iter().flatten() {
             adjacency.entry(thread.clone()).or_default().insert(linked.clone());
             adjacency.entry(linked.clone()).or_default().insert(thread.clone());
         }
-        headers.push((thread, source));
+        headers.push((thread, source, links.is_none()));
     }
 
     let mut component_by_thread = BTreeMap::new();
@@ -773,7 +778,7 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
 
     headers
         .into_iter()
-        .map(|(thread, source)| {
+        .map(|(thread, source, unread)| {
             let analytical_selector = derive_agent_thread_id(Agent::Codex, &thread)
                 .map_err(|error| Failure::runtime(error.to_string()))?
                 .to_string();
@@ -785,6 +790,7 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
                 native_selector: OsString::from(thread),
                 analytical_selector,
                 paths: source_paths(source),
+                unread,
             })
         })
         .collect()
@@ -805,62 +811,40 @@ fn codex_thread_from_locator(locator: &str) -> String {
     stem.get(stem.len().saturating_sub(36)..).unwrap_or(stem).to_owned()
 }
 
-fn read_codex_session_links(source: &DiscoveredSource) -> Result<BTreeSet<String>, Failure> {
-    let Some((path, representation)) = source.files.primary() else {
-        return Ok(BTreeSet::new());
-    };
-    // A rollout compressed or deleted since discovery has no header to link here; the
-    // ingest that follows reads its new representation or reports it as vanished.
-    let Some(reader) = open_decoded(path, representation)? else {
-        return Ok(BTreeSet::new());
-    };
-    let mut reader = reader.take(MAX_CATALOG_HEADER_BYTES.saturating_add(1));
-    let mut line = Vec::new();
-    reader.read_until(b'\n', &mut line).map_err(|error| {
-        Failure::runtime(format!("cannot read source {}: {error}", path.display()))
-    })?;
-    if u64::try_from(line.len()).unwrap_or(u64::MAX) > MAX_CATALOG_HEADER_BYTES {
-        return Err(Failure::runtime(format!(
-            "cannot inspect Codex session header in {}: first record exceeds {} MiB",
-            path.display(),
-            MAX_CATALOG_HEADER_BYTES / (1024 * 1024)
-        )));
-    }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
-        return Ok(BTreeSet::new());
-    };
-    if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
-        return Ok(BTreeSet::new());
-    }
-    Ok([
-        "/payload/session_id",
-        "/payload/parent_thread_id",
-        "/payload/forked_from_id",
-        "/payload/source/subagent/thread_spawn/parent_thread_id",
-    ]
-    .into_iter()
-    .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
-    .map(str::to_owned)
-    .collect())
-}
-
-/// Opens a source file through its decoder; `None` when it no longer exists.
-fn open_decoded(
-    path: &Path,
-    representation: Representation,
-) -> Result<Option<Box<dyn BufRead>>, Failure> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(Failure::runtime(format!(
-                "cannot open source {}: {error}",
-                path.display()
-            )));
+/// The threads a rollout's `session_meta` header links: its session, parent and fork
+/// origin. The header is the first record of the first file of the source that has one,
+/// read under the reader's rules, so a primary compressed since discovery is read from its
+/// new file. `None` when no file has a complete first record, as while a compressor is
+/// still writing it or when it is damaged: ingest then reads the source or reports it.
+fn read_codex_session_links(source: &DiscoveredSource) -> Option<BTreeSet<String>> {
+    reader::peek(&source.files, |reader| {
+        let mut line = Vec::new();
+        reader
+            .take(MAX_CATALOG_HEADER_BYTES.saturating_add(1))
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        // Only a terminated line within the record limit is a complete first record.
+        if line.last() != Some(&b'\n') {
+            return None;
         }
-    };
-    reader::decode(file, representation).map(Some).map_err(|error| {
-        Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
+            return Some(BTreeSet::new());
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+            return Some(BTreeSet::new());
+        }
+        Some(
+            [
+                "/payload/session_id",
+                "/payload/parent_thread_id",
+                "/payload/forked_from_id",
+                "/payload/source/subagent/thread_spawn/parent_thread_id",
+            ]
+            .into_iter()
+            .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+            .collect(),
+        )
     })
 }
 
@@ -894,10 +878,14 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
     }
     let mut dialect = None;
     for discovered in &discovery.sources {
-        let Some((path, _)) = discovered.files.primary() else { continue };
-        // A transcript holding only records no dialect claims, such as a lone title
-        // record, says nothing about the root; the other files decide it.
-        let Some(candidate) = classify_jsonl(path)? else { continue };
+        // A source that cannot be read, or that holds only records no dialect claims, such
+        // as a lone title record, says nothing about the root; the other files decide it,
+        // and ingest reports an unreadable one.
+        let Some(candidate) = reader::peek(&discovered.files, |reader| {
+            classify_records(reader, MAX_CATALOG_HEADER_BYTES)
+        }) else {
+            continue;
+        };
         if dialect.replace(candidate).is_some_and(|previous| previous != candidate) {
             return Err(Failure::runtime(format!(
                 "source {} contains multiple agent dialects; pass each agent root separately",
@@ -910,42 +898,26 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
         Some(Agent::Codex) => Ok(vec![ExplicitDialect::Codex(source.to_owned())]),
         Some(Agent::Pi) => Err(Failure::usage("Pi source input is not supported yet")),
         None => Err(Failure::runtime(format!(
-            "source {} contains no supported Claude Code or Codex JSONL records",
+            "source {} contains no readable Claude Code or Codex JSONL records",
             source.display()
         ))),
     }
 }
 
-fn classify_jsonl(path: &Path) -> Result<Option<Agent>, Failure> {
-    classify_jsonl_with_limit(path, MAX_CATALOG_HEADER_BYTES)
-}
-
-/// Classifies a transcript by its first recognized record type, or `None` when none of
-/// its first 100 records belongs to a supported dialect.
-fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Option<Agent>, Failure> {
-    let representation = Representation::of_path(path).unwrap_or(Representation::Plain);
-    let Some(mut reader) = open_decoded(path, representation)? else {
-        return Ok(None);
-    };
+/// Classifies decoded records by the first recognized record type. `None` when none of
+/// the first 100 records belongs to a supported dialect, or when the records cannot be
+/// read, a record within `max_line_bytes` included, so such a file decides nothing.
+fn classify_records(reader: &mut dyn BufRead, max_line_bytes: u64) -> Option<Agent> {
     let mut line = Vec::new();
     for _ in 0..100 {
         line.clear();
-        let read = reader
-            .by_ref()
-            .take(max_line_bytes.saturating_add(1))
-            .read_until(b'\n', &mut line)
-            .map_err(|error| {
-                Failure::runtime(format!("cannot read source {}: {error}", path.display()))
-            })?;
+        let read =
+            reader.take(max_line_bytes.saturating_add(1)).read_until(b'\n', &mut line).ok()?;
         if read == 0 {
             break;
         }
         if u64::try_from(line.len()).unwrap_or(u64::MAX) > max_line_bytes {
-            return Err(Failure::runtime(format!(
-                "cannot inspect source {}: a classification record exceeds {} MiB",
-                path.display(),
-                max_line_bytes / (1024 * 1024)
-            )));
+            return None;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else { continue };
         let kind = value.get("type").and_then(serde_json::Value::as_str);
@@ -960,7 +932,7 @@ fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Option<
                     | "response_item"
             )
         ) {
-            return Ok(Some(Agent::Codex));
+            return Some(Agent::Codex);
         }
         if matches!(
             kind,
@@ -977,10 +949,10 @@ fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Option<
                     | "custom-title"
             )
         ) {
-            return Ok(Some(Agent::Claude));
+            return Some(Agent::Claude);
         }
     }
-    Ok(None)
+    None
 }
 
 #[derive(Debug)]
@@ -1251,7 +1223,7 @@ mod tests {
     use super::{
         Agent, AgentStats, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit,
         ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ScopeArg, Stats, TerminalContext,
-        classify_explicit_source, classify_jsonl_with_limit, decoding_workers,
+        classify_explicit_source, classify_records, codex_thread_from_locator, decoding_workers,
         derive_agent_thread_id, execute, ingest_capacity, narrow_discoveries, run,
         run_with_context, stats_requested,
     };
@@ -1259,7 +1231,16 @@ mod tests {
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
     use urollup_core::ledger::reconcile::ReconcileError;
     use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
-    use urollup_core::sources::roots;
+    use urollup_core::sources::manifest::Representation;
+    use urollup_core::sources::{reader, roots};
+
+    /// Classifies one file's records, reading lines of at most `max_line_bytes`.
+    fn classify_file(path: &std::path::Path, max_line_bytes: u64) -> Option<Agent> {
+        let representation = Representation::of_path(path).expect("a source file name");
+        let file = fs::File::open(path).expect("the file opens");
+        let mut decoded = reader::decode(file, representation).expect("the decoder starts");
+        classify_records(&mut *decoded, max_line_bytes)
+    }
 
     struct Outcome {
         exit: Exit,
@@ -1578,7 +1559,8 @@ mod tests {
     #[test]
     fn explicit_artifact_classification_bounds_plain_and_decoded_compressed_lines() {
         let root = tempfile::tempdir().unwrap();
-        let line = format!(r#"{{"type":"assistant","padding":"{}"}}\n"#, "x".repeat(128));
+        let line =
+            format!("{}\n", serde_json::json!({"type": "assistant", "padding": "x".repeat(128)}));
         let plain = root.path().join("oversized.jsonl");
         fs::write(&plain, &line).unwrap();
         let compressed = root.path().join("oversized.jsonl.zst");
@@ -1589,8 +1571,9 @@ mod tests {
         fs::write(&gzipped, encoder.finish().unwrap()).unwrap();
 
         for path in [plain, compressed, gzipped] {
-            let error = classify_jsonl_with_limit(&path, 32).unwrap_err();
-            assert!(error.message.contains("classification record exceeds"));
+            // A record longer than the bound is not buffered, so it decides nothing.
+            assert_eq!(classify_file(&path, 32), None, "{}", path.display());
+            assert_eq!(classify_file(&path, 1024), Some(Agent::Claude), "{}", path.display());
         }
     }
 
@@ -1616,11 +1599,8 @@ mod tests {
         assert!(
             matches!(classified.as_slice(), [ExplicitDialect::Claude(path)] if path == &project)
         );
-        assert_eq!(classify_jsonl_with_limit(&project.join("aaaa.jsonl"), 1024).unwrap(), None);
-        assert_eq!(
-            classify_jsonl_with_limit(&project.join("bbbb.jsonl"), 1024).unwrap(),
-            Some(Agent::Claude)
-        );
+        assert_eq!(classify_file(&project.join("aaaa.jsonl"), 1024), None);
+        assert_eq!(classify_file(&project.join("bbbb.jsonl"), 1024), Some(Agent::Claude));
     }
 
     #[test]
@@ -1814,6 +1794,66 @@ mod tests {
             index.select(&query).unwrap().len(),
             2,
             "fork support is ingested but fork is not a descendant"
+        );
+    }
+
+    #[test]
+    fn codex_catalog_keeps_rollouts_whose_discovered_header_cannot_be_read() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions/2026/09/16");
+        fs::create_dir_all(&sessions).unwrap();
+        let thread = |n: u32| format!("019f0000-0000-7000-8000-0030000000{n:02}");
+        let rollout =
+            |n: u32| sessions.join(format!("rollout-2026-09-16T12-00-00-{}.jsonl", thread(n)));
+        let header = |n: u32, parent: Option<u32>| {
+            let mut payload = serde_json::json!({"id": thread(n), "cwd": "/workspace/project"});
+            if let Some(parent) = parent {
+                payload["parent_thread_id"] = serde_json::json!(thread(parent));
+            }
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "timestamp": "2026-09-16T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": payload,
+                })
+            )
+        };
+        // 1 has children 2 and 6, and 2 has child 3; 4 is unrelated.
+        for (n, parent) in [(1, None), (2, Some(1)), (3, Some(2)), (4, None), (6, Some(1))] {
+            fs::write(rollout(n), header(n, parent)).unwrap();
+        }
+        // An interrupted compressor left nothing readable.
+        fs::write(rollout(5).with_extension("jsonl.gz"), b"").unwrap();
+
+        let codex_roots = codex_rollout::rollout_roots(&[root.path().to_owned()]);
+        let discovered = roots::discover(&codex_roots);
+        assert_eq!(discovered.sources.len(), 6);
+        // After discovery `zstd --rm` compresses 2, whose header alone links 1 to 3, and 6
+        // expires.
+        fs::write(
+            rollout(2).with_extension("jsonl.zst"),
+            zstd::stream::encode_all(header(2, Some(1)).as_bytes(), 1).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(rollout(2)).unwrap();
+        fs::remove_file(rollout(6)).unwrap();
+
+        let mut claude = roots::Discovery::default();
+        let mut codex = discovered;
+        let query = SelectionQuery {
+            sessions: vec![OsString::from(thread(1))],
+            scope: Some(Scope::Descendants),
+            ..SelectionQuery::default()
+        };
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        let kept: Vec<String> =
+            codex.sources.iter().map(|source| codex_thread_from_locator(&source.locator)).collect();
+        assert_eq!(
+            kept,
+            [thread(1), thread(2), thread(3), thread(5), thread(6)],
+            "the compressed child's header is read from its new file, and rollouts with no \
+             readable header are left for ingest to read or report"
         );
     }
 

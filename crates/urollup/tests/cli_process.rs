@@ -377,3 +377,52 @@ fn a_compressed_transcript_path_selects_its_session() {
     let single = json_view(&["report", "--all"], &copy.path().join(format!("{transcript}.gz")));
     assert_eq!(single.status.code(), Some(0), "{}", String::from_utf8_lossy(&single.stderr));
 }
+
+#[test]
+fn a_damaged_compressed_rollout_is_reported_without_stopping_any_report() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+    let clean = fixtures.join("codex-rollout/token-usage-records");
+    let copy = tempfile::tempdir().expect("temporary directory is created");
+    copy_compressed(&clean, copy.path(), "", <[u8]>::to_vec);
+    // An interrupted compressor leaves an empty `.jsonl.gz` for another thread.
+    std::fs::write(
+        copy.path().join(
+            "sessions/2026/09/04/\
+             rollout-2026-09-04T10-00-00-019f0000-0000-7000-8000-00ee00000001.jsonl.gz",
+        ),
+        b"",
+    )
+    .expect("damaged rollout is writable");
+    let parse = |output: &Output| -> serde_json::Value {
+        serde_json::from_slice(&output.stdout).expect("the report is JSON")
+    };
+
+    for (view, under) in [
+        (&["report", "--all"][..], ""),
+        (&["report", "--session", "019f0000-0000-7000-8000-000500000001"], ""),
+        // A directory without the standard layout is classified by reading its files.
+        (&["report", "--all"], "sessions"),
+    ] {
+        let damaged = json_view(view, &copy.path().join(under));
+        assert_eq!(
+            damaged.status.code(),
+            Some(0),
+            "{view:?} {under}: {}",
+            String::from_utf8_lossy(&damaged.stderr)
+        );
+        let report = parse(&damaged);
+        assert_eq!(report["coverage"]["complete"], false, "{view:?} {under}");
+        assert_eq!(
+            report["diagnostics"],
+            serde_json::json!([{
+                "code": "source-incomplete",
+                "count": 1,
+                "detail": "a Codex rollout could not be read completely: incomplete-compressed-frame",
+            }]),
+            "{view:?} {under}"
+        );
+        let expected = parse(&json_view(view, &clean.join(under)));
+        assert_eq!(report["totals"], expected["totals"], "{view:?} {under}: readable totals");
+    }
+}

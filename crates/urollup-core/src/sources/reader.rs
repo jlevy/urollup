@@ -432,15 +432,15 @@ fn open_source(
     Ok(None)
 }
 
-/// A file the reader may open in place of a source's primary.
-struct Fallback {
+/// A file the reader may open for a source.
+struct Candidate {
     path: PathBuf,
     representation: Representation,
     /// Whether discovery recorded, and so vetted, this file.
     discovered: bool,
 }
 
-impl Fallback {
+impl Candidate {
     /// Opens the file; `None` when it is absent or, for a file discovery never saw, not a
     /// regular file.
     fn open(&self) -> Result<Option<File>, SourceReadError> {
@@ -451,7 +451,7 @@ impl Fallback {
 /// The files to try, in preference order, when a source's primary is gone: each other
 /// representation's discovered file or, when discovery found none, the primary's sibling
 /// in that representation, such as the `.jsonl.gz` that `gzip` wrote after discovery.
-fn fallbacks(files: &LogicalSource, primary: &Path) -> Vec<Fallback> {
+fn fallbacks(files: &LogicalSource, primary: &Path) -> Vec<Candidate> {
     Representation::ALL
         .into_iter()
         .filter_map(|representation| {
@@ -460,9 +460,27 @@ fn fallbacks(files: &LogicalSource, primary: &Path) -> Vec<Fallback> {
                 Some((path, _)) => (path.to_owned(), true),
                 None => (sibling(primary, representation)?, false),
             };
-            (path != primary).then_some(Fallback { path, representation, discovered })
+            (path != primary).then_some(Candidate { path, representation, discovered })
         })
         .collect()
+}
+
+/// Decodes the files of a source in reading order until `look` accepts one, for a look
+/// at its first records outside a snapshot: the primary, then the files [`read_source`]
+/// falls back to, opened under the same rules. A file that is absent, cannot be opened or
+/// decoded, or that `look` rejects, as when it has no complete first record, is skipped,
+/// so one damaged file never stops the look. `None` when no file is accepted.
+pub fn peek<T>(
+    files: &LogicalSource,
+    mut look: impl FnMut(&mut dyn BufRead) -> Option<T>,
+) -> Option<T> {
+    let (primary, representation) = files.primary()?;
+    let first = Candidate { path: primary.to_owned(), representation, discovered: true };
+    std::iter::once(first).chain(fallbacks(files, primary)).find_map(|candidate| {
+        let file = candidate.open().ok()??;
+        let mut reader = decode(file, candidate.representation).ok()?;
+        look(&mut *reader)
+    })
 }
 
 /// Opens a file discovery never saw, only when it is a regular file, as discovery requires.

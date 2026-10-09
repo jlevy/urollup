@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 use super::{
     LogicalSource, RawRecord, ReadOptions, RecordDisposition, ScanHooks, SourceReadError,
-    SourceSpec, read_source, read_source_with_hooks,
+    SourceSpec, peek, read_source, read_source_with_hooks,
 };
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{
@@ -892,4 +892,24 @@ fn a_long_line_does_not_prevent_reading_the_next_record() {
     assert_eq!(records.len(), 2);
     assert_eq!(entry.counters.decoded, 2);
     assert_eq!(records[1].1, "{\"n\":2}");
+}
+
+#[test]
+fn a_peek_reads_the_first_file_of_the_source_that_the_look_accepts() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    // The plain file is still being written; its gzip twin is complete.
+    write(&plain_path, b"{\"i\":1");
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let files = LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(gzip_path) };
+    let first_line = |reader: &mut dyn std::io::BufRead| {
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).ok()?;
+        line.ends_with(b"\n").then_some(line)
+    };
+
+    assert_eq!(peek(&files, first_line), Some(b"{\"i\":1}\n".to_vec()));
+    assert_eq!(peek(&files, |_| None::<()>), None, "a look that accepts nothing finds nothing");
+    assert_eq!(peek(&LogicalSource::default(), first_line), None);
 }
