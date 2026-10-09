@@ -13,7 +13,9 @@
 //!   compared before and after, and the first record's fingerprint is re-read, so
 //!   replacement, truncation and in-place mutation each become a [`SourceChange`]. A path
 //!   that is briefly absent while another tool rewrites it is retried and reported as
-//!   [`SourceChange::BrieflyAbsent`] rather than counted as a lost source. An in-place
+//!   [`SourceChange::BrieflyAbsent`] rather than counted as a lost source. A path gone
+//!   after the scan is [`SourceChange::RemovedAfterScan`], which loses nothing: the open
+//!   file supplied the snapshot, so it is checked instead of the path. An in-place
 //!   mutation that keeps both the length and the modification time is the one case this
 //!   check misses.
 //! - **Files that disappear after discovery.** A compressor such as `zstd --rm` or
@@ -273,7 +275,7 @@ where
     else {
         return Ok(vanished_entry(spec, primary, primary_representation));
     };
-    let mut read = scan_file(spec, path, representation, &opened, options, &mut visit, hooks)?;
+    let mut read = scan_file(spec, path, representation, opened, options, &mut visit, hooks)?;
     if read.scan.fingerprint.is_none() {
         if let Some(substitute) =
             read_twin_with_record(spec, files, &read.file.path, options, &mut visit, hooks)?
@@ -285,12 +287,14 @@ where
             read = substitute;
         }
     }
-    let Scanned { file, representation, snapshot_len, modified, captured_at, mut scan } = read;
+    let Scanned { file, representation, opened, snapshot_len, modified, captured_at, mut scan } =
+        read;
 
     let twins = twin_identities(files, &file.path, scan.fingerprint, spec, &mut scan.failures);
     detect_changes(
         &file.path,
         representation,
+        &opened,
         &file,
         snapshot_len,
         modified,
@@ -298,7 +302,7 @@ where
         options,
         hooks,
         &mut changes,
-    );
+    )?;
 
     let complete_through = scan.complete_through();
     Ok(ManifestEntry {
@@ -324,6 +328,9 @@ where
 struct Scanned {
     file: FileIdentity,
     representation: Representation,
+    /// The open file, kept so the checks after the scan can examine what was read even
+    /// when its path is gone.
+    opened: File,
     snapshot_len: u64,
     modified: Option<SystemTime>,
     captured_at: SystemTime,
@@ -335,7 +342,7 @@ fn scan_file<F>(
     spec: &SourceSpec<'_>,
     path: PathBuf,
     representation: Representation,
-    opened: &File,
+    opened: File,
     options: &ReadOptions,
     visit: &mut F,
     hooks: &mut dyn ScanHooks,
@@ -363,10 +370,11 @@ where
         offset: 0,
         pending: None,
     };
-    let mut reader = reader_for(opened, snapshot_len, representation);
+    let mut reader = reader_for(&opened, snapshot_len, representation);
     scan.run(&mut reader, spec, options, visit, representation)?;
+    drop(reader);
     hooks.after_scan(&file.path);
-    Ok(Scanned { file, representation, snapshot_len, modified, captured_at, scan })
+    Ok(Scanned { file, representation, opened, snapshot_len, modified, captured_at, scan })
 }
 
 /// Reads, in place of a file that held no complete record, the first other discovered
@@ -392,7 +400,7 @@ where
             continue;
         }
         let Some(opened) = open_once(twin)? else { continue };
-        return scan_file(spec, twin.to_owned(), representation, &opened, options, visit, hooks)
+        return scan_file(spec, twin.to_owned(), representation, opened, options, visit, hooks)
             .map(Some);
     }
     Ok(None)
@@ -814,6 +822,9 @@ fn open_once(path: &Path) -> Result<Option<File>, SourceReadError> {
     }
 }
 
+/// Compares the source after its scan with its snapshot: the path's identity, length and
+/// modification time, and its first record. When the path is gone after its retries, the
+/// open file is examined instead, since it is what the snapshot read.
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; splitting it would only move the arguments"
@@ -821,6 +832,7 @@ fn open_once(path: &Path) -> Result<Option<File>, SourceReadError> {
 fn detect_changes(
     path: &Path,
     representation: Representation,
+    opened: &File,
     snapshot: &FileIdentity,
     snapshot_len: u64,
     snapshot_modified: Option<SystemTime>,
@@ -828,7 +840,7 @@ fn detect_changes(
     options: &ReadOptions,
     hooks: &mut dyn ScanHooks,
     changes: &mut Vec<SourceChange>,
-) {
+) -> Result<(), SourceReadError> {
     let mut attempts = 0;
     let metadata = loop {
         match std::fs::metadata(path) {
@@ -846,8 +858,17 @@ fn detect_changes(
         }
     };
     let Some(metadata) = metadata else {
-        changes.push(SourceChange::Vanished);
-        return;
+        // A compressor that finished or an agent that expired the file removed the path,
+        // but the open file supplied the snapshot, so only a change to it loses records.
+        let held = opened
+            .metadata()
+            .map_err(|source| SourceReadError::Open { path: path.to_owned(), source })?;
+        compare_extent(&held, snapshot_len, snapshot_modified, changes);
+        if fingerprint.is_some_and(|ours| first_record_of(opened, representation) != Some(ours)) {
+            changes.push(SourceChange::FirstRecordChanged);
+        }
+        changes.push(SourceChange::RemovedAfterScan);
+        return Ok(());
     };
     if attempts > 0
         && !changes.iter().any(|change| matches!(change, SourceChange::BrieflyAbsent { .. }))
@@ -856,8 +877,23 @@ fn detect_changes(
     }
     if device_of(&metadata) != snapshot.device || inode_of(&metadata) != snapshot.inode {
         changes.push(SourceChange::Replaced);
-        return;
+        return Ok(());
     }
+    compare_extent(&metadata, snapshot_len, snapshot_modified, changes);
+    if fingerprint.is_some_and(|ours| first_record_fingerprint(path, representation) != Some(ours))
+    {
+        changes.push(SourceChange::FirstRecordChanged);
+    }
+    Ok(())
+}
+
+/// Records a change in a file's length or, at the same length, its modification time.
+fn compare_extent(
+    metadata: &Metadata,
+    snapshot_len: u64,
+    snapshot_modified: Option<SystemTime>,
+    changes: &mut Vec<SourceChange>,
+) {
     let observed_len = metadata.len();
     if observed_len < snapshot_len {
         changes.push(SourceChange::Truncated { snapshot_len, observed_len });
@@ -866,17 +902,16 @@ fn detect_changes(
     } else if metadata.modified().ok() != snapshot_modified {
         changes.push(SourceChange::ModifiedInPlace);
     }
-    if let Some(fingerprint) = fingerprint {
-        if first_record_fingerprint(path, representation) != Some(fingerprint) {
-            changes.push(SourceChange::FirstRecordChanged);
-        }
-    }
 }
 
 /// Re-reads a file's first complete record to check that the bytes the source ID covers
 /// did not change; `None` when the file cannot be read or holds no complete record.
 fn first_record_fingerprint(path: &Path, representation: Representation) -> Option<Fingerprint> {
-    let mut file = File::open(path).ok()?;
+    first_record_of(&File::open(path).ok()?, representation)
+}
+
+/// The fingerprint of an open file's first complete record, read from its start.
+fn first_record_of(mut file: &File, representation: Representation) -> Option<Fingerprint> {
     file.seek(SeekFrom::Start(0)).ok()?;
     let mut reader = decode(file, representation).ok()?;
     let mut buffer = Vec::new();

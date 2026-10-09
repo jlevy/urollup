@@ -215,8 +215,13 @@ pub enum SourceChange {
         /// Retries needed before the path reappeared.
         attempts: u32,
     },
-    /// The path was absent after the scan and did not reappear.
+    /// No file of the source existed when it was opened, after retries and after trying
+    /// every other representation, so the snapshot holds none of its records.
     Vanished,
+    /// The path was gone after a scan of the open file, as when a compressor finished or
+    /// an agent expired the file. The open file supplied every record of the snapshot, so
+    /// this alone loses nothing; a change to the open file is reported on its own.
+    RemovedAfterScan,
     /// The path names a different file after the scan.
     Replaced,
     /// The file became shorter than its snapshot length.
@@ -265,6 +270,7 @@ impl SourceChange {
         match self {
             Self::BrieflyAbsent { .. } => "briefly-absent",
             Self::Vanished => "vanished",
+            Self::RemovedAfterScan => "removed-after-scan",
             Self::Replaced => "replaced",
             Self::Truncated { .. } => "truncated",
             Self::ModifiedInPlace => "modified-in-place",
@@ -280,6 +286,7 @@ impl SourceChange {
         match self {
             Self::GrewBeyondCutoff { .. }
             | Self::BrieflyAbsent { .. }
+            | Self::RemovedAfterScan
             | Self::ReadFromOtherRepresentation { .. } => false,
             Self::Vanished
             | Self::Replaced

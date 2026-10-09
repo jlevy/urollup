@@ -441,6 +441,9 @@ rather than silently skipping data.
 - An unfinished last line is recorded as pending, distinct from interior corruption.
 - Replacement, truncation or mutation during the scan is detected and reported,
   including a path that is briefly absent while another tool rewrites it.
+  A path removed after a complete scan, as when a compressor finishes, is recorded but
+  loses nothing: the open file supplied every record, and a change to it is still
+  detected.
 - A `.jsonl` file and its `.jsonl.zst` and `.jsonl.gz` twins are one logical source
   whose representation changed, not two sources; for a Codex rollout they share a thread
   and rollout ID. The plain file is read first, then zstd, then gzip. Each other file
@@ -455,8 +458,8 @@ rather than silently skipping data.
   regular file, so a link or FIFO beside the source is never followed or opened.
 - Every source whose snapshot lost data, through damaged or truncated compressed data,
   an oversized record, a read error, a mismatched twin, a change that affects the
-  snapshot or a disappearance, raises a `source-incomplete` diagnostic and makes
-  coverage partial.
+  snapshot or a disappearance before it was read, raises a `source-incomplete`
+  diagnostic and makes coverage partial.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a

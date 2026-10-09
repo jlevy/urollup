@@ -127,6 +127,7 @@ fn source_change(change: &SourceChange) -> Value {
             json!({ "briefly_absent": { "attempts": attempts } })
         }
         SourceChange::Vanished => json!("vanished"),
+        SourceChange::RemovedAfterScan => json!("removed_after_scan"),
         SourceChange::Replaced => json!("replaced"),
         SourceChange::Truncated { snapshot_len, observed_len } => json!({
             "truncated": { "observed_len": observed_len, "snapshot_len": snapshot_len },

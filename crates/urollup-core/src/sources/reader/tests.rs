@@ -674,16 +674,52 @@ fn a_path_that_is_briefly_absent_is_retried_and_reported() {
 }
 
 #[test]
-fn a_source_that_vanishes_during_a_scan_is_reported() {
+fn a_source_removed_after_a_complete_scan_is_reported_but_not_a_loss() {
+    // The open file supplied every record of its extent, and it is unchanged, so a
+    // compressor finishing (`zstd --rm`, `gzip`) or an agent expiring the file after the
+    // scan loses nothing.
+    for compress_first in [false, true] {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("session.jsonl");
+        write(&path, THREE_RECORDS);
+        let removed = path.clone();
+        let mut hooks = At::new(When::AfterScan, move |_| {
+            if compress_first {
+                write(&removed.with_extension("jsonl.gz"), &gzip(THREE_RECORDS));
+            }
+            fs::remove_file(&removed).unwrap();
+        });
+
+        let (entry, records) = scan_with(&plain(&path), &options(), &mut hooks);
+        assert_eq!(records.len(), 3, "compressed first: {compress_first}");
+        assert_eq!(entry.file.path, path);
+        assert_eq!(entry.changes, vec![SourceChange::RemovedAfterScan], "{compress_first}");
+        assert!(entry.losses().is_empty(), "{compress_first}");
+        assert!(entry.is_complete(), "{compress_first}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_change_to_the_open_file_is_still_a_loss_when_its_path_is_gone() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("session.jsonl");
     write(&path, THREE_RECORDS);
-    let removed = path.clone();
-    let mut hooks = At::new(When::AfterScan, move |_| fs::remove_file(&removed).unwrap());
+    let changed = path.clone();
+    let mut hooks = At::new(When::AfterOpen, move |_| {
+        fs::OpenOptions::new().write(true).open(&changed).unwrap().set_len(8).unwrap();
+        fs::remove_file(&changed).unwrap();
+    });
 
     let (entry, records) = scan_with(&plain(&path), &options(), &mut hooks);
-    assert_eq!(records.len(), 3);
-    assert_eq!(entry.changes, vec![SourceChange::Vanished]);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        entry.changes,
+        vec![
+            SourceChange::Truncated { snapshot_len: 24, observed_len: 8 },
+            SourceChange::RemovedAfterScan,
+        ]
+    );
     assert!(!entry.is_complete());
 }
 
