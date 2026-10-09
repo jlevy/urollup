@@ -292,7 +292,7 @@ where
         offset: 0,
         pending: None,
     };
-    let mut reader = reader_for(opened, snapshot_len, representation);
+    let mut reader = reader_for(&opened, snapshot_len, representation);
     scan.run(&mut reader, spec, options, &mut visit, representation)?;
     hooks.after_scan(path);
 
@@ -515,7 +515,7 @@ fn source_identity(
     Ok(StoredIdentity::derive(key.key)?)
 }
 
-fn reader_for(file: File, extent: u64, representation: Representation) -> Box<dyn BufRead> {
+fn reader_for(file: &File, extent: u64, representation: Representation) -> Box<dyn BufRead + '_> {
     // A decoder is only built here; a failure is a corrupt or empty stream, which the scan
     // reports as a read failure at offset 0.
     decode(file.take(extent), representation)
@@ -531,10 +531,10 @@ fn reader_for(file: File, extent: u64, representation: Representation) -> Box<dy
 /// # Errors
 ///
 /// A zstd decoder that cannot be created. Damaged data surfaces from the reader instead.
-pub fn decode<R: Read + 'static>(
+pub fn decode<'a, R: Read + 'a>(
     stored: R,
     representation: Representation,
-) -> io::Result<Box<dyn BufRead>> {
+) -> io::Result<Box<dyn BufRead + 'a>> {
     const CAPACITY: usize = 128 * 1024;
     Ok(match representation {
         Representation::Plain => Box::new(BufReader::with_capacity(CAPACITY, stored)),
