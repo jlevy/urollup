@@ -446,16 +446,18 @@ rather than silently skipping data.
   detected.
 - A `.jsonl` file and its `.jsonl.zst` and `.jsonl.gz` twins are one logical source
   whose representation changed, not two sources; for a Codex rollout they share a thread
-  and rollout ID. The plain file is read first, then zstd, then gzip. Each other file
-  whose first record differs is reported as a different, unread source, and one with no
-  complete first record yet, such as a compressor’s unfinished output, is neither a
-  verified twin nor a loss. When the file read has no complete record but another file
-  of the source has one, that file is read instead.
+  and rollout ID. The plain file is read first, then zstd, then gzip.
+  Each other file whose first record differs is reported as a different, unread source,
+  and one with no complete first record yet, such as a compressor’s unfinished output,
+  is neither a verified twin nor a loss.
+  When the file read has no complete record but another file of the source has one, that
+  file is read instead.
 - A file that disappears between discovery and reading, as when a compressor replaces it
   or an agent expires an old transcript, is read from its newer representation when one
   exists, and the manifest records which file was read instead; otherwise the source is
-  recorded as vanished. A representation discovery did not see is read only when it is a
-  regular file, so a link or FIFO beside the source is never followed or opened.
+  recorded as vanished.
+  A representation discovery did not see is read only when it is a regular file, so a
+  link or FIFO beside the source is never followed or opened.
 - Every source whose snapshot lost data, through damaged or truncated compressed data,
   an oversized record, a read error, a mismatched twin, a change that affects the
   snapshot or a disappearance before it was read, raises a `source-incomplete`
@@ -852,14 +854,20 @@ set these source-specific rules:
   keyed by `response_id` and owned by its `thread_id`; responses without usage write
   none. A record whose `thread_id` differs from the file’s thread is a copy, and
   `compacted.latest_token_usage_record` is never an observation.
+- **Codex request context:** a usage record takes its model and effort from the
+  `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
+  `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
+  the root would attribute the parent’s model to the subagent.
 - **Codex counters:** older files use cumulative `token_count` events.
-  A `last_token_usage` counts only when the running total advances and it has nonzero
-  input or output. Identical consecutive totals add nothing, `info: null` is only a
-  provider limit observation, compaction estimates and context-window-full fills (zero
-  input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
-  in any cumulative component opens a new counter epoch with a diagnostic.
-  The decreasing record counts its own `last_token_usage`, not the new total: Codex
+  An update whose running total advances counts the advance as one request.
+  A decrease in any cumulative component opens a new counter epoch with a diagnostic,
+  and the decreasing record counts its own `last_token_usage`, not the new total: Codex
   lowers its running total at compaction instead of restarting it from zero.
+  A decrease whose `last_token_usage` has zero input and output adds no request.
+  Identical consecutive totals add nothing, `info: null` is only a provider limit
+  observation, and compaction estimates and context-window-full fills (a
+  `last_token_usage` with zero input and output and nonzero `total_tokens`) are estimate
+  diagnostics, not requests.
 - **Codex decoding:** a line that contains none of the quoted relevant type tokens
   (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
   `thread_settings_applied`) is validated without building a document and counted as

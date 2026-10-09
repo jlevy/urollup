@@ -834,57 +834,93 @@ fn codex_usage_takes_its_model_from_its_own_turn_not_the_root_turn() {
     );
 }
 
+/// A legacy Codex `token_count` event, with usage as [input, cached, output, reasoning].
+fn token_count_line(second: u32, total: [u64; 4], last: [u64; 4]) -> String {
+    let usage = |[input, cached, output, reasoning]: [u64; 4]| {
+        format!(
+            r#"{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":{reasoning},"total_tokens":{}}}"#,
+            input + output
+        )
+    };
+    format!(
+        r#"{{"timestamp":"2026-10-01T07:00:{second:02}.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{},"last_token_usage":{},"model_context_window":272000}},"rate_limits":null}}}}"#,
+        usage(total),
+        usage(last)
+    )
+}
+
+/// Ingests one legacy Codex rollout of `thread` holding `counts` after its header.
+fn ingest_counter_rollout(thread: &str, counts: &[String]) -> urollup_core::adapters::Ingested {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    let day = home.path().join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).expect("rollout directory is writable");
+    let mut lines = vec![
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.150.0"}}}}"#
+        ),
+        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-test","effort":"medium"}}"#.to_owned(),
+    ];
+    lines.extend_from_slice(counts);
+    std::fs::write(
+        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .expect("rollout is writable");
+    ingest_codex(home.path()).expect("the rollout ingests")
+}
+
+fn epoch_resets(ingested: &urollup_core::adapters::Ingested) -> usize {
+    ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "codex-counter-epoch-reset")
+        .count()
+}
+
 #[test]
 fn a_codex_total_lowered_at_compaction_counts_only_its_own_request() {
     // Codex lowers its running total at compaction instead of restarting it. The
     // decreasing token_count's last_token_usage is that request's usage; its new total
     // is the session so far.
-    let home = tempfile::tempdir().unwrap();
-    let thread = "019f0000-0000-7000-8000-00bb00000001";
-    let day = home.path().join("sessions/2026/10/01");
-    std::fs::create_dir_all(&day).unwrap();
-    let count = |second: u32, total: [u64; 4], last: [u64; 4]| {
-        let usage = |[input, cached, output, reasoning]: [u64; 4]| {
-            format!(
-                r#"{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":{reasoning},"total_tokens":{}}}"#,
-                input + output
-            )
-        };
-        format!(
-            r#"{{"timestamp":"2026-10-01T07:00:{second:02}.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{},"last_token_usage":{},"model_context_window":272000}},"rate_limits":null}}}}"#,
-            usage(total),
-            usage(last)
-        )
-    };
-    let lines = [
-        format!(
-            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.150.0"}}}}"#
-        ),
-        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-test","effort":"medium"}}"#.to_owned(),
-        count(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
-        count(3, [7_000, 2_500, 800, 200], [4_000, 2_500, 500, 200]),
-        r#"{"timestamp":"2026-10-01T07:00:04.000Z","type":"compacted","payload":{"message":""}}"#.to_owned(),
-        count(5, [6_000, 2_000, 900, 200], [1_000, 500, 100, 0]),
-        count(6, [7_500, 3_000, 1_000, 200], [1_500, 1_000, 100, 0]),
-    ];
-    std::fs::write(
-        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
-        lines.join("\n") + "\n",
-    )
-    .unwrap();
-
-    let ingested = ingest_codex(home.path()).unwrap();
+    let ingested = ingest_counter_rollout(
+        "019f0000-0000-7000-8000-00bb00000001",
+        &[
+            token_count_line(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
+            token_count_line(3, [7_000, 2_500, 800, 200], [4_000, 2_500, 500, 200]),
+            r#"{"timestamp":"2026-10-01T07:00:04.000Z","type":"compacted","payload":{"message":""}}"#.to_owned(),
+            token_count_line(5, [6_000, 2_000, 900, 200], [1_000, 500, 100, 0]),
+            token_count_line(6, [7_500, 3_000, 1_000, 200], [1_500, 1_000, 100, 0]),
+        ],
+    );
     let totals = ledger_totals(&ingested.ledger).unwrap();
     assert_eq!(totals.total.requests, 4);
     let tokens = totals.total.tokens;
     assert_eq!(tokens.uncached_input, Some(3_000 + 1_500 + 500 + 500));
     assert_eq!(tokens.cache_read, Some(2_500 + 500 + 1_000));
     assert_eq!(tokens.output, Some(300 + 500 + 100 + 100));
-    let resets = ingested
-        .ledger
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code.token() == "codex-counter-epoch-reset")
-        .count();
-    assert_eq!(resets, 1, "the decrease still opens a new epoch with a diagnostic");
+    assert_eq!(
+        epoch_resets(&ingested),
+        1,
+        "the decrease still opens a new epoch with a diagnostic"
+    );
+}
+
+#[test]
+fn a_codex_total_lowered_without_new_usage_adds_no_request() {
+    // A decrease whose last_token_usage reports no input and no output carries no
+    // response of its own.
+    let ingested = ingest_counter_rollout(
+        "019f0000-0000-7000-8000-00cc00000001",
+        &[
+            token_count_line(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
+            token_count_line(3, [2_000, 0, 200, 0], [0, 0, 0, 0]),
+            token_count_line(4, [2_500, 0, 250, 0], [500, 0, 50, 0]),
+        ],
+    );
+    let totals = ledger_totals(&ingested.ledger).unwrap();
+    assert_eq!(totals.total.requests, 2);
+    assert_eq!(totals.total.tokens.uncached_input, Some(3_000 + 500));
+    assert_eq!(totals.total.tokens.output, Some(300 + 50));
+    assert_eq!(epoch_resets(&ingested), 1, "the decrease still opens a new epoch");
 }

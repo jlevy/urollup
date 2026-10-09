@@ -1098,9 +1098,8 @@ fn observe_parsed_source(
                         ));
                     }
                     let Some(last) = last else { continue };
-                    let estimated = last.input.unwrap_or(0) == 0
-                        && last.output.unwrap_or(0) == 0
-                        && last.total.unwrap_or(0) > 0;
+                    let silent = last.input.unwrap_or(0) == 0 && last.output.unwrap_or(0) == 0;
+                    let estimated = silent && last.total.unwrap_or(0) > 0;
                     if estimated {
                         let context_fill = total.input.unwrap_or(0) == 0
                             && total.output.unwrap_or(0) == 0
@@ -1117,16 +1116,18 @@ fn observe_parsed_source(
                         ));
                         continue;
                     }
-                    if step.event != CounterEvent::Repeated {
-                        // Codex lowers its running total at compaction rather than
-                        // restarting it, so after a decrease the new total is not one
-                        // request's usage; the record's own last usage is. Where the
-                        // counter did restart from zero, the two agree.
-                        let delta = if step.event == CounterEvent::Reset {
-                            codex_usage(last)?
-                        } else {
-                            step.delta
-                        };
+                    // Codex lowers its running total at compaction rather than restarting
+                    // it, so after a decrease the new total is not one request's usage:
+                    // the record's own last usage is, which the observation takes when it
+                    // has no delta, and a decrease whose last usage has no input or output
+                    // reports no new response. Where the counter did restart from zero,
+                    // the new total and the last usage agree.
+                    let charged = match step.event {
+                        CounterEvent::Repeated => false,
+                        CounterEvent::Reset => !silent,
+                        CounterEvent::Advanced | CounterEvent::Gap { .. } => true,
+                    };
+                    if charged {
                         observations.push(counter_observation(
                             &view,
                             last,
@@ -1136,7 +1137,7 @@ fn observe_parsed_source(
                                 owner: file_thread_text,
                                 thread_ids,
                                 context: current_turn.and_then(|turn| turns.get(&turn)),
-                                delta: Some(delta),
+                                delta: (step.event != CounterEvent::Reset).then_some(step.delta),
                             },
                         )?);
                     }
