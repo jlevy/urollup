@@ -464,8 +464,9 @@ rather than silently skipping data.
   link or FIFO beside the source is never followed or opened.
 - Every source whose snapshot lost data, through damaged or truncated compressed data,
   an oversized record, a read error, a mismatched or unreadable twin, a change that
-  affects the snapshot or a disappearance before it was read, raises a
-  `source-incomplete` diagnostic and makes coverage partial.
+  affects the snapshot or a disappearance before it was read, makes coverage partial and
+  is counted once in its agent’s `source-incomplete` diagnostic, whose detail names each
+  kind of loss with the number of sources that had it.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a

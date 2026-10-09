@@ -59,50 +59,62 @@ impl Ingested {
     }
 }
 
-/// `source-incomplete` diagnostics and an unreadable-source coverage gap for each snapshot
-/// that lost data, so a damaged, truncated, replaced or vanished source makes totals
-/// partial instead of silently smaller.
+/// A single `source-incomplete` diagnostic covering every snapshot that lost data, and an
+/// unreadable-source coverage gap for each, so a damaged, truncated, replaced or vanished
+/// source makes totals partial instead of silently smaller.
 ///
-/// `evidence` cites a source by its `src-` ID; a source with no complete record has none.
-/// Sources that lost the same things share one diagnostic whose occurrences count them,
-/// because [`crate::ledger::diagnostics::compact`] would merge identical per-source
-/// diagnostics, and two sources without a `src-` ID cite nothing that tells them apart.
-/// `kind` names the dialect's sources in the detail, which holds no path.
+/// The diagnostic's occurrences count the losing sources, and its detail names each kind
+/// of loss with the number of sources that had it, such as "3 Codex rollouts could not be
+/// read completely: corrupt-compressed-data (2), incomplete-compressed-frame (1)". It is
+/// one diagnostic because [`crate::ledger::diagnostics::compact`] keeps a single detail
+/// per code, and sources without a `src-` ID cite nothing that tells their diagnostics
+/// apart. `evidence` cites a source by its `src-` ID; a source with no complete record has
+/// none. `kind` names the dialect's sources in the detail, which holds no path.
 pub(crate) fn snapshot_losses(
     manifest: &SnapshotManifest,
     kind: &str,
     evidence: impl Fn(&ManifestEntry) -> Option<EvidenceRef>,
-) -> (Vec<Diagnostic>, Vec<CoverageGap>) {
-    let mut by_losses: BTreeMap<Vec<&'static str>, (u64, Vec<EvidenceRef>)> = BTreeMap::new();
+) -> (Option<Diagnostic>, Vec<CoverageGap>) {
+    let mut sources: u64 = 0;
+    let mut by_loss: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut cited = Vec::new();
     let mut gaps = Vec::new();
     for entry in &manifest.entries {
         let losses = entry.losses();
         if losses.is_empty() {
             continue;
         }
-        let cited: Vec<EvidenceRef> = evidence(entry).into_iter().collect();
-        let (sources, group_evidence) = by_losses.entry(losses).or_default();
-        *sources = sources.saturating_add(1);
-        group_evidence.extend(cited.iter().copied());
+        sources = sources.saturating_add(1);
+        for loss in losses {
+            let count = by_loss.entry(loss).or_default();
+            *count = count.saturating_add(1);
+        }
+        let evidence: Vec<EvidenceRef> = evidence(entry).into_iter().collect();
+        cited.extend(evidence.iter().copied());
         gaps.push(CoverageGap {
             reason: UnobservedReason::UnreadableSource,
             thread: None,
-            evidence: cited,
+            evidence,
         });
     }
-    let diagnostics = by_losses
-        .into_iter()
-        .map(|(losses, (sources, cited))| {
-            Diagnostic::new(
-                DiagnosticCode::SourceIncomplete,
-                None,
-                cited,
-                format!("a {kind} could not be read completely: {}", losses.join(", ")),
-            )
-            .with_occurrences(sources)
-        })
-        .collect();
-    (diagnostics, gaps)
+    let detail = match sources {
+        0 => return (None, gaps),
+        1 => format!(
+            "a {kind} could not be read completely: {}",
+            by_loss.into_keys().collect::<Vec<_>>().join(", ")
+        ),
+        _ => format!(
+            "{sources} {kind}s could not be read completely: {}",
+            by_loss
+                .iter()
+                .map(|(loss, count)| format!("{loss} ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let diagnostic = Diagnostic::new(DiagnosticCode::SourceIncomplete, None, cited, detail)
+        .with_occurrences(sources);
+    (Some(diagnostic), gaps)
 }
 
 /// A persistent-log adapter could not produce a normalized result.

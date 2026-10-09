@@ -758,14 +758,15 @@ fn truncated_compressed_rollouts_are_reported_and_leave_readable_totals_unchange
         incomplete_sources(&damaged),
         vec![(
             2,
-            "a Codex rollout could not be read completely: incomplete-compressed-frame".to_owned()
+            "2 Codex rollouts could not be read completely: incomplete-compressed-frame (2)"
+                .to_owned()
         )],
         "each unreadable rollout is counted once"
     );
 }
 
 #[test]
-fn every_unreadable_transcript_is_counted_once() {
+fn every_unreadable_transcript_is_counted_once_and_described() {
     let root = tempfile::tempdir().unwrap();
     copy_compressed(&fixture("brief-double-counting"), root.path(), Compression::Gzip);
     let project = root.path().join("projects/-Users-example-project");
@@ -775,11 +776,16 @@ fn every_unreadable_transcript_is_counted_once() {
     std::fs::write(project.join("bad-4.jsonl.gz"), b"").unwrap();
 
     let ingested = ingest_root(root.path()).unwrap();
-    let incomplete = incomplete_sources(&ingested);
+    // One row describes every source: compaction keeps only the first detail of a code, so
+    // a row per kind of loss would be reported as one kind.
     assert_eq!(
-        incomplete.iter().map(|(occurrences, _)| occurrences).sum::<u64>(),
-        4,
-        "four sources lost data: {incomplete:?}"
+        incomplete_sources(&ingested),
+        vec![(
+            4,
+            "4 Claude Code transcripts could not be read completely: \
+             corrupt-compressed-data (2), incomplete-compressed-frame (2)"
+                .to_owned()
+        )]
     );
 }
 
