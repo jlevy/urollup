@@ -890,21 +890,35 @@ set these source-specific rules:
   thread it names. An explicit ordinal boundary also identifies an inherited prefix
   without an embedded parent session header; direct records, compacted usage copies and
   cumulative counters use that ownership consistently.
-  Invalid boundary metadata and unpositioned usage fail ingestion rather than silently
-  becoming child originals.
   A prefix without a known parent remains unowned copy evidence, never child usage.
-  A child cumulative counter needs its inherited baseline unless its first total equals
-  its last-request usage, establishing a zero baseline for that counter epoch.
-  The parent’s latest total is not a substitute for its total at the fork.
-  In a rollout without `token_usage_record` lines, the copy also ends at the first
-  `turn_context` whose turn ID the copied thread’s root rollout never recorded; turn IDs
-  are matched across rollouts by 128-bit digest.
+  Usage that a declared boundary cannot place is excluded, never counted as the child’s:
+  an invalid `subagent_history_start_ordinal` places none of the rollout’s usage, and a
+  usage record or cumulative total without an `ordinal` is not placed.
+  A `token_count` that reports only rate limits carries no usage and needs no ordinal.
+  In a child with an explicit boundary, or in any child after copied counters, the first
+  own counter step that reports usage must match its `last_token_usage`, either as its
+  delta from the inherited total (a seeded child) or as its whole total (an unseeded
+  child, which opens a new counter epoch with a `codex-counter-epoch-reset` diagnostic).
+  A first step that matches neither is excluded, including the first step of an
+  explicit-boundary child with no copied counter whose total differs from its
+  `last_token_usage`; later steps count from its total.
+  A child with neither an explicit boundary nor copied counters starts from zero
+  unchecked. The parent’s latest total is not a substitute for its total at the fork.
+  Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
+  diagnostic and a coverage gap for its thread, so that thread and the whole history
+  report partial coverage while every other session still reports; the anomaly never
+  stops the run. In a rollout without `token_usage_record` lines, the copy also ends at
+  the first `turn_context` whose turn ID the copied thread’s root rollout never
+  recorded; turn IDs are matched across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.
   In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
-  is a copy keyed to the copied thread’s last response ID. A fork or subagent continues
-  the parent’s running total, so the child’s counters start from the inherited total.
+  is a copy keyed to the copied thread’s last response ID when the prefix holds that
+  thread’s usage record; from 0.153 forked prefixes drop those records, so such a copy
+  stays an unkeyed copy-only request, excluded from totals.
+  A fork or subagent continues the parent’s running total, so the child’s counters start
+  from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
   copied lines contribute neither usage nor times to the child.

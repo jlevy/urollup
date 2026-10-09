@@ -47,6 +47,9 @@ pub enum DiagnosticCode {
     CodexEstimateCompaction,
     /// Codex emitted a context-window-fill estimate instead of measured usage.
     CodexEstimateContextWindowFill,
+    /// Codex fork-boundary evidence could not prove which usage is the thread's own, so
+    /// that usage was excluded as a coverage gap.
+    CodexHistoryBoundaryUnverified,
     /// One Codex rollout was found at more than one location.
     CodexRolloutDuplicateLocation,
     /// A complete source line was malformed.
@@ -86,6 +89,7 @@ impl DiagnosticCode {
             Self::CodexCounterEpochReset => "codex-counter-epoch-reset",
             Self::CodexEstimateCompaction => "codex-estimate-compaction",
             Self::CodexEstimateContextWindowFill => "codex-estimate-context-window-fill",
+            Self::CodexHistoryBoundaryUnverified => "codex-history-boundary-unverified",
             Self::CodexRolloutDuplicateLocation => "codex-rollout-duplicate-location",
             Self::MalformedLine => "malformed-line",
             Self::PendingTail => "pending-tail",

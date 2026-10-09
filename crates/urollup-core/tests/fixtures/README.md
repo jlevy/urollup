@@ -69,7 +69,8 @@ Diagnostic codes are provisional names for the ledger to adopt or rename:
 `claude-block-usage-conflict`, `claude-cache-creation-breakdown-mismatch`,
 `claude-nested-copy-without-original`, `identity-key-conflict`,
 `codex-counter-epoch-reset`, `codex-estimate-compaction`,
-`codex-estimate-context-window-fill`, `codex-copied-history-inferred`, `thread-orphan`,
+`codex-estimate-context-window-fill`, `codex-copied-history-inferred`,
+`codex-history-boundary-unverified`, `thread-orphan`,
 `codex-rollout-duplicate-location`, `malformed-line`, `pending-tail` and
 `source-incomplete`.
 
