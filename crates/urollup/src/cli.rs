@@ -135,7 +135,7 @@ enum ColorWhen {
 
 #[derive(Clone, Debug, Subcommand)]
 enum Command {
-    /// Session report: totals, coverage, request sizes and separate breakdowns
+    /// Session report: totals, coverage, request sizes, separate breakdowns and diagnostics
     Report(ReportArgs),
     /// Calendar rollup by day
     Daily(SelectionArgs),
@@ -219,7 +219,11 @@ struct ReportArgs {
     selection: SelectionArgs,
 
     /// One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension
-    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION")]
+    // Help lists options by display order, then by long name. Clap numbers the flattened
+    // selection from 0, so 6 is `--source`'s slot: `--group-by` follows `--timezone` and
+    // precedes `--source`, where it sat before it left the selection. The CLI-surface
+    // golden pins the order.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION", display_order = 6)]
     group_by: Vec<GroupByArg>,
 }
 

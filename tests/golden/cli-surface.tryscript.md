@@ -34,7 +34,7 @@ Trustworthy token and usage rollups from Claude Code and Codex session logs
 Usage: urollup [OPTIONS] <COMMAND>
 
 Commands:
-  report    Session report: totals, coverage, request sizes and separate breakdowns
+  report    Session report: totals, coverage, request sizes, separate breakdowns and diagnostics
   daily     Calendar rollup by day
   sessions  One row per session
   help      Print this message or the help of the given subcommand(s)
@@ -99,7 +99,7 @@ own; it never combines dimensions.
 
 ```console
 $ urollup report -h
-Session report: totals, coverage, request sizes and separate breakdowns
+Session report: totals, coverage, request sizes, separate breakdowns and diagnostics
 
 Usage: urollup report [OPTIONS]
 
@@ -112,11 +112,11 @@ Options:
       --scope <SCOPE>         Include only selected threads or also their spawned subagent descendants [possible values: self, descendants]
       --format <FORMAT>       Output as a terminal table or JSON document [default: table] [possible values: table, json]
       --timezone <ZONE>       IANA timezone for calendar grouping; defaults to the system timezone
+      --group-by <DIMENSION>  One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension [possible values: project, account, model, effort]
       --source <PATH>         Add a source root or JSONL artifact; repeatable
       --no-default-sources    Read only paths named by --source
       --max-ram <SIZE>        Ingest budget as a byte size (512M, 8G, 8GiB) or a percent of physical RAM (25%). Default: 25% of RAM, or 2 GiB if RAM cannot be read. `UROLLUP_MAX_RAM` sets the same value when this flag is omitted
       --max-rows <N>          Exact per-agent observation ceiling. When set with --max-ram, the stricter (smaller) ceiling wins
-      --group-by <DIMENSION>  One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension [possible values: project, account, model, effort]
   -h, --help                  Print help (see more with '--help')
 ? 0
 ```
@@ -165,7 +165,7 @@ $ urollup
 ! Usage: urollup [OPTIONS] <COMMAND>
 !
 ! Commands:
-!   report    Session report: totals, coverage, request sizes and separate breakdowns
+!   report    Session report: totals, coverage, request sizes, separate breakdowns and diagnostics
 !   daily     Calendar rollup by day
 !   sessions  One row per session
 !   help      Print this message or the help of the given subcommand(s)
