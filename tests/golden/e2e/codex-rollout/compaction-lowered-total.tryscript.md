@@ -47,7 +47,8 @@ unknown | 5 | 259,000 | 6,000 | 265,000
 
 EFFORT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-medium | 5 | 259,000 | 6,000 | 265,000
+high | 3 | 169,000 | 3,500 | 172,500
+medium | 2 | 90,000 | 2,500 | 92,500
 
 MODEL BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
@@ -135,20 +136,38 @@ $ urollup report --all --format json --timezone UTC
     "effort": [
       {
         "group": "effort",
-        "value": "medium",
+        "value": "high",
         "requests": {
-          "owned": 5,
+          "owned": 3,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 46000,
-          "cache_read": 213000,
+          "uncached_input": 31000,
+          "cache_read": 138000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 6000,
-          "reasoning": 2300,
-          "total": 265000
+          "output": 3500,
+          "reasoning": 1300,
+          "total": 172500
+        }
+      },
+      {
+        "group": "effort",
+        "value": "medium",
+        "requests": {
+          "owned": 2,
+          "ambiguous": 0,
+          "unknown": 0
+        },
+        "tokens": {
+          "uncached_input": 15000,
+          "cache_read": 75000,
+          "cache_write": 0,
+          "cache_write_unspecified": 0,
+          "output": 2500,
+          "reasoning": 1000,
+          "total": 92500
         }
       }
     ],

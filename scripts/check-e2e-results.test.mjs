@@ -241,6 +241,11 @@ test("models and efforts count request rows per value, as the report's breakdown
   assert.deepEqual(reconciled.efforts, { high: 2, low: 1, unknown: 1 });
   assert.equal(normalizeExpected(JSON.parse(record({ requests: [] }))).reconciled.models, undefined, "no request rows, nothing to compare");
   assert.throws(() => normalizeExpected(JSON.parse(record({ requests: [{ model: 5 }] }))), /requests\[0\]\.model must be a string or null/);
+  // A bad component model is reported at the component, not at the row's own model.
+  assert.throws(
+    () => normalizeExpected(JSON.parse(record({ requests: [{ model: "m", model_usage: [{ model: "m" }, { model: 7 }] }] }))),
+    /requests\[0\]\.model_usage\[1\]\.model must be a string or null/,
+  );
 
   // The report side sums every ownership status of a breakdown row.
   const breakdown = (values) => values.map(([value, owned, ambiguous = 0]) => ({ value, requests: { owned, ambiguous, unknown: 0 }, tokens: {} }));

@@ -150,8 +150,8 @@ export function caseEnvironment(roots, caseDir, emptyRoot) {
 export const RESULT_READERS = {
   requests: (raw) => raw.totals?.requests?.unique,
   ownership: (raw) => selectCounts(raw.totals?.requests, OWNERSHIP_STATUSES),
-  models: (raw) => requestCounts(raw.requests, "model", (row) => (Array.isArray(row.model_usage) && row.model_usage.length > 0 ? row.model_usage.map((component) => component?.model) : [row.model])),
-  efforts: (raw) => requestCounts(raw.requests, "effort", (row) => [row.effort]),
+  models: (raw) => requestCounts(raw.requests, modelValues),
+  efforts: (raw) => requestCounts(raw.requests, (row) => [["effort", row.effort]]),
   tokens: (raw) => raw.totals?.tokens,
   unresolved: (raw) => selectCounts(raw.totals?.unresolved, ["requests", "tokens"]),
   possible: (raw) => selectCounts(raw.totals?.possible, ["requests", "tokens"]),
@@ -176,18 +176,30 @@ function sortedCounts(counts) {
 }
 
 /**
- * Request counts per value of one request field, read from a case's request rows, as the
- * report's breakdown of that field counts them (design §4.1, §4.3): `values(row)` lists what one
- * row counts toward, and a null or missing value counts as `unknown`, the report's label.
- * Undefined when the case lists no request rows, so the result is not compared.
+ * The models one request row counts toward, as `[field, value]` pairs: each `model_usage`
+ * component's model when the row splits its usage, as the report's model breakdown does,
+ * and otherwise the row's own model.
  */
-function requestCounts(rows, field, values) {
+function modelValues(row) {
+  if (Array.isArray(row.model_usage) && row.model_usage.length > 0) {
+    return row.model_usage.map((component, index) => [`model_usage[${index}].model`, component?.model]);
+  }
+  return [["model", row.model]];
+}
+
+/**
+ * Request counts per value, read from a case's request rows, as the report's breakdown counts
+ * them (design §4.1, §4.3): `values(row)` lists the `[field, value]` pairs one row counts toward,
+ * and a null or missing value counts as `unknown`, the report's label. Undefined when the case
+ * lists no request rows, so the result is not compared.
+ */
+function requestCounts(rows, values) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return undefined;
   }
   const counts = new Map();
   rows.forEach((row, index) => {
-    for (const value of values(isObject(row) ? row : {})) {
+    for (const [field, value] of values(isObject(row) ? row : {})) {
       if (value !== undefined && value !== null && typeof value !== "string") {
         throw new Error(`requests[${index}].${field} must be a string or null, found ${JSON.stringify(value)}`);
       }
