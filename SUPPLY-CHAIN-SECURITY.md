@@ -169,11 +169,10 @@ test inputs. Every crate below builds on the 1.85 MSRV.
 
 Checked on 2026-10-08 for bead `uro-t4l1`. `npm audit` failed on GHSA-vfj7-8cjw-p6xm, a
 stack-exhaustion advisory in `braces` with no patched release, reached through tryscript
-0.2.1, `fast-glob` and `micromatch`. tryscript 0.3.0 (2026-10-04, first-party, so
-exempt from the cool-off) replaces `fast-glob` with `tinyglobby`, which removes 17
-packages including `braces`.
-The new transitive packages, `tinyglobby` 0.2.17, `fdir` 6.5.0 and `picomatch` 4.0.7,
-pass the 14-day gate.
+0.2.1, `fast-glob` and `micromatch`. tryscript 0.3.0 (2026-10-04, first-party, so exempt
+from the cool-off) replaces `fast-glob` with `tinyglobby`, which removes 17 packages
+including `braces`. The new transitive packages, `tinyglobby` 0.2.17, `fdir` 6.5.0 and
+`picomatch` 4.0.7, pass the 14-day gate.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
