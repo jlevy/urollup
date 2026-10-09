@@ -681,8 +681,8 @@ not resume boxing, `N=1` keys, `shrink_to` of a large remainder, chunked consume
 intern-lifetime observe reorder, packing keys off the shell, two-pass Claude, or
 prefix-merge. Tail-consume after grouping was judged unable to return RSS and was not
 filed. `uro-l0gd` is closed as the dated remasure (Codex-only 586 MiB / WH 653 MiB).
-`uro-n1cp` is not closable and now depends on `uro-zrr0`. The 512 MiB gate and the 10 s
-target live on Phase 2.
+`uro-n1cp` is not closable and now depends on `uro-zrr0`. Phase 2 owned the 512 MiB gate
+and the 10 s target until the 2026-09-27 policy retired them.
 
 1. **Phase 1 (`uro-n1cp`), 512 MiB.**
 
@@ -712,26 +712,28 @@ target live on Phase 2.
 | `uro-73al` (canceled; pack-to-nodes reverted) | `reconcile.rs` `RequestObservation.keys`, `resolve_identities` | Packed keys to a node index (two inline slots kept). Join-time intern, join-time `KeyGraph`, and concat-then-pack all left WH at 657–682 MiB vs 653 standing. IDs already live in the shells. Reverted. |
 | `uro-l0gd` (done; remasure only) | privacy-safe `sessions --all` | Dated numbers: Codex-only 586 MiB (600336 KiB) / 13.2 s; WH 653 MiB (668384 KiB) / 17.3 s (repeat 661 / 18.6). Does not close `uro-n1cp`. |
 
-2. **Phase 2 (`uro-zrr0`) owns 512 MiB and 10 s.**
+2. **Phase 2 (`uro-zrr0`), which owned 512 MiB and 10 s until 2026-09-27.**
 
 | Bead | Files and functions | Why |
 | --- | --- | --- |
 | `uro-nuhn` (canceled; no-Value numbers reverted) | `codex_rollout/line.rs` `CompactJson` `visit_i64`/`u64`/`f64` | Writing primitives without `Value` left quiet WH at 685 MiB / 21.3 s vs 653 / 17.3. Reverted. |
 | `uro-nzo1` (open) | `claude_project/line.rs` `UnsignedAt`, `unsigned` | Usage-line number checks still wrap `Value::from`. |
-| `uro-a3fo` (open) | `claude_project.rs` `read_subagent_meta`; `sources/decode.rs` `parse_record` | Sidecar is a `Value`; `parse_record` still builds a document. |
+| `uro-a3fo` (done) | `claude_project.rs` `read_subagent_meta`; `sources/decode.rs` `parse_record` | Typed sidecar fields replace the `Value`; `parse_record` is test-only. No whole-history performance result is claimed. |
 | `uro-96vw` (canceled; mimalloc reverted) | `crates/urollup` `mimalloc` 0.1.52 | Quiet WH 834 MiB (853568 KiB) / 19.0 s vs 653 / 17.3; Codex-only 676 MiB (692016 KiB) / 15.3 s vs 586 / 13.2. Slack is not the system allocator. Reverted. |
 | `uro-lsaz` (open; profile recorded) | `cli.rs` phases; sampling profile | Quiet remasure WH 648 MiB / 18.2 s, Codex-only 573 MiB / 14.3 s (standing band 653 / 17.3 and 586 / 13.2). `codex_ingest` 13.5 s of WH. Remaining worker time after `uro-s5vb` revert is kernel read (~40%) and `Line::read`. |
 | `uro-s5vb` (canceled; zero-copy accept reverted) | `sources/json.rs` `accept`; `decode.rs` `validate_record` | In-place scanner matched `parse_record` in tests (malformed contract held) but quiet WH 650 MiB (665712 KiB) / 20.7 s vs 648 / 18.2 and Codex-only 583 MiB (596928 KiB) / 15.3 s vs 573 / 14.3. Reverted. |
 | `uro-h6iw` (canceled; 1 MiB window reverted) | `reader.rs` `reader_for` | 128 KiB → 1 MiB `BufReader`. Quiet WH 635 MiB (649696 KiB) / 21.2 s vs 648 / 18.2; Codex-only 602 MiB (616160 KiB) / 13.7 s vs 573 / 14.3. WH wall and Codex peak rose. `posix_fadvise` not added (`unsafe` denied; Darwin no-ops it). Reverted. |
-| `uro-6gwt` (open) | leftover `Value` umbrella | Blocked on `uro-nzo1` and `uro-a3fo`. |
+| `uro-6gwt` (open) | leftover `Value` umbrella | Blocked on `uro-nzo1`; `uro-a3fo` is done. |
 
 3. **Phase 3 (`uro-ky6c`).** Run the full-history QA playbook and record a privacy-safe
    report. The one-pass local parity join already landed.
    There is no second engine to delete.
 
-Milestone 0.1 G1 (`uro-d36a`) waits on Phase 2 (`uro-zrr0`), which owns the 512 MiB
-gate. Independent review of the published stack (`uro-nncx`) is parallel and does not
-block this work. Publishing (`uro-30ef`) waits on the 0.1 epic.
+Milestone 0.1 G1 (`uro-d36a`) waits on Phase 2 (`uro-zrr0`) under the
+[accepted policy](#accepted-scale-and-memory-policy-2026-09-27) and on the
+[open correctness fixes](plan-2026-09-16-first-release-publishing.md#open-correctness-fixes).
+Independent review of the published stack (`uro-nncx`) is complete.
+Publishing (`uro-30ef`) waits on the 0.1 epic.
 
 ## Testing Strategy
 
