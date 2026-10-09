@@ -64,8 +64,8 @@ Each command currently rereads the logs.
 Separate commands can observe different input when sessions are active.
 `report --group-by project,model` produces separate project and model breakdowns, not
 project × model rows.
-`--group-by` currently affects only `report`; the known CLI defect that accepts it on
-other commands is tracked as `uro-oz6w`.
+Only `report` takes `--group-by`; `daily` and `sessions` reject it as a usage error
+(exit 2) until joint grouping is implemented.
 
 JSON is useful for inspection and scripts, but a report is a view, not a reusable
 request dataset or merge input.

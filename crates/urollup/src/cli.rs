@@ -135,8 +135,8 @@ enum ColorWhen {
 
 #[derive(Clone, Debug, Subcommand)]
 enum Command {
-    /// Session report: totals, breakdowns, sizes, tools and limitations
-    Report(SelectionArgs),
+    /// Session report: totals, coverage, request sizes and separate breakdowns
+    Report(ReportArgs),
     /// Calendar rollup by day
     Daily(SelectionArgs),
     /// One row per session
@@ -154,7 +154,8 @@ impl Command {
 
     fn args(&self) -> &SelectionArgs {
         match self {
-            Self::Report(args) | Self::Daily(args) | Self::Sessions(args) => args,
+            Self::Report(args) => &args.selection,
+            Self::Daily(args) | Self::Sessions(args) => args,
         }
     }
 
@@ -190,10 +191,6 @@ struct SelectionArgs {
     #[arg(long, value_name = "ZONE")]
     timezone: Option<String>,
 
-    /// Report breakdown; repeatable and comma-delimited
-    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION")]
-    group_by: Vec<GroupByArg>,
-
     /// Add a source root or JSONL artifact; repeatable
     #[arg(long = "source", value_name = "PATH")]
     sources: Vec<PathBuf>,
@@ -209,6 +206,21 @@ struct SelectionArgs {
     /// Exact per-agent observation ceiling. When set with --max-ram, the stricter (smaller) ceiling wins
     #[arg(long, value_name = "N")]
     max_rows: Option<u64>,
+}
+
+/// `report` arguments: the shared selection plus the breakdowns only `report` prints.
+///
+/// `daily` and `sessions` do not take `--group-by`, so clap rejects it there as a usage
+/// error instead of accepting a flag the rollups would ignore. Joint calendar and
+/// dimension grouping is planned separately (uro-qvp1).
+#[derive(Clone, Debug, Default, Args)]
+struct ReportArgs {
+    #[command(flatten)]
+    selection: SelectionArgs,
+
+    /// One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION")]
+    group_by: Vec<GroupByArg>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -1036,8 +1048,8 @@ fn execute(command: &Command, color: bool, stats: &mut Stats) -> Result<String, 
     let metadata = QueryMetadata::new(command.name(), selection_name, scope, &timezone);
 
     let mut output = match command {
-        Command::Report(_) => {
-            let groups = args.group_by.iter().copied().map(GroupBy::from).collect();
+        Command::Report(report_args) => {
+            let groups = report_args.group_by.iter().copied().map(GroupBy::from).collect();
             let document = report(&sources, &corpus.index, &selected, all, metadata, &groups)
                 .map_err(|error| Failure::runtime(error.to_string()))?;
             match args.format {
@@ -1222,10 +1234,10 @@ mod tests {
 
     use super::{
         Agent, AgentStats, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit,
-        ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ScopeArg, Stats, TerminalContext,
-        classify_explicit_source, classify_records, codex_thread_from_locator, decoding_workers,
-        derive_agent_thread_id, execute, ingest_capacity, narrow_discoveries, run,
-        run_with_context, stats_requested,
+        ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ReportArgs, ScopeArg, Stats,
+        TerminalContext, classify_explicit_source, classify_records, codex_thread_from_locator,
+        decoding_workers, derive_agent_thread_id, execute, ingest_capacity, narrow_discoveries,
+        run, run_with_context, stats_requested,
     };
     use clap::Parser;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
@@ -1505,9 +1517,10 @@ mod tests {
             "--no-default-sources",
         ])
         .expect("selection flags parse");
-        let Command::Report(selection) = cli.command else {
+        let Command::Report(ReportArgs { selection, group_by }) = cli.command else {
             panic!("expected report command");
         };
+        assert!(group_by.is_empty());
         assert!(selection.current);
         assert_eq!(selection.sessions, ["native-one", "thr-two"]);
         assert!(selection.all);
@@ -1536,6 +1549,46 @@ mod tests {
             ] {
                 assert!(outcome.stdout.contains(flag), "{command} help lacks {flag}");
             }
+        }
+    }
+
+    #[test]
+    fn daily_and_sessions_reject_group_by_as_a_usage_error() {
+        // Joint calendar and dimension grouping is not implemented (uro-qvp1), so a
+        // grouping flag on a rollup must fail rather than print ungrouped rows.
+        for command in ["daily", "sessions"] {
+            let outcome = invoke(&[
+                command,
+                "--all",
+                "--no-default-sources",
+                "--timezone",
+                "UTC",
+                "--group-by",
+                "model",
+            ]);
+            assert_eq!(outcome.exit, Exit::Usage, "{command}: {}", outcome.stdout);
+            assert_eq!(outcome.stdout, "", "{command}");
+            assert!(
+                outcome.stderr.starts_with("error: unexpected argument '--group-by' found"),
+                "{command}: {}",
+                outcome.stderr
+            );
+        }
+    }
+
+    #[test]
+    fn help_describes_report_groups_as_separate_breakdowns_without_tools() {
+        let root = invoke(&["--help"]);
+        assert!(!root.stdout.contains("tools"), "{}", root.stdout);
+        let report = invoke(&["report", "--help"]);
+        assert_eq!(report.exit, Exit::Success);
+        assert!(!report.stdout.contains("tools"), "{}", report.stdout);
+        assert!(report.stdout.contains("--group-by"), "{}", report.stdout);
+        assert!(report.stdout.contains("never combined"), "{}", report.stdout);
+        for command in ["daily", "sessions"] {
+            let help = invoke(&[command, "--help"]);
+            assert_eq!(help.exit, Exit::Success, "{command}");
+            assert!(!help.stdout.contains("--group-by"), "{command}: {}", help.stdout);
         }
     }
 
