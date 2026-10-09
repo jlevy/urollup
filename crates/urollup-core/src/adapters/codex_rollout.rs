@@ -1008,8 +1008,12 @@ impl UnverifiedUsage {
 
 /// How a rollout's first own cumulative total relates to the baseline it may continue.
 enum FirstStep {
-    /// The baseline accounts for the total, or the step reports no usage: count from it.
+    /// The baseline accounts for the total, or the step reports no usage it could check:
+    /// count from it.
     Continues(RunningTotal),
+    /// The total repeats the baseline, so the step adds nothing and the next step that
+    /// reports usage is still the one to check.
+    Repeated,
     /// The total is the step's own usage alone, so the inherited baseline does not apply.
     Unseeded,
     /// Neither the baseline nor a zero start accounts for the total.
@@ -1030,7 +1034,7 @@ fn first_step(
     let Some(last) = last else { return Ok(FirstStep::Continues(tracker)) };
     let step = tracker.clone().observe(total, None)?;
     let proven = match step.event {
-        CounterEvent::Repeated => true,
+        CounterEvent::Repeated => return Ok(FirstStep::Repeated),
         CounterEvent::Reset => same_usage(total, last),
         CounterEvent::Advanced | CounterEvent::Gap { .. } => same_usage(&step.delta, last),
     };
@@ -1041,6 +1045,19 @@ fn first_step(
     } else {
         FirstStep::Unverified
     })
+}
+
+/// Whether `total` changes the running total the rollout's next own step continues: the
+/// counter's, or else the inherited total. A total that only repeats it carries no usage.
+fn changes_running_total(
+    counter: Option<&RunningTotal>,
+    inherited: Option<TokenMeasures>,
+    total: &TokenMeasures,
+) -> Result<bool, AdapterError> {
+    let mut tracker = counter
+        .cloned()
+        .unwrap_or_else(|| inherited.map_or_else(RunningTotal::new, RunningTotal::inheriting));
+    Ok(tracker.observe(total, None)?.event != CounterEvent::Repeated)
 }
 
 /// Category-wise equality, reading a missing count as zero.
@@ -1134,19 +1151,28 @@ fn observe_parsed_source(
         };
         // Usage that would count as this rollout's own, but that a declared boundary
         // cannot place, is copied history of no proven owner: never the child's usage.
-        let claimed_by_file = match &record.kind {
-            RecordKind::UsageRecord(usage) => {
-                usage.thread_id.map_or(active_thread == file_thread, |thread| thread == file_thread)
-            }
-            RecordKind::TokenCount { .. } => {
-                !has_direct && first_usage.is_some() && active_thread == file_thread
-            }
-            RecordKind::SessionMeta { .. }
-            | RecordKind::TurnContext { .. }
-            | RecordKind::Compacted(_)
-            | RecordKind::ThreadSettingsApplied { .. } => false,
-        };
-        let unplaced = claimed_by_file && native_boundary.cannot_place(record.ordinal);
+        // A cumulative total that only repeats the running total carries no usage; Codex
+        // re-sends the current totals with every rate-limit refresh.
+        let unplaced = native_boundary.cannot_place(record.ordinal)
+            && match &record.kind {
+                RecordKind::UsageRecord(usage) => usage
+                    .thread_id
+                    .map_or(active_thread == file_thread, |thread| thread == file_thread),
+                RecordKind::TokenCount { .. } => match &first_usage {
+                    Some(total) if !has_direct && active_thread == file_thread => {
+                        changes_running_total(
+                            counter.as_ref(),
+                            inherited_total,
+                            &codex_usage(total)?,
+                        )?
+                    }
+                    Some(_) | None => false,
+                },
+                RecordKind::SessionMeta { .. }
+                | RecordKind::TurnContext { .. }
+                | RecordKind::Compacted(_)
+                | RecordKind::ThreadSettingsApplied { .. } => false,
+            };
         if unplaced {
             unverified.add(view.evidence);
         }
@@ -1260,12 +1286,13 @@ fn observe_parsed_source(
                     let mut copy_owner =
                         (usage_owner != Some(file_thread_text)).then_some(usage_owner);
                     let needs_baseline = inherited_total.is_some()
-                        || matches!(native_boundary, NativeBoundary::At(boundary) if boundary > 0);
+                        || matches!(native_boundary, NativeBoundary::At(_));
                     if copy_owner.is_none() && counter.is_none() && needs_baseline {
                         let last_usage =
                             last.filter(|_| !estimated).map(codex_usage).transpose()?;
                         match first_step(inherited_total, &total_usage, last_usage.as_ref())? {
                             FirstStep::Continues(tracker) => counter = Some(tracker),
+                            FirstStep::Repeated => continue,
                             FirstStep::Unseeded => {
                                 diagnostics.push(Diagnostic::new(
                                     DiagnosticCode::CodexCounterEpochReset,

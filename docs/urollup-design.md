@@ -894,16 +894,21 @@ set these source-specific rules:
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
   an invalid `subagent_history_start_ordinal` places none of the rollout’s usage, and a
   usage record or cumulative total without an `ordinal` is not placed.
-  A `token_count` that reports only rate limits carries no usage and needs no ordinal.
-  In a child with an explicit boundary, or in any child after copied counters, the first
-  own counter step that reports usage must match its `last_token_usage`, either as its
-  delta from the inherited total (a seeded child) or as its whole total (an unseeded
-  child, which opens a new counter epoch with a `codex-counter-epoch-reset` diagnostic).
+  A `token_count` that carries no usage needs no ordinal: one that reports only rate
+  limits (`info: null`), or one whose total repeats the running total, which Codex sends
+  with every rate-limit refresh.
+  In a child with an explicit boundary, including a boundary of 0, or in any child after
+  copied counters, the first own counter step that reports usage must match its
+  `last_token_usage`, either as its delta from the inherited total (a seeded child) or
+  as its whole total (an unseeded child, which opens a new counter epoch with a
+  `codex-counter-epoch-reset` diagnostic).
   A first step that matches neither is excluded, including the first step of an
   explicit-boundary child with no copied counter whose total differs from its
   `last_token_usage`; later steps count from its total.
-  A child with neither an explicit boundary nor copied counters starts from zero
-  unchecked. The parent’s latest total is not a substitute for its total at the fork.
+  A step that only repeats the inherited total reports no usage, so the step after it is
+  the one checked. A child with neither an explicit boundary nor copied counters starts
+  from zero unchecked.
+  The parent’s latest total is not a substitute for its total at the fork.
   Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
   diagnostic and a coverage gap for its thread, so that thread and the whole history
   report partial coverage while every other session still reports; the anomaly never

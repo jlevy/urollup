@@ -689,3 +689,74 @@ fn nested_paginated_subagents_with_every_original_present_report_complete_covera
         assert_eq!(select(&ingested, &[native]).completeness, Completeness::Complete, "{native}");
     }
 }
+
+#[test]
+fn an_unpositioned_token_count_repeating_the_running_total_adds_nothing_and_is_no_gap() {
+    // Codex re-sends the current totals with every rate-limit refresh, so a token_count
+    // without an ordinal may only repeat the inherited or the running total.
+    let inherited = counter(1, 90, 10, 90, 10);
+    for child in [
+        vec![
+            inherited.clone(),
+            unpositioned(&counter(0, 90, 10, 90, 10)),
+            counter(3, 108, 12, 18, 2),
+            counter(5, 113, 13, 5, 1),
+        ],
+        vec![
+            inherited.clone(),
+            counter(3, 108, 12, 18, 2),
+            unpositioned(&counter(0, 108, 12, 18, 2)),
+            counter(5, 113, 13, 5, 1),
+        ],
+    ] {
+        let root = fork_root(Some(std::slice::from_ref(&inherited)), &child);
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        let mut totals = counted_totals(&ingested);
+        totals.sort_unstable();
+        assert_eq!(totals, [6, 20, 100]);
+        assert!(boundary_diagnostics(&ingested).is_empty(), "a repeated total is no anomaly");
+        assert!(ingested.ledger.gaps.is_empty());
+        assert_eq!(
+            ledger_totals(&ingested.ledger).expect("totals").completeness,
+            Completeness::Complete
+        );
+    }
+}
+
+#[test]
+fn an_explicit_boundary_of_zero_still_checks_the_first_counter_step() {
+    let parent = [counter(1, 90, 10, 90, 10)];
+    let meta = json!({"parent_thread_id": PARENT, "subagent_history_start_ordinal": 0});
+
+    let seeded = fork_root(Some(&parent), &[]);
+    write_child(&seeded, meta.clone(), &[counter(1, 108, 12, 18, 2)]);
+    let ingested = codex_rollout::ingest_root(seeded.path()).expect("ingest synthetic fork");
+    assert_eq!(counted_totals(&ingested), [100], "the inherited 100 is never the child's");
+    assert_excluded_as_gap(&ingested, CHILD);
+
+    let unseeded = fork_root(Some(&parent), &[]);
+    write_child(&unseeded, meta, &[counter(1, 18, 2, 18, 2)]);
+    let ingested = codex_rollout::ingest_root(unseeded.path()).expect("ingest synthetic fork");
+    let mut totals = counted_totals(&ingested);
+    totals.sort_unstable();
+    assert_eq!(totals, [20, 100], "a child that starts from zero passes the check");
+    assert!(boundary_diagnostics(&ingested).is_empty());
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+}
+
+#[test]
+fn a_repeated_inherited_total_does_not_use_up_the_first_step_check() {
+    // A rate-limit refresh after the boundary repeats the inherited total and reports no
+    // usage, so the next step that does is still checked against the baseline.
+    let inherited = counter(1, 90, 10, 90, 10);
+    let root = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 90, 10, 90, 10), counter(4, 150, 20, 30, 5)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+    assert_eq!(counted_totals(&ingested), [100], "the inconsistent step stays excluded");
+    assert_excluded_as_gap(&ingested, CHILD);
+}
