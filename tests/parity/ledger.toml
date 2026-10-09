@@ -3,6 +3,48 @@ schema = 1
 # Deltas are urollup minus ccusage 20.0.20. Omitted rule dimensions match any value,
 # while expected_matches pins the number of matrix cells a rule may explain.
 
+# Whole-history runs see both sessions claim the shared response and report it as
+# ambiguous. An exact `--session` selection ingests only the selected session's files,
+# where that session is the sole proven owner, so each single-session run counts it.
+# ccusage deduplicates the response across sessions and keeps it in the first session.
+[[entry]]
+id = "claude-ambiguous-owner-session-selection"
+case = "claude-project/ambiguous-owner"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Revisit when exact session selection reads owner claims outside the selected session's files and reports the shared response as possible usage, or when ccusage stops deduplicating responses across sessions."
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_read"
+expected_delta = 2000
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "cache_write"
+expected_delta = 200
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "output"
+expected_delta = 80
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "total"
+expected_delta = 2310
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+metric = "uncached_input"
+expected_delta = 30
+expected_matches = 4
+
 [[entry]]
 id = "claude-zero-token-session"
 case = "claude-project/brief-double-counting"

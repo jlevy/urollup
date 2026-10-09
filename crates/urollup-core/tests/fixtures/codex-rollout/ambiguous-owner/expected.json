@@ -1,0 +1,214 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "ambiguous-owner",
+  "dialect": "codex-rollout",
+  "summary": "Two unrelated threads each record a token_usage_record with the same response_id, model and usage under their own thread_id, with no fork or resume edge between them, so the response's owner is ambiguous.",
+  "rules": [
+    "design §4.2 Ownership and Totals (ambiguous ownership)",
+    "design §3.4 Codex requests (token_usage_record)",
+    "design §3.6 Identity Basis and Linking"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 legacy rollouts; token_usage_record first shipped in rust-v0.153.0. No release is known to write one response_id into two unrelated threads; the case models the ambiguity design §4.2 defines."
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl",
+      "lines": 9,
+      "thread": "019f0000-0000-7000-8000-001700000001"
+    },
+    {
+      "path": "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl",
+      "lines": 13,
+      "thread": "019f0000-0000-7000-8000-001700000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001700000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 2000,
+          "cache_read": 6000,
+          "cache_write": 0,
+          "output": 400,
+          "reasoning": 100
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001700000002",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1000,
+          "cache_read": 4000,
+          "cache_write": 0,
+          "output": 300,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_a1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-05T10:00:20.000Z",
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 6000,
+        "cache_write": 0,
+        "output": 400,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl:5"
+      ],
+      "turn_id": "turn-c17-a1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_shared"
+      },
+      "identity_basis": "native",
+      "ownership": "ambiguous",
+      "owner_thread": null,
+      "owner_candidates": [
+        "019f0000-0000-7000-8000-001700000001",
+        "019f0000-0000-7000-8000-001700000002"
+      ],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-05T10:00:50.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 9000,
+        "cache_write": 0,
+        "output": 600,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl:7",
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl:7",
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_b2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-05T11:00:50.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 4000,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl:11"
+      ],
+      "evidence": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl:11"
+      ],
+      "turn_id": "turn-c17-b2"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 2,
+      "ambiguous": 1,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 6000,
+      "cache_read": 19000,
+      "cache_write": 0,
+      "output": 1300,
+      "reasoning": 300
+    },
+    "total_tokens": 26300
+  },
+  "diagnostics": [
+    {
+      "code": "conflicting-owners",
+      "refs": [
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-00-019f0000-0000-7000-8000-001700000001.jsonl:7",
+        "sessions/2026/09/05/rollout-2026-09-05T03-00-40-019f0000-0000-7000-8000-001700000002.jsonl:5"
+      ],
+      "detail": "resp_synthetic_c17_shared is recorded by both threads under their own thread_id, so both are proven owners and neither is chosen"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum usage of every token_usage_record line",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 9000,
+        "cache_read": 28000,
+        "cache_write": 0,
+        "output": 1900,
+        "reasoning": 500,
+        "total_tokens": 38900
+      }
+    },
+    {
+      "rule": "Sum last_token_usage of every token_count event in both rollouts",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 9000,
+        "cache_read": 28000,
+        "cache_write": 0,
+        "output": 1900,
+        "reasoning": 500,
+        "total_tokens": 38900
+      }
+    }
+  ],
+  "notes": [
+    "The shared response is counted once in every total. Neither thread's own usage includes it, and a selection of one thread reports it as possible usage, never counted.",
+    "Both records name the thread of the file that holds them, so both are originals; token_count events are reconciliation checks when records exist.",
+    "The shared request takes the agent its candidates share, Codex, even though it has no single thread (design §4.2): a sessions listing shows it in Codex's unowned row, never in another agent's."
+  ]
+}

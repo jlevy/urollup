@@ -1,0 +1,198 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "ambiguous-owner",
+  "dialect": "claude-project",
+  "summary": "Two sessions each record the same response (message.id, requestId, model and usage) as their own, under their own sessionId and fresh uuids, with no replay, fork or resume evidence between them, so its owner is ambiguous.",
+  "rules": [
+    "design §4.2 Ownership and Totals (ambiguous ownership)",
+    "design §3.6 Identity Basis and Linking",
+    "design §3.4 Claude requests"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. No release is known to write one response into two sessions without replay evidence; the case models the ambiguity design §4.2 defines."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001700000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001700000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001700000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 20,
+          "cache_read": 1000,
+          "cache_write": 100,
+          "output": 50,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001700000002",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 15,
+          "cache_read": 500,
+          "cache_write": 0,
+          "output": 40,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic17A",
+        "request_id": "req_011Synthetic17A"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-05T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 20,
+        "cache_read": 1000,
+        "cache_write": 100,
+        "output": 50,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic17Shared",
+        "request_id": "req_011Synthetic17Shared"
+      },
+      "identity_basis": "native",
+      "ownership": "ambiguous",
+      "owner_thread": null,
+      "owner_candidates": [
+        "00000000-0000-4000-8000-001700000001",
+        "00000000-0000-4000-8000-001700000002"
+      ],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-05T10:01:06.000Z",
+      "tokens": {
+        "uncached_input": 30,
+        "cache_read": 2000,
+        "cache_write": 200,
+        "output": 80,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl:4",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl:4",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic17B",
+        "request_id": "req_011Synthetic17B"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001700000002",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-05T11:05:04.000Z",
+      "tokens": {
+        "uncached_input": 15,
+        "cache_read": 500,
+        "cache_write": 0,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl:4"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 2,
+      "ambiguous": 1,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 65,
+      "cache_read": 3500,
+      "cache_write": 300,
+      "output": 170,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "conflicting-owners",
+      "refs": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000001.jsonl:4",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001700000002.jsonl:2"
+      ],
+      "detail": "msg_01Synthetic17Shared with requestId req_011Synthetic17Shared is an original in both sessions, so both are proven owners and neither is chosen"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 95,
+        "cache_read": 5500,
+        "cache_write": 500,
+        "output": 250,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "The shared response is counted once in every total. Neither session's own usage includes it, and a selection of one session reports it as possible usage, never counted.",
+    "Session 2's copy names session 2 and has new uuids, and session 2 is a main session, so neither the uuid nor the message replay rule marks it as a copy; both observations are originals.",
+    "The shared request takes the agent its candidates share, Claude Code, even though it has no single session (design §4.2): a sessions listing shows it in Claude Code's unowned row, never in another agent's."
+  ]
+}

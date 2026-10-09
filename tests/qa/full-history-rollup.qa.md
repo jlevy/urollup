@@ -288,7 +288,7 @@ The numeric values are measurements, not fixed targets.
 
 ```bash
 jq '.rows | length' "$QA/sessions.json" "$QA/daily.json"
-jq '.rows | group_by(.agent) | map({agent: .[0].agent, sessions: length})' "$QA/sessions.json"
+jq '[.rows[] | select(.thread != null)] | group_by(.agent) | map({agent: .[0].agent, sessions: length})' "$QA/sessions.json"
 jq '.totals.requests' "$QA/report.json"
 ```
 
