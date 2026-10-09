@@ -38,16 +38,16 @@ default) when it starts, whether or not they are compressed
 ([transcript storage](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)).
 A whole-history Claude report therefore covers about the last month.
 To keep more, raise `cleanupPeriodDays` in `~/.claude/settings.json`, or copy
-transcripts to an archive directory and pass it with `--source`; urollup reads `.jsonl`
-and `.jsonl.zst` files there, and `.jsonl.gz` support is tracked as `uro-nc34`. If the
-archive also holds transcripts still under `~/.claude/projects`, add
+transcripts to an archive directory and pass it with `--source`; urollup reads `.jsonl`,
+`.jsonl.zst` and `.jsonl.gz` files there.
+If the archive also holds transcripts still under `~/.claude/projects`, add
 `--no-default-sources` and name each root explicitly so no transcript is read from two
 roots. Codex keeps archived sessions under `archived_sessions`, which default discovery
 reads.
 
-Known accounting defects remain open, including a Codex paginated-fork double count that
-still reports complete coverage (`uro-kpbp`); treat Codex totals as provisional.
-The
+Codex totals stay provisional until the real-history comparison is rerun after the
+accounting fixes: PR #18 (merged 2026-10-09) and the paginated-fork double count
+(`uro-kpbp`) in PR #16. The
 [release readiness record](project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes)
 lists each open fix.
 

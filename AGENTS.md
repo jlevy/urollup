@@ -62,9 +62,10 @@ projected 100 GiB within 25% of reference-machine RAM, and safe early refusal fo
 over-budget histories.
 Raw input larger than RAM must stream successfully within the validated retained-state
 envelope. Process-wide admission (`uro-6pi8`), scale proofs (`uro-z1h1`) and
-representative evidence (`uro-erqo`) remain required before G1, as does the Codex fork
-fix (`uro-kpbp`). The current row-shell budget is not that process-wide safety
-mechanism. Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
+representative evidence (`uro-erqo`) remain required before G1, as does a real-history
+rerun after the Codex accounting fixes (`uro-kpbp` in PR #16, and PR #18). The current
+row-shell budget is not that process-wide safety mechanism.
+Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
 follow-ups, not 0.1 blockers.
 Keep the existing small synthetic regression limits.
 Phase 1 field and ID compaction is exhausted.
@@ -82,10 +83,10 @@ reverted. Do not retry those.
 Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
 pattern. The historical `uro-lsaz` profile found Codex worker decode dominant.
 A larger read window did not cut WH wall.
-Next: land and revalidate the open correctness fixes, starting with the Codex
-paginated-fork double count (`uro-kpbp`), then process-wide safety and scale validation
-under `uro-zrr0`. The `uro-a3fo` typed-sidecar refactor is complete; representative
-evidence (`uro-erqo`) remains open.
+Next: revalidate the correctness fixes on real history (PR #18, merged 2026-10-09, and
+the Codex paginated-fork fix `uro-kpbp` in PR #16), then process-wide safety and scale
+validation under `uro-zrr0`. The `uro-a3fo` typed-sidecar refactor is complete;
+representative evidence (`uro-erqo`) remains open.
 Historical 653/586 MiB results recorded here are not measurements of the stabilized
 stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
 `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned

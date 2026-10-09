@@ -71,9 +71,9 @@ valuation must not be advertised as completed 0.1 features.
 
 ### Open Correctness Fixes
 
-These defects are present on `main` as of the date above.
-Their fixes are open pull requests; none is merged, and Codex totals stay provisional
-until they land and the real-history comparison is rerun.
+These defects were present on `main` as of the date above.
+PR #18 merged on 2026-10-09, and PR #16 lands with this record.
+Codex totals stay provisional until the real-history comparison is rerun.
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
@@ -83,12 +83,12 @@ until they land and the real-history comparison is rerun.
   It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
   (`uro-aakb`). The fix is in [PR #16](https://github.com/jlevy/urollup/pull/16).
 - **Source reading and Codex usage (fixed in
-  [PR #18](https://github.com/jlevy/urollup/pull/18)):** `.jsonl.gz` sources are
-  silently excluded (`uro-nc34`); a source deleted or compressed during a run aborts the
-  command (`uro-2abk`); a corrupt, truncated or unreadable source lowers totals while
-  coverage stays complete (`uro-1h5s`); Codex subagent requests report an `unknown`
-  model and effort (`uro-5nkv`); and a lowered Codex cumulative total is charged to one
-  request (`uro-v1c9`).
+  [PR #18](https://github.com/jlevy/urollup/pull/18), merged 2026-10-09):** `.jsonl.gz`
+  sources are silently excluded (`uro-nc34`); a source deleted or compressed during a
+  run aborts the command (`uro-2abk`); a corrupt, truncated or unreadable source lowers
+  totals while coverage stays complete (`uro-1h5s`); Codex subagent requests report an
+  `unknown` model and effort (`uro-5nkv`); and a lowered Codex cumulative total is
+  charged to one request (`uro-v1c9`).
 
 ## Goals
 
