@@ -426,3 +426,53 @@ fn a_damaged_compressed_rollout_is_reported_without_stopping_any_report() {
         assert_eq!(report["totals"], expected["totals"], "{view:?} {under}: readable totals");
     }
 }
+
+#[test]
+fn an_unverifiable_codex_fork_boundary_does_not_stop_the_report() {
+    let claude = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../urollup-core/tests/fixtures/claude-project/workflow-subagents"
+    );
+    let codex = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../urollup-core/tests/fixtures/codex-rollout/unverified-fork-boundary"
+    );
+    let run = |command: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_urollup"))
+            .args([command, "--source", claude, "--source", codex, "--no-default-sources"])
+            .args(["--format", "json", "--timezone", "UTC"])
+            .env("NO_COLOR", "1")
+            .env_remove("UROLLUP_JOBS")
+            .env_remove("UROLLUP_STATS")
+            .env_remove("UROLLUP_MAX_RAM")
+            .output()
+            .expect("the urollup binary runs");
+        assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON output")
+    };
+
+    let sessions = run("sessions");
+    let agents: Vec<&str> = sessions["rows"]
+        .as_array()
+        .expect("session rows")
+        .iter()
+        .filter(|row| row["tokens"]["total"].as_u64().is_some_and(|total| total > 0))
+        .filter_map(|row| row["agent"].as_str())
+        .collect();
+    assert!(agents.contains(&"claude"), "Claude still reports: {agents:?}");
+    assert!(agents.contains(&"codex"), "the healthy Codex sessions still report: {agents:?}");
+
+    let report = run("report");
+    assert_eq!(report["coverage"]["complete"], serde_json::Value::Bool(false));
+    let diagnostic_codes: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .filter_map(|diagnostic| diagnostic["code"].as_str())
+        .collect();
+    assert!(
+        diagnostic_codes.contains(&"codex-history-boundary-unverified"),
+        "{diagnostic_codes:?}"
+    );
+}

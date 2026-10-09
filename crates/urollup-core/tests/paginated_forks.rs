@@ -11,15 +11,16 @@ use urollup_core::accounting::totals::{
 use urollup_core::adapters::{Ingested, codex_rollout};
 use urollup_core::ledger::coverage::UnobservedReason;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode};
-use urollup_core::ledger::entities::{Counting, Ownership};
+use urollup_core::ledger::entities::{Counting, Ownership, RelationshipKind};
 use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::tokens::TokenMeasures;
-use urollup_core::selection::{Agent, agent_thread_identity};
+use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex, agent_thread_identity};
 use urollup_core::sources::roots::discover;
 
 const PARENT: &str = "11111111-1111-4111-8111-111111111111";
 const CHILD: &str = "22222222-2222-4222-8222-222222222222";
 const OTHER: &str = "33333333-3333-4333-8333-333333333333";
+const GRANDCHILD: &str = "44444444-4444-4444-8444-444444444444";
 
 fn counter(ordinal: u64, input: u64, output: u64, last_input: u64, last_output: u64) -> String {
     json!({
@@ -157,17 +158,31 @@ fn limits_only() -> String {
     .to_string()
 }
 
-/// Writes the child rollout with its own `session_meta` payload fields.
-fn write_child(root: &tempfile::TempDir, meta: serde_json::Value, records: &[String]) {
+/// Writes the rollout of thread `native`, named for `second`, whose own `session_meta` at
+/// ordinal 0 adds the `meta` payload fields.
+fn write_rollout(
+    root: &tempfile::TempDir,
+    native: &str,
+    second: u8,
+    meta: serde_json::Value,
+    records: &[String],
+) {
     let serde_json::Value::Object(fields) = meta else { panic!("meta is an object") };
-    let mut payload = json!({"id": CHILD});
+    let mut payload = json!({"id": native});
     payload.as_object_mut().expect("payload").extend(fields);
     let metadata = json!({"ordinal": 0, "type": "session_meta", "payload": payload});
     fs::write(
-        root.path().join("sessions").join(format!("rollout-2026-01-01T00-00-02-{CHILD}.jsonl")),
+        root.path()
+            .join("sessions")
+            .join(format!("rollout-2026-01-01T00-00-{second:02}-{native}.jsonl")),
         format!("{metadata}\n{}\n", records.join("\n")),
     )
-    .expect("child rollout");
+    .expect("synthetic rollout");
+}
+
+/// Writes the child rollout with its own `session_meta` payload fields.
+fn write_child(root: &tempfile::TempDir, meta: serde_json::Value, records: &[String]) {
+    write_rollout(root, CHILD, 2, meta, records);
 }
 
 fn thread(native: &str) -> AnalyticalId {
@@ -404,21 +419,26 @@ fn fork_totals_and_ownership_are_invariant_to_workers_source_order_and_parent_pr
     let child_id = agent_thread_identity(Agent::Codex, CHILD).expect("child identity").id;
     for direct_usage in [false, true] {
         for parent_present in [false, true] {
-            for reset in [false, true] {
+            // Counter path: the child's counter continues the inherited total or restarts
+            // from zero. Direct path: the copied prefix still holds the parent's usage
+            // record, which keys the copied token_count (before 0.153), or holds only the
+            // token_count, which stays unkeyed (0.153 and later).
+            for variant in [false, true] {
                 let inherited = counter(1, 90, 10, 90, 10);
                 let next =
-                    if reset { counter(3, 18, 2, 18, 2) } else { counter(3, 108, 12, 18, 2) };
+                    if variant { counter(3, 18, 2, 18, 2) } else { counter(3, 108, 12, 18, 2) };
                 let (parent, child) = if direct_usage {
-                    (
-                        vec![direct(1, PARENT, "parent-response", 90, 10), inherited],
-                        vec![
-                            direct(1, PARENT, "parent-response", 90, 10),
-                            counter(2, 90, 10, 90, 10),
-                            compacted_parent(),
-                            direct(3, CHILD, "child-response", 18, 2),
-                            next,
-                        ],
-                    )
+                    let mut child = vec![
+                        direct(1, PARENT, "parent-response", 90, 10),
+                        counter(2, 90, 10, 90, 10),
+                        compacted_parent(),
+                        direct(3, CHILD, "child-response", 18, 2),
+                        counter(3, 108, 12, 18, 2),
+                    ];
+                    if variant {
+                        child.remove(0);
+                    }
+                    (vec![direct(1, PARENT, "parent-response", 90, 10), inherited], child)
                 } else {
                     (vec![inherited.clone()], vec![inherited, next])
                 };
@@ -493,5 +513,179 @@ fn fork_totals_and_ownership_are_invariant_to_workers_source_order_and_parent_pr
                 }
             }
         }
+    }
+}
+
+/// The `uro-kpbp` fork on the counter path and on the direct path: a parent with 100
+/// tokens and a child with a copied prefix and 20 tokens of its own.
+fn kpbp_fork(direct_usage: bool) -> tempfile::TempDir {
+    let inherited = counter(1, 90, 10, 90, 10);
+    if direct_usage {
+        let parent = [direct(1, PARENT, "parent-response", 90, 10), counter(2, 90, 10, 90, 10)];
+        let root = fork_root(Some(&parent), &[]);
+        write_child(
+            &root,
+            json!({"parent_thread_id": PARENT, "forked_from_id": PARENT,
+                   "history_mode": "paginated", "subagent_history_start_ordinal": 3}),
+            &[
+                direct(1, PARENT, "parent-response", 90, 10),
+                counter(2, 90, 10, 90, 10),
+                direct(3, CHILD, "child-response", 18, 2),
+                counter(4, 108, 12, 18, 2),
+            ],
+        );
+        root
+    } else {
+        fork_root(
+            Some(std::slice::from_ref(&inherited)),
+            &[inherited.clone(), counter(3, 108, 12, 18, 2)],
+        )
+    }
+}
+
+#[test]
+fn self_combined_and_descendant_selections_count_the_inherited_prefix_once() {
+    for direct_usage in [false, true] {
+        let root = kpbp_fork(direct_usage);
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        assert!(
+            ingested
+                .relationships
+                .iter()
+                .any(|relationship| relationship.kind == RelationshipKind::Spawn
+                    && relationship.from == thread(PARENT)
+                    && relationship.to == thread(CHILD)),
+            "the child is a descendant of its parent"
+        );
+        let counted = |threads: &[&str]| {
+            let totals = select(&ingested, threads);
+            (totals.counted.requests, totals.counted.tokens.total().expect("valid sum"))
+        };
+        assert_eq!(counted(&[PARENT]), (1, Some(100)), "parent self, direct={direct_usage}");
+        assert_eq!(counted(&[CHILD]), (1, Some(20)), "child self, direct={direct_usage}");
+        assert_eq!(counted(&[PARENT, CHILD]), (2, Some(120)), "combined, direct={direct_usage}");
+
+        let mut index = SessionIndex::default();
+        index.add(Agent::Codex, &ingested).expect("index synthetic fork");
+        for (scope, expected) in [(Scope::SelfOnly, 100), (Scope::Descendants, 120)] {
+            let selected = index
+                .select(&SelectionQuery {
+                    sessions: vec![PARENT.into()],
+                    scope: Some(scope),
+                    ..SelectionQuery::default()
+                })
+                .expect("select the parent");
+            let totals = selection_totals(&ingested.ledger, &selected).expect("selection totals");
+            assert_eq!(
+                (totals.counted.tokens.total().expect("valid sum"), totals.completeness),
+                (Some(expected), Completeness::Complete),
+                "{scope:?}, direct={direct_usage}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_counter_reset_after_the_child_advanced_opens_a_new_epoch_for_the_child() {
+    let inherited = counter(1, 90, 10, 90, 10);
+    let root = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 108, 12, 18, 2), counter(4, 5, 1, 5, 1)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+    let child = select(&ingested, &[CHILD]);
+    assert_eq!(
+        (child.counted.requests, child.counted.tokens.total().expect("valid sum")),
+        (2, Some(26)),
+        "20 before the reset and 6 after it"
+    );
+    assert_eq!(select(&ingested, &[PARENT]).counted.tokens.total().expect("valid sum"), Some(100));
+    assert!(
+        ingested
+            .ledger
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::CodexCounterEpochReset
+                && diagnostic.subject == Some(thread(CHILD)))
+    );
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+}
+
+#[test]
+fn an_unkeyed_copied_token_count_with_its_parent_present_keeps_coverage_complete() {
+    // From 0.153 forked prefixes keep the parent's token_count but drop its usage record,
+    // so the copy has no response key to reconcile with. Paginated (ordinals and an
+    // explicit boundary) and legacy (embedded parent header, then a settings event that
+    // names the child) destinations both hold such a copy.
+    let parent = [direct(1, PARENT, "parent-response", 90, 10), counter(2, 90, 10, 90, 10)];
+    let paginated = fork_root(Some(&parent), &[]);
+    write_child(
+        &paginated,
+        json!({"parent_thread_id": PARENT, "subagent_history_start_ordinal": 2}),
+        &[
+            counter(1, 90, 10, 90, 10),
+            direct(2, CHILD, "child-response", 18, 2),
+            counter(3, 108, 12, 18, 2),
+        ],
+    );
+    let legacy = fork_root(Some(&parent), &[]);
+    write_child(
+        &legacy,
+        json!({"parent_thread_id": PARENT}),
+        &[
+            json!({"type": "session_meta", "payload": {"id": PARENT}}).to_string(),
+            unpositioned(&counter(0, 90, 10, 90, 10)),
+            json!({"type": "event_msg", "payload": {
+                "type": "thread_settings_applied", "thread_id": CHILD
+            }})
+            .to_string(),
+            unpositioned(&direct(0, CHILD, "child-response", 18, 2)),
+            unpositioned(&counter(0, 108, 12, 18, 2)),
+        ],
+    );
+    for root in [paginated, legacy] {
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        let mut totals = counted_totals(&ingested);
+        totals.sort_unstable();
+        assert_eq!(totals, [20, 100]);
+        let totals = ledger_totals(&ingested.ledger).expect("totals");
+        assert_eq!(totals.copy_only.requests, 1, "the unkeyed copy is excluded");
+        assert_eq!(totals.completeness, Completeness::Complete);
+        assert_eq!(select(&ingested, &[PARENT]).completeness, Completeness::Complete);
+    }
+}
+
+#[test]
+fn nested_paginated_subagents_with_every_original_present_report_complete_coverage() {
+    let root = tempfile::tempdir().expect("temporary log root");
+    fs::create_dir(root.path().join("sessions")).expect("sessions directory");
+    write_rollout(&root, PARENT, 0, json!({}), &[counter(1, 90, 10, 90, 10)]);
+    write_rollout(
+        &root,
+        CHILD,
+        1,
+        json!({"parent_thread_id": PARENT, "subagent_history_start_ordinal": 2}),
+        &[counter(1, 90, 10, 90, 10), counter(2, 108, 12, 18, 2)],
+    );
+    write_rollout(
+        &root,
+        GRANDCHILD,
+        2,
+        json!({"parent_thread_id": CHILD, "subagent_history_start_ordinal": 3}),
+        &[counter(1, 90, 10, 90, 10), counter(2, 108, 12, 18, 2), counter(3, 113, 13, 5, 1)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest nested forks");
+    let mut totals = counted_totals(&ingested);
+    totals.sort_unstable();
+    assert_eq!(totals, [6, 20, 100]);
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+    for native in [PARENT, CHILD, GRANDCHILD] {
+        assert_eq!(select(&ingested, &[native]).completeness, Completeness::Complete, "{native}");
     }
 }
