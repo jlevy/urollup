@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 11
+version: 12
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-09-28T07:41:45.984Z
+updated_at: 2026-10-09T07:16:42.295Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -38,3 +38,41 @@ Acceptance:
 ## Notes
 
 Current uncommitted pricing foundation on codex/alpha-pricing-context: exact Decimal/string-only serde, disjoint token category pricing and unknown coverage, validated offline exact-key matching with dates/context bands, request-level model components/default labels/counterfactual date, and currency-separated additive cost totals. Synthetic tests cover advisor usage priced once, custom providers unmatched, missing dates/usage, context conflicts, overlap rejection, missing rates, reasoning subset and arithmetic overflow. On 2026-09-28 the full current cargo test --workspace run passed (external results/pricing-current-workspace-tests.log); all-target all-feature clippy also passed on this code. PR16 remains review-ready with all 15 hosted checks green, verified live. Pricing is still uncommitted and has no PR. Remaining: reviewed real rate table/provenance and override parser, documented default-policy data and cache-lifetime assumption labels, malformed dimensions and no-turn Codex cases, source-reported costs and CLI report integration, cache metrics, full make check, process-wide memory safety/scale proofs and accepted-head private end-to-end QA. Do not claim alpha readiness or full cost rollups yet.
+
+
+The parent of this bead is:
+---
+type: is
+id: is-01m2ke55tfcy92ct96d9446j5p
+title: "Milestone 0.4: Prices"
+kind: epic
+status: open
+priority: P1
+version: 12
+spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
+labels:
+  - milestone-0.4
+# Blocks: uro-zd26
+# Blocked by: uro-xr5l
+dependencies:
+  - type: blocks
+    target: is-01m2ke5h6e0v5vq32nfbmy6rs2
+parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
+child_order_hints:
+  - is-01m2f0tfxphsg75gwnpfyzb6k7
+  - is-01m2khsqrw2qc4khnkxmca2p88
+  - is-01m2kswxt5gxe3s49wch9dss46
+  - is-01m2ksx04swwn45tchzcjqhr0g
+  - is-01m2ksx3pmqbfk86av545tdvab
+  - is-01m2ksx6f9w2rep42kwatz76k5
+  - is-01m2kt2ce2nta6ssw3qr0rw2zk
+  - is-01m2kt2dgbm2s63dhvm4y3h2g9
+  - is-01m2kt2edxydx274wawh93bjxx
+  - is-01m2kt2f8c62j2vaw2k4swfaj6
+created_at: 2026-09-15T21:04:22.765Z
+updated_at: 2026-09-16T00:32:37.131Z
+---
+Reviewed price table, PriceTable contract, overrides, staleness diagnostics, --require-priced and repricing goldens. Plan milestone 0.4.
+
+
+2026-10-09: the uncommitted pricing work is preserved as draft PR https://github.com/jlevy/urollup/pull/19 (branch codex/alpha-pricing-context, commits 9a6f6c9 code and 18f5260 docs), the top layer of formal stack #17 above #16. Not ready for review; rebase onto #18 when it lands (shared adapter and diagnostics files).
