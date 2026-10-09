@@ -3,9 +3,9 @@ type: is
 id: is-01m4fdqwy15hznwazg6cjweps6
 title: "Recent Codex usage records lose their model: context is looked up by root_turn_id"
 kind: bug
-status: in_progress
+status: closed
 priority: 1
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies:
@@ -13,7 +13,11 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-10-09T04:11:33.695Z
-updated_at: 2026-10-09T05:35:59.510Z
+updated_at: 2026-10-09T09:28:14.098Z
+closed_at: 2026-10-09T09:28:14.098Z
+close_reason: "Merged to main in 98f9428 via PRs #18 and #22 (stack #23) after senior, correctness, security and follow-up reviews with every finding dispositioned."
+resolution: null
+duplicate_of: null
 ---
 usage_observation applied turn context with payload.root_turn_id, but turns are keyed by turn_context.turn_id. In multi-agent subagent rollouts every token_usage_record carries turn_id and root_turn_id; turn_id matches the subagent's turn_context while root_turn_id names the parent's turn, so model and effort were never applied and every subagent request reported model and effort unknown. Top-level rollouts, where the two IDs agree, were unaffected. Fix: store the record's own turn_id, falling back to root_turn_id, in the same slot. Blocks list-price estimates (uro-neii), which need the model.
 
