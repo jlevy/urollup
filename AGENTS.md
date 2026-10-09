@@ -62,9 +62,9 @@ projected 100 GiB within 25% of reference-machine RAM, and safe early refusal fo
 over-budget histories.
 Raw input larger than RAM must stream successfully within the validated retained-state
 envelope. Process-wide admission (`uro-6pi8`), scale proofs (`uro-z1h1`) and
-representative evidence (`uro-erqo`) remain required before G1. The current row-shell
-budget is not that process-wide safety mechanism.
-Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
+representative evidence (`uro-erqo`) remain required before G1, as does the Codex fork
+fix (`uro-kpbp`). The current row-shell budget is not that process-wide safety
+mechanism. Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
 follow-ups, not 0.1 blockers.
 Keep the existing small synthetic regression limits.
 Phase 1 field and ID compaction is exhausted.
@@ -82,20 +82,21 @@ reverted. Do not retry those.
 Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
 pattern. The historical `uro-lsaz` profile found Codex worker decode dominant.
 A larger read window did not cut WH wall.
-Next: process-wide safety and scale validation under `uro-zrr0`. The `uro-a3fo`
-typed-sidecar refactor passed integrated validation and technical review; representative
-performance acceptance remains open.
+Next: land and revalidate the open correctness fixes, starting with the Codex
+paginated-fork double count (`uro-kpbp`), then process-wide safety and scale validation
+under `uro-zrr0`. The `uro-a3fo` typed-sidecar refactor is complete; representative
+evidence (`uro-erqo`) remains open.
 Historical 653/586 MiB results recorded here are not measurements of the stabilized
 stack. `EvidenceRef` is 16 bytes and worker line buffers are bounded (`uro-as4a`,
 `uro-1sm8`). Compact `Measures` (`uro-7w0u`), packed `sequence` (`uro-24ua`), interned
 limit rows (`uro-4h93`), and once-stored `KeyGraph` IDs (`uro-t8ws`) landed.
 The implementation stack is merged at main `4c55617`, with all 15 hosted CI jobs green
 and technical review complete.
-Representative performance, full local QA and recorded maintainer decisions remain
-before milestone acceptance.
-Publishing is planned in
-[`plan-2026-09-16-first-release-publishing.md`](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
-and waits on that acceptance.
+The
+[release readiness record](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
+owns the open correctness fixes, gates and remaining milestone work; update status there
+rather than restating it here.
+Publishing waits on milestone acceptance.
 There is one exploration (a Rust log throughput spike) under
 `explorations/log-throughput/`. urollup will be a Rust CLI and local read-only web UI
 that produces usage rollups (tokens, cost, request sizes, tools) from coding-agent

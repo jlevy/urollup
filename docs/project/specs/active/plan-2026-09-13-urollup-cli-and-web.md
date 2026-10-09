@@ -3,7 +3,7 @@ title: "urollup: Rust Agent Usage CLI and Rollup Web UI"
 description: Implementation plan for urollup, the Rust agent usage CLI and rollup web UI, covering phases and milestones, the testing strategy with performance targets, and rollout for the design in docs/urollup-design.md.
 author: Joshua Levy with LLM assistance
 date: 2026-09-13
-status: Active; 0.1 implementation stack merged and technically reviewed; representative performance, local QA and maintainer decisions remain; G5 tracks the complete usage-analysis workflow
+status: Active; 0.1 implementation stack merged and technically reviewed; open correctness fixes, process-wide safety, local QA and maintainer decisions remain (see Current Readiness in the publishing plan); G5 tracks the complete usage-analysis workflow
 ---
 # Feature: urollup, a Rust Agent Usage CLI and Rollup Web UI
 
@@ -174,6 +174,10 @@ The capture store lands only after the uncached engine is the correctness refere
   grouping flags and fix help (`uro-oz6w`); replace per-session aggregate rescans and
   retain cache-write lifetimes and metric availability (`uro-qg1a`). These are fixes to
   the existing surface, not completion of G5.
+- [ ] Land the
+  [open correctness fixes](plan-2026-09-16-first-release-publishing.md#open-correctness-fixes),
+  starting with the Codex paginated-fork double count (`uro-kpbp`), each with synthetic
+  regressions, then rerun the real-history comparison.
 - [ ] Bound persistent-log memory before release.
   The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
   after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary

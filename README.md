@@ -64,8 +64,9 @@ Those ccusage-style workflows remain planned rather than implied by the current 
 Each command rereads the logs.
 Multiple `report --group-by` dimensions produce separate breakdowns; combined
 calendar-by-model queries are not implemented.
-Cache-read tokens and cache writes by recorded lifetime are available, but cache-hit
-request counts, tool counts, usage durations and list-price estimates are not.
+Cache-read and cache-write tokens are available, and `--format json` also splits cache
+writes by recorded lifetime; cache-hit request counts, tool counts, usage durations and
+list-price estimates are not.
 The [usage analysis guide](docs/usage-analysis.md) explains the current commands, cache
 semantics and the planned reusable workflow.
 
@@ -78,9 +79,14 @@ Redirected, piped and machine-readable workflows stay plain and noninteractive.
 
 ## Status
 
-Milestone 0.1’s accounting and report implementation and fixture-backed ccusage
-reconciliation are complete, as are terminal-aware color, interactive progress and the
-privacy-tested local acceptance tools.
+Milestone 0.1’s report commands, fixture-backed ccusage reconciliation, terminal-aware
+color, interactive progress and privacy-tested local acceptance tools are implemented.
+Known accounting defects remain open on `main`. The most serious is a Codex
+paginated-fork double count that still reports complete coverage (`uro-kpbp`), so treat
+Codex totals as provisional.
+The
+[release readiness record](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
+lists every open fix and gate.
 A bounded, consented real-log corpus passed the command and memory-watchdog checks.
 Whole-history `sessions`, `daily` and `report --all` runs now complete on large local
 corpora: sources decode on parallel workers into compact rows, so memory follows the
@@ -96,9 +102,8 @@ records dated measurements and the remaining memory work.
 Whole-history results still need acceptance under the
 [full-history QA playbook](tests/qa/full-history-rollup.qa.md).
 The implementation stack is merged into `main`, and its technical review is complete.
-Representative performance acceptance, full local QA and recorded maintainer decisions
-remain before milestone acceptance, after which packaging implementation and rehearsal
-can begin. The complete analysis workflow is tracked separately as G5 in the
+Packaging implementation and rehearsal begin after milestone acceptance.
+The complete analysis workflow is tracked separately as G5 in the
 [workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md).
 
 ## Documentation
