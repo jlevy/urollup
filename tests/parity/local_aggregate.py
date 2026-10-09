@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Produce a privacy-safe aggregate report over consented local agent logs.
 
-The report comes from three whole-history urollup runs (`daily`, `report` and
-`sessions`) and `--version`, however many sessions the history holds. Every count it
-carries is urollup's own; this script only filters complete days, sums day rows and
-copies a fixed allowlist of fields.
+The report comes from `--version` and three whole-history urollup runs (`sessions`,
+`daily` and `report`), however many sessions the history holds. Every count it carries
+is urollup's own. This script filters complete days, sums day rows, labels how many
+summed days reported each token field, classifies sessions as stable from urollup's
+per-session dates, and copies a fixed allowlist of fields.
 """
 
 from __future__ import annotations
@@ -40,7 +41,6 @@ REQUEST_CLASSES = ("owned", "ambiguous", "unknown")
 AGENTS = {"claude", "codex", "unknown"}
 VERSION_PATTERN = re.compile(r"^urollup [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-VIEWS = ("daily", "report", "sessions")
 
 
 class LocalAggregateError(RuntimeError):
@@ -83,26 +83,29 @@ def token_counts(row: dict[str, Any]) -> dict[str, int | None]:
 def token_totals(
     days: list[dict[str, int | None]],
 ) -> tuple[dict[str, int | None], dict[str, str]]:
-    """Sum day rows per metric and record how many of them reported it.
+    """Sum day rows per metric and label how many of them carried it.
 
-    A metric is `observed` when every day row reported it, even as zero; `partial` when
-    only some did, so its sum covers those days; and `unknown`, with a null sum, when
-    none did. urollup does not yet count the requests inside a row that lacked a field,
-    so availability is measured in day rows.
+    The label is `all_days` when every summed day row carried the metric, even as zero;
+    `some_days` when only some did, so the sum covers those days; and `no_days`, with a
+    null sum, when none did. A urollup day row carries a field when any one of its
+    counted requests reported it, so on a day mixing Claude and Codex requests an
+    agent-specific field such as `reasoning` reads `all_days` although some requests
+    lacked it. Request-level availability needs per-metric request counts that urollup
+    does not report yet.
     """
 
     totals: dict[str, int | None] = {}
-    availability: dict[str, str] = {}
+    coverage: dict[str, str] = {}
     for metric in TOKEN_METRICS:
         reported = [day[metric] for day in days if day[metric] is not None]
         totals[metric] = sum(reported) if reported else None
         if not reported:
-            availability[metric] = "unknown"
+            coverage[metric] = "no_days"
         elif len(reported) == len(days):
-            availability[metric] = "observed"
+            coverage[metric] = "all_days"
         else:
-            availability[metric] = "partial"
-    return totals, availability
+            coverage[metric] = "some_days"
+    return totals, coverage
 
 
 def stable_daily_rows(payload: dict[str, Any], cutoff: str) -> list[dict[str, Any]]:
@@ -182,20 +185,25 @@ def safe_coverage(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def stable_session_summary(sessions: dict[str, Any], *, cutoff: str) -> dict[str, Any]:
-    """Count sessions whose counted requests all fall on complete days before `cutoff`.
+    """Count sessions whose owned requests all fall on complete days before `cutoff`.
 
     urollup dates each whole-history `sessions` row by the rule `daily` uses:
-    `last_date` is the latest dated counted request and `undated_requests` counts those
-    without a timestamp. A session is stable when it has a counted request, none
-    undated, and a last date before the cutoff, which is what a separate `daily`
-    run for the session would show. Identifiers stay in memory; only counts return.
+    `last_date` is the latest dated counted request the session owns and
+    `undated_requests` counts those without a timestamp. A session is stable when it
+    owns a counted request, none undated, and its last date is before the cutoff.
+
+    Classification uses the whole-history ledger, as the record's totals do. A request
+    that two sessions both prove they own is ambiguous there and belongs to neither, so
+    a finished session whose requests are all ambiguous counts as
+    `without_owned_requests`, not stable. A per-session `daily --session` run narrows
+    discovery and may own such requests. Identifiers stay in memory; only counts return.
     """
 
     rows = sessions.get("rows")
     if not isinstance(rows, list):
         raise LocalAggregateError("sessions output has no rows")
     stable = 0
-    active_or_unknown = 0
+    excluded = {"active_or_undated": 0, "without_owned_requests": 0, "unowned_or_unknown_agent": 0}
     by_agent = {agent: 0 for agent in sorted(AGENTS)}
     for row in rows:
         if not isinstance(row, dict):
@@ -213,37 +221,29 @@ def stable_session_summary(sessions: dict[str, Any], *, cutoff: str) -> dict[str
             raise LocalAggregateError("sessions output contains an invalid last date")
         thread = row.get("thread")
         agent = row.get("agent")
-        if (
-            isinstance(thread, str)
-            and isinstance(agent, str)
-            and agent in AGENTS
-            and requests > 0
-            and undated == 0
-            and last_date is not None
-            and last_date < cutoff
-        ):
+        if not isinstance(thread, str) or not isinstance(agent, str) or agent not in AGENTS:
+            excluded["unowned_or_unknown_agent"] += 1
+        elif requests == 0:
+            excluded["without_owned_requests"] += 1
+        elif undated > 0 or last_date is None or last_date >= cutoff:
+            excluded["active_or_undated"] += 1
+        else:
             stable += 1
             by_agent[agent] += 1
-        else:
-            active_or_unknown += 1
-    return {
-        "stable": stable,
-        "active_or_unknown_excluded": active_or_unknown,
-        "stable_by_agent": by_agent,
-    }
+    return {"stable": stable, "stable_by_agent": by_agent, "excluded": excluded}
 
 
 def build_aggregate(
     *,
     daily: dict[str, Any],
     report: dict[str, Any],
-    sessions: dict[str, Any],
+    session_summary: dict[str, Any],
     version: str,
     timezone: str,
     cutoff: str,
     platform_name: str,
 ) -> dict[str, Any]:
-    """Build the complete allowlisted output record."""
+    """Build the complete allowlisted output record around a `stable_session_summary`."""
 
     if VERSION_PATTERN.fullmatch(version) is None:
         raise LocalAggregateError("urollup returned an invalid version")
@@ -253,16 +253,16 @@ def build_aggregate(
         owned = request_counts(row)
         requests = add_requests(requests, owned)
         per_day.append({"date": row["date"], "requests": owned, "tokens": token_counts(row)})
-    tokens, availability = token_totals([day["tokens"] for day in per_day])
+    tokens, day_coverage = token_totals([day["tokens"] for day in per_day])
     return {
         "format": FORMAT,
         "tool": version,
         "platform": platform_name,
         "timezone": timezone,
         "interval": {"start": None, "until_exclusive": cutoff},
-        "totals": {"requests": requests, "tokens": tokens, "token_availability": availability},
+        "totals": {"requests": requests, "tokens": tokens, "token_day_coverage": day_coverage},
         "per_day": per_day,
-        "sessions": stable_session_summary(sessions, cutoff=cutoff),
+        "sessions": session_summary,
         "coverage": safe_coverage(report),
         "diagnostics": safe_diagnostics(report),
     }
@@ -365,12 +365,17 @@ def main(argv: list[str] | None = None) -> int:
         "never",
         "--no-progress",
     ]
-    documents = {view: execute_json(binary, [view, *common]) for view in VIEWS}
+    # A stale binary fails before any ingest, and one whose `sessions` rows lack the
+    # calendar fields fails before the other two ingests.
+    tool = version(binary)
+    session_summary = stable_session_summary(
+        execute_json(binary, ["sessions", *common]), cutoff=cutoff
+    )
     safe = build_aggregate(
-        daily=documents["daily"],
-        report=documents["report"],
-        sessions=documents["sessions"],
-        version=version(binary),
+        daily=execute_json(binary, ["daily", *common]),
+        report=execute_json(binary, ["report", *common]),
+        session_summary=session_summary,
+        version=tool,
         timezone=timezone,
         cutoff=cutoff,
         platform_name=f"{platform.system().lower()}-{platform.machine().lower()}",

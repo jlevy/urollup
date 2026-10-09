@@ -11,6 +11,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -188,6 +189,25 @@ def run_aggregate(fake: FakeUrollup, output: Path) -> None:
         )
 
 
+def build(
+    daily: dict[str, object], sessions: dict[str, object] | None = None
+) -> dict[str, Any]:
+    """Build an aggregate from synthetic documents at a 2026-09-16 cutoff."""
+
+    cutoff = "2026-09-16"
+    return local_aggregate.build_aggregate(
+        daily=daily,
+        report=coverage_report(),
+        session_summary=local_aggregate.stable_session_summary(
+            sessions or {"rows": []}, cutoff=cutoff
+        ),
+        version="urollup 0.1.0",
+        timezone="UTC",
+        cutoff=cutoff,
+        platform_name="test-platform",
+    )
+
+
 class LocalAggregateTests(unittest.TestCase):
     def test_private_markers_cannot_reach_the_aggregate(self) -> None:
         daily = {
@@ -206,16 +226,7 @@ class LocalAggregateTests(unittest.TestCase):
                 },
             ]
         }
-        sessions = {"rows": [aggregate_session("claude", "2026-09-14")]}
-        aggregate = local_aggregate.build_aggregate(
-            daily=daily,
-            report=coverage_report(),
-            sessions=sessions,
-            version="urollup 0.1.0",
-            timezone="UTC",
-            cutoff="2026-09-16",
-            platform_name="test-platform",
-        )
+        aggregate = build(daily, {"rows": [aggregate_session("claude", "2026-09-14")]})
         rendered = json.dumps(aggregate, sort_keys=True)
         for marker in PRIVATE_MARKERS:
             self.assertNotIn(marker, rendered)
@@ -240,8 +251,10 @@ class LocalAggregateTests(unittest.TestCase):
                     # An undated request could belong to the current day.
                     aggregate_session("claude", "2026-09-15", undated=1),
                     aggregate_session("codex", None, requests=2, undated=2),
-                    # A session with no counted request has no complete day.
+                    # A session that owns no counted request has no complete day, even
+                    # one whose requests the whole-history ledger finds ambiguous.
                     aggregate_session("claude", None, requests=0),
+                    aggregate_session("codex", "2026-09-01", requests=0),
                     # The unowned group and an unexpected agent are no stable sessions.
                     aggregate_session("unknown", "2026-09-01", thread=None),
                     aggregate_session("other", "2026-09-01"),
@@ -253,8 +266,12 @@ class LocalAggregateTests(unittest.TestCase):
             summary,
             {
                 "stable": 3,
-                "active_or_unknown_excluded": 7,
                 "stable_by_agent": {"claude": 1, "codex": 1, "unknown": 1},
+                "excluded": {
+                    "active_or_undated": 4,
+                    "without_owned_requests": 2,
+                    "unowned_or_unknown_agent": 2,
+                },
             },
         )
         self.assertNotIn(PRIVATE_MARKERS[2], json.dumps(summary))
@@ -272,15 +289,16 @@ class LocalAggregateTests(unittest.TestCase):
             self.assertEqual(json.loads(rendered)["sessions"]["stable"], session_count)
             launches[session_count] = fake.calls
         self.assertEqual(len(launches[1]), len(launches[60]))
+        # The version and the sessions contract are checked before the other two ingests.
         views = [call[1] for call in launches[60]]
-        self.assertEqual(sorted(views), ["--version", "daily", "report", "sessions"])
+        self.assertEqual(views, ["--version", "sessions", "daily", "report"])
         for call in launches[60]:
             self.assertNotIn("--session", call)
             if call[1] != "--version":
                 self.assertEqual(call[2:4], ["--all", "--scope"])
                 self.assertIn("UTC", call)
 
-    def test_absent_token_fields_stay_unknown_and_zero_stays_observed(self) -> None:
+    def test_absent_token_fields_stay_null_and_zero_stays_zero(self) -> None:
         requests = {"owned": 1, "ambiguous": 0, "unknown": 0}
         daily = {
             "rows": [
@@ -309,15 +327,7 @@ class LocalAggregateTests(unittest.TestCase):
                 },
             ]
         }
-        aggregate = local_aggregate.build_aggregate(
-            daily=daily,
-            report=coverage_report(),
-            sessions={"rows": []},
-            version="urollup 0.1.0",
-            timezone="UTC",
-            cutoff="2026-09-16",
-            platform_name="test-platform",
-        )
+        aggregate = build(daily)
         totals = aggregate["totals"]
         self.assertEqual(
             totals["tokens"],
@@ -334,19 +344,20 @@ class LocalAggregateTests(unittest.TestCase):
                 "total": 10,
             },
         )
+        # Coverage counts day rows: a row carries a field when any of its requests did.
         self.assertEqual(
-            totals["token_availability"],
+            totals["token_day_coverage"],
             {
-                "uncached_input": "observed",
-                "cache_read": "unknown",
-                "cache_write": "observed",
-                "cache_write_5m": "partial",
-                "cache_write_1h": "partial",
-                "cache_write_unspecified": "unknown",
-                "output": "unknown",
-                "reasoning": "unknown",
-                "provider_only": "observed",
-                "total": "observed",
+                "uncached_input": "all_days",
+                "cache_read": "no_days",
+                "cache_write": "all_days",
+                "cache_write_5m": "some_days",
+                "cache_write_1h": "some_days",
+                "cache_write_unspecified": "no_days",
+                "output": "no_days",
+                "reasoning": "no_days",
+                "provider_only": "all_days",
+                "total": "all_days",
             },
         )
         first_day = aggregate["per_day"][0]["tokens"]
@@ -354,18 +365,10 @@ class LocalAggregateTests(unittest.TestCase):
         self.assertIsNone(first_day["cache_write_1h"])
         self.assertIsNone(first_day["reasoning"])
 
-    def test_no_complete_day_leaves_every_token_metric_unknown(self) -> None:
-        aggregate = local_aggregate.build_aggregate(
-            daily={"rows": []},
-            report=coverage_report(),
-            sessions={"rows": []},
-            version="urollup 0.1.0",
-            timezone="UTC",
-            cutoff="2026-09-16",
-            platform_name="test-platform",
-        )
+    def test_no_complete_day_leaves_every_token_metric_null(self) -> None:
+        aggregate = build({"rows": []})
         self.assertEqual(set(aggregate["totals"]["tokens"].values()), {None})
-        self.assertEqual(set(aggregate["totals"]["token_availability"].values()), {"unknown"})
+        self.assertEqual(set(aggregate["totals"]["token_day_coverage"].values()), {"no_days"})
         self.assertEqual(
             aggregate["totals"]["requests"], {"owned": 0, "ambiguous": 0, "unknown": 0}
         )
@@ -406,6 +409,10 @@ class LocalAggregateTests(unittest.TestCase):
                 for marker in PRIVATE_MARKERS:
                     self.assertNotIn(marker, messages[name])
         self.assertIn("rebuild", messages.get("sessions without calendar fields", ""))
+        # A stale binary fails before any ingest, and an old sessions contract before
+        # the other two.
+        self.assertEqual(len(cases["failed version"].calls), 1)
+        self.assertEqual(len(cases["sessions without calendar fields"].calls), 2)
 
     def test_consent_flag_is_required(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
