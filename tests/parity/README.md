@@ -34,13 +34,25 @@ make e2e-local CONSENT_LOCAL_LOGS=1
 make parity-local CONSENT_LOCAL_LOGS=1
 ```
 
-`e2e-local` writes `target/acceptance/local-aggregate.json`. It includes only complete
-days before the current local day, fixed request and token counters, counts of stable
-sessions, coverage counters and internal diagnostic codes.
-`parity-local` writes `target/parity/local.json` with tool versions, platform, timezone,
-the half-open interval, token totals and deltas, per-day deltas, the safe `other` model
-bucket, matched and one-sided session counts, a relative-delta histogram and the
-unexplained residual.
+`e2e-local` writes `target/acceptance/local-aggregate.json` in the
+`urollup.local-aggregate/v2` format.
+It starts four urollup processes however many sessions the history holds: `--version`
+and whole-history `daily`, `report` and `sessions`. The record includes only complete
+days before the current local day: per-day and total request counters, every urollup
+token field including the 5-minute, 1-hour and unspecified cache-write lifetimes,
+coverage counters, internal diagnostic codes and counts of stable sessions.
+A token field that no counted request reported is null, not zero.
+`totals.token_availability` marks each metric `observed` when every summed day reported
+it, `partial` when only some did, and `unknown` when none did; urollup does not yet
+count the requests inside a day that lacked a field.
+A session is stable when its whole-history `sessions` row has a counted request, no
+`undated_requests` and a `last_date` before the current local day.
+urollup dates those rows by the rule `daily` uses, so the classification is the one a
+per-session `daily` query over the same whole-history ledger gives, without one ingest
+per session. `parity-local` writes `target/parity/local.json` with tool versions,
+platform, timezone, the half-open interval, token totals and deltas, per-day deltas, the
+safe `other` model bucket, matched and one-sided session counts, a relative-delta
+histogram and the unexplained residual.
 Session counts come from one whole-history urollup `sessions` run and one ccusage
 `session` run per agent, joined in memory on the native `session` field; a Codex rollout
 path joins on its trailing thread ID. Only sessions whose ccusage last activity falls
@@ -52,9 +64,11 @@ Both scripts may hold paths and identifiers in memory while joining results, but
 output builders use fixed allowlists.
 CI unit tests feed unique markers through paths, projects, sessions, requests, prompts
 and custom model names and fail if any marker reaches the rendered record.
-Subprocess failures are reported without forwarding tool diagnostics that could contain
-a private path. Generated reports remain under the ignored `target/` tree until a
-maintainer reviews an aggregate for release records.
+They also fail if the number of urollup processes `e2e-local` starts changes with the
+number of sessions. Subprocess failures are reported without forwarding tool diagnostics
+that could contain a private path.
+Generated reports remain under the ignored `target/` tree until a maintainer reviews an
+aggregate for release records.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

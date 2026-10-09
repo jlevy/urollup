@@ -270,9 +270,10 @@ Do not capture table rows in the QA report.
    `target/acceptance/local-aggregate.json`.
 
 4. Review only these aggregate fields: session-row and daily-row counts; owned,
-   ambiguous and unknown request counts; token totals by fixed token class; coverage
-   counters and completeness; request-size count, percentiles and maximum; diagnostic
-   count. Never copy rows, identifiers, paths, prompts or custom model values.
+   ambiguous and unknown request counts; token totals and availability by fixed token
+   class, where null means no counted request reported the field; coverage counters and
+   completeness; request-size count, percentiles and maximum; diagnostic count.
+   Never copy rows, identifiers, paths, prompts or custom model values.
 
 ### Troubleshooting
 

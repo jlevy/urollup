@@ -52,9 +52,12 @@ measurement engine.
   Publishing any aggregate needs authorization for the destination and payload; consent
   to read logs does not grant it.
 
-`make e2e-local` currently calls a per-session loop in `local_aggregate.py`; `uro-qg1a`
-must replace it with bounded shared queries and preserve cache lifetimes and unknown
-metric fields. Do not use that loop as the whole-history performance recipe.
+`make e2e-local` runs whole-history `daily`, `report` and `sessions` once each, however
+many sessions the history holds, and classifies stable sessions from the `last_date` and
+`undated_requests` fields of the `sessions` rows (`uro-qg1a`). Its
+`urollup.local-aggregate/v2` record keeps the cache-write lifetimes and leaves
+unreported token fields null.
+It records no timings or footprints, so it is not the whole-history performance recipe.
 Reuse `run-rss-watchdog.py` and the existing scale measurement helpers in the maintained
 runner. Build time, input scans, saved-artifact loading, query rendering and optional
 postprocessing are measured separately.
