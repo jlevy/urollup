@@ -914,8 +914,137 @@ fn thread_ids_from_locators<'a>(
     Ok(ids)
 }
 
-fn has_direct_usage(source: &ParsedSource) -> bool {
-    source.records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_)))
+/// The records of a rollout whose `token_count` usage the cumulative-counter rules count.
+///
+/// From `rust-v0.153.0` Codex writes a `token_usage_record` for each response that
+/// reports usage, beside the `token_count` it still writes for that response, so usage
+/// records account for a rollout's usage from the first one on, and later counters add
+/// nothing. A rollout that an earlier release started and a later one resumed holds
+/// counter-only turns before that record. The counter rules count them as they would in a
+/// rollout without usage records, copies, fork boundaries and epochs included, except a
+/// twin: a counter that reports a response a usage record also reports, which Codex can
+/// write just before that record.
+enum CounterRegion {
+    /// Every record: the rollout has no `token_usage_record`.
+    Whole,
+    /// The records before the rollout's first `token_usage_record`, except twins.
+    Prefix(Twins),
+    /// No record: every `token_count` with a total before the first usage record is a
+    /// twin, so the rollout's usage is its usage records'.
+    Empty,
+}
+
+/// What identifies a `token_count` before a rollout's first usage record as a twin.
+struct Twins {
+    /// The index of the rollout's first `token_usage_record`.
+    end: usize,
+    /// The turns the rollout's usage records name.
+    turns: HashSet<Sym>,
+    /// The usage of the first usage record, the next one after any counter in the region.
+    first: Option<CodexUsage>,
+}
+
+impl Twins {
+    /// Whether a counter in `turn`, the latest `turn_context` turn ID before it, reports
+    /// a response that a usage record also reports: its turn has a usage record, or, with
+    /// no turn to match, its last usage is the next usage record's usage.
+    fn contains(&self, turn: Option<Sym>, last: Option<&CodexUsage>) -> bool {
+        match turn {
+            Some(turn) => self.turns.contains(&turn),
+            None => last.zip(self.first.as_ref()).is_some_and(|(last, first)| {
+                last.counts().map(|count| count.unwrap_or(0))
+                    == first.counts().map(|count| count.unwrap_or(0))
+            }),
+        }
+    }
+}
+
+impl CounterRegion {
+    fn of(source: &ParsedSource) -> Self {
+        let records = &source.records;
+        let Some(end) =
+            records.iter().position(|record| matches!(record.kind, RecordKind::UsageRecord(_)))
+        else {
+            return Self::Whole;
+        };
+        // Only a counter with a total can count; one without (`info: null`) reports limits.
+        let usage_bearing = |kind: &RecordKind| matches!(kind, RecordKind::TokenCount { usage, .. } if usage.has(0));
+        if !records[..end].iter().any(|record| usage_bearing(&record.kind)) {
+            return Self::Empty;
+        }
+        let turns = records
+            .iter()
+            .filter_map(|record| match record.kind {
+                RecordKind::UsageRecord(usage) => usage.turn,
+                RecordKind::SessionMeta { .. }
+                | RecordKind::TurnContext { .. }
+                | RecordKind::Compacted(_)
+                | RecordKind::TokenCount { .. }
+                | RecordKind::ThreadSettingsApplied { .. } => None,
+            })
+            .collect();
+        // Counts are packed in record order, so reading the first usage record's usage
+        // reads every record before it.
+        let mut counts = CountReader::new(&source.counts);
+        let mut first = None;
+        for record in &records[..=end] {
+            [first, _] = counts.record(&record.kind);
+        }
+        let twins = Twins { end, turns, first };
+        let mut counts = CountReader::new(&source.counts);
+        let mut turn = None;
+        for record in &records[..end] {
+            let [_, last] = counts.record(&record.kind);
+            match record.kind {
+                RecordKind::TurnContext { turn_id, .. } => turn = turn_id,
+                RecordKind::TokenCount { .. }
+                    if usage_bearing(&record.kind) && !twins.contains(turn, last.as_ref()) =>
+                {
+                    return Self::Prefix(twins);
+                }
+                RecordKind::SessionMeta { .. }
+                | RecordKind::UsageRecord(_)
+                | RecordKind::Compacted(_)
+                | RecordKind::TokenCount { .. }
+                | RecordKind::ThreadSettingsApplied { .. } => {}
+            }
+        }
+        Self::Empty
+    }
+
+    /// Whether the counter rules apply to no record, the inference of a legacy
+    /// copied-history boundary from other rollouts' turn IDs included.
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    /// The number of leading records the region spans.
+    fn end(&self, records: usize) -> usize {
+        match self {
+            Self::Whole => records,
+            Self::Prefix(twins) => twins.end,
+            Self::Empty => 0,
+        }
+    }
+
+    /// Whether the record at `index` lies in the region.
+    fn contains(&self, index: usize) -> bool {
+        match self {
+            Self::Whole => true,
+            Self::Prefix(twins) => index < twins.end,
+            Self::Empty => false,
+        }
+    }
+
+    /// Whether the `token_count` at `index`, in `turn` with last usage `last`, is one whose
+    /// usage the counter rules count.
+    fn counts(&self, index: usize, turn: Option<Sym>, last: Option<&CodexUsage>) -> bool {
+        match self {
+            Self::Whole => true,
+            Self::Prefix(twins) => index < twins.end && !twins.contains(turn, last),
+            Self::Empty => false,
+        }
+    }
 }
 
 fn decode_rollout(
@@ -924,7 +1053,9 @@ fn decode_rollout(
     admission: &Admission,
 ) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
     let (entry, parsed) = decode_source(source, admission)?;
-    if has_direct_usage(&parsed) {
+    // Counters the counter rules count may need the other rollouts' turns to end a legacy
+    // copied prefix, so only a rollout without them is observed on its worker.
+    if CounterRegion::of(&parsed).is_empty() {
         Ok((
             entry,
             DecodedRollout::Observed(observe_to_observed(parsed, thread_ids, &KnownTurns::new())?),
@@ -1098,7 +1229,7 @@ fn observe_parsed_source(
     let strings = &source.strings;
     let file_thread = source.file_thread;
     let file_thread_text = strings.resolve(file_thread);
-    let has_direct = has_direct_usage(source);
+    let region = CounterRegion::of(source);
     let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
     let parent_thread = own_meta.and_then(SessionMeta::parent);
     let native_boundary = NativeBoundary::of(own_meta);
@@ -1115,11 +1246,12 @@ fn observe_parsed_source(
     };
     if parent_thread.is_some()
         && (has_foreign_meta || has_native_prefix)
-        && (!has_direct || native_boundary.is_declared())
+        && (!region.is_empty() || native_boundary.is_declared())
     {
         copied_regions = copied_regions.saturating_add(1);
-        if !has_direct && !native_boundary.is_declared() {
-            let copied = legacy_copied_evidence(source, known_turns);
+        if !region.is_empty() && !native_boundary.is_declared() {
+            let copied =
+                legacy_copied_evidence(source, known_turns, region.end(source.records.len()));
             diagnostics.push(
                 Diagnostic::new(
                     DiagnosticCode::CodexCopiedHistoryInferred,
@@ -1140,9 +1272,12 @@ fn observe_parsed_source(
     let mut unverified = UnverifiedUsage::default();
     let mut previous_limits = BTreeMap::new();
     let mut counts = CountReader::new(&source.counts);
-    for record in &source.records {
+    for (index, record) in source.records.iter().enumerate() {
         let [first_usage, second_usage] = counts.record(&record.kind);
         let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
+        // Whether this is a token_count whose usage the counter rules count.
+        let cumulative = matches!(record.kind, RecordKind::TokenCount { .. })
+            && region.counts(index, current_turn, second_usage.as_ref());
         if let NativeBoundary::At(boundary) = native_boundary {
             if record.ordinal.is_some_and(|ordinal| ordinal >= boundary) {
                 active_thread = file_thread;
@@ -1167,7 +1302,7 @@ fn observe_parsed_source(
                     .thread_id
                     .map_or(active_thread == file_thread, |thread| thread == file_thread),
                 RecordKind::TokenCount { .. } => match &first_usage {
-                    Some(total) if !has_direct && active_thread == file_thread => {
+                    Some(total) if cumulative && active_thread == file_thread => {
                         changes_running_total(
                             counter.as_ref(),
                             inherited_total,
@@ -1192,7 +1327,7 @@ fn observe_parsed_source(
                 }
             }
             RecordKind::TurnContext { turn_id, model, effort } => {
-                if !has_direct
+                if region.contains(index)
                     && active_thread != file_thread
                     && turn_id.is_some_and(|turn| {
                         is_unknown_turn(known_turns, strings, active_thread, turn)
@@ -1251,34 +1386,7 @@ fn observe_parsed_source(
                         &mut limit_observations,
                     );
                 }
-                if has_direct && owner != Some(file_thread_text) {
-                    if let Some(usage) = &last {
-                        let mut observation = RequestObservation::new(view.evidence);
-                        observation.role = ObservationRole::Copy;
-                        observation.owner = owner
-                            .and_then(|owner| thread_ids.get(owner))
-                            .cloned()
-                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                        observation.usage = Some(codex_usage(usage)?.into());
-                        if let Some(response_id) =
-                            owner.and_then(|owner| last_response_by_thread.get(owner))
-                        {
-                            observation.keys.push(
-                                RESPONSE_KEY
-                                    .key(vec![
-                                        KeyComponent::text(PROVIDER_NAMESPACE),
-                                        KeyComponent::text(strings.resolve(*response_id)),
-                                    ])?
-                                    .derive()?,
-                            );
-                        }
-                        observation.timestamp = view.timestamp;
-                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
-                            apply_context(&mut observation, context);
-                        }
-                        observations.push(observation);
-                    }
-                } else if !has_direct {
+                if cumulative {
                     let Some(total) = &total else { continue };
                     let total_usage = codex_usage(total)?;
                     let last = last.as_ref();
@@ -1398,6 +1506,54 @@ fn observe_parsed_source(
                                 delta: (step.event != CounterEvent::Reset).then_some(step.delta),
                             },
                         )?);
+                    }
+                } else {
+                    // Usage records account for this counter's response, so it adds no
+                    // usage; in another thread's copied history it is that thread's copy.
+                    if let (true, Some(total)) = (region.contains(index), &total) {
+                        // A twin before the first usage record still moves the running
+                        // total a later counted counter continues, as a counted step or
+                        // copy would; otherwise that counter's delta would include it.
+                        let total = codex_usage(total)?;
+                        if owner == Some(file_thread_text) {
+                            counter
+                                .get_or_insert_with(|| {
+                                    inherited_total
+                                        .map_or_else(RunningTotal::new, RunningTotal::inheriting)
+                                })
+                                .observe(&total, None)?;
+                        } else {
+                            inherited_total = Some(total);
+                        }
+                    }
+                    if owner == Some(file_thread_text) {
+                        continue;
+                    }
+                    if let Some(usage) = &last {
+                        let mut observation = RequestObservation::new(view.evidence);
+                        observation.role = ObservationRole::Copy;
+                        observation.owner = owner
+                            .and_then(|owner| thread_ids.get(owner))
+                            .cloned()
+                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+                        observation.usage = Some(codex_usage(usage)?.into());
+                        if let Some(response_id) =
+                            owner.and_then(|owner| last_response_by_thread.get(owner))
+                        {
+                            observation.keys.push(
+                                RESPONSE_KEY
+                                    .key(vec![
+                                        KeyComponent::text(PROVIDER_NAMESPACE),
+                                        KeyComponent::text(strings.resolve(*response_id)),
+                                    ])?
+                                    .derive()?,
+                            );
+                        }
+                        observation.timestamp = view.timestamp;
+                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
+                            apply_context(&mut observation, context);
+                        }
+                        observations.push(observation);
                     }
                 }
             }
@@ -1707,13 +1863,19 @@ fn normalize(
     Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
 }
 
-fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> CopiedEvidence {
+/// The copied lines among a rollout's first `end` records, the region the counter rules
+/// account for, and the lines skipped before the record after them.
+fn legacy_copied_evidence(
+    source: &ParsedSource,
+    known_turns: &KnownTurns,
+    end: usize,
+) -> CopiedEvidence {
     let strings = &source.strings;
     let file_thread = source.file_thread;
     let mut active_thread = file_thread;
     let mut evidence = Vec::new();
     let mut occurrences = 0_u64;
-    for record in &source.records {
+    for record in &source.records[..end] {
         if active_thread != file_thread {
             occurrences = occurrences.saturating_add(record.skipped_before);
         }
@@ -1744,7 +1906,9 @@ fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> Co
         }
     }
     if active_thread != file_thread {
-        occurrences = occurrences.saturating_add(source.trailing_skipped);
+        let tail =
+            source.records.get(end).map_or(source.trailing_skipped, |next| next.skipped_before);
+        occurrences = occurrences.saturating_add(tail);
     }
     CopiedEvidence { evidence, occurrences }
 }
