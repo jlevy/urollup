@@ -189,8 +189,10 @@ fn a_prefix_without_parent_identity_is_excluded_without_losing_child_usage() {
             .collect();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].ownership, Ownership::Unknown);
+        // Copy-only requests are excluded from totals but do not change completeness.
         let totals = urollup_core::accounting::totals::ledger_totals(&ingested.ledger).unwrap();
-        assert_ne!(totals.completeness, urollup_core::accounting::totals::Completeness::Complete);
+        assert_eq!(totals.completeness, urollup_core::accounting::totals::Completeness::Complete);
+        assert_eq!(totals.copy_only.requests, 1);
     }
 }
 
@@ -268,9 +270,9 @@ fn fork_totals_and_ownership_are_invariant_to_workers_source_order_and_parent_pr
                                 .expect("fork totals")
                                 .completeness;
                         assert_eq!(
-                            coverage == urollup_core::accounting::totals::Completeness::Complete,
-                            parent_present,
-                            "missing originals, not reconciled copies, make coverage incomplete"
+                            coverage,
+                            urollup_core::accounting::totals::Completeness::Complete,
+                            "excluded copies never make coverage incomplete"
                         );
                         assert!(
                             ingested

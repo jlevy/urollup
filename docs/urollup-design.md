@@ -893,11 +893,9 @@ set these source-specific rules:
   Invalid boundary metadata and unpositioned usage fail ingestion rather than silently
   becoming child originals.
   A prefix without a known parent remains unowned copy evidence, never child usage.
-  Requests seen only as copies are excluded from counted totals and make whole-history
-  coverage incomplete; a selected owner’s copy-only requests also make its coverage
-  incomplete. A child cumulative counter needs its inherited baseline unless its first
-  total equals its last-request usage, establishing a zero baseline for that counter
-  epoch. The parent’s latest total is not a substitute for its total at the fork.
+  A child cumulative counter needs its inherited baseline unless its first total equals
+  its last-request usage, establishing a zero baseline for that counter epoch.
+  The parent’s latest total is not a substitute for its total at the fork.
   In a rollout without `token_usage_record` lines, the copy also ends at the first
   `turn_context` whose turn ID the copied thread’s root rollout never recorded; turn IDs
   are matched across rollouts by 128-bit digest.
