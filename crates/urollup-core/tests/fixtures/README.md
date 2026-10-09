@@ -1,8 +1,8 @@
 # Dialect Fixtures
 
-Frozen fixtures for the `claude-project` and `codex-rollout` adapters, one directory per
-case, each a small discovery root plus an `expected.json` holding the reconciled truth
-and the naive sums a reader gets without reconciliation.
+Frozen fixtures for the `claude-project`, `codex-rollout` and `cursor-state` adapters,
+one directory per case, each a small discovery root plus an `expected.json` holding the
+reconciled truth and the naive sums a reader gets without reconciliation.
 
 **All fixture content is synthetic.** IDs, prompts, replies, tool inputs, paths,
 branches and token counts were invented for these cases; nothing was copied from a local
@@ -28,6 +28,9 @@ milestone 0.1 ccusage parity harness:
   file, a `.jsonl.zst` twin and flat `archived_sessions/` where a case needs them.
   File names use local time (UTC-7 in these cases) while record timestamps are UTC, so a
   reader that takes dates from names gets them wrong.
+- **`cursor-state/<case>/`** is an opted-in Cursor store directory: point
+  `UROLLUP_CURSOR_DIRS` at it, or pass `--source` to `cursor-state.json`. It holds a
+  synthetic `urollup-cursor-state/v1` snapshot, not a live `state.vscdb`.
 
 ## `expected.json`
 
@@ -49,11 +52,11 @@ One object per case, `format: urollup-fixture-expected/v1`:
 
 Tokens use urollup’s normalized categories: `uncached_input`, `cache_read`,
 `cache_write`, `output` and `reasoning` (`null` when the dialect records none, as Claude
-transcripts do). Claude `input_tokens` excludes cache reads and writes, so it is
-`uncached_input` directly; Codex `input_tokens` includes `cached_input_tokens`, so
-`uncached_input` is their difference.
-Codex cases keep `cache_write_input_tokens` at 0, because whether it sits inside
-`input_tokens` is unverified.
+transcripts do for reasoning and `cursor-state` does for cache).
+Claude `input_tokens` excludes cache reads and writes, so it is `uncached_input`
+directly; Codex `input_tokens` includes `cached_input_tokens`, so `uncached_input` is
+their difference. Codex cases keep `cache_write_input_tokens` at 0, because whether it
+sits inside `input_tokens` is unverified.
 Codex rows also carry `total_tokens`, which is where counter overcounts show up.
 Every `path:line` reference is relative to the case directory and 1-based.
 
@@ -71,8 +74,8 @@ Diagnostic codes are provisional names for the ledger to adopt or rename:
 `codex-counter-epoch-reset`, `codex-estimate-compaction`,
 `codex-estimate-context-window-fill`, `codex-copied-history-inferred`,
 `codex-history-boundary-unverified`, `thread-orphan`,
-`codex-rollout-duplicate-location`, `malformed-line`, `pending-tail` and
-`source-incomplete`.
+`codex-rollout-duplicate-location`, `cursor-estimate-cost`, `malformed-line`,
+`pending-tail` and `source-incomplete`.
 
 ## Cases
 
@@ -118,6 +121,10 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/auto-review-model` | The `codex-auto-review` placeholder model and a tier-less settings event | §3.1, §3.2 | ccusage placeholder handling; Codex guardian sessions | Codex CLI 0.154.0 |
 | `codex-rollout/pending-tail` | Interior corruption and an unfinished last line | §2.2 | Codex line skipping and truncated-tail test | Codex CLI 0.154.0 |
 | `codex-rollout/ambiguous-owner` | One `response_id` recorded by two unlinked threads: counted once, ambiguous ownership, kept with Codex | §4.2, §3.4 | `token-usage-records` record shapes | Codex CLI 0.154.0 shape; the ambiguity is synthetic |
+| `cursor-state/basic` | Nonzero bubble tokens on two catalog families; Auto cost-only chat is not a request; sibling JSONL is the same `composerId` | §3.4, §4.1 | Cursor research brief; `composerData` / `bubbleId` | Cursor 3.21.x |
+| `cursor-state/facets` | Independent purpose, provider, model and effort slices, including Gemini as google, Kimi as moonshot, and `background` | §3.4, §4.1 | Cursor research brief; `composerData` / `bubbleId` | Cursor 3.21.x |
+| `cursor-state/subagents` | Parent `subagentComposerIds` plus child `parentComposerId` spawn edges | §3.2, §3.4, §4.2 | Cursor research brief; live `subagentComposerIds` | Cursor 3.21.x |
+| `cursor-state/best-of-n` | Parent `subComposerIds` plus `isBestOfNSubcomposer` siblings keep Spawn edges | §3.2, §3.4, §4.2 | Cursor research brief; `isBestOfNSubcomposer` | Cursor 3.21.x |
 
 Design sections are in [docs/urollup-design.md](../../../../docs/urollup-design.md), and
 the double-counting example is in the
@@ -132,6 +139,9 @@ the double-counting example is in the
   as paginated, dropping rolled-back usage records.
   `codex-rollout/guardian-migrated-boundary` models migrated Guardian reviews; a before
   and after pair needs capture-store expectations, which belong with the capture work.
+- **Cursor resume and fork:** the surveyed `state.vscdb` has no recorded resume or fork
+  field. Do not invent one.
+  Best-of-N siblings stay on Spawn so independently recorded tokens still count.
 - **More cases derived from real sessions:** one case,
   `claude-project/derived-block-records-subagent`, is sanitized from this project’s own
   Claude Code logs; every other case is synthetic.

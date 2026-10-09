@@ -1,0 +1,200 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "subagents",
+  "dialect": "cursor-state",
+  "summary": "A Cursor parent composer with two subagentComposerIds; each child has its own tokens and a spawn edge.",
+  "rules": [
+    "design §3.2 Relationships and the Discovery Index",
+    "design §3.4 Dialect reconciliation rules",
+    "design §4.2 Ownership and Totals (descendants scope)"
+  ],
+  "agent": {
+    "name": "Cursor",
+    "versions": "Cursor 3.21.x composer state.vscdb; synthetic urollup-cursor-state/v1 snapshot"
+  },
+  "files": [
+    {
+      "path": "cursor-state.json",
+      "lines": 62
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "99999999-9999-4999-8999-999999999999",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 6,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 2,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 13,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 4,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "kind": "subagent",
+      "parent": "99999999-9999-4999-8999-999999999999",
+      "relationship": "spawn",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "kind": "subagent",
+      "parent": "99999999-9999-4999-8999-999999999999",
+      "relationship": "spawn",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "request_id": "req-parent-grok"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "99999999-9999-4999-8999-999999999999",
+      "owner_candidates": [],
+      "model": "cursor-grok-4.6-xhigh-fast",
+      "model_basis": "requested",
+      "timestamp": "2024-09-19T00:50:01.000Z",
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 2,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:14"
+      ],
+      "evidence": [
+        "cursor-state.json:14"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-child-claude"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "owner_candidates": [],
+      "model": "claude-4.5-opus-high-thinking",
+      "model_basis": "requested",
+      "effort": "style-2",
+      "timestamp": "2024-09-19T00:51:41.000Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:32"
+      ],
+      "evidence": [
+        "cursor-state.json:32"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-child-gemini"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "owner_candidates": [],
+      "model": "gemini-3-pro",
+      "model_basis": "requested",
+      "timestamp": "2024-09-19T00:53:21.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:51"
+      ],
+      "evidence": [
+        "cursor-state.json:51"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 13,
+      "cache_read": null,
+      "cache_write": null,
+      "output": 4,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Count every composer as a request; here every composer has nonzero bubble tokens",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 13,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 4,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "subagentComposerIds on the parent and parentComposerId on each child are the spawn edges. --session on the parent with default descendants scope includes both children. Child providers stay independent: grok to cursor, claude-* to anthropic, gemini-* to google."
+  ]
+}

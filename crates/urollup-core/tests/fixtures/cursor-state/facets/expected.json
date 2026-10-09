@@ -1,0 +1,272 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "facets",
+  "dialect": "cursor-state",
+  "summary": "Five Cursor composers with nonzero tokens on distinct purpose, provider, model and effort slices, including Gemini as google, Kimi as moonshot, and background purpose.",
+  "rules": [
+    "design §3.4 Dialect reconciliation rules",
+    "design §4.1 Measure contracts"
+  ],
+  "agent": {
+    "name": "Cursor",
+    "versions": "Cursor 3.21.x composer state.vscdb; synthetic urollup-cursor-state/v1 snapshot"
+  },
+  "files": [
+    {
+      "path": "cursor-state.json",
+      "lines": 87
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 8,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 2,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "88888888-8888-4888-8888-888888888888",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 2,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 1,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "request_id": "req-claude"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "55555555-5555-4555-8555-555555555555",
+      "owner_candidates": [],
+      "model": "claude-4.6-opus-high-thinking",
+      "model_basis": "requested",
+      "effort": "style-2",
+      "timestamp": "2024-09-18T23:43:21.000Z",
+      "tokens": {
+        "uncached_input": 8,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 2,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:10"
+      ],
+      "evidence": [
+        "cursor-state.json:10"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-gemini"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "66666666-6666-4666-8666-666666666666",
+      "owner_candidates": [],
+      "model": "gemini-3-pro",
+      "model_basis": "requested",
+      "effort": "style-1",
+      "timestamp": "2024-09-19T00:00:01.000Z",
+      "tokens": {
+        "uncached_input": 5,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:27"
+      ],
+      "evidence": [
+        "cursor-state.json:27"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-gpt"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "77777777-7777-4777-8777-777777777777",
+      "owner_candidates": [],
+      "model": "gpt-5.1-codex-high",
+      "model_basis": "requested",
+      "timestamp": "2024-09-19T00:16:41.000Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:44"
+      ],
+      "evidence": [
+        "cursor-state.json:44"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-composer"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "88888888-8888-4888-8888-888888888888",
+      "owner_candidates": [],
+      "model": "composer-2.5-fast",
+      "model_basis": "requested",
+      "timestamp": "2024-09-19T00:33:21.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:60"
+      ],
+      "evidence": [
+        "cursor-state.json:60"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-kimi"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "owner_candidates": [],
+      "model": "kimi-k2-instruct",
+      "model_basis": "requested",
+      "timestamp": "2024-09-19T00:50:01.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 1,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:76"
+      ],
+      "evidence": [
+        "cursor-state.json:76"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 5,
+      "owned": 5,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 22,
+      "cache_read": null,
+      "cache_write": null,
+      "output": 6,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Count every composer as a request; here every composer has nonzero bubble tokens",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 22,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 6,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Purpose is unifiedMode (agent, chat, plan, multitask, background). Provider is inferred at query time: claude-* to anthropic, gemini-* to google, gpt-* to openai, composer-* to cursor, kimi-* to moonshot. Effort is thinkingStyle as style-n, omitted when absent. Composer modelConfig.maxMode is current picker state and is not a historical usage facet."
+  ]
+}

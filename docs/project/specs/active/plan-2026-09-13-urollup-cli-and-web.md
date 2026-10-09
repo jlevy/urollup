@@ -48,8 +48,9 @@ in the design’s
 Queued review decisions get phase items only once confirmed
 ([§9.2](../../../urollup-design.md#92-queued-review-decisions)).
 
-Cursor is a candidate agent pending a recorded decision.
-Its database adapter would follow Phase 3 ordering under Decision 20; it is not part of
+Cursor is a candidate agent pending a recorded decision (`uro-jfaw`). Its named
+`cursor-state` reader of Cursor’s state store needs a confirmed Decision 20 exception,
+proposed on `uro-2hck`; generic SQLite input remains Phase 3. It is not part of
 milestone 0.1 or this plan’s Phase 2 Pi and Gemini CLI slice.
 See [plan-2026-09-19-cursor-dialect.md](plan-2026-09-19-cursor-dialect.md).
 

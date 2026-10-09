@@ -25,8 +25,8 @@ make test            # both, plus the Rust tests
 ## Isolation
 
 `make check` normally runs inside a coding agent, whose environment names that agent’s
-live session (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_FILE`) and whose
-`HOME` holds the maintainer’s real logs.
+live session (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID`,
+`PI_SESSION_FILE`) and whose `HOME` holds the maintainer’s real logs.
 Nothing in a golden run may read those, so
 [`scripts/golden-env.mjs`](../../scripts/golden-env.mjs) builds the environment from
 nothing:

@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use urollup_core::adapters::Ingested;
 use urollup_core::adapters::claude_project;
 use urollup_core::adapters::codex_rollout;
+use urollup_core::adapters::cursor_state;
 use urollup_core::ledger::entities::{Counting, ModelUsage, Ownership, Request, SelectedUsage};
 use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::names::Name;
@@ -231,6 +232,28 @@ fn snapshot(ingested: &Ingested) -> Value {
             })).collect::<Vec<_>>(),
         },
     })
+}
+
+fn hermetic_locator(ingested: &Ingested) -> Value {
+    let mut value = snapshot(ingested);
+    if let Some(entries) = value["manifest"]["entries"].as_array_mut() {
+        for entry in entries {
+            if let Some(locator) = entry.get("locator").and_then(Value::as_str) {
+                let name = std::path::Path::new(locator)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                entry["locator"] = json!(name);
+            }
+        }
+    }
+    value
+}
+
+#[test]
+fn cursor_state_basic_snapshot() {
+    let ingested = cursor_state::ingest_root(&fixture("cursor-state", "basic")).unwrap();
+    insta::assert_yaml_snapshot!(hermetic_locator(&ingested));
 }
 
 #[test]

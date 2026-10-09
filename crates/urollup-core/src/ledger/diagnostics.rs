@@ -62,6 +62,8 @@ pub enum DiagnosticCode {
     SourceIncomplete,
     /// A thread names a parent whose rollout was not discovered.
     ThreadOrphan,
+    /// Cursor stored a session `usageData.costInCents` estimate, not request tokens.
+    CursorEstimateCost,
 }
 
 impl DiagnosticCode {
@@ -95,6 +97,7 @@ impl DiagnosticCode {
             Self::PendingTail => "pending-tail",
             Self::SourceIncomplete => "source-incomplete",
             Self::ThreadOrphan => "thread-orphan",
+            Self::CursorEstimateCost => "cursor-estimate-cost",
         }
     }
 }

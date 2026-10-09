@@ -2,7 +2,7 @@
 //
 // The golden runners start from nothing rather than from the invoking shell. `make check`
 // is usually run inside a coding agent, whose environment names the agent's own live
-// session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, PI_SESSION_FILE) and whose HOME holds
+// session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, CURSOR_CONVERSATION_ID, PI_SESSION_FILE) and whose HOME holds
 // the maintainer's real logs. A report inheriting either would read private data and
 // produce output that exists on one machine only (general-testing-rules: an ambient
 // variable that redirects a tool's target is an input the suite must control).

@@ -124,7 +124,12 @@ function relative(root, dir) {
 /** Which native discovery roots a case directory is laid out as (design §2.1). */
 export function inferRoots(dir) {
   const has = (name) => existsSync(path.join(dir, name)) && statSync(path.join(dir, name)).isDirectory();
-  return { claude: has("projects"), codex: has("sessions") || has("archived_sessions") };
+  const hasFile = (name) => existsSync(path.join(dir, name)) && statSync(path.join(dir, name)).isFile();
+  return {
+    claude: has("projects"),
+    codex: has("sessions") || has("archived_sessions"),
+    cursor: hasFile("cursor-state.json") || hasFile("state.vscdb"),
+  };
 }
 
 /** Discovery variables for a case: its own roots, and an empty root for every other agent. */
@@ -133,6 +138,7 @@ export function caseEnvironment(roots, caseDir, emptyRoot) {
     CLAUDE_CONFIG_DIR: roots.claude ? caseDir : emptyRoot,
     CODEX_HOME: roots.codex ? caseDir : emptyRoot,
     PI_CODING_AGENT_SESSION_DIR: path.join(emptyRoot, "sessions"),
+    UROLLUP_CURSOR_DIRS: roots.cursor ? caseDir : "",
   };
 }
 
@@ -556,7 +562,7 @@ export function checkE2E({ config, fixturesRoot, goldenSessions, runUrollup, emp
 
   // Commands: a stub is pending only while its bead is named; an implemented command is checked.
   const active = [];
-  const noCase = caseEnvironment({ claude: false, codex: false }, emptyRoot, emptyRoot);
+  const noCase = caseEnvironment({ claude: false, codex: false, cursor: false }, emptyRoot, emptyRoot);
   for (const command of config.commands) {
     const stub = isStub(runUrollup([command.name], noCase));
     if (stub && command.pending) {
@@ -631,8 +637,8 @@ export function checkE2E({ config, fixturesRoot, goldenSessions, runUrollup, emp
       fail(`${fixtureCase.id}/expected.json: ${error.message}`);
       continue;
     }
-    if (!fixtureCase.roots.claude && !fixtureCase.roots.codex) {
-      fail(`${fixtureCase.id} has neither projects/ (Claude Code) nor sessions/ or archived_sessions/ (Codex), so no discovery root names it`);
+    if (!fixtureCase.roots.claude && !fixtureCase.roots.codex && !fixtureCase.roots.cursor) {
+      fail(`${fixtureCase.id} has neither projects/ (Claude Code) nor sessions/ or archived_sessions/ (Codex) nor cursor-state.json (Cursor), so no discovery root names it`);
       continue;
     }
     if (active.length === 0) {

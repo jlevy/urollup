@@ -1,0 +1,126 @@
+---
+source: crates/urollup-core/tests/snapshots.rs
+expression: hermetic_locator(&ingested)
+---
+ledger:
+  candidate_sets: []
+  coverage:
+    candidate_sets: 0
+    conflicting_keys: 0
+    conflicting_rereads: 0
+    copies: 0
+    copy_only_requests: 0
+    observations: 2
+    requests: 2
+    requests_without_usage: 0
+    rereads: 0
+    unresolved_requests: 0
+  diagnostics:
+    - code: cursor-estimate-cost
+      detail: Cursor reported a session cost estimate
+      evidence:
+        - length: 1
+          offset: 4
+          source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+      occurrences: 1
+      subject: thr-v1-2r5gncw638mdv11ptxq05nq9vg
+  gaps: []
+  requests:
+    - aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: style-2
+      evidence:
+        - length: 1
+          offset: 0
+          source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+      first_seen: "2024-09-18T22:53:21Z"
+      id: req-v1-5vrzqm5qdx2e8p3tzavymxcmcd
+      last_seen: "2024-09-18T22:53:21Z"
+      model:
+        basis: Requested
+        name: claude-4.5-opus-high-thinking
+      ownership:
+        owned: thr-v1-28bscd1h6qcyy03gnmj5vhx8tg
+      selected_usage:
+        revision:
+          evidence:
+            length: 1
+            offset: 0
+            source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+          model_usage: []
+          usage:
+            measures:
+              cache_read: ~
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: ~
+              output: 5
+              provider_only: ~
+              reasoning: ~
+              uncached_input: 20
+        rule: latest-revision
+        status: Final
+    - aliases: []
+      basis: native
+      copies: []
+      counting: counted
+      effort: ~
+      evidence:
+        - length: 1
+          offset: 2
+          source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+      first_seen: "2024-09-18T23:10:01Z"
+      id: req-v1-7bvtn4cmq290ywws5fs841y1v4
+      last_seen: "2024-09-18T23:10:01Z"
+      model:
+        basis: Requested
+        name: cursor-grok-4.6-xhigh-fast
+      ownership:
+        owned: thr-v1-2dfpbnpasb0xdch1kgkm0tswfw
+      selected_usage:
+        revision:
+          evidence:
+            length: 1
+            offset: 2
+            source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+          model_usage: []
+          usage:
+            measures:
+              cache_read: ~
+              cache_write_1h: ~
+              cache_write_5m: ~
+              cache_write_unspecified: ~
+              output: 3
+              provider_only: ~
+              reasoning: ~
+              uncached_input: 10
+        rule: latest-revision
+        status: Final
+manifest:
+  entries:
+    - changes: []
+      complete: true
+      counters:
+        blank_lines: 0
+        decoded: 3
+        malformed: 0
+        oversized: 0
+        records: 3
+        skipped: 0
+        unparsable: 0
+      cutoff:
+        complete_through: 1231
+        pending_tail: ~
+      dialect: cursor-state
+      environment: local
+      failures: []
+      file_len: 1231
+      fingerprint: 3w68hngcgtf01bh8rx3r1w7b00
+      first_malformed: ~
+      locator: cursor-state.json
+      representation: Plain
+      source: src-v1-6cbz9hqmdm6wa36envrfcyjyk0
+      twin: false
+  skipped_links: []

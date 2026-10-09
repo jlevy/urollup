@@ -18,6 +18,8 @@ pub enum Agent {
     Claude,
     /// Codex.
     Codex,
+    /// Cursor, a multi-model surface with inferred providers.
+    Cursor,
     /// Pi, recognized for current-session diagnostics but not yet supported.
     Pi,
 }
@@ -28,6 +30,7 @@ impl Agent {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
             Self::Pi => "pi",
         }
     }
@@ -94,6 +97,7 @@ impl IndexedSession {
                 })
             }
             Agent::Codex => key.get("thread_id").cloned(),
+            Agent::Cursor => key.get("composer_id").cloned(),
             Agent::Pi => None,
         }
     }
@@ -209,13 +213,20 @@ impl SessionIndex {
             }
             let analytical = text.is_some_and(|value| value == id.to_string());
             let native = text.is_some_and(|value| native_selectors(session).contains(value));
+            let cursor_transcript = session.agent == Agent::Cursor
+                && cursor_composer_id_from_selector(selector).is_some_and(|composer| {
+                    session.thread.native_key.get("composer_id") == Some(&composer)
+                });
             let source_path = session.source_paths.iter().any(|source| {
+                if session.agent == Agent::Cursor && is_shared_cursor_store(source) {
+                    return false;
+                }
                 source == path
                     || canonical.as_ref().is_some_and(|selected| {
                         std::fs::canonicalize(source).is_ok_and(|source| source == *selected)
                     })
             });
-            if analytical || native || source_path {
+            if analytical || native || source_path || cursor_transcript {
                 candidates.insert(id.clone());
             }
         }
@@ -326,7 +337,7 @@ impl SessionIndex {
                 let expected = hook.agent_id.as_ref().unwrap_or(&hook.session_id);
                 session.thread.native_key.get("thread_id") == Some(expected)
             }
-            Agent::Pi => false,
+            Agent::Cursor | Agent::Pi => false,
         };
         if !matches {
             return Err(SelectionError::HookMismatch);
@@ -340,8 +351,45 @@ impl SessionIndex {
 fn codex_locator_thread(agent: Agent, thread: &Thread) -> Option<&str> {
     match agent {
         Agent::Codex => thread.native_key.get("thread_id").map(String::as_str),
-        Agent::Claude | Agent::Pi => None,
+        Agent::Claude | Agent::Cursor | Agent::Pi => None,
     }
+}
+
+/// Native Cursor composer UUID from a `--session` / `--current` selector.
+///
+/// Accepts the UUID itself or a Cursor JSONL transcript path whose file stem or parent
+/// directory is that UUID (`agent-transcripts/<id>/<id>.jsonl`). The shared state store
+/// is not a session selector.
+pub fn cursor_composer_id_from_selector(selector: &OsStr) -> Option<String> {
+    if let Some(text) = selector.to_str().filter(|text| is_composer_uuid(text)) {
+        return Some(text.to_owned());
+    }
+    let path = Path::new(selector);
+    for name in [path.file_stem(), path.parent().and_then(Path::file_name)].into_iter().flatten() {
+        if let Some(text) = name.to_str().filter(|text| is_composer_uuid(text)) {
+            return Some(text.to_owned());
+        }
+    }
+    None
+}
+
+fn is_composer_uuid(value: &str) -> bool {
+    let mut parts = value.split('-');
+    for expected in [8_usize, 4, 4, 4, 12] {
+        let Some(part) = parts.next() else {
+            return false;
+        };
+        if part.len() != expected || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+    parts.next().is_none()
+}
+
+fn is_shared_cursor_store(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("state.vscdb") || name == "cursor-state.json")
 }
 
 fn native_selectors(session: &IndexedSession) -> BTreeSet<&str> {
@@ -357,6 +405,11 @@ fn native_selectors(session: &IndexedSession) -> BTreeSet<&str> {
         Agent::Codex => {
             if let Some(thread) = session.thread.native_key.get("thread_id") {
                 selectors.insert(thread.as_str());
+            }
+        }
+        Agent::Cursor => {
+            if let Some(composer) = session.thread.native_key.get("composer_id") {
+                selectors.insert(composer.as_str());
             }
         }
         Agent::Pi => {}
@@ -386,6 +439,7 @@ impl CurrentEnvironment {
             "CLAUDE_CODE_SESSION_ID",
             "CODEX_THREAD_ID",
             "CODEX_SESSION_ID",
+            "CURSOR_CONVERSATION_ID",
             "PI_SESSION_ID",
             "PI_SESSION_FILE",
         ]
@@ -417,6 +471,11 @@ impl CurrentEnvironment {
         if admits(Agent::Codex) {
             if let Some(id) = value("CODEX_THREAD_ID") {
                 candidates.push(CurrentSession { agent: Agent::Codex, selector: id.clone() });
+            }
+        }
+        if admits(Agent::Cursor) {
+            if let Some(id) = value("CURSOR_CONVERSATION_ID") {
+                candidates.push(CurrentSession { agent: Agent::Cursor, selector: id.clone() });
             }
         }
         if admits(Agent::Pi) {
@@ -456,8 +515,8 @@ pub struct HookInput {
 impl HookInput {
     /// Parses hook input and selects `agent_transcript_path` for `SubagentStop`.
     pub fn parse(bytes: &[u8], agent_hint: Agent) -> Result<Self, SelectionError> {
-        if agent_hint == Agent::Pi {
-            return Err(SelectionError::UnsupportedAgent(Agent::Pi));
+        if matches!(agent_hint, Agent::Pi | Agent::Cursor) {
+            return Err(SelectionError::UnsupportedAgent(agent_hint));
         }
         let value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|source| SelectionError::HookJson { source })?;
@@ -557,7 +616,7 @@ mod tests {
     use super::{
         Agent, CurrentEnvironment, HookInput, Scope, SelectionError, SelectionQuery, SessionIndex,
     };
-    use crate::adapters::{claude_project, codex_rollout};
+    use crate::adapters::{claude_project, codex_rollout, cursor_state};
 
     fn fixture(dialect: &str, case: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(dialect).join(case)
@@ -630,6 +689,42 @@ mod tests {
     }
 
     #[test]
+    fn cursor_jsonl_path_selects_one_composer_and_store_path_does_not() {
+        let ingested = cursor_state::ingest_root(&fixture("cursor-state", "basic"))
+            .expect("Cursor fixture ingests");
+        let mut index = SessionIndex::default();
+        index.add(Agent::Cursor, &ingested).expect("Cursor sessions index");
+        let transcript = PathBuf::from(
+            "/tmp/agent-transcripts/11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.jsonl",
+        );
+        let id = index.resolve(transcript.as_os_str()).expect("JSONL path resolves");
+        assert_eq!(
+            index
+                .get(&id)
+                .expect("indexed")
+                .thread
+                .native_key
+                .get("composer_id")
+                .map(String::as_str),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        let store = index.get(&id).expect("indexed").source_paths[0].as_os_str();
+        let error = index.resolve(store).expect_err("shared store is not a session");
+        assert!(matches!(error, SelectionError::UnknownSelector(_)));
+    }
+
+    #[test]
+    fn current_environment_detects_cursor_conversation_id() {
+        let env = CurrentEnvironment::new([(
+            "CURSOR_CONVERSATION_ID",
+            OsString::from("00000000-0000-4000-8000-000000000001"),
+        )]);
+        let current = env.detect(&BTreeSet::new()).expect("Cursor is detected");
+        assert_eq!(current.agent, Agent::Cursor);
+        assert_eq!(current.selector, OsString::from("00000000-0000-4000-8000-000000000001"));
+    }
+
+    #[test]
     fn current_environment_detects_exactly_one_agent() {
         let only_claude =
             CurrentEnvironment::new([("CLAUDE_CODE_SESSION_ID", OsString::from("claude-session"))]);
@@ -647,6 +742,19 @@ mod tests {
         let codex =
             nested.detect(&BTreeSet::from([Agent::Codex])).expect("agent filter selects Codex");
         assert_eq!(codex.agent, Agent::Codex);
+
+        let cursor_and_claude = CurrentEnvironment::new([
+            ("CLAUDE_CODE_SESSION_ID", OsString::from("claude-session")),
+            ("CURSOR_CONVERSATION_ID", OsString::from("00000000-0000-4000-8000-000000000001")),
+        ]);
+        assert!(matches!(
+            cursor_and_claude.detect(&BTreeSet::new()),
+            Err(SelectionError::AmbiguousCurrent(_))
+        ));
+        let cursor = cursor_and_claude
+            .detect(&BTreeSet::from([Agent::Cursor]))
+            .expect("agent filter selects Cursor");
+        assert_eq!(cursor.agent, Agent::Cursor);
     }
 
     #[test]
@@ -790,6 +898,7 @@ mod tests {
                 let ingested = match agent {
                     Agent::Claude => claude_project::ingest_root(&case),
                     Agent::Codex | Agent::Pi => codex_rollout::ingest_root(&case),
+                    Agent::Cursor => continue,
                 };
                 let Ok(ingested) = ingested else { continue };
                 let mut index = SessionIndex::default();

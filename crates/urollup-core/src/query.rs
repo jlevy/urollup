@@ -67,6 +67,12 @@ pub enum GroupBy {
     Model,
     /// Recorded reasoning effort.
     Effort,
+    /// Coding-agent surface (`claude`, `codex`, `cursor`).
+    Agent,
+    /// Usage vendor, observed for single-vendor agents and inferred for Cursor.
+    Provider,
+    /// Thread purpose or Cursor unified mode (`agent`, `chat`, `plan`, `multitask`, `background`), when recorded.
+    Purpose,
 }
 
 impl GroupBy {
@@ -77,6 +83,9 @@ impl GroupBy {
             Self::Account => "account",
             Self::Model => "model",
             Self::Effort => "effort",
+            Self::Agent => "agent",
+            Self::Provider => "provider",
+            Self::Purpose => "purpose",
         }
     }
 }

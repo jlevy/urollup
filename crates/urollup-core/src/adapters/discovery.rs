@@ -51,6 +51,7 @@ impl DiscoveryEnvironment {
             "XDG_CONFIG_HOME",
             "UROLLUP_CODEX_HOMES",
             "CODEX_HOME",
+            "UROLLUP_CURSOR_DIRS",
         ]
         .into_iter()
         .filter_map(|name| std::env::var_os(name).map(|value| (name.to_owned(), value)))
@@ -124,6 +125,18 @@ impl DiscoveryEnvironment {
             roots: self.home.iter().map(|home| home.join(".codex")).collect(),
             origin: RootOrigin::Default,
         }
+    }
+
+    /// Selects Cursor state-store roots. Discovery is opt-in: without
+    /// `UROLLUP_CURSOR_DIRS` this is empty, even when a live `state.vscdb` exists.
+    pub fn cursor_roots(&self) -> RootSelection {
+        if let Some(value) = self.variables.get("UROLLUP_CURSOR_DIRS").filter(|v| !v.is_empty()) {
+            return RootSelection {
+                roots: config_paths(value).collect(),
+                origin: RootOrigin::Override,
+            };
+        }
+        RootSelection { roots: Vec::new(), origin: RootOrigin::Default }
     }
 }
 
@@ -207,6 +220,21 @@ mod tests {
 
         assert_eq!(environment.claude_project_roots().origin, RootOrigin::Default);
         assert_eq!(environment.codex_homes().origin, RootOrigin::Default);
+        assert_eq!(environment.cursor_roots().origin, RootOrigin::Default);
+        assert!(environment.cursor_roots().roots.is_empty());
+    }
+
+    #[test]
+    fn cursor_override_is_opt_in_and_does_not_invent_defaults() {
+        let override_value = std::env::join_paths(["/one/state.vscdb", "/two"]).unwrap();
+        let environment = DiscoveryEnvironment::new(
+            Some(PathBuf::from("/home/example")),
+            [("UROLLUP_CURSOR_DIRS", override_value)],
+        );
+        let selected = environment.cursor_roots();
+        assert_eq!(selected.origin, RootOrigin::Override);
+        assert_eq!(selected.roots, [PathBuf::from("/one/state.vscdb"), PathBuf::from("/two")]);
+        assert!(selected.missing_is_error());
     }
 
     #[test]

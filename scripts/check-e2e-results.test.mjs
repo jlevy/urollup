@@ -74,7 +74,11 @@ function fakeUrollup({ implemented = ["report", "daily", "sessions"], output = (
     if (args.length === 1) {
       return { status: 2, stdout: "", stderr: "error: no current session detected; pass --session, --latest or --all\n" };
     }
-    const caseDir = env.CLAUDE_CONFIG_DIR !== EMPTY ? env.CLAUDE_CONFIG_DIR : env.CODEX_HOME;
+    const caseDir = env.CLAUDE_CONFIG_DIR !== EMPTY
+      ? env.CLAUDE_CONFIG_DIR
+      : env.CODEX_HOME !== EMPTY
+        ? env.CODEX_HOME
+        : env.UROLLUP_CURSOR_DIRS;
     const file = path.join(OUTPUTS, path.relative(FIXTURES, caseDir), `${output(name)}.json`);
     if (!existsSync(file)) {
       return { status: 1, stdout: "", stderr: `error: no sample output ${file}\n` };
@@ -115,10 +119,10 @@ test("cases are discovered generically, including derived cases with subagent me
   assert.deepEqual(
     cases.map(({ id, roots }) => [id, roots]),
     [
-      ["claude-project/block-records", { claude: true, codex: false }],
-      ["claude-project/subagent-derived", { claude: true, codex: false }],
-      ["codex-rollout/archived-rollout", { claude: false, codex: true }],
-      ["codex-rollout/cumulative-repeat", { claude: false, codex: true }],
+      ["claude-project/block-records", { claude: true, codex: false, cursor: false }],
+      ["claude-project/subagent-derived", { claude: true, codex: false, cursor: false }],
+      ["codex-rollout/archived-rollout", { claude: false, codex: true, cursor: false }],
+      ["codex-rollout/cumulative-repeat", { claude: false, codex: true, cursor: false }],
     ],
   );
 });

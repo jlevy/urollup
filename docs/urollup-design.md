@@ -402,10 +402,12 @@ gives each dialect’s fields, counters and linkage.
   [ccusage feature inventory](project/research/research-2026-09-13-portable-agent-usage.md#ccusage-feature-inventory)
   lists. Each would be a new dialect added by the candidate policy in
   [§9.1](#additional-agent-adapters).
-  Cursor is a candidate under that policy, pending a recorded decision.
-  Its proposed dialect, with model and provider as first-class facets, is in
-  [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md),
-  and any database adapter follows Phase 3 ordering under Decision 20.
+  Cursor is a candidate under that policy, pending a recorded decision (`uro-jfaw`). Its
+  proposed dialect, with model and provider as first-class facets, is in
+  [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md).
+  Its named `cursor-state` reader of Cursor’s state store needs a Decision 20 exception,
+  proposed on `uro-2hck` and not yet confirmed; it is not generic SQLite input and is
+  not part of milestone 0.1.
 
 #### Source Manifest
 
@@ -1048,6 +1050,25 @@ set these source-specific rules:
   `session_meta.id` is a check on that rollout, which owns the usage.
   Without the rollout, turn usage is the difference between consecutive totals for the
   thread, and a first total that may include earlier runs gets a diagnostic.
+- **Cursor (candidate, pending `uro-jfaw` and `uro-2hck`):** the named `cursor-state`
+  reader owns usage from `composerData` / `bubbleId` in an opted-in `state.vscdb`, or
+  from a synthetic `urollup-cursor-state/v1` fixture.
+  JSONL under `agent-transcripts/` is the same `composerId` when present and is not a
+  second session. Threads key on `composerId`. Cursor-issued `requestId` and `usageUuid`
+  values are thread-scoped; they collide across composers if keyed only by agent.
+  Count a bubble only when `tokenCount` input or output is nonzero.
+  Session `usageData.costInCents` is a `cursor-estimate-cost` diagnostic, never invented
+  tokens. Model is the bubble catalog id, else a single composer `modelConfig.modelName`
+  (a fallback the plan’s Facet Contract does not allow, open in the plan); `default` is
+  Auto; a comma-separated picker list stays unknown unless every part is the same name.
+  Provider is inferred at query time from the versioned catalog-family table
+  (`ledger/provider.rs`). `thinkingStyle` is `Request.effort` as `style-{n}`.
+  `unifiedMode` is observed thread purpose (`agent`, `chat`, `plan`, `multitask`,
+  `background`). Composer `modelConfig.maxMode` is the current picker flag and is not a
+  historical usage facet.
+  Project is `workspaceId` when present.
+  Subagent and Best-of-N child composers stay on Spawn so `--session` descendants still
+  include independently recorded sibling usage; `Other("best-of-n")` would drop them.
 - **Pi:** requests key on provider and `responseId`, else on the lineage root and a
   digest of copy-invariant fields, never on a bare entry ID. Copied history in fork,
   clone and export files belongs to the parent.
@@ -1096,8 +1117,8 @@ are Later (Phase 2).
 Purpose values record their basis; core accounting never infers them.
 
 - **Phase 1:** `observed` purpose comes only from native fields, such as a recorded
-  subagent type or a review or compaction mode.
-  A request inherits its thread’s purpose unless it records its own.
+  subagent type, a review or compaction mode, or Cursor `unifiedMode`. A request
+  inherits its thread’s purpose unless it records its own.
 - **Phase 2:** `configured` purpose comes from declared, versioned rules in the source
   manifest or query file that match recorded properties such as project, initiator or
   model. Observed values take precedence, and a disagreeing rule produces a diagnostic.
@@ -2056,9 +2077,12 @@ in this order:
    thread) exits 1 as an unsaved session.
 2. **Agent environment:** `CLAUDE_CODE_SESSION_ID` for Claude Code, `CODEX_THREAD_ID`
    for Codex (the subagent’s own thread inside a subagent’s tools, with
-   `CODEX_SESSION_ID` as the root), and `PI_SESSION_FILE` for Pi, where `PI_SESSION_ID`
-   without `PI_SESSION_FILE` marks an unsaved session and exits 1 rather than searching
-   roots; `--agent` limits which variables count.
+   `CODEX_SESSION_ID` as the root), `CURSOR_CONVERSATION_ID` for Cursor (`composerId`),
+   and `PI_SESSION_FILE` for Pi, where `PI_SESSION_ID` without `PI_SESSION_FILE` marks
+   an unsaved session and exits 1 rather than searching roots; `--agent` limits which
+   variables count. The Cursor signal belongs to the candidate `cursor-state` reader
+   (`uro-jfaw`); if Cursor was not ingested, the CLI drops `CURSOR_CONVERSATION_ID` so a
+   default `report` inside Cursor without opt-in stays CurrentNotDetected.
    Until the Pi adapters ship in Phase 2, a detected Pi session (`PI_SESSION_FILE` or
    `PI_SESSION_ID`) exits 2 with an unsupported-dialect diagnostic.
    Gemini CLI has no equivalent: its tool and MCP subprocesses get only the marker
@@ -3446,6 +3470,9 @@ ledger store of its own until the Phase 3 cache exists.
 database needs a named, tested adapter.
 
 **Confirmed:** 2026-09-14; see [§5.1](#51-portable-inputs-and-artifacts).
+An exception for the named `cursor-state` reader of Cursor `state.vscdb` before Phase 3
+is proposed on `uro-2hck` and is not confirmed.
+It would not admit generic SQLite input.
 
 #### Decision 21: Serving Separability
 
@@ -3653,7 +3680,7 @@ process-stream paths.
 | Anomaly detectors ported from agentfdr | Later, if confirmed | [§9.2](#anomaly-detectors) |
 | `urollup mcp` stdio server with read-only query tools | Later, if confirmed | [§9.1](#mcp-surface) |
 | Adapters for agents beyond these four, such as the rest that ccusage reads, one tested dialect at a time | Later, if confirmed; SQLite-backed agents no earlier than Phase 3 | [§2.1](#21-dialects-and-discovery), [§9.1](#additional-agent-adapters) |
-| Cursor dialect with model and provider facets | Later, if confirmed; database adapter no earlier than Phase 3 (Decision 20) | [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md) |
+| Cursor dialect with model and provider facets | Later, if confirmed (`uro-jfaw`); the named `cursor-state` reader needs the Decision 20 exception proposed on `uro-2hck`; not part of milestone 0.1 | [plan-2026-09-19-cursor-dialect.md](project/specs/active/plan-2026-09-19-cursor-dialect.md) |
 | Resource collector adapters and provider charge import | Later, once a tested collector or billing export exists | [§3.1](#31-entities), [§9.3](#receipts-and-billing-exports) |
 | ccusage `blocks` compatibility view, labeled an estimate | Later | [§4.4](#44-usage-windows) |
 | Forecasts and calibrated budgets, labeled estimates | Later | [§4.4](#44-usage-windows) |

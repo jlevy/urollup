@@ -23,6 +23,7 @@ pub mod identity;
 pub mod inline_list;
 pub mod linking;
 pub mod names;
+pub mod provider;
 pub mod reconcile;
 pub mod scope;
 pub mod tokens;

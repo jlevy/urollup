@@ -52,6 +52,11 @@ urollup report --all --source <log-root-or-file> --no-default-sources
 
 The CLI discovers the standard Claude Code and Codex log locations unless
 `--no-default-sources` is set.
+Cursor is opt-in: pass `--source` to `state.vscdb` or a `cursor-state.json` fixture, or
+set `UROLLUP_CURSOR_DIRS`. `--no-default-sources` ignores that variable and requires
+`--source`. `report --group-by provider,agent,purpose` adds separate breakdowns for
+Cursor’s multiplexed vendors, the coding-agent surface and `unifiedMode`, and `effort`
+carries Cursor’s thinking style.
 Whole-history reports have no input-size limit.
 `UROLLUP_JOBS` sets how many threads decode logs, and `UROLLUP_STATS=1` prints phase
 timings, the worker count and row counts to stderr.

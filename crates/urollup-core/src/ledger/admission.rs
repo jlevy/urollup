@@ -165,6 +165,7 @@ const fn agent_name(agent: Agent) -> &'static str {
     match agent {
         Agent::Claude => "Claude Code",
         Agent::Codex => "Codex",
+        Agent::Cursor => "Cursor",
         Agent::Pi => "Pi",
     }
 }
@@ -173,6 +174,7 @@ const fn source_noun(agent: Agent) -> &'static str {
     match agent {
         Agent::Claude => "transcripts",
         Agent::Codex => "rollouts",
+        Agent::Cursor => "state stores",
         Agent::Pi => "sessions",
     }
 }
@@ -376,7 +378,7 @@ pub struct MemoryAdmission {
     large_record: Mutex<u64>,
     stopped: AtomicBool,
     refusal: OnceLock<CapacityError>,
-    rows: [AtomicUsize; 3],
+    rows: [AtomicUsize; 4],
     row_ceiling: Option<ObservationCapacity>,
 }
 
@@ -758,6 +760,7 @@ const fn row_index(agent: Agent) -> usize {
         Agent::Claude => 0,
         Agent::Codex => 1,
         Agent::Pi => 2,
+        Agent::Cursor => 3,
     }
 }
 

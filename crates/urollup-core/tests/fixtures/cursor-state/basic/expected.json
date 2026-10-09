@@ -1,0 +1,176 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "basic",
+  "dialect": "cursor-state",
+  "summary": "Two Cursor composers with nonzero bubble tokens on different catalog families, plus an Auto cost-only chat that contributes no request.",
+  "rules": [
+    "design §3.4 Dialect reconciliation rules",
+    "design §4.1 Measure contracts"
+  ],
+  "agent": {
+    "name": "Cursor",
+    "versions": "Cursor 3.21.x composer state.vscdb; synthetic urollup-cursor-state/v1 snapshot"
+  },
+  "files": [
+    {
+      "path": "cursor-state.json",
+      "lines": 45
+    },
+    {
+      "path": "agent-transcripts/11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.jsonl",
+      "lines": 2
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 20,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 5,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 10,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 3,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 0,
+        "tokens": {
+          "uncached_input": 0,
+          "cache_read": null,
+          "cache_write": null,
+          "output": 0,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "request_id": "req-opus"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "11111111-1111-4111-8111-111111111111",
+      "owner_candidates": [],
+      "model": "claude-4.5-opus-high-thinking",
+      "model_basis": "requested",
+      "effort": "style-2",
+      "timestamp": "2024-09-18T22:53:21.000Z",
+      "tokens": {
+        "uncached_input": 20,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 5,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:10"
+      ],
+      "evidence": [
+        "cursor-state.json:10"
+      ]
+    },
+    {
+      "key": {
+        "request_id": "req-grok"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "22222222-2222-4222-8222-222222222222",
+      "owner_candidates": [],
+      "model": "cursor-grok-4.6-xhigh-fast",
+      "model_basis": "requested",
+      "timestamp": "2024-09-18T23:10:01.000Z",
+      "tokens": {
+        "uncached_input": 10,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 3,
+        "reasoning": null
+      },
+      "selected": [
+        "cursor-state.json:27"
+      ],
+      "evidence": [
+        "cursor-state.json:27"
+      ]
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 30,
+      "cache_read": null,
+      "cache_write": null,
+      "output": 8,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "cursor-estimate-cost",
+      "refs": [
+        "cursor-state.json"
+      ],
+      "detail": "Cursor reported a session cost estimate"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Count every composer as a request, including the Auto cost-only chat with zero bubble tokens",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 30,
+        "cache_read": null,
+        "cache_write": null,
+        "output": 8,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "usageData.costInCents on the Auto composer is a session-level estimate, not a request. Bubble tokenCount of zero is not counted. Provider is inferred at query time: claude-* to anthropic, grok/composer to cursor, gemini-* to google. The sibling JSONL transcript is the same composerId and is not a usage owner."
+  ]
+}

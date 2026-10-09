@@ -1,0 +1,61 @@
+{
+  "format": "urollup-cursor-state/v1",
+  "composers": [
+    {
+      "composerId": "55555555-5555-4555-8555-555555555555",
+      "createdAt": 1726708000000,
+      "lastUpdatedAt": 1726708005000,
+      "unifiedMode": "agent",
+      "subComposerIds": [
+        "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+      ],
+      "bubbles": [
+        {
+          "bubbleId": "b-parent",
+          "requestId": "req-parent-grok",
+          "createdAt": 1726708001000,
+          "modelName": "cursor-grok-4.6-xhigh-fast",
+          "inputTokens": 5,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "createdAt": 1726708100000,
+      "lastUpdatedAt": 1726708105000,
+      "unifiedMode": "agent",
+      "isBestOfNSubcomposer": true,
+      "parentComposerId": "55555555-5555-4555-8555-555555555555",
+      "bubbles": [
+        {
+          "bubbleId": "b-a",
+          "requestId": "req-a-claude",
+          "createdAt": 1726708101000,
+          "modelName": "claude-4.5-opus-high-thinking",
+          "inputTokens": 3,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "createdAt": 1726708200000,
+      "lastUpdatedAt": 1726708205000,
+      "unifiedMode": "agent",
+      "isBestOfNSubcomposer": true,
+      "parentComposerId": "55555555-5555-4555-8555-555555555555",
+      "bubbles": [
+        {
+          "bubbleId": "b-b",
+          "requestId": "req-b-gemini",
+          "createdAt": 1726708201000,
+          "modelName": "gemini-3-pro",
+          "inputTokens": 2,
+          "outputTokens": 1
+        }
+      ]
+    }
+  ]
+}

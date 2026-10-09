@@ -99,8 +99,9 @@ This plan’s own Phase 0 and Phase 1 are stages of this plan, not product phase
 - A generic SQLite input feature.
   [Decision 20](../../../urollup-design.md#decision-20-database-input-in-phase-3) defers
   database input, including named external adapters, to Phase 3. This plan’s named
-  Cursor adapter follows that ordering.
-  Earlier implementation requires an explicit confirmed exception to Decision 20.
+  `cursor-state` reader of Cursor `state.vscdb` follows that ordering unless the
+  exception proposed on `uro-2hck` is confirmed; that exception would cover this one
+  reader, not generic SQLite input.
 - Collapsing Cursor into one model bucket, or using `cursor` as a `--group-by model`
   value.
 - Assigning provider `cursor` to every request.
@@ -215,11 +216,11 @@ honest coverage for missing tokens.
 | Facet | Cursor rule | Justification |
 | --- | --- | --- |
 | **Agent** | `cursor` | Cursor is the coding-agent surface, the same role as `claude` and `codex`. Selection (`--agent cursor`) and `QuerySource.agent` use this token, as will summary `properties.agent` once the designed summary artifact ([§5.2](../../../urollup-design.md#52-usage-summary-format)) exists. |
-| **Dialect** | One registry token for the state-store owner (`composerData` / `bubbleId`), with JSONL as the same session when the folder UUID matches. Do not emit a second session from JSONL. A `store.db` dialect waits until that tree is seen. | A dialect is one format written by one agent ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)). The brief names the stores, not a urollup token; this plan’s Phase 1 picks the token. |
+| **Dialect** | Registry token `cursor-state` for the state-store owner (`composerData` / `bubbleId`), with JSONL as the same session when the folder UUID matches. Do not emit a second session from JSONL. A `store.db` dialect waits until that tree is seen. | A dialect is one format written by one agent ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)). The brief names the stores, not a urollup token; this plan’s Phase 1 picks `cursor-state`. |
 | **Model** | Use the model field attached to the measured record: `usageData` key for session/model cost, bubble `modelInfo.modelName` for bubble tokens. Preserve current session `selectedModels[]` and picker `modelName` separately as selection metadata. Do not use them to relabel historical usage. Map `default` to Auto; absent historical attribution stays unknown. | `--group-by model` must split catalog families. The token `cursor` is never a model value. Claude and Codex record a provider model id; Cursor records Cursor’s own catalog and picker spellings. |
 | **Provider** | Inferred vendor from the catalog-family table, `Basis::Inferred`, with a diagnostic. Never invent a column. Auto and unmapped families stay unknown. A `claude-fable-*` value maps to `anthropic` through the `claude-*` rule; a Fable spelling without that prefix stays unknown until seen. | This is the existing identity and price-table meaning of provider. Cursor is the first agent that multiplexes vendors, so provider becomes a request field and a `--group-by` dimension rather than an adapter constant. |
 | **Account** | Observed stable account identifier, else unknown | Same rule as Claude and Codex: never guess from model or subscription ([§2.1 Projects and Accounts](../../../urollup-design.md#projects-and-accounts)). |
-| **Effort** | Recorded thinking or effort field, else omitted. Picker labels often encode effort (`-high-thinking`, `-xhigh-fast`); do not parse those suffixes into `Request.effort` unless a later brief shows a separate field. | Same as `Request.effort` today. |
+| **Effort** | Recorded thinking or effort field, else omitted. On this install that field is integer `thinkingStyle` (observed 1 and 2), stored as `style-{n}`. Picker labels often encode effort (`-high-thinking`, `-xhigh-fast`); do not parse those suffixes into `Request.effort`. | Same as `Request.effort` today. A later named level can replace `style-{n}` if Cursor starts writing one. |
 
 Historical model attribution follows the grain of each measurement:
 
@@ -249,10 +250,12 @@ Identity keys follow the brief’s uniqueness scope
 
 - Vendor-issued response IDs, if any later appear, use `IdScope::Provider` and the
   inferred vendor token.
-- Cursor-issued request IDs (`requestId`, `usageUuid`) use `IdScope::Agent` and
-  namespace `cursor`.
+- Cursor-issued request IDs (`requestId`, `usageUuid`) use `IdScope::Thread` and the
+  composer’s analytical thread ID. Live `state.vscdb` reuses the same `requestId` across
+  composers; agent-scoped keys produced `conflicting-shared-key` and
+  `unresolved-candidate` diagnostics.
+  Composer or conversation IDs alone are not request keys.
 - Thread keys use `composerId` under `agent_thread_identity(Agent::Cursor, …)`.
-- Composer or conversation IDs alone are not request keys.
 
 ### Discovery Roots
 
@@ -346,16 +349,18 @@ Unknown keys stay verbatim in capture and become stubs on export.
 
 ### Current Session
 
-The current implementation detects Claude Code, Codex, and Pi; it has no Cursor signal
-or Cursor-specific unsupported-dialect diagnostic.
-Planned behavior: once an exact Cursor environment or hook signal is established, map it
-onto `CurrentEnvironment` and `Agent::Cursor`. If selection remains unsupported at that
-point, exit 2 with an unsupported-dialect diagnostic, as for Pi.
-`--latest` stays the only heuristic and is never implicit
-([§6.2](../../../urollup-design.md#62-current-session-detection)). Hooks (`stop`,
-`preToolUse`, `postToolUse`, `afterAgentResponse`) are a capture path, not a historical
-store; public notes say a `stop` payload may include `conversation_id` and
-`transcript_path` and still lacks token usage.
+The `cursor-state` layer reads `CURSOR_CONVERSATION_ID` as `composerId` and maps it onto
+`CurrentEnvironment` and `Agent::Cursor`. `--agent cursor` disambiguates when Claude or
+Codex signals are also set.
+If Cursor was not ingested, the CLI drops the signal so a default `report` without
+opt-in stays `CurrentNotDetected`. The research brief does not document this variable,
+so it is not yet the exact signal this plan requires; `uro-w5oa` stays open until a
+consented check confirms it.
+Cursor hooks stay rejected, like Pi’s. Hooks (`stop`, `preToolUse`, `postToolUse`,
+`afterAgentResponse`) are a capture path, not a historical store; public notes say a
+`stop` payload may include `conversation_id` and `transcript_path` and still lacks token
+usage. `--latest` stays the only heuristic and is never implicit
+([§6.2](../../../urollup-design.md#62-current-session-detection)).
 
 ### CLI and Reports
 
@@ -432,7 +437,7 @@ Each of these blocks the adapter bead `uro-p9ay`:
 
 ### Phase 1: Facets, Adapter, and Fixtures
 
-- [ ] Add `Agent::Cursor` (`cursor`) through selection, discovery, CLI `--agent`, and
+- [x] Add `Agent::Cursor` (`cursor`) through selection, discovery, CLI `--agent`, and
   report `QuerySource` wiring, beside `Claude`, `Codex`, and the existing Pi diagnostic
   variant.
 - [ ] Use the generic request-level provider and agent facets, `--group-by provider` and
@@ -445,7 +450,7 @@ Each of these blocks the adapter bead `uro-p9ay`:
   `composerId` dedup, JSONL as the same session, subagent edges, coverage gaps for
   missing tokens and Auto, and provider limit observations only when the store records
   them.
-- [ ] Add synthetic fixtures under `crates/urollup-core/tests/fixtures/<dialect>/`,
+- [x] Add synthetic fixtures under `crates/urollup-core/tests/fixtures/<dialect>/`,
   goldens under `tests/golden/e2e/<dialect>/`, and result checks.
   Derive fixture shapes from the brief or a structure-only sanitizer; never copy a real
   Cursor file into the tree.
@@ -458,6 +463,54 @@ Each of these blocks the adapter bead `uro-p9ay`:
   the one-line pointers in the product plan current.
 - [ ] Run a consented local verification that prints aggregates only, under the same
   privacy sentinels as `make e2e-local`. Do not commit that corpus.
+
+### Draft Implementation Status
+
+The `cursor-state` layer implements most of Phase 1 ahead of the decisions above, so its
+items stay unchecked until those decisions are confirmed and the layer passes review.
+It answers the questions before implementation provisionally:
+
+- **Facets:** `GroupBy::Agent`, `GroupBy::Provider` and `GroupBy::Purpose` are separate
+  `report` breakdowns, and the catalog-family table is `ledger/provider.rs`, ahead of
+  the generic facets in `uro-qvp1`. `--group-by purpose` slices Cursor `unifiedMode`
+  (`agent`, `chat`, `plan`, `multitask`, `background`). Composer `maxMode` is current
+  picker state, not a historical usage facet.
+- **Snapshot and evidence (`uro-9m75`):** `state.vscdb` is opened read-only with
+  `query_only`, without a copy.
+  Each store gets one manifest entry fingerprinted from its first 256 bytes, and
+  evidence references count composer and bubble rows rather than bytes.
+  Decode loads the selected composers and bubbles before reconciliation checks the
+  observation ceiling; it does not charge admission while decoding.
+- **Usage mapping (`uro-jrir`):** a bubble counts only when `tokenCount` input or output
+  is nonzero, as uncached input and output; cache categories stay unknown.
+  Session `costInCents` is a `cursor-estimate-cost` diagnostic, not a ledger amount.
+- **Request identity (`uro-qy0e`):** `requestId` and `usageUuid` are thread-scoped keys,
+  and a bubble with neither keys on its `bubbleId`. Bubbles that share a key keep the
+  last one in store order under the latest-revision rule rather than summing.
+- **SQLite reader (`uro-kddq`):** `rusqlite` with bundled SQLite, without default
+  features.
+- **Opt-in roots (`uro-tvc0`):** a `UROLLUP_CURSOR_DIRS` entry or `--source` path names
+  a `state.vscdb` file, a `cursor-state.json` fixture, or a directory holding either.
+  A Cursor JSONL transcript passed alone exits 1 as not a usage owner.
+- **Current session (`uro-w5oa`):** `CURSOR_CONVERSATION_ID`, not yet verified (see
+  [Current Session](#current-session)).
+
+| Concern | Location |
+| --- | --- |
+| Opt-in roots | `DiscoveryEnvironment::cursor_roots` in `adapters/discovery.rs`; `UROLLUP_CURSOR_DIRS` |
+| Dialect token and store open | `cursor_state::is_cursor_source`, `ingest_roots`, `read_sqlite` (`query_only`) |
+| Composer / bubble decode | `load_composers`, `load_bubbles`, `attributed_model_name` |
+| `--current` / `--session` family | `cursor_composer_ids` in `cli.rs`; `retain_composer_family` plus bubble-key prefix reads |
+| JSONL path selector | `cursor_composer_id_from_selector` in `selection.rs`; UUID from transcript path, not usage |
+| Project facet | `Thread.project` from `workspaceId` on `composerData` or `composerHeaders` |
+| Thread / request keys | `agent_thread_identity(Agent::Cursor, composerId)`; `REQUEST_KEY` / `USAGE_KEY` (`IdScope::Thread`) |
+| Cost estimate | `DiagnosticCode::CursorEstimateCost` in `ledger/diagnostics.rs` |
+| Provider facet | `provider_for` / `infer_catalog_provider` in `ledger/provider.rs`; `GroupBy::Provider` |
+| Purpose / effort | `Thread.purpose` from `unifiedMode`; `Request.effort` from `thinkingStyle` |
+| Agent / current session | `Agent::Cursor` and `CURSOR_CONVERSATION_ID` in `selection.rs` |
+| CLI third corpus leg | `Corpus::discover` in `cli.rs`; `classify_explicit_source` prefers Cursor |
+| Reports | `query/aggregate.rs` `breakdowns`, `purpose_for_owners`, `provider_label` |
+| Fixtures / goldens | `tests/fixtures/cursor-state/{basic,facets,subagents,best-of-n}/`; `tests/golden/e2e/cursor-state/{basic,facets,subagents,best-of-n}.tryscript.md` |
 
 ## Testing Strategy
 
@@ -479,8 +532,8 @@ Each of these blocks the adapter bead `uro-p9ay`:
 
 Implementation belongs no earlier than the product’s Phase 3 database-input work, and
 only after the questions before implementation are settled.
-A confirmed exception to Decision 20 is required to change that ordering.
-It must not land in the 0.1.0 alpha
+A confirmed exception to Decision 20, proposed on `uro-2hck`, is required to change that
+ordering. It must not land in the 0.1.0 alpha
 ([first-release publishing](plan-2026-09-16-first-release-publishing.md)). This plan
 does not change ingest acceptance, which `uro-zrr0` and the
 [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) own, or other product
@@ -498,12 +551,15 @@ The questions that block implementation are under
 These remain open without blocking it:
 
 - Are Best-of-N siblings separately billed, or is one winner the sole counted usage?
-- What exact environment or hook fields identify `--current`?
 - Does a later install grow `~/.cursor/chats/**/store.db`, and how does it join
   `composerId`?
 - Which Cursor releases after 3.21.13 change these shapes, and how should the adapter
   version that claim?
-- Which registry token names the state-store dialect?
+- Should bubble tokens without `modelInfo` stay unknown, as the Facet Contract says, or
+  fall back to the composer’s current `modelConfig.modelName`? The `cursor-state` layer
+  uses the bubble value, then that composer fallback, because many bubbles omit
+  `modelInfo`; one of the two must change before that layer is ready.
+- Is `CURSOR_CONVERSATION_ID` the exact `--current` signal on every Cursor surface?
 
 ## References
 

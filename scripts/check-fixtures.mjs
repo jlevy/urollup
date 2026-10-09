@@ -24,7 +24,7 @@ import zlib from "node:zlib";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const FIXTURE_DIR = path.join("crates", "urollup-core", "tests", "fixtures");
-export const DIALECTS = ["claude-project", "codex-rollout"];
+export const DIALECTS = ["claude-project", "codex-rollout", "cursor-state"];
 export const EXPECTED_FORMAT = "urollup-fixture-expected/v1";
 export const TOKEN_KEYS = ["uncached_input", "cache_read", "cache_write", "output", "reasoning"];
 const OWNERSHIP = ["owned", "ambiguous", "unknown"];
@@ -186,8 +186,8 @@ export function tokenProblems(tokens, where) {
   const problems = [];
   for (const key of TOKEN_KEYS) {
     const value = tokens[key];
-    if (key === "reasoning" ? !(value === null || isCount(value)) : !isCount(value)) {
-      problems.push(`${where}: tokens.${key} must be a non-negative integer${key === "reasoning" ? " or null" : ""}`);
+    if (!(value === null || isCount(value))) {
+      problems.push(`${where}: tokens.${key} must be a non-negative integer or null`);
     }
   }
   return problems;
@@ -195,21 +195,19 @@ export function tokenProblems(tokens, where) {
 
 function addTokens(rows) {
   const sum = Object.fromEntries(TOKEN_KEYS.map((key) => [key, 0]));
-  let reasoningRecorded = false;
+  const recorded = Object.fromEntries(TOKEN_KEYS.map((key) => [key, false]));
   for (const tokens of rows) {
     for (const key of TOKEN_KEYS) {
-      if (key === "reasoning") {
-        if (tokens.reasoning !== null) {
-          reasoningRecorded = true;
-          sum.reasoning += tokens.reasoning;
-        }
-      } else {
+      if (tokens[key] !== null && tokens[key] !== undefined) {
+        recorded[key] = true;
         sum[key] += tokens[key];
       }
     }
   }
-  if (!reasoningRecorded) {
-    sum.reasoning = null;
+  for (const key of TOKEN_KEYS) {
+    if (!recorded[key]) {
+      sum[key] = null;
+    }
   }
   return sum;
 }

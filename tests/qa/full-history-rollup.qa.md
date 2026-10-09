@@ -174,7 +174,7 @@ export QA_RAM_MIB=$(( $(sysctl -n hw.memsize) / 1048576 ))
 export QA_WATCHDOG_MIB=$(( QA_RAM_MIB / 4 ))
 export CCUSAGE=tests/parity/ccusage/node_modules/@ccusage/ccusage-darwin-arm64/bin/ccusage
 export UROLLUP_STATS=1
-unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID UROLLUP_JOBS
+unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID UROLLUP_JOBS
 measure() {
   local name=$1; shift
   uv --config-file uv.toml run --frozen python scripts/run-rss-watchdog.py \

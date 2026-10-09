@@ -17,6 +17,11 @@ NODE_INSTALL_STAMP := node_modules/.package-lock.json
 CCUSAGE_DIR := tests/parity/ccusage
 CCUSAGE_INSTALL_STAMP := $(CCUSAGE_DIR)/node_modules/.package-lock.json
 RELEASE_UROLLUP_BIN := target/release/urollup
+# `make rust-test` often runs inside an agent. Drop stats, Cursor opt-in roots, and
+# current-session signals so a live composer or Claude/Codex session cannot become an input.
+HERMETIC_CARGO_TEST := env -u UROLLUP_STATS -u UROLLUP_CURSOR_DIRS \
+	-u CURSOR_CONVERSATION_ID -u CLAUDE_CODE_SESSION_ID \
+	-u CODEX_THREAD_ID -u CODEX_SESSION_ID -u PI_SESSION_ID -u PI_SESSION_FILE
 
 # Always pass the repository's uv.toml, so user-level uv configuration never changes
 # resolution (AGENTS.md).
@@ -55,8 +60,8 @@ build:
 test: rust-test qa-tool-tests golden e2e-results parity scale-gate
 
 rust-test:
-	$(CARGO) test --locked --workspace
-	$(CARGO) test --locked --workspace --no-default-features
+	$(HERMETIC_CARGO_TEST) $(CARGO) test --locked --workspace
+	$(HERMETIC_CARGO_TEST) $(CARGO) test --locked --workspace --no-default-features
 
 qa-tool-tests:
 	$(UV_RUN) python -m unittest discover -s tests/qa -p 'test_*.py'
@@ -246,8 +251,8 @@ dependency-guard:
 	$(NODE) scripts/check-dependency-guard.mjs
 
 msrv:
-	$(CARGO) +$(MSRV) check --locked --workspace --all-targets
-	$(CARGO) +$(MSRV) test --locked --workspace
+	$(HERMETIC_CARGO_TEST) $(CARGO) +$(MSRV) check --locked --workspace --all-targets
+	$(HERMETIC_CARGO_TEST) $(CARGO) +$(MSRV) test --locked --workspace
 
 audit:
 	$(CARGO) deny --locked check

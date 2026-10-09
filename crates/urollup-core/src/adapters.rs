@@ -19,6 +19,7 @@ use crate::sources::reader::SourceReadError;
 
 pub mod claude_project;
 pub mod codex_rollout;
+pub mod cursor_state;
 pub mod discovery;
 
 /// The normalized result of ingesting one or more roots of one dialect.
@@ -189,6 +190,14 @@ pub enum AdapterError {
     /// A source-decoding worker thread panicked.
     #[error(transparent)]
     Worker(#[from] crate::sources::parallel::ParallelReadError),
+    /// A named Cursor state store could not be opened or decoded.
+    #[error("cannot read Cursor store {path}: {message}")]
+    Store {
+        /// The store path.
+        path: PathBuf,
+        /// Why it could not be read.
+        message: String,
+    },
 }
 
 impl From<CapacityError> for AdapterError {

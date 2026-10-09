@@ -186,7 +186,7 @@ test("a case is checked end to end, including zstd members", () => {
 test("private data anywhere in a case fails it, and a missing README row fails the tree", () => {
   const scratch = mkdtempSync(join(tmpdir(), "urollup-check-fixtures-test-"));
   try {
-    writeFileSync(join(scratch, "README.md"), "| claude-project/c |\n");
+    writeFileSync(join(scratch, "README.md"), "| claude-project/c |\n| cursor-state/k |\n");
     writeCase(scratch, "claude-project", "c", {
       "README.md": "# c\n",
       "expected.json": JSON.stringify(expectedFor("c", "claude-project")),
@@ -197,9 +197,14 @@ test("private data anywhere in a case fails it, and a missing README row fails t
       "expected.json": JSON.stringify(expectedFor("r", "codex-rollout")),
       "s.jsonl": '{"a":1}\n{"b":2}\n',
     });
+    writeCase(scratch, "cursor-state", "k", {
+      "README.md": "# k\n",
+      "expected.json": JSON.stringify(expectedFor("k", "cursor-state")),
+      "s.jsonl": '{"a":1}\n{"b":2}\n',
+    });
     const { problems, counts } = checkFixtures(scratch);
     const text = problems.join("\n");
-    assert.deepEqual(counts, { "claude-project": 1, "codex-rollout": 1 });
+    assert.deepEqual(counts, { "claude-project": 1, "codex-rollout": 1, "cursor-state": 1 });
     assert.match(text, /claude-project\/c\/s\.jsonl:2: a home directory that is not a placeholder/);
     assert.match(text, /does not list codex-rollout\/r/);
     assert.doesNotMatch(text, /claude-project\/c\/s\.jsonl:1/);
@@ -211,6 +216,6 @@ test("private data anywhere in a case fails it, and a missing README row fails t
 test("the committed fixture tree passes", () => {
   const { problems, counts } = checkFixtures(join(ROOT, FIXTURE_DIR));
   assert.deepEqual(problems, []);
-  assert.ok(counts["claude-project"] > 0 && counts["codex-rollout"] > 0);
+  assert.ok(counts["claude-project"] > 0 && counts["codex-rollout"] > 0 && counts["cursor-state"] > 0);
   assert.ok(readFileSync(join(ROOT, FIXTURE_DIR, "README.md"), "utf8").includes("synthetic"));
 });

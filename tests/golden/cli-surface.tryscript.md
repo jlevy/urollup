@@ -29,7 +29,7 @@ urollup 0.1.0
 
 ```console
 $ urollup --help
-Trustworthy token and usage rollups from Claude Code and Codex session logs
+Trustworthy token and usage rollups from Claude Code, Codex and Cursor session logs
 
 Usage: urollup [OPTIONS] <COMMAND>
 
@@ -160,7 +160,7 @@ A bare invocation is a usage error too: it prints help on stderr, not stdout.
 
 ```console
 $ urollup
-! Trustworthy token and usage rollups from Claude Code and Codex session logs
+! Trustworthy token and usage rollups from Claude Code, Codex and Cursor session logs
 !
 ! Usage: urollup [OPTIONS] <COMMAND>
 !

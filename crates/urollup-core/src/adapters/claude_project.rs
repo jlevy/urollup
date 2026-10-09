@@ -1059,7 +1059,8 @@ fn normalize(
             | DiagnosticCode::MalformedLine
             | DiagnosticCode::PendingTail
             | DiagnosticCode::SourceIncomplete
-            | DiagnosticCode::ThreadOrphan) => code,
+            | DiagnosticCode::ThreadOrphan
+            | DiagnosticCode::CursorEstimateCost) => code,
         };
     }
     ledger.diagnostics.sort();

@@ -11,6 +11,7 @@ use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::names::Name;
+use crate::ledger::provider::provider_for;
 use crate::ledger::tokens::TokenMeasures;
 use crate::selection::{Agent, IndexedSession, SessionIndex};
 
@@ -423,15 +424,19 @@ fn breakdowns(
         let mut rows: BTreeMap<String, Accumulator> = BTreeMap::new();
         for selected in requests {
             let ownership = ownership_class(&selected.request.ownership);
-            if group == GroupBy::Model {
+            if matches!(group, GroupBy::Model | GroupBy::Provider) {
                 if let Some(usage) = &selected.request.usage {
                     if !usage.revision.model_usage.is_empty() {
                         for component in &usage.revision.model_usage {
-                            let value = component
+                            let model = component
                                 .model
                                 .as_ref()
-                                .map_or("unknown", |model| model.name.as_str())
-                                .to_owned();
+                                .map_or("unknown", |model| model.name.as_str());
+                            let value = if group == GroupBy::Provider {
+                                provider_label(selected.request, index, Some(model))
+                            } else {
+                                model.to_owned()
+                            };
                             rows.entry(value)
                                 .or_default()
                                 .add(ownership, component.usage.into())?;
@@ -461,6 +466,76 @@ fn group_value(group: GroupBy, request: &Request, index: &SessionIndex) -> Strin
             request.model.as_ref().map_or("unknown", |model| model.name.as_str()).to_owned()
         }
         GroupBy::Effort => request.effort.map_or("unknown", Name::as_str).to_owned(),
+        GroupBy::Agent => agent_for_owners(request, index),
+        GroupBy::Provider => {
+            let model = request.model.as_ref().map(|model| model.name.as_str());
+            provider_label(request, index, model)
+        }
+        GroupBy::Purpose => purpose_for_owners(request, index),
+    }
+}
+
+fn provider_label(request: &Request, index: &SessionIndex, model: Option<&str>) -> String {
+    let agent = agent_enum_for_owners(request, index);
+    match provider_for(agent, model) {
+        crate::ledger::entities::Basis::Observed(token)
+        | crate::ledger::entities::Basis::Configured(token)
+        | crate::ledger::entities::Basis::Inferred(token) => token.to_owned(),
+        crate::ledger::entities::Basis::Unknown => "unknown".to_owned(),
+    }
+}
+
+fn agent_enum_for_owners(request: &Request, index: &SessionIndex) -> Agent {
+    let owners: Vec<_> = match &request.ownership {
+        Ownership::Owned { thread } => vec![thread],
+        Ownership::Ambiguous { candidates } => candidates.iter().collect(),
+        Ownership::Unknown => return Agent::Pi,
+    };
+    let values: BTreeSet<_> =
+        owners.into_iter().map(|owner| index.get(owner).map(|session| session.agent)).collect();
+    if values.len() == 1 {
+        values.into_iter().next().flatten().unwrap_or(Agent::Pi)
+    } else {
+        Agent::Pi
+    }
+}
+
+fn agent_for_owners(request: &Request, index: &SessionIndex) -> String {
+    let owners: Vec<_> = match &request.ownership {
+        Ownership::Owned { thread } => vec![thread],
+        Ownership::Ambiguous { candidates } => candidates.iter().collect(),
+        Ownership::Unknown => return "unknown".to_owned(),
+    };
+    let values: BTreeSet<_> = owners
+        .into_iter()
+        .map(|owner| index.get(owner).map_or("unknown", |session| session.agent.token()))
+        .collect();
+    if values.len() == 1 {
+        values.into_iter().next().unwrap_or("unknown").to_owned()
+    } else {
+        "ambiguous".to_owned()
+    }
+}
+
+fn purpose_for_owners(request: &Request, index: &SessionIndex) -> String {
+    let owners: Vec<_> = match &request.ownership {
+        Ownership::Owned { thread } => vec![thread],
+        Ownership::Ambiguous { candidates } => candidates.iter().collect(),
+        Ownership::Unknown => return "unknown".to_owned(),
+    };
+    let values: BTreeSet<_> = owners
+        .into_iter()
+        .map(|owner| {
+            index
+                .get(owner)
+                .and_then(|session| session.thread.purpose.value())
+                .map_or("unknown", String::as_str)
+        })
+        .collect();
+    if values.len() == 1 {
+        values.into_iter().next().unwrap_or("unknown").to_owned()
+    } else {
+        "ambiguous".to_owned()
     }
 }
 

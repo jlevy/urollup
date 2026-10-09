@@ -25,6 +25,8 @@ const AMBIENT = {
   CLAUDE_CONFIG_DIR: "/Users/someone/.claude",
   CODEX_HOME: "/Users/someone/.codex",
   CODEX_THREAD_ID: "live-thread",
+  CURSOR_CONVERSATION_ID: "00000000-0000-4000-8000-000000000001",
+  UROLLUP_CURSOR_DIRS: "/Users/someone/Library/Application Support/Cursor",
   PI_SESSION_FILE: "/Users/someone/.pi/agent/sessions/x.jsonl",
   UROLLUP_CLAUDE_CONFIG_DIRS: "/Users/someone/.claude",
   XDG_CONFIG_HOME: "/Users/someone/.config",
@@ -131,6 +133,6 @@ test("a child process started with the golden environment sees the golden HOME a
   assert.equal(result.status, 0, result.stderr);
   const seen = JSON.parse(result.stdout);
   assert.equal(seen.HOME, golden.dirs.home);
-  const leaked = Object.keys(seen).filter((name) => /^(CLAUDE|CODEX|PI_|GIT|GITHUB)/.test(name) || (name.startsWith("UROLLUP_") && name !== "UROLLUP_CAPTURE_DIR"));
+  const leaked = Object.keys(seen).filter((name) => /^(CLAUDE|CODEX|CURSOR_|PI_|GIT|GITHUB)/.test(name) || (name.startsWith("UROLLUP_") && name !== "UROLLUP_CAPTURE_DIR"));
   assert.deepEqual(leaked, []);
 });

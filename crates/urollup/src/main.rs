@@ -20,12 +20,14 @@ fn main() -> ExitCode {
     };
     let mut out = io::BufWriter::new(stdout.lock());
     let mut diagnostics = stderr.lock();
+    let stats = std::env::var_os(cli::STATS_VARIABLE);
     let exit = cli::run_with_context(
         std::env::args_os(),
         &mut out,
         &mut diagnostics,
         terminals,
         cli::ColorEnvironment::from_process(),
+        stats.as_deref(),
     );
     ExitCode::from(exit.code())
 }

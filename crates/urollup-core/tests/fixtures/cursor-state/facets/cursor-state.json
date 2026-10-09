@@ -1,0 +1,87 @@
+{
+  "format": "urollup-cursor-state/v1",
+  "composers": [
+    {
+      "composerId": "55555555-5555-4555-8555-555555555555",
+      "createdAt": 1726703000000,
+      "lastUpdatedAt": 1726703005000,
+      "unifiedMode": "agent",
+      "bubbles": [
+        {
+          "bubbleId": "b-agent",
+          "requestId": "req-claude",
+          "createdAt": 1726703001000,
+          "modelName": "claude-4.6-opus-high-thinking",
+          "thinkingStyle": 2,
+          "inputTokens": 8,
+          "outputTokens": 2
+        }
+      ]
+    },
+    {
+      "composerId": "66666666-6666-4666-8666-666666666666",
+      "createdAt": 1726704000000,
+      "lastUpdatedAt": 1726704005000,
+      "unifiedMode": "chat",
+      "bubbles": [
+        {
+          "bubbleId": "b-chat",
+          "requestId": "req-gemini",
+          "createdAt": 1726704001000,
+          "modelName": "gemini-3-pro",
+          "thinkingStyle": 1,
+          "inputTokens": 5,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "77777777-7777-4777-8777-777777777777",
+      "createdAt": 1726705000000,
+      "lastUpdatedAt": 1726705005000,
+      "unifiedMode": "plan",
+      "bubbles": [
+        {
+          "bubbleId": "b-plan",
+          "requestId": "req-gpt",
+          "createdAt": 1726705001000,
+          "modelName": "gpt-5.1-codex-high",
+          "inputTokens": 4,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "88888888-8888-4888-8888-888888888888",
+      "createdAt": 1726706000000,
+      "lastUpdatedAt": 1726706005000,
+      "unifiedMode": "multitask",
+      "bubbles": [
+        {
+          "bubbleId": "b-multi",
+          "requestId": "req-composer",
+          "createdAt": 1726706001000,
+          "modelName": "composer-2.5-fast",
+          "inputTokens": 3,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "createdAt": 1726707000000,
+      "lastUpdatedAt": 1726707005000,
+      "unifiedMode": "background",
+      "bubbles": [
+        {
+          "bubbleId": "b-bg",
+          "requestId": "req-kimi",
+          "createdAt": 1726707001000,
+          "modelName": "kimi-k2-instruct",
+          "inputTokens": 2,
+          "outputTokens": 1
+        }
+      ]
+    }
+  ]
+}

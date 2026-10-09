@@ -46,7 +46,12 @@ export function renderGolden(config, caseId, roots) {
     `  CODEX_HOME: ${roots.codex ? "." : "$GOLDEN_EMPTY_ROOT"}`,
     "  PI_CODING_AGENT_SESSION_DIR: $GOLDEN_EMPTY_ROOT/sessions",
   ];
-  const variable = [roots.claude && "`CLAUDE_CONFIG_DIR`", roots.codex && "`CODEX_HOME`"].filter(Boolean).join(" and ");
+  if (roots.cursor) {
+    env.push("  UROLLUP_CURSOR_DIRS: .");
+  }
+  const variable = [roots.claude && "`CLAUDE_CONFIG_DIR`", roots.codex && "`CODEX_HOME`", roots.cursor && "`UROLLUP_CURSOR_DIRS`"]
+    .filter(Boolean)
+    .join(" and ");
   const blocks = VIEWS.flatMap(([title, args]) => [`## ${title}`, "", "```console", `$ urollup ${args}`, "???", "```", ""]);
   return [
     "---",
@@ -82,8 +87,8 @@ function main() {
     throw new Error(`${config.fixturesRoot}/${caseId} is not a fixture case (no expected.json)`);
   }
   const roots = inferRoots(caseDir);
-  if (!roots.claude && !roots.codex) {
-    throw new Error(`${config.fixturesRoot}/${caseId} has neither projects/ nor sessions/ or archived_sessions/`);
+  if (!roots.claude && !roots.codex && !roots.cursor) {
+    throw new Error(`${config.fixturesRoot}/${caseId} has neither projects/ nor sessions/ or archived_sessions/ nor cursor-state.json`);
   }
   const target = path.join(ROOT, ...goldenPath(config, caseId).split("/"));
   if (existsSync(target)) {

@@ -1,0 +1,62 @@
+{
+  "format": "urollup-cursor-state/v1",
+  "composers": [
+    {
+      "composerId": "99999999-9999-4999-8999-999999999999",
+      "createdAt": 1726707000000,
+      "lastUpdatedAt": 1726707005000,
+      "unifiedMode": "agent",
+      "subagentComposerIds": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      ],
+      "bubbles": [
+        {
+          "bubbleId": "b-parent",
+          "requestId": "req-parent-grok",
+          "createdAt": 1726707001000,
+          "modelName": "cursor-grok-4.6-xhigh-fast",
+          "inputTokens": 6,
+          "outputTokens": 2
+        }
+      ]
+    },
+    {
+      "composerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "createdAt": 1726707100000,
+      "lastUpdatedAt": 1726707105000,
+      "unifiedMode": "agent",
+      "isSubagent": true,
+      "parentComposerId": "99999999-9999-4999-8999-999999999999",
+      "bubbles": [
+        {
+          "bubbleId": "b-child-claude",
+          "requestId": "req-child-claude",
+          "createdAt": 1726707101000,
+          "modelName": "claude-4.5-opus-high-thinking",
+          "thinkingStyle": 2,
+          "inputTokens": 4,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "composerId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "createdAt": 1726707200000,
+      "lastUpdatedAt": 1726707205000,
+      "unifiedMode": "agent",
+      "isSubagent": true,
+      "parentComposerId": "99999999-9999-4999-8999-999999999999",
+      "bubbles": [
+        {
+          "bubbleId": "b-child-gemini",
+          "requestId": "req-child-gemini",
+          "createdAt": 1726707201000,
+          "modelName": "gemini-3-pro",
+          "inputTokens": 3,
+          "outputTokens": 1
+        }
+      ]
+    }
+  ]
+}

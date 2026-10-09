@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
 use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
-use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
+use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout, cursor_state};
 use urollup_core::ledger::capacity::{
     ObservationCapacity, RamBudget, physical_memory_bytes, resolve_capacity,
 };
@@ -26,7 +26,7 @@ use urollup_core::query::{
 };
 use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
-    derive_agent_thread_id,
+    cursor_composer_id_from_selector, derive_agent_thread_id,
 };
 use urollup_core::sources::parallel;
 use urollup_core::sources::reader::{self, ReadOptions};
@@ -41,7 +41,7 @@ const JOBS_VARIABLE: &str = "UROLLUP_JOBS";
 /// process's threads.
 const MAX_JOBS: usize = 256;
 /// The environment variable that prints privacy-safe run statistics to stderr.
-const STATS_VARIABLE: &str = "UROLLUP_STATS";
+pub(crate) const STATS_VARIABLE: &str = "UROLLUP_STATS";
 /// The environment variable that sets the ingest RAM budget when `--max-ram` is omitted.
 const MAX_RAM_VARIABLE: &str = "UROLLUP_MAX_RAM";
 const CLI_STYLES: Styles = Styles::styled()
@@ -191,6 +191,10 @@ struct SelectionArgs {
     #[arg(long, value_name = "ZONE")]
     timezone: Option<String>,
 
+    /// Restrict selection to one or more agents; repeatable and comma-delimited
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "AGENT")]
+    agent: Vec<AgentArg>,
+
     /// Add a source root or JSONL artifact; repeatable
     #[arg(long = "source", value_name = "PATH")]
     sources: Vec<PathBuf>,
@@ -220,10 +224,9 @@ struct ReportArgs {
 
     /// One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension
     // Help lists options by display order, then by long name. Clap numbers the flattened
-    // selection from 0, so 6 is `--source`'s slot: `--group-by` follows `--timezone` and
-    // precedes `--source`, where it sat before it left the selection. The CLI-surface
-    // golden pins the order.
-    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION", display_order = 6)]
+    // selection from 0, so 7 is `--source`'s slot: `--group-by` follows `--timezone` and
+    // `--agent` and precedes `--source`. The CLI-surface golden pins the order.
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "DIMENSION", display_order = 7)]
     group_by: Vec<GroupByArg>,
 }
 
@@ -256,6 +259,9 @@ enum GroupByArg {
     Account,
     Model,
     Effort,
+    Agent,
+    Provider,
+    Purpose,
 }
 
 impl From<GroupByArg> for GroupBy {
@@ -265,6 +271,28 @@ impl From<GroupByArg> for GroupBy {
             GroupByArg::Account => Self::Account,
             GroupByArg::Model => Self::Model,
             GroupByArg::Effort => Self::Effort,
+            GroupByArg::Agent => Self::Agent,
+            GroupByArg::Provider => Self::Provider,
+            GroupByArg::Purpose => Self::Purpose,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentArg {
+    Claude,
+    Codex,
+    Cursor,
+    Pi,
+}
+
+impl From<AgentArg> for Agent {
+    fn from(value: AgentArg) -> Self {
+        match value {
+            AgentArg::Claude => Self::Claude,
+            AgentArg::Codex => Self::Codex,
+            AgentArg::Cursor => Self::Cursor,
+            AgentArg::Pi => Self::Pi,
         }
     }
 }
@@ -281,7 +309,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    run_with_context(args, stdout, stderr, TerminalContext::default(), ColorEnvironment::default())
+    run_with_context(
+        args,
+        stdout,
+        stderr,
+        TerminalContext::default(),
+        ColorEnvironment::default(),
+        None,
+    )
 }
 
 /// Run with explicit terminal and environment capabilities.
@@ -294,6 +329,7 @@ pub(crate) fn run_with_context<I, T>(
     stderr: &mut dyn Write,
     terminals: TerminalContext,
     color_environment: ColorEnvironment,
+    stats: Option<&OsStr>,
 ) -> Exit
 where
     I: IntoIterator<Item = T>,
@@ -331,7 +367,7 @@ where
         .enabled(terminals.stdout_is_terminal);
     let stderr_color = ColorContext { when: cli.color, machine, environment: color_environment }
         .enabled(terminals.stderr_is_terminal);
-    let show_stats = match stats_requested(std::env::var_os(STATS_VARIABLE).as_deref()) {
+    let show_stats = match stats_requested(stats) {
         Ok(show_stats) => show_stats,
         Err(failure) => return report_failure(stderr, &failure, stderr_color),
     };
@@ -370,6 +406,7 @@ fn report_failure(stderr: &mut dyn Write, failure: &Failure, color: bool) -> Exi
 struct Corpus {
     claude: Ingested,
     codex: Ingested,
+    cursor: Ingested,
     index: SessionIndex,
 }
 
@@ -403,11 +440,19 @@ impl Corpus {
             let missing_is_error = selected.missing_is_error();
             (selected.roots, missing_is_error)
         };
+        let (mut cursor_roots, cursor_missing_is_error) = if args.no_default_sources {
+            (Vec::new(), false)
+        } else {
+            let selected = environment.cursor_roots();
+            let missing_is_error = selected.missing_is_error();
+            (selected.roots, missing_is_error)
+        };
         for source in &args.sources {
             for explicit in classify_explicit_source(source)? {
                 match explicit {
                     ExplicitDialect::Claude(root) => claude_roots.push(root),
                     ExplicitDialect::Codex(root) => codex_roots.push(root),
+                    ExplicitDialect::Cursor(root) => cursor_roots.push(root),
                 }
             }
         }
@@ -452,16 +497,58 @@ impl Corpus {
         claude.release_discovery();
         index_elapsed += started.elapsed();
 
+        let started = Instant::now();
+        let mut cursor = cursor_state::ingest_roots(
+            &cursor_roots,
+            cursor_missing_is_error,
+            &capacity,
+            cursor_composer_ids(query).as_deref(),
+        )
+        .map_err(|error| Failure::adapter(&error))?;
+        stats.phase("cursor_ingest", started);
+        stats.agent("cursor", &cursor);
+        let started = Instant::now();
+        index.add(Agent::Cursor, &cursor).map_err(|error| Failure::selection(&error))?;
+        cursor.release_discovery();
+        index_elapsed += started.elapsed();
+
         stats.record("session_index", index_elapsed);
-        Ok(Self { claude, codex, index })
+        Ok(Self { claude, codex, cursor, index })
     }
 
-    fn sources(&self) -> [QuerySource<'_>; 2] {
+    fn sources(&self) -> [QuerySource<'_>; 3] {
         [
             QuerySource { agent: Agent::Claude, ingested: &self.claude },
             QuerySource { agent: Agent::Codex, ingested: &self.codex },
+            QuerySource { agent: Agent::Cursor, ingested: &self.cursor },
         ]
     }
+
+    fn has_cursor_sessions(&self) -> bool {
+        self.index.sessions().any(|(_, session)| session.agent == Agent::Cursor)
+    }
+}
+
+/// Native Cursor composer UUIDs from `--current` / `--session`, used to skip unread
+/// composers and their bubbles. Analytical `thr-` IDs and path selectors need the
+/// full store.
+fn cursor_composer_ids(query: &SelectionQuery) -> Option<Vec<String>> {
+    let mut ids = Vec::new();
+    if let Some(current) = &query.current {
+        if current.agent == Agent::Cursor {
+            ids.push(cursor_composer_id_from_selector(&current.selector)?);
+        }
+    }
+    for session in &query.sessions {
+        match cursor_composer_id_from_selector(session.as_os_str()) {
+            Some(id) => ids.push(id),
+            None if session.to_str().is_some_and(|selector| selector.starts_with("thr-")) => {
+                return None;
+            }
+            None => return None,
+        }
+    }
+    if ids.is_empty() { None } else { Some(ids) }
 }
 
 /// The number of threads that decode sources: `UROLLUP_JOBS` when it is set, otherwise
@@ -864,12 +951,17 @@ fn read_codex_session_links(source: &DiscoveredSource) -> Option<BTreeSet<String
     })
 }
 
+#[derive(Debug)]
 enum ExplicitDialect {
     Claude(PathBuf),
     Codex(PathBuf),
+    Cursor(PathBuf),
 }
 
 fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failure> {
+    if cursor_state::is_cursor_source(source) {
+        return Ok(vec![ExplicitDialect::Cursor(source.to_owned())]);
+    }
     let mut standard_roots = Vec::new();
     if source.join("projects").is_dir() {
         standard_roots.push(ExplicitDialect::Claude(source.join("projects")));
@@ -912,9 +1004,13 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
     match dialect {
         Some(Agent::Claude) => Ok(vec![ExplicitDialect::Claude(source.to_owned())]),
         Some(Agent::Codex) => Ok(vec![ExplicitDialect::Codex(source.to_owned())]),
+        Some(Agent::Cursor) => Err(Failure::runtime(format!(
+            "source {} is a Cursor JSONL transcript, which is not a usage owner; pass state.vscdb or a cursor-state fixture",
+            source.display()
+        ))),
         Some(Agent::Pi) => Err(Failure::usage("Pi source input is not supported yet")),
         None => Err(Failure::runtime(format!(
-            "source {} contains no readable Claude Code or Codex JSONL records",
+            "source {} contains no readable Claude Code, Codex or Cursor records",
             source.display()
         ))),
     }
@@ -966,6 +1062,16 @@ fn classify_records(reader: &mut dyn BufRead, max_line_bytes: u64) -> Option<Age
             )
         ) {
             return Some(Agent::Claude);
+        }
+        if kind == Some("turn_ended")
+            || (kind.is_none()
+                && matches!(
+                    value.get("role").and_then(serde_json::Value::as_str),
+                    Some("user" | "assistant")
+                )
+                && value.get("message").is_some())
+        {
+            return Some(Agent::Cursor);
         }
     }
     None
@@ -1022,8 +1128,9 @@ fn execute(command: &Command, color: bool, stats: &mut Stats) -> Result<String, 
         || (!explicit_selection && args.sources.is_empty() && !command.defaults_to_all());
     let wants_all = args.all
         || (!explicit_selection && (command.defaults_to_all() || !args.sources.is_empty()));
+    let agents: BTreeSet<Agent> = args.agent.iter().copied().map(Agent::from).collect();
     let current = wants_current
-        .then(|| CurrentEnvironment::from_process().detect(&BTreeSet::new()))
+        .then(|| CurrentEnvironment::from_process().detect(&agents))
         .transpose()
         .map_err(|error| Failure::selection(&error))?;
     let scope = args.scope.map_or_else(
@@ -1036,18 +1143,29 @@ fn execute(command: &Command, color: bool, stats: &mut Stats) -> Result<String, 
         },
         Scope::from,
     );
-    let query = SelectionQuery {
+    let mut query = SelectionQuery {
         current,
         sessions: args.sessions.clone(),
         all: wants_all,
         scope: Some(scope),
-        ..SelectionQuery::default()
+        agents,
     };
-    let selection_name = selection_name(&query);
     let corpus = Corpus::discover(args, &query, stats)?;
+    if query.current.as_ref().is_some_and(|current| current.agent == Agent::Cursor)
+        && !corpus.has_cursor_sessions()
+    {
+        query.current = None;
+        if wants_current && query.sessions.is_empty() && !wants_all {
+            return Err(Failure::selection(&SelectionError::CurrentNotDetected));
+        }
+    }
+    let selection_name = selection_name(&query);
     let started = Instant::now();
     let selected = corpus.index.select(&query).map_err(|error| Failure::selection(&error))?;
-    let all = query.all && query.current.is_none() && query.sessions.is_empty();
+    let all = query.all
+        && query.current.is_none()
+        && query.sessions.is_empty()
+        && query.agents.is_empty();
     let sources = corpus.sources();
     let metadata = QueryMetadata::new(command.name(), selection_name, scope, &timezone);
 
@@ -1240,8 +1358,8 @@ mod tests {
         Agent, AgentStats, Cli, ColorContext, ColorEnvironment, ColorWhen, Command, Exit,
         ExplicitDialect, Failure, MAX_JOBS, OutputFormat, ReportArgs, ScopeArg, Stats,
         TerminalContext, classify_explicit_source, classify_records, codex_thread_from_locator,
-        decoding_workers, derive_agent_thread_id, execute, ingest_capacity, narrow_discoveries,
-        run, run_with_context, stats_requested,
+        cursor_composer_ids, decoding_workers, derive_agent_thread_id, execute, ingest_capacity,
+        narrow_discoveries, run, run_with_context, stats_requested,
     };
     use clap::Parser;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
@@ -1283,7 +1401,7 @@ mod tests {
     ) -> Outcome {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let exit = run_with_context(args, &mut stdout, &mut stderr, terminals, environment);
+        let exit = run_with_context(args, &mut stdout, &mut stderr, terminals, environment, None);
         Outcome {
             exit,
             stdout: String::from_utf8(stdout).expect("stdout is UTF-8"),
@@ -1301,6 +1419,308 @@ mod tests {
             .chain(["--no-default-sources"].into_iter().map(OsString::from))
             .chain(extra.iter().copied().map(OsString::from))
             .collect()
+    }
+
+    #[test]
+    fn mixed_claude_codex_and_cursor_sources_split_agent_and_provider() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let mut args = vec![OsString::from("urollup"), OsString::from("report")];
+        for source in [
+            fixtures.join("claude-project/nested-null-tool-input"),
+            fixtures.join("codex-rollout/info-null"),
+            fixtures.join("cursor-state/basic"),
+        ] {
+            args.push(OsString::from("--source"));
+            args.push(source.into_os_string());
+        }
+        args.extend(
+            [
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--group-by",
+                "agent,provider",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let outcome = invoke_with_context(
+            args.clone(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(outcome.exit, Exit::Success, "{}", outcome.stderr);
+        let document: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("json report");
+        let agents: Vec<_> = document["breakdowns"]["agent"]
+            .as_array()
+            .expect("agent")
+            .iter()
+            .map(|row| row["value"].as_str().expect("agent value"))
+            .collect();
+        let providers: Vec<_> = document["breakdowns"]["provider"]
+            .as_array()
+            .expect("provider")
+            .iter()
+            .map(|row| row["value"].as_str().expect("provider value"))
+            .collect();
+        assert_eq!(agents, ["claude", "codex", "cursor"]);
+        assert_eq!(providers, ["anthropic", "cursor", "openai"]);
+        assert_eq!(document["totals"]["requests"]["owned"], 5);
+        assert_eq!(document["diagnostics"][0]["code"], "cursor-estimate-cost");
+
+        args.extend(["--agent", "cursor"].into_iter().map(OsString::from));
+        let cursor_only =
+            invoke_with_context(args, TerminalContext::default(), ColorEnvironment::default());
+        assert_eq!(cursor_only.exit, Exit::Success, "{}", cursor_only.stderr);
+        let cursor_document: serde_json::Value =
+            serde_json::from_str(&cursor_only.stdout).expect("json report");
+        assert_eq!(cursor_document["totals"]["requests"]["owned"], 2);
+        let cursor_agents: Vec<_> = cursor_document["breakdowns"]["agent"]
+            .as_array()
+            .expect("agent")
+            .iter()
+            .map(|row| row["value"].as_str().expect("agent value"))
+            .collect();
+        assert_eq!(cursor_agents, ["cursor"]);
+
+        let claude_on_cursor = invoke_with_context(
+            {
+                let cursor = fixtures.join("cursor-state/basic");
+                [
+                    "urollup",
+                    "report",
+                    "--source",
+                    cursor.to_str().expect("utf-8 fixture path"),
+                    "--no-default-sources",
+                    "--format",
+                    "json",
+                    "--timezone",
+                    "UTC",
+                    "--agent",
+                    "claude",
+                ]
+                .into_iter()
+                .map(OsString::from)
+                .collect()
+            },
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(claude_on_cursor.exit, Exit::Success, "{}", claude_on_cursor.stderr);
+        let empty: serde_json::Value =
+            serde_json::from_str(&claude_on_cursor.stdout).expect("json report");
+        assert_eq!(empty["totals"]["requests"]["owned"], 0);
+        assert!(empty["breakdowns"]["agent"].as_array().is_none_or(Vec::is_empty));
+
+        let cursor = fixtures.join("cursor-state/basic");
+        let cursor_source = cursor.to_str().expect("utf-8 fixture path");
+        let daily_cursor = invoke_with_context(
+            [
+                "urollup",
+                "daily",
+                "--source",
+                cursor_source,
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--agent",
+                "cursor",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(daily_cursor.exit, Exit::Success, "{}", daily_cursor.stderr);
+        let daily_document: serde_json::Value =
+            serde_json::from_str(&daily_cursor.stdout).expect("json daily");
+        let daily_owned: u64 = daily_document["rows"]
+            .as_array()
+            .expect("daily rows")
+            .iter()
+            .map(|row| row["requests"]["owned"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(daily_owned, 2);
+
+        let daily_claude = invoke_with_context(
+            [
+                "urollup",
+                "daily",
+                "--source",
+                cursor_source,
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--agent",
+                "claude",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(daily_claude.exit, Exit::Success, "{}", daily_claude.stderr);
+        let daily_empty: serde_json::Value =
+            serde_json::from_str(&daily_claude.stdout).expect("json daily");
+        assert!(daily_empty["rows"].as_array().is_none_or(Vec::is_empty));
+
+        let sessions_cursor = invoke_with_context(
+            [
+                "urollup",
+                "sessions",
+                "--source",
+                cursor_source,
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--agent",
+                "cursor",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(sessions_cursor.exit, Exit::Success, "{}", sessions_cursor.stderr);
+        let sessions_document: serde_json::Value =
+            serde_json::from_str(&sessions_cursor.stdout).expect("json sessions");
+        let session_rows = sessions_document["rows"].as_array().expect("session rows");
+        assert_eq!(session_rows.len(), 3);
+        assert!(session_rows.iter().all(|row| row["agent"] == "cursor"));
+
+        let sessions_claude = invoke_with_context(
+            [
+                "urollup",
+                "sessions",
+                "--source",
+                cursor_source,
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--agent",
+                "claude",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(sessions_claude.exit, Exit::Success, "{}", sessions_claude.stderr);
+        let sessions_empty: serde_json::Value =
+            serde_json::from_str(&sessions_claude.stdout).expect("json sessions");
+        assert!(sessions_empty["rows"].as_array().is_none_or(Vec::is_empty));
+
+        let exact = invoke_with_context(
+            [
+                "urollup",
+                "report",
+                "--source",
+                cursor_source,
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--session",
+                "11111111-1111-4111-8111-111111111111",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(exact.exit, Exit::Success, "{}", exact.stderr);
+        let exact_document: serde_json::Value =
+            serde_json::from_str(&exact.stdout).expect("json report");
+        assert_eq!(exact_document["query"]["selection"], "session");
+        assert_eq!(exact_document["totals"]["requests"]["owned"], 1);
+        assert_eq!(
+            exact_document["breakdowns"]["model"][0]["value"],
+            "claude-4.5-opus-high-thinking"
+        );
+
+        let subagents = fixtures.join("cursor-state/subagents");
+        let parent = "99999999-9999-4999-8999-999999999999";
+        let descendants = invoke_with_context(
+            [
+                "urollup",
+                "report",
+                "--source",
+                subagents.to_str().expect("utf-8 fixture path"),
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--session",
+                parent,
+                "--group-by",
+                "provider,model",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(descendants.exit, Exit::Success, "{}", descendants.stderr);
+        let family: serde_json::Value =
+            serde_json::from_str(&descendants.stdout).expect("json report");
+        assert_eq!(family["query"]["scope"], "descendants");
+        assert_eq!(family["totals"]["requests"]["owned"], 3);
+        let providers: Vec<_> = family["breakdowns"]["provider"]
+            .as_array()
+            .expect("provider")
+            .iter()
+            .map(|row| row["value"].as_str().expect("provider value"))
+            .collect();
+        assert_eq!(providers, ["anthropic", "cursor", "google"]);
+
+        let self_only = invoke_with_context(
+            [
+                "urollup",
+                "report",
+                "--source",
+                subagents.to_str().expect("utf-8 fixture path"),
+                "--no-default-sources",
+                "--format",
+                "json",
+                "--timezone",
+                "UTC",
+                "--session",
+                parent,
+                "--scope",
+                "self",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(self_only.exit, Exit::Success, "{}", self_only.stderr);
+        let parent_only: serde_json::Value =
+            serde_json::from_str(&self_only.stdout).expect("json report");
+        assert_eq!(parent_only["query"]["scope"], "self");
+        assert_eq!(parent_only["totals"]["requests"]["owned"], 1);
+        assert_eq!(parent_only["breakdowns"]["model"][0]["value"], "cursor-grok-4.6-xhigh-fast");
     }
 
     /// A writer whose every write fails with one error kind.
@@ -1548,6 +1968,7 @@ mod tests {
                 "--no-default-sources",
                 "--format",
                 "--timezone",
+                "--agent",
                 "--color",
                 "--no-progress",
             ] {
@@ -1614,6 +2035,61 @@ mod tests {
     }
 
     #[test]
+    fn cursor_jsonl_is_recognized_and_rejected_as_a_usage_source() {
+        let root = tempfile::tempdir().unwrap();
+        let transcript = root.path().join("agent-transcript.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                r#"{"role":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+                "\n",
+                r#"{"type":"turn_ended","status":"success","error":null}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(classify_file(&transcript, 1024), Some(Agent::Cursor));
+        let error = classify_explicit_source(&transcript).unwrap_err();
+        assert_eq!(error.exit, Exit::Runtime);
+        assert!(error.message.contains("not a usage owner"), "{}", error.message);
+
+        let claude_shaped = root.path().join("claude.jsonl");
+        fs::write(&claude_shaped, "{\"type\":\"assistant\",\"sessionId\":\"cccc\"}\n").unwrap();
+        assert_eq!(classify_file(&claude_shaped, 1024), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn cursor_snapshot_plus_jsonl_source_is_rejected() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+        let snapshot = fixtures.join("cursor-state/basic/cursor-state.json");
+        let transcript = fixtures.join(
+            "cursor-state/basic/agent-transcripts/11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.jsonl",
+        );
+        let outcome = invoke_with_context(
+            [
+                "urollup",
+                "report",
+                "--source",
+                snapshot.to_str().expect("utf-8 snapshot"),
+                "--source",
+                transcript.to_str().expect("utf-8 transcript"),
+                "--no-default-sources",
+                "--all",
+                "--timezone",
+                "UTC",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            TerminalContext::default(),
+            ColorEnvironment::default(),
+        );
+        assert_eq!(outcome.exit, Exit::Runtime, "{}", outcome.stderr);
+        assert!(outcome.stderr.contains("not a usage owner"), "{}", outcome.stderr);
+    }
+
+    #[test]
     fn explicit_artifact_classification_bounds_plain_and_decoded_compressed_lines() {
         let root = tempfile::tempdir().unwrap();
         let line =
@@ -1658,6 +2134,41 @@ mod tests {
         );
         assert_eq!(classify_file(&project.join("aaaa.jsonl"), 1024), None);
         assert_eq!(classify_file(&project.join("bbbb.jsonl"), 1024), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn cursor_composer_ids_take_uuids_and_ignore_whole_store_reports() {
+        assert_eq!(
+            cursor_composer_ids(&SelectionQuery { all: true, ..SelectionQuery::default() }),
+            None
+        );
+        let current = CurrentSession {
+            agent: Agent::Cursor,
+            selector: OsString::from("11111111-1111-4111-8111-111111111111"),
+        };
+        assert_eq!(
+            cursor_composer_ids(&SelectionQuery {
+                current: Some(current),
+                ..SelectionQuery::default()
+            }),
+            Some(vec!["11111111-1111-4111-8111-111111111111".to_owned()])
+        );
+        assert_eq!(
+            cursor_composer_ids(&SelectionQuery {
+                sessions: vec!["not-a-composer".into()],
+                ..SelectionQuery::default()
+            }),
+            None
+        );
+        assert_eq!(
+            cursor_composer_ids(&SelectionQuery {
+                sessions: vec![OsString::from(
+                    "/tmp/agent-transcripts/11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.jsonl"
+                )],
+                ..SelectionQuery::default()
+            }),
+            Some(vec!["11111111-1111-4111-8111-111111111111".to_owned()])
+        );
     }
 
     #[test]
@@ -1997,16 +2508,25 @@ mod tests {
         let phases: Vec<_> = stats.phases.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             phases,
-            ["discovery", "codex_ingest", "claude_ingest", "session_index", "query_render"]
+            [
+                "discovery",
+                "codex_ingest",
+                "claude_ingest",
+                "cursor_ingest",
+                "session_index",
+                "query_render"
+            ]
         );
-        let [codex, claude] = stats.agents.as_slice() else {
+        let [codex, claude, cursor] = stats.agents.as_slice() else {
             panic!("expected one row per agent: {:?}", stats.agents);
         };
-        assert_eq!((claude.agent, codex.agent), ("claude", "codex"));
+        assert_eq!((claude.agent, codex.agent, cursor.agent), ("claude", "codex", "cursor"));
         assert!(claude.sources > 0 && claude.requests > 0, "{claude:?}");
         assert!(claude.observations >= u64::try_from(claude.requests).unwrap(), "{claude:?}");
         assert_eq!(codex.sources, 0);
         assert_eq!(codex.observations, 0);
+        assert_eq!(cursor.sources, 0);
+        assert_eq!(cursor.observations, 0);
     }
 
     #[test]
