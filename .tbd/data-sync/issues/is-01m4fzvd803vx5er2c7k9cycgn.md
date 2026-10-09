@@ -3,9 +3,9 @@ type: is
 id: is-01m4fzvd803vx5er2c7k9cycgn
 title: "Address PR #16 review C: follow-up on Codex fork boundary degrade"
 kind: task
-status: open
+status: closed
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels: []
 dependencies: []
@@ -15,6 +15,10 @@ child_order_hints:
   - is-01m4fzvfga7pp1t59nm22vzbkt
   - is-01m4fzvgjjwkrfjm4q50p0qy5b
 created_at: 2026-10-09T09:28:03.069Z
-updated_at: 2026-10-09T09:28:06.479Z
+updated_at: 2026-10-09T09:47:41.117Z
+closed_at: 2026-10-09T09:47:41.115Z
+close_reason: "Review C dispositions posted at https://github.com/jlevy/urollup/pull/16#issuecomment-6078490540: C1, C3, C5 fixed (f456852, 1bec262); C2 deferred to uro-omlf, C4 to uro-akgu, C6 to uro-x3sk. CI did not run at 1bec262 because #15 was rebased and #16 now conflicts; restack is with the coordinator."
+resolution: null
+duplicate_of: null
 ---
 Follow-up review C (https://github.com/jlevy/urollup/pull/16#pullrequestreview-5468251421, round 2, verdict approve, six Low findings) pinned at 5d8cdeb20984b6395e3e375b596d7eafc49b7eb9. Coordinator decisions: fix C1, C3, C5; defer C2 and C4 to new beads under uro-n8h5; defer C6 to uro-x3sk.
