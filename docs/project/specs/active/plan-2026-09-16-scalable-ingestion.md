@@ -347,8 +347,8 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 and 2 (budget source and ledger)
-implemented, with only the row ceiling wired into ingestion.
+**Status:** design accepted (2026-10-09); slices 1 and 2 (budget source and ledger) and
+the slice 3 cost model implemented, with only the row ceiling wired into ingestion.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -1067,6 +1067,39 @@ Choices made while implementing, where this design left room:
   signatures and the CLI are unchanged, and a row refusal still converts to
   `ReconcileError::CapacityExceeded`, so its message is the same, which a test pins.
   Memory refusals reach callers as the new `AdapterError::Capacity`.
+- **Cost model (slice 3).** `ledger::admission::model` implements the costing rule with
+  three refinements, each an upper bound the unit tests check.
+  The 3 × vector rule applies to at least the standard minimum capacity (eight one-byte
+  or four small elements) and adds both buffers’ allocation costs.
+  A hash table costs its hashbrown bucket count at 7/8 load plus the half-size table
+  live while it resizes; the per-entry 3.5 × (entry + 1) bounds it only with a per-map
+  base of 12 × (entry + 1) + 96 bytes, because small tables are less than 7/8 full.
+  A B-tree costs one node per five entries plus the root, since every non-root node of
+  the standard B-tree holds at least five; its per-entry charge is the larger of the
+  design’s 2.5 × entry and a fifth of a node, because 2.5 × alone undercounts entries
+  under about 110 bytes, such as an ID-to-ID map.
+  At current row sizes (224 B observation, 216 B request, 30 B key node and 16 B of
+  slots), κ is 672 bytes for Codex, where construction (3 × 224) dominates grouping
+  (654) and finalize (656), and 1,058 for Claude, construction plus 386 bytes of owner
+  and ambiguity state, with grouping at 980. The key bound is 1 for Codex, whose
+  observations carry one key and no invariant, and 3 for Claude, two keys plus a split
+  part’s artifact-local key; unit tests on each adapter’s observation builders assert
+  both. Grouping charges the request vector as presized, 33/32 of a request, and per
+  observation one evidence slot and one alias per key; parts that conflicting keys split
+  past the presized capacity are charged where they are pushed (`split_growth`), and a
+  group’s scratch by its size (`group_scratch`). Decoded records cost 3 × 176 bytes for
+  Claude and 3 × 80 for Codex, a limit row 320 bytes.
+  The query has a per-request part the reservation table omits: `selected_requests` and
+  `size_summary` each hold an 8-byte item per counted request, so the model charges 48
+  bytes per request beside 1 KiB per row, 64 KiB fixed and 3 × the rendered bytes.
+  `DeepSize` gives the retained heap of `Ingested`, `Ledger`, `SessionIndex`,
+  `Discovery`, `ReconcileInput` and their parts, counting exact capacities for vectors,
+  strings and boxes and the model’s bound for maps.
+  Interned names and overflow patterns are left out of deep size and counted by
+  `names::interned_bytes` and `tokens::overflow_interned_bytes`, the charge slice 5
+  makes at each new insert.
+  `construction_estimate` exists for slices 5 and 6 but is not yet verified, since
+  construction cannot be measured from outside the adapters.
 
 ### Parallelism and Determinism
 

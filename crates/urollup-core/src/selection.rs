@@ -106,6 +106,12 @@ pub struct SessionIndex {
     relationships: Vec<Relationship>,
 }
 
+impl crate::ledger::admission::deep_size::DeepSize for SessionIndex {
+    fn heap(&self) -> u64 {
+        self.sessions.heap().saturating_add(self.relationships.heap())
+    }
+}
+
 impl SessionIndex {
     /// Adds one adapter result to the index.
     pub fn add(&mut self, agent: Agent, ingested: &Ingested) -> Result<(), SelectionError> {

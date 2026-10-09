@@ -1005,6 +1005,10 @@ type LimitSortKey = (
     Name,
 );
 
+/// One entry of the cache `sort_by_cached_key` builds while limit observations are
+/// sorted, which admission charges per limit row.
+pub(crate) const LIMIT_SORT_CACHE_BYTES: u64 = std::mem::size_of::<(LimitSortKey, usize)>() as u64;
+
 fn limit_stream_key(observation: &ProviderLimitObservation) -> LimitStreamKey {
     (
         observation.evidence.source,

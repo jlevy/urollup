@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{self, AtomicU64};
 use std::sync::{Mutex, PoisonError};
 
 /// A model, effort or provider-limit string, interned so a row holds an 8-byte reference
@@ -21,6 +22,9 @@ const _: () = assert!(std::mem::size_of::<Option<Name>>() == 8);
 
 /// Every interned text.
 static TABLE: Mutex<BTreeMap<&'static str, Name>> = Mutex::new(BTreeMap::new());
+
+/// The admission model's charge for every distinct text interned so far.
+static INTERNED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Recently interned names per thread, so rows that repeat a name skip the shared lock.
 const RECENT_CAPACITY: usize = 8;
@@ -52,11 +56,21 @@ impl Name {
     }
 }
 
+/// The admission model's charge for every distinct name this process has interned:
+/// each text, its leaked reference and its table entry. Interned names live until exit.
+pub fn interned_bytes() -> u64 {
+    INTERNED_BYTES.load(atomic::Ordering::Relaxed)
+}
+
 fn intern(text: &str) -> Name {
     let mut table = TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(name) = table.get(text) {
         return *name;
     }
+    INTERNED_BYTES.fetch_add(
+        crate::ledger::admission::model::name_intern(text.len() as u64),
+        atomic::Ordering::Relaxed,
+    );
     let text: &'static str = Box::leak(Box::<str>::from(text));
     let name = Name(Box::leak(Box::new(text)));
     table.insert(text, name);

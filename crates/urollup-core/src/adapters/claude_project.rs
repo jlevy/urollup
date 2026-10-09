@@ -118,6 +118,22 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 const _: () =
     assert!(size_of::<ParsedRecord>() <= 200, "a decoded Claude record outgrew its size budget");
 
+/// The bytes of one decoded record, which admission charges until its chunk is consumed by
+/// `reconcile_input` (`ledger::admission::model::decoded_record`).
+pub(crate) const DECODED_RECORD_BYTES: u64 = size_of::<ParsedRecord>() as u64;
+
+/// The owner and ambiguity state `reconcile_input` builds per decoded record, part of the
+/// Claude construction charge in κ: the message and uuid owner maps, the list of
+/// owner-eligible records (3 ×, as it grows), the per-message model map and the ambiguous
+/// set, each map entry at the hash-table rate.
+pub(crate) const OWNER_STATE_PER_RECORD: u64 = {
+    use crate::ledger::admission::model::hash_entry;
+    2 * hash_entry(size_of::<(Digest, NativeThread)>() as u64)
+        + 3 * size_of::<(&AnalyticalId, &ParsedRecord)>() as u64
+        + hash_entry(size_of::<(Digest, Option<Sym>)>() as u64)
+        + hash_entry(size_of::<Digest>() as u64)
+};
+
 /// A 128-bit SHA-256 digest of a native ID that only joins records, never appears in
 /// output, and so need not be kept as text.
 type Digest = [u8; 16];
@@ -1707,6 +1723,38 @@ mod tests {
         // Once any worker exhausts the budget, even content-only records cancel.
         let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
         assert_eq!(first.decode_with_admission(&skipped, Some(&budget)), RecordDisposition::Stop);
+    }
+
+    #[test]
+    fn observations_stay_within_the_admission_key_bound() {
+        use std::collections::{HashMap, HashSet};
+
+        use super::{Owners, observe};
+        use crate::ledger::admission::model::key_bound;
+        use crate::selection::Agent;
+
+        let bytes = br#"{"type":"assistant","sessionId":"s1","uuid":"u1","requestId":"req_1","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":3,"output_tokens":1}}}"#;
+        let evidence = source_evidence(0);
+        let mut decoder = SourceDecoder::new("project/s1.jsonl");
+        assert_eq!(
+            decoder.decode(&RawRecord { evidence: &evidence, bytes }),
+            RecordDisposition::Decoded
+        );
+        let owners = Owners { messages: HashMap::new(), uuids: HashMap::new() };
+        let observation = observe(
+            &decoder.records[0],
+            evidence,
+            &decoder.strings,
+            &owners,
+            &HashSet::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!((observation.keys.len(), observation.invariants.len()), (2, 1));
+        // Each key is a key-graph node; the model invariant can split the observation into
+        // an artifact-local part, one more node.
+        let nodes = observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty());
+        assert_eq!(u64::try_from(nodes).unwrap(), key_bound(Agent::Claude));
     }
 
     #[test]

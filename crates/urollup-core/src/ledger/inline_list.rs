@@ -1,5 +1,8 @@
 //! Short lists stored inline.
 
+use super::admission::deep_size::DeepSize;
+use super::admission::model::allocation;
+
 /// A list whose first `N` items are stored inline, spilling to the heap beyond them.
 ///
 /// Observations carry one or two keys and at most one invariant. A `Vec` allocates a
@@ -101,6 +104,15 @@ impl<T, const N: usize> FromIterator<T> for InlineList<T, N> {
 impl<T, const N: usize> From<Vec<T>> for InlineList<T, N> {
     fn from(items: Vec<T>) -> Self {
         items.into_iter().collect()
+    }
+}
+
+impl<T: DeepSize, const N: usize> DeepSize for InlineList<T, N> {
+    fn heap(&self) -> u64 {
+        let spilled = self.spilled.as_deref().map_or(0, |items| {
+            allocation(std::mem::size_of::<Vec<T>>() as u64).saturating_add(items.heap())
+        });
+        self.inline.iter().flatten().fold(spilled, |total, item| total.saturating_add(item.heap()))
     }
 }
 

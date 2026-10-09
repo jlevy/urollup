@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
+use std::sync::atomic::{self, AtomicU64};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Disjoint token categories. `None` means the source does not report the category.
@@ -112,6 +113,18 @@ struct OverflowRow {
 /// Distinct overflow patterns, interned for the process like [`super::names::Name`]s.
 static OVERFLOW: OnceLock<Mutex<HashMap<OverflowRow, u32>>> = OnceLock::new();
 static OVERFLOW_ROWS: Mutex<Vec<OverflowRow>> = Mutex::new(Vec::new());
+/// The admission model's charge for every overflow pattern interned so far.
+static OVERFLOW_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// The admission model's charge for every distinct overflow pattern this process has
+/// interned. Patterns live until exit.
+pub fn overflow_interned_bytes() -> u64 {
+    OVERFLOW_BYTES.load(atomic::Ordering::Relaxed)
+}
+
+// The admission model charges an overflow pattern as a 72-byte row and an 80-byte map entry.
+const _: () = assert!(std::mem::size_of::<OverflowRow>() == 72);
+const _: () = assert!(std::mem::size_of::<(OverflowRow, u32)>() <= 80);
 
 impl Measures {
     fn fields(&self) -> [Option<u64>; 8] {
@@ -149,6 +162,8 @@ fn intern_overflow(row: OverflowRow) -> u32 {
     let id = u32::try_from(rows.len()).expect("fewer than 2^32 overflow measure patterns");
     rows.push(row);
     index.insert(row, id);
+    OVERFLOW_BYTES
+        .fetch_add(crate::ledger::admission::model::overflow_intern(), atomic::Ordering::Relaxed);
     id
 }
 

@@ -532,6 +532,12 @@ fn apply_permutation<T>(rows: &mut [T], order: &mut [usize]) {
     }
 }
 
+impl crate::ledger::admission::deep_size::DeepSize for Requests {
+    fn heap(&self) -> u64 {
+        crate::ledger::admission::deep_size::DeepSize::heap(&self.rows)
+    }
+}
+
 impl std::ops::Index<&AnalyticalId> for Requests {
     type Output = Request;
 

@@ -94,6 +94,10 @@ const COUNTER_KEY: KeySpec = KeySpec {
 const _: () =
     assert!(size_of::<ParsedRecord>() <= 80, "a decoded Codex record outgrew its size budget");
 
+/// The bytes of one decoded record, which admission charges while its rollout waits to be
+/// observed (`ledger::admission::model::decoded_record`).
+pub(crate) const DECODED_RECORD_BYTES: u64 = size_of::<ParsedRecord>() as u64;
+
 /// Everything one rollout contributes before normalization.
 struct ParsedSource {
     /// The source ID every record of the rollout shares; `None` only without records.
@@ -2613,6 +2617,66 @@ mod tests {
     fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
         let evidence = EvidenceRef::new(0, 0, u64::try_from(line.len()).unwrap());
         decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+    }
+
+    #[test]
+    fn observations_stay_within_the_admission_key_bound() {
+        use std::collections::{BTreeMap, HashMap};
+
+        use super::{
+            CounterObservation, RecordView, TurnContext, Turns, UsagePayload, counter_observation,
+            thread_identity, usage_observation,
+        };
+        use crate::ledger::admission::model::key_bound;
+        use crate::ledger::names::Name;
+        use crate::ledger::reconcile::ObservationRole;
+        use crate::selection::Agent;
+
+        let thread = "019f0000-0000-7000-8000-000000000001";
+        let thread_ids = BTreeMap::from([(thread.to_owned(), thread_identity(thread).unwrap().id)]);
+        let record = RecordView { evidence: EvidenceRef::new(0, 0, 1), timestamp: None };
+        let context =
+            TurnContext { model: Some(Name::new("gpt-test")), effort: Some(Name::new("high")) };
+        let usage =
+            CodexUsage { input: Some(3), output: Some(1), total: Some(4), ..CodexUsage::default() };
+        let mut interner = Interner::default();
+        let turn = interner.intern("turn");
+        let turns: Turns = HashMap::from([(turn, context)]);
+        let payload = UsagePayload {
+            thread_id: Some(thread),
+            response_id: Some("resp"),
+            usage: Some(usage),
+            turn: Some(turn),
+        };
+        let direct = usage_observation(
+            &record,
+            &payload,
+            ObservationRole::Original,
+            thread,
+            &thread_ids,
+            &turns,
+        )
+        .unwrap();
+        let counter = counter_observation(
+            &record,
+            &usage,
+            &usage,
+            CounterObservation {
+                role: ObservationRole::Original,
+                owner: Some(thread),
+                thread_ids: &thread_ids,
+                context: Some(&context),
+                delta: None,
+            },
+        )
+        .unwrap();
+        for observation in [direct, counter] {
+            // Each key is a key-graph node, as is the artifact-local key a keyless
+            // observation gets; a revision-invariant field could split it and add one more.
+            let nodes =
+                observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty());
+            assert_eq!(u64::try_from(nodes).unwrap(), key_bound(Agent::Codex), "{observation:?}");
+        }
     }
 
     #[test]
