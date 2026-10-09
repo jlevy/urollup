@@ -337,9 +337,9 @@ gives each dialect’s fields, counters and linkage.
 
 | Agent | Dialect | Definition | Default discovery |
 | --- | --- | --- | --- |
-| Claude Code | `claude-project` | Session and subagent transcripts under Claude Code’s config directory | Yes |
+| Claude Code | `claude-project` | Session and subagent transcripts under Claude Code’s config directory, plain, zstd- or gzip-compressed | Yes |
 | Claude Code | `claude-stream` | Saved `claude -p --output-format stream-json` output | No |
-| Codex | `codex-rollout` | Thread rollouts, plain or zstd-compressed, active or archived | Yes |
+| Codex | `codex-rollout` | Thread rollouts, plain, zstd- or gzip-compressed, active or archived | Yes |
 | Codex | `codex-exec` | Saved `codex exec --json` output | No |
 | Pi | `pi-session` | Tree-structured session files written by the `pi` coding agent | Yes, once validated |
 | Pi | `pi-events` | Saved `pi --mode json` output | No |
@@ -441,8 +441,32 @@ rather than silently skipping data.
 - An unfinished last line is recorded as pending, distinct from interior corruption.
 - Replacement, truncation or mutation during the scan is detected and reported,
   including a path that is briefly absent while another tool rewrites it.
-- A Codex `.jsonl` rollout and its `.jsonl.zst` twin with the same thread and rollout ID
-  are one logical source whose representation changed, not two sources.
+  A path removed after a complete scan, as when a compressor finishes, is recorded but
+  loses nothing: the open file supplied every record, and a change to it is still
+  detected.
+- A `.jsonl` file and its `.jsonl.zst` and `.jsonl.gz` twins are one logical source
+  whose representation changed, not two sources; for a Codex rollout they share a thread
+  and rollout ID. The plain file is read first, then zstd, then gzip.
+  Each other file whose first record differs is reported as a different, unread source,
+  and one whose first record cannot be read, because its data does not decode or it
+  holds only an oversized record, is reported as unreadable.
+  Only a file whose stream ends before its first record, as every prefix of a valid
+  stream and so a compressor’s unfinished output does, is neither a verified twin nor a
+  loss. When the file read has no complete record but another file of the source has one,
+  that file is read instead, and the file read keeps any failure other than an early
+  end. First records are found as the scan finds them, passing over blank and oversized
+  lines.
+- A file that disappears between discovery and reading, as when a compressor replaces it
+  or an agent expires an old transcript, is read from its newer representation when one
+  exists, and the manifest records which file was read instead; otherwise the source is
+  recorded as vanished.
+  A representation discovery did not see is read only when it is a regular file, so a
+  link or FIFO beside the source is never followed or opened.
+- Every source whose snapshot lost data, through damaged or truncated compressed data,
+  an oversized record, a read error, a mismatched or unreadable twin, a change that
+  affects the snapshot or a disappearance before it was read, makes coverage partial and
+  is counted once in its agent’s `source-incomplete` diagnostic, whose detail names each
+  kind of loss with the number of sources that had it.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a
@@ -835,12 +859,20 @@ set these source-specific rules:
   keyed by `response_id` and owned by its `thread_id`; responses without usage write
   none. A record whose `thread_id` differs from the file’s thread is a copy, and
   `compacted.latest_token_usage_record` is never an observation.
+- **Codex request context:** a usage record takes its model and effort from the
+  `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
+  `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
+  the root would attribute the parent’s model to the subagent.
 - **Codex counters:** older files use cumulative `token_count` events.
-  A `last_token_usage` counts only when the running total advances and it has nonzero
-  input or output. Identical consecutive totals add nothing, `info: null` is only a
-  provider limit observation, compaction estimates and context-window-full fills (zero
-  input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
-  in any cumulative component opens a new counter epoch with a diagnostic.
+  An update whose running total advances counts the advance as one request.
+  A decrease in any cumulative component opens a new counter epoch with a diagnostic,
+  and the decreasing record counts its own `last_token_usage`, not the new total: Codex
+  lowers its running total at compaction instead of restarting it from zero.
+  A decrease whose `last_token_usage` has zero input and output adds no request.
+  Identical consecutive totals add nothing, `info: null` is only a provider limit
+  observation, and compaction estimates and context-window-full fills (a
+  `last_token_usage` with zero input and output and nonzero `total_tokens`) are estimate
+  diagnostics, not requests.
 - **Codex decoding:** a line that contains none of the quoted relevant type tokens
   (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
   `thread_settings_applied`) is validated without building a document and counted as
@@ -1879,11 +1911,11 @@ Rules that keep detection exact:
 - **ID resolution:** IDs resolve by searching every root: Claude `<root>/*/<id>.jsonl`,
   preferring the project whose recorded `cwd` matches (two matches exit 2, none exits 1
   listing the roots); Codex `rollout-*-<thread-id>.jsonl`, with an optional
-  `_<rollout-id>` suffix and `.zst` extension, in `sessions/` and `archived_sessions/`,
-  where several files are one thread; Pi’s `PI_SESSION_FILE`; and Gemini CLI
-  `<root>/<project>/chats/session-*-<first 8 characters of the ID>.jsonl`, confirmed by
-  the file’s recorded `sessionId`, since the name keeps only a prefix, with subagents at
-  `chats/<session ID>/<agent ID>.jsonl`.
+  `_<rollout-id>` suffix and `.zst` or `.gz` extension, in `sessions/` and
+  `archived_sessions/`, where several files are one thread; Pi’s `PI_SESSION_FILE`; and
+  Gemini CLI `<root>/<project>/chats/session-*-<first 8 characters of the ID>.jsonl`,
+  confirmed by the file’s recorded `sessionId`, since the name keeps only a prefix, with
+  subagents at `chats/<session ID>/<agent ID>.jsonl`.
 - **Claude Code subagents:** inside a Claude Code subagent the variable names the
   parent, so only hook input or `--session` selects a subagent alone.
 - **In-flight requests:** Claude Code transcripts are flushed asynchronously, so a
@@ -2348,9 +2380,16 @@ records how the engine reached this shape, with dated whole-history measurements
 - **Discovery and selection:** discovery follows the skip rule in
   [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
   sources to the selected session families before any source is decoded.
+  A Codex family is read from each rollout’s first record, from any file of the source
+  under the reader’s rules.
+  A rollout none of whose files has a newline-terminated first line stays in every
+  narrowed selection, so ingest reads it or reports it as incomplete; a complete first
+  line that is not valid JSON or not a `session_meta` record links nothing, and its
+  rollout is narrowed by its own thread.
+  Identifying the dialect of a `--source` directory likewise skips files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
-  weighting zstd files by an assumed expansion.
+  weighting compressed files by an assumed expansion.
   The default is `min(available_parallelism, 8)` workers.
   `UROLLUP_JOBS` sets a count from 1 to 256; an empty value counts as unset, and any
   other value is a usage error.

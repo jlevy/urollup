@@ -549,3 +549,384 @@ fn claude_largest_u64_block_index_wins_equal_output_ties() {
     assert_eq!(usage.uncached_input, Some(100));
     assert_eq!(usage.output, Some(10));
 }
+
+/// A way to store a fixture's `.jsonl` files compressed.
+#[derive(Clone, Copy, Debug)]
+enum Compression {
+    Gzip,
+    Zstd,
+}
+
+impl Compression {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Gzip => ".gz",
+            Self::Zstd => ".zst",
+        }
+    }
+
+    fn encode(self, contents: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        match self {
+            Self::Gzip => {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(contents).expect("gzip encodes in memory");
+                encoder.finish().expect("gzip finishes in memory")
+            }
+            Self::Zstd => zstd::stream::encode_all(contents, 3).expect("zstd encodes in memory"),
+        }
+    }
+}
+
+/// Copies a fixture case, storing every `.jsonl` file that has no compressed twin as
+/// `.jsonl.gz` or `.jsonl.zst` and every other file unchanged. Returns how many files were
+/// compressed.
+fn copy_compressed(
+    case: &std::path::Path,
+    destination: &std::path::Path,
+    compression: Compression,
+) -> usize {
+    let mut compressed = 0;
+    let mut pending = vec![case.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("fixture directory is readable") {
+            let path = entry.expect("fixture entry").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let target = destination.join(path.strip_prefix(case).expect("file is under its case"));
+            std::fs::create_dir_all(target.parent().expect("target has a parent"))
+                .expect("target directory is writable");
+            let name = path.file_name().expect("fixture file has a name").to_string_lossy();
+            let has_twin = [".zst", ".gz"]
+                .iter()
+                .any(|suffix| path.with_file_name(format!("{name}{suffix}")).exists());
+            let contents = std::fs::read(&path).expect("fixture file is readable");
+            if name.ends_with(".jsonl") && !has_twin {
+                let target = target.with_file_name(format!("{name}{}", compression.suffix()));
+                std::fs::write(target, compression.encode(&contents)).expect("copy is writable");
+                compressed += 1;
+            } else {
+                std::fs::write(target, contents).expect("copy is writable");
+            }
+        }
+    }
+    compressed
+}
+
+#[test]
+fn every_fixture_ingests_identically_from_gzip_and_zstd_files() {
+    type Ingest =
+        fn(
+            &std::path::Path,
+        )
+            -> Result<urollup_core::adapters::Ingested, urollup_core::adapters::AdapterError>;
+    for (dialect, ingest) in
+        [("claude-project", ingest_root as Ingest), ("codex-rollout", ingest_codex as Ingest)]
+    {
+        let mut cases: Vec<_> = std::fs::read_dir(fixture("").join("..").join(dialect))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.join("expected.json").is_file())
+            .collect();
+        cases.sort();
+        assert!(!cases.is_empty(), "{dialect} has fixtures");
+        let mut compressed_files = 0;
+
+        for case in cases {
+            let name = case.file_name().unwrap().to_string_lossy().into_owned();
+            let original = ingest(&case).unwrap();
+            for compression in [Compression::Gzip, Compression::Zstd] {
+                let copy = tempfile::tempdir().unwrap();
+                // A case that already holds compressed twins, such as zst-twin, keeps them.
+                compressed_files += copy_compressed(&case, copy.path(), compression);
+
+                let decoded = ingest(copy.path()).unwrap();
+                let label = format!("{dialect}/{name} as {compression:?}");
+                assert_eq!(decoded.ledger, original.ledger, "{label}: ledger");
+                assert_eq!(decoded.threads, original.threads, "{label}: threads");
+                assert_eq!(decoded.relationships, original.relationships, "{label}: relationships");
+                assert_eq!(
+                    decoded.limit_observations, original.limit_observations,
+                    "{label}: limit observations"
+                );
+                assert_eq!(
+                    decoded.manifest.entries.len(),
+                    original.manifest.entries.len(),
+                    "{label}: one source per logical file"
+                );
+            }
+        }
+        assert!(compressed_files > 0, "{dialect}: sources were compressed");
+    }
+}
+
+#[test]
+fn a_source_deleted_after_discovery_leaves_partial_totals_with_a_diagnostic() {
+    use urollup_core::accounting::totals::{Completeness, PartialReason};
+    use urollup_core::adapters::claude_project::ingest_discovery;
+    use urollup_core::sources::roots::discover;
+
+    let root = tempfile::tempdir().unwrap();
+    copy_compressed(&fixture("brief-double-counting"), root.path(), Compression::Gzip);
+    let projects = root.path().join("projects");
+    let discovery = discover(std::slice::from_ref(&projects));
+    let complete = ingest_discovery(discovery.clone(), true).unwrap();
+    assert_eq!(ledger_totals(&complete.ledger).unwrap().completeness, Completeness::Complete);
+
+    // Claude Code expires old transcripts; one disappears between discovery and reading.
+    let (removed, _) = discovery.sources[0].files.primary().unwrap();
+    std::fs::remove_file(removed).unwrap();
+    let partial = ingest_discovery(discovery, true).expect("a vanished source is not fatal");
+
+    let totals = ledger_totals(&partial.ledger).unwrap();
+    assert!(
+        matches!(&totals.completeness, Completeness::Partial(reasons)
+            if reasons.contains(&PartialReason::UnobservedGap)),
+        "{:?}",
+        totals.completeness
+    );
+    assert!(totals.total.requests < ledger_totals(&complete.ledger).unwrap().total.requests);
+    let incomplete: Vec<_> = partial
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "source-incomplete")
+        .collect();
+    assert_eq!(incomplete.len(), 1, "{:?}", partial.ledger.diagnostics);
+    assert_eq!(
+        incomplete[0].detail,
+        "a Claude Code transcript could not be read completely: vanished"
+    );
+}
+
+/// The `source-incomplete` diagnostics of an ingest, as (occurrences, detail).
+fn incomplete_sources(ingested: &urollup_core::adapters::Ingested) -> Vec<(u64, String)> {
+    ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "source-incomplete")
+        .map(|diagnostic| (diagnostic.occurrences, diagnostic.detail.clone()))
+        .collect()
+}
+
+#[test]
+fn truncated_compressed_rollouts_are_reported_and_leave_readable_totals_unchanged() {
+    use urollup_core::accounting::totals::{Completeness, PartialReason};
+
+    let home = tempfile::tempdir().unwrap();
+    copy_compressed(&codex_fixture("token-usage-records"), home.path(), Compression::Zstd);
+    let readable = ledger_totals(&ingest_codex(home.path()).unwrap().ledger).unwrap();
+    assert_eq!(readable.completeness, Completeness::Complete);
+
+    // Two rollouts whose `.jsonl.zst` ends mid-frame, as an interrupted `zstd` leaves it.
+    // Neither decodes a record, so neither has a src- ID to tell its diagnostic apart.
+    let day = home.path().join("sessions/2026/09/05");
+    std::fs::create_dir_all(&day).unwrap();
+    for thread in ["019f0000-0000-7000-8000-00dd00000001", "019f0000-0000-7000-8000-00dd00000002"] {
+        let rollout = [
+            format!(
+                r#"{{"timestamp":"2026-09-05T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.160.0"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"2026-09-05T07:00:02.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-{thread}","usage":{{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}}}"#
+            ),
+        ]
+        .join("\n")
+            + "\n";
+        let compressed = Compression::Zstd.encode(rollout.as_bytes());
+        std::fs::write(
+            day.join(format!("rollout-2026-09-05T07-00-00-{thread}.jsonl.zst")),
+            &compressed[..compressed.len() / 2],
+        )
+        .unwrap();
+    }
+
+    let damaged = ingest_codex(home.path()).expect("an unreadable rollout is not fatal");
+    let totals = ledger_totals(&damaged.ledger).unwrap();
+    assert_eq!(totals.total, readable.total, "the readable rollouts' totals are unchanged");
+    assert!(
+        matches!(&totals.completeness, Completeness::Partial(reasons)
+            if reasons.contains(&PartialReason::UnobservedGap)),
+        "{:?}",
+        totals.completeness
+    );
+    assert_eq!(
+        incomplete_sources(&damaged),
+        vec![(
+            2,
+            "2 Codex rollouts could not be read completely: incomplete-compressed-frame (2)"
+                .to_owned()
+        )],
+        "each unreadable rollout is counted once"
+    );
+}
+
+#[test]
+fn every_unreadable_transcript_is_counted_once_and_described() {
+    let root = tempfile::tempdir().unwrap();
+    copy_compressed(&fixture("brief-double-counting"), root.path(), Compression::Gzip);
+    let project = root.path().join("projects/-Users-example-project");
+    std::fs::write(project.join("bad-1.jsonl.gz"), b"not gzip at all\n").unwrap();
+    std::fs::write(project.join("bad-2.jsonl.gz"), b"not gzip either\n").unwrap();
+    std::fs::write(project.join("bad-3.jsonl.gz"), b"").unwrap();
+    std::fs::write(project.join("bad-4.jsonl.gz"), b"").unwrap();
+
+    let ingested = ingest_root(root.path()).unwrap();
+    // One row describes every source: compaction keeps only the first detail of a code, so
+    // a row per kind of loss would be reported as one kind.
+    assert_eq!(
+        incomplete_sources(&ingested),
+        vec![(
+            4,
+            "4 Claude Code transcripts could not be read completely: \
+             corrupt-compressed-data (2), incomplete-compressed-frame (2)"
+                .to_owned()
+        )]
+    );
+}
+
+#[test]
+fn codex_usage_takes_its_model_from_its_own_turn_not_the_root_turn() {
+    // A multi-agent subagent's records name the parent's turn as their root, so only
+    // `turn_id` matches the subagent's own `turn_context`.
+    let home = tempfile::tempdir().unwrap();
+    let thread = "019f0000-0000-7000-8000-00aa00000001";
+    let day = home.path().join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).unwrap();
+    let lines = [
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.160.0"}}}}"#
+        ),
+        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-own","root_turn_id":"turn-parent","model":"gpt-test","effort":"high"}}"#.to_owned(),
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:02.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-1","turn_id":"turn-own","root_turn_id":"turn-parent","usage":{{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}}}"#
+        ),
+        // A record without its own turn still falls back to the root turn.
+        r#"{"timestamp":"2026-10-01T07:00:03.000Z","type":"turn_context","payload":{"turn_id":"turn-legacy","model":"gpt-legacy","effort":"low"}}"#.to_owned(),
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:04.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-2","root_turn_id":"turn-legacy","usage":{{"input_tokens":50,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":55}}}}}}"#
+        ),
+    ];
+    std::fs::write(
+        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+
+    let ingested = ingest_codex(home.path()).unwrap();
+    let mut models: Vec<(String, String)> = ingested
+        .ledger
+        .requests
+        .values()
+        .map(|request| {
+            let name = |value: Option<&str>| value.unwrap_or("unknown").to_owned();
+            (
+                name(request.model.as_ref().map(|model| model.name.as_str())),
+                name(request.effort.as_ref().map(|effort| effort.as_str())),
+            )
+        })
+        .collect();
+    models.sort();
+    assert_eq!(
+        models,
+        vec![
+            ("gpt-legacy".to_owned(), "low".to_owned()),
+            ("gpt-test".to_owned(), "high".to_owned()),
+        ]
+    );
+}
+
+/// A legacy Codex `token_count` event, with usage as [input, cached, output, reasoning].
+fn token_count_line(second: u32, total: [u64; 4], last: [u64; 4]) -> String {
+    let usage = |[input, cached, output, reasoning]: [u64; 4]| {
+        format!(
+            r#"{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":{reasoning},"total_tokens":{}}}"#,
+            input + output
+        )
+    };
+    format!(
+        r#"{{"timestamp":"2026-10-01T07:00:{second:02}.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{},"last_token_usage":{},"model_context_window":272000}},"rate_limits":null}}}}"#,
+        usage(total),
+        usage(last)
+    )
+}
+
+/// Ingests one legacy Codex rollout of `thread` holding `counts` after its header.
+fn ingest_counter_rollout(thread: &str, counts: &[String]) -> urollup_core::adapters::Ingested {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    let day = home.path().join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).expect("rollout directory is writable");
+    let mut lines = vec![
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.150.0"}}}}"#
+        ),
+        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-test","effort":"medium"}}"#.to_owned(),
+    ];
+    lines.extend_from_slice(counts);
+    std::fs::write(
+        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .expect("rollout is writable");
+    ingest_codex(home.path()).expect("the rollout ingests")
+}
+
+fn epoch_resets(ingested: &urollup_core::adapters::Ingested) -> usize {
+    ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "codex-counter-epoch-reset")
+        .count()
+}
+
+#[test]
+fn a_codex_total_lowered_at_compaction_counts_only_its_own_request() {
+    // Codex lowers its running total at compaction instead of restarting it. The
+    // decreasing token_count's last_token_usage is that request's usage; its new total
+    // is the session so far.
+    let ingested = ingest_counter_rollout(
+        "019f0000-0000-7000-8000-00bb00000001",
+        &[
+            token_count_line(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
+            token_count_line(3, [7_000, 2_500, 800, 200], [4_000, 2_500, 500, 200]),
+            r#"{"timestamp":"2026-10-01T07:00:04.000Z","type":"compacted","payload":{"message":""}}"#.to_owned(),
+            token_count_line(5, [6_000, 2_000, 900, 200], [1_000, 500, 100, 0]),
+            token_count_line(6, [7_500, 3_000, 1_000, 200], [1_500, 1_000, 100, 0]),
+        ],
+    );
+    let totals = ledger_totals(&ingested.ledger).unwrap();
+    assert_eq!(totals.total.requests, 4);
+    let tokens = totals.total.tokens;
+    assert_eq!(tokens.uncached_input, Some(3_000 + 1_500 + 500 + 500));
+    assert_eq!(tokens.cache_read, Some(2_500 + 500 + 1_000));
+    assert_eq!(tokens.output, Some(300 + 500 + 100 + 100));
+    assert_eq!(
+        epoch_resets(&ingested),
+        1,
+        "the decrease still opens a new epoch with a diagnostic"
+    );
+}
+
+#[test]
+fn a_codex_total_lowered_without_new_usage_adds_no_request() {
+    // A decrease whose last_token_usage reports no input and no output carries no
+    // response of its own.
+    let ingested = ingest_counter_rollout(
+        "019f0000-0000-7000-8000-00cc00000001",
+        &[
+            token_count_line(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
+            token_count_line(3, [2_000, 0, 200, 0], [0, 0, 0, 0]),
+            token_count_line(4, [2_500, 0, 250, 0], [500, 0, 50, 0]),
+        ],
+    );
+    let totals = ledger_totals(&ingested.ledger).unwrap();
+    assert_eq!(totals.total.requests, 2);
+    assert_eq!(totals.total.tokens.uncached_input, Some(3_000 + 500));
+    assert_eq!(totals.total.tokens.output, Some(300 + 50));
+    assert_eq!(epoch_resets(&ingested), 1, "the decrease still opens a new epoch");
+}

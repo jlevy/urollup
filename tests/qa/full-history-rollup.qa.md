@@ -343,7 +343,8 @@ jq -sc '[.[] | select(.type == "event_msg" and .payload.type == "token_count" an
 
 - [ ] The token objects match exactly when urollup reports no
   `codex-counter-epoch-reset`, `codex-estimate-compaction`,
-  `codex-estimate-context-window-fill`, `malformed-line` or `pending-tail` diagnostic.
+  `codex-estimate-context-window-fill`, `malformed-line`, `pending-tail` or
+  `source-incomplete` diagnostic.
 - [ ] If one of those diagnostics appears, choose another rollout; those cases are
   covered by fixtures, where the last cumulative total intentionally differs.
 

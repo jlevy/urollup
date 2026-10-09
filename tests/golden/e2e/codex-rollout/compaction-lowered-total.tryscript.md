@@ -1,5 +1,5 @@
 ---
-sandbox: ../../../../crates/urollup-core/tests/fixtures/codex-rollout/auto-review-model
+sandbox: ../../../../crates/urollup-core/tests/fixtures/codex-rollout/compaction-lowered-total
 path:
   - $UROLLUP_BIN
 env:
@@ -7,10 +7,10 @@ env:
   CODEX_HOME: .
   PI_CODING_AGENT_SESSION_DIR: $GOLDEN_EMPTY_ROOT/sessions
 ---
-# E2E: codex-rollout/auto-review-model
+# E2E: codex-rollout/compaction-lowered-total
 
 The fixture case
-[`codex-rollout/auto-review-model`](../../../../crates/urollup-core/tests/fixtures/codex-rollout/auto-review-model/)
+[`codex-rollout/compaction-lowered-total`](../../../../crates/urollup-core/tests/fixtures/codex-rollout/compaction-lowered-total/)
 read through `CODEX_HOME` from a sandbox copy, with every other discovery root empty and
 HOME hermetic. `make e2e-results` checks its reconciled results against `expected.json`;
 this session records the complete output of each view for review.
@@ -23,41 +23,43 @@ urollup report
 Selection all  Scope self  Timezone UTC
 
 TOTALS
-Requests  2
-Owned     2
+Requests  5
+Owned     5
 Ambiguous 0
 Unknown   0
-Uncached input 4,200
-Cache read     6,000
+Uncached input 46,000
+Cache read     213,000
 Cache write    0
-Output         560
-Reasoning      220
-Total tokens   10,760
+Output         6,000
+Reasoning      2,300
+Total tokens   265,000
 
 COVERAGE
 Status complete  Copies excluded 0  Limit observations 0
 Unresolved 0  Possible 0  Requests without usage 0
 
 REQUEST SIZES (inclusive input tokens)
-Count 2  p50 2,200  p90 8,000  p99 8,000  max 8,000
+Count 5  p50 40,000  p90 120,000  p99 120,000  max 120,000
 
 ACCOUNT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-unknown | 2 | 10,200 | 560 | 10,760
+unknown | 5 | 259,000 | 6,000 | 265,000
 
 EFFORT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-high | 1 | 8,000 | 500 | 8,500
-low | 1 | 2,200 | 60 | 2,260
+high | 3 | 169,000 | 3,500 | 172,500
+medium | 2 | 90,000 | 2,500 | 92,500
 
 MODEL BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-codex-auto-review | 1 | 2,200 | 60 | 2,260
-gpt-5.2-codex | 1 | 8,000 | 500 | 8,500
+gpt-5.2-codex | 5 | 259,000 | 6,000 | 265,000
 
 PROJECT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-project | 2 | 10,200 | 560 | 10,760
+project | 5 | 259,000 | 6,000 | 265,000
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
 ? 0
 ```
 
@@ -79,21 +81,27 @@ $ urollup report --all --format json --timezone UTC
     "requests_without_usage": 0,
     "complete": true
   },
-  "diagnostics": [],
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    }
+  ],
   "totals": {
     "requests": {
-      "owned": 2,
+      "owned": 5,
       "ambiguous": 0,
       "unknown": 0
     },
     "tokens": {
-      "uncached_input": 4200,
-      "cache_read": 6000,
+      "uncached_input": 46000,
+      "cache_read": 213000,
       "cache_write": 0,
       "cache_write_unspecified": 0,
-      "output": 560,
-      "reasoning": 220,
-      "total": 10760
+      "output": 6000,
+      "reasoning": 2300,
+      "total": 265000
     },
     "unresolved": {
       "requests": 0,
@@ -110,18 +118,18 @@ $ urollup report --all --format json --timezone UTC
         "group": "account",
         "value": "unknown",
         "requests": {
-          "owned": 2,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 4200,
-          "cache_read": 6000,
+          "uncached_input": 46000,
+          "cache_read": 213000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 560,
-          "reasoning": 220,
-          "total": 10760
+          "output": 6000,
+          "reasoning": 2300,
+          "total": 265000
         }
       }
     ],
@@ -130,74 +138,56 @@ $ urollup report --all --format json --timezone UTC
         "group": "effort",
         "value": "high",
         "requests": {
-          "owned": 1,
+          "owned": 3,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 2000,
-          "cache_read": 6000,
+          "uncached_input": 31000,
+          "cache_read": 138000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 500,
-          "reasoning": 200,
-          "total": 8500
+          "output": 3500,
+          "reasoning": 1300,
+          "total": 172500
         }
       },
       {
         "group": "effort",
-        "value": "low",
+        "value": "medium",
         "requests": {
-          "owned": 1,
+          "owned": 2,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 2200,
-          "cache_read": 0,
+          "uncached_input": 15000,
+          "cache_read": 75000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 60,
-          "reasoning": 20,
-          "total": 2260
+          "output": 2500,
+          "reasoning": 1000,
+          "total": 92500
         }
       }
     ],
     "model": [
       {
         "group": "model",
-        "value": "codex-auto-review",
-        "requests": {
-          "owned": 1,
-          "ambiguous": 0,
-          "unknown": 0
-        },
-        "tokens": {
-          "uncached_input": 2200,
-          "cache_read": 0,
-          "cache_write": 0,
-          "cache_write_unspecified": 0,
-          "output": 60,
-          "reasoning": 20,
-          "total": 2260
-        }
-      },
-      {
-        "group": "model",
         "value": "gpt-5.2-codex",
         "requests": {
-          "owned": 1,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 2000,
-          "cache_read": 6000,
+          "uncached_input": 46000,
+          "cache_read": 213000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 500,
-          "reasoning": 200,
-          "total": 8500
+          "output": 6000,
+          "reasoning": 2300,
+          "total": 265000
         }
       }
     ],
@@ -206,28 +196,28 @@ $ urollup report --all --format json --timezone UTC
         "group": "project",
         "value": "project",
         "requests": {
-          "owned": 2,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 4200,
-          "cache_read": 6000,
+          "uncached_input": 46000,
+          "cache_read": 213000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 560,
-          "reasoning": 220,
-          "total": 10760
+          "output": 6000,
+          "reasoning": 2300,
+          "total": 265000
         }
       }
     ]
   },
   "sizes": {
-    "count": 2,
-    "p50": 2200,
-    "p90": 8000,
-    "p99": 8000,
-    "max": 8000
+    "count": 5,
+    "p50": 40000,
+    "p90": 120000,
+    "p99": 120000,
+    "max": 120000
   }
 }
 ? 0
@@ -241,7 +231,10 @@ urollup daily
 Selection all  Scope self  Timezone UTC
 
 DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
-2026-09-11 | 2 | 4,200 | 6,000 | 0 | 560 | 10,760
+2026-09-13 | 5 | 46,000 | 213,000 | 0 | 6,000 | 265,000
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
 ? 0
 ```
 
@@ -259,24 +252,30 @@ $ urollup daily --all --format json --timezone UTC
   },
   "rows": [
     {
-      "date": "2026-09-11",
+      "date": "2026-09-13",
       "requests": {
-        "owned": 2,
+        "owned": 5,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 4200,
-        "cache_read": 6000,
+        "uncached_input": 46000,
+        "cache_read": 213000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 560,
-        "reasoning": 220,
-        "total": 10760
+        "output": 6000,
+        "reasoning": 2300,
+        "total": 265000
       }
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    }
+  ]
 }
 ? 0
 ```
@@ -289,8 +288,10 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-thr-v1-4rp0v4rxbna4q2qfkhe7yqxj8r | codex | project | 1 | 2,200 | 60 | 2,260
-thr-v1-7b011gqs6atykhhpg55am3tbrt | codex | project | 1 | 8,000 | 500 | 8,500
+thr-v1-1v07wwy6vy0e39tjw13hkhb8gc | codex | project | 5 | 259,000 | 6,000 | 265,000
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
 ? 0
 ```
 
@@ -308,47 +309,33 @@ $ urollup sessions --all --format json --timezone UTC
   },
   "rows": [
     {
-      "thread": "thr-v1-4rp0v4rxbna4q2qfkhe7yqxj8r",
-      "session": "019f0000-0000-7000-8000-001300000002",
+      "thread": "thr-v1-1v07wwy6vy0e39tjw13hkhb8gc",
+      "session": "019f0000-0000-7000-8000-001500000001",
       "agent": "codex",
       "project": "project",
       "requests": {
-        "owned": 1,
+        "owned": 5,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 2200,
-        "cache_read": 0,
+        "uncached_input": 46000,
+        "cache_read": 213000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 60,
-        "reasoning": 20,
-        "total": 2260
-      }
-    },
-    {
-      "thread": "thr-v1-7b011gqs6atykhhpg55am3tbrt",
-      "session": "019f0000-0000-7000-8000-001300000001",
-      "agent": "codex",
-      "project": "project",
-      "requests": {
-        "owned": 1,
-        "ambiguous": 0,
-        "unknown": 0
-      },
-      "tokens": {
-        "uncached_input": 2000,
-        "cache_read": 6000,
-        "cache_write": 0,
-        "cache_write_unspecified": 0,
-        "output": 500,
-        "reasoning": 200,
-        "total": 8500
+        "output": 6000,
+        "reasoning": 2300,
+        "total": 265000
       }
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    }
+  ]
 }
 ? 0
 ```
@@ -361,8 +348,10 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-thr-v1-4rp0v4rxbna4q2qfkhe7yqxj8r | codex | project | 1 | 2,200 | 60 | 2,260
-thr-v1-7b011gqs6atykhhpg55am3tbrt | codex | project | 1 | 8,000 | 500 | 8,500
+thr-v1-1v07wwy6vy0e39tjw13hkhb8gc | codex | project | 5 | 259,000 | 6,000 | 265,000
+
+DIAGNOSTICS
+codex-counter-epoch-reset x1: Codex cumulative usage decreased and opened a new counter epoch
 ? 0
 ```
 
@@ -380,47 +369,33 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
   },
   "rows": [
     {
-      "thread": "thr-v1-4rp0v4rxbna4q2qfkhe7yqxj8r",
-      "session": "019f0000-0000-7000-8000-001300000002",
+      "thread": "thr-v1-1v07wwy6vy0e39tjw13hkhb8gc",
+      "session": "019f0000-0000-7000-8000-001500000001",
       "agent": "codex",
       "project": "project",
       "requests": {
-        "owned": 1,
+        "owned": 5,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 2200,
-        "cache_read": 0,
+        "uncached_input": 46000,
+        "cache_read": 213000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 60,
-        "reasoning": 20,
-        "total": 2260
-      }
-    },
-    {
-      "thread": "thr-v1-7b011gqs6atykhhpg55am3tbrt",
-      "session": "019f0000-0000-7000-8000-001300000001",
-      "agent": "codex",
-      "project": "project",
-      "requests": {
-        "owned": 1,
-        "ambiguous": 0,
-        "unknown": 0
-      },
-      "tokens": {
-        "uncached_input": 2000,
-        "cache_read": 6000,
-        "cache_write": 0,
-        "cache_write_unspecified": 0,
-        "output": 500,
-        "reasoning": 200,
-        "total": 8500
+        "output": 6000,
+        "reasoning": 2300,
+        "total": 265000
       }
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-counter-epoch-reset",
+      "count": 1,
+      "detail": "Codex cumulative usage decreased and opened a new counter epoch"
+    }
+  ]
 }
 ? 0
 ```

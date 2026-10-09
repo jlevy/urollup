@@ -12,7 +12,7 @@
 
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::ledger::identity::{IdPrefix, StoredIdentity, crockford_base32_128, sha256_128};
@@ -38,7 +38,8 @@ pub const SOURCE_STABLE_LOCATOR: KeySpec = KeySpec {
 };
 
 /// The `src-` key kind for a root-relative locator, with `/` separators and any
-/// compression suffix removed, so a `.jsonl` file and its `.jsonl.zst` twin share it.
+/// compression suffix removed, so a `.jsonl` file and its `.jsonl.zst` or `.jsonl.gz`
+/// twins share it.
 pub const SOURCE_ROOT_RELATIVE: KeySpec = KeySpec {
     prefix: IdPrefix::Source,
     kind: "root-relative",
@@ -73,12 +74,47 @@ impl fmt::Display for Fingerprint {
 }
 
 /// How a source's bytes are stored.
+///
+/// The variants are in preference order: when one logical source has several files, the
+/// earliest representation is read and the others are verified twins.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Representation {
     /// Plain `.jsonl`.
     Plain,
     /// zstd-compressed `.jsonl.zst`, possibly in several frames.
     Zstd,
+    /// gzip-compressed `.jsonl.gz`, possibly in several members.
+    Gzip,
+}
+
+impl Representation {
+    /// Every representation, in preference order.
+    pub const ALL: [Self; 3] = [Self::Plain, Self::Zstd, Self::Gzip];
+
+    /// The file-name suffix that marks a source file in this representation.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Plain => ".jsonl",
+            Self::Zstd => ".jsonl.zst",
+            Self::Gzip => ".jsonl.gz",
+        }
+    }
+
+    /// The compression extension after `.jsonl`, which locators drop so that a source
+    /// keeps its ID when it is compressed; `None` for a plain file.
+    pub const fn compression_extension(self) -> Option<&'static str> {
+        match self {
+            Self::Plain => None,
+            Self::Zstd => Some(".zst"),
+            Self::Gzip => Some(".gz"),
+        }
+    }
+
+    /// The representation a file name marks, or `None` for a file that is not a source.
+    pub fn of_path(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy();
+        Self::ALL.into_iter().find(|representation| name.ends_with(representation.suffix()))
+    }
 }
 
 /// A file's identity when it was opened.
@@ -162,6 +198,16 @@ pub enum CoverageFailure {
         /// The locator both files claim.
         locator: String,
     },
+    /// A twin whose first record cannot be read, because the file cannot be opened, its
+    /// data does not decode, or no record fits the size bound, so nothing shows that it
+    /// holds no records the file read lacks. A twin whose stream only ends early, as a
+    /// compressor's unfinished output does, is not one.
+    UnreadableTwin {
+        /// The twin's path.
+        path: PathBuf,
+        /// The locator both files claim.
+        locator: String,
+    },
     /// An I/O error ended the scan early.
     ReadError {
         /// Decoded bytes read before the error.
@@ -179,8 +225,13 @@ pub enum SourceChange {
         /// Retries needed before the path reappeared.
         attempts: u32,
     },
-    /// The path was absent after the scan and did not reappear.
+    /// No file of the source existed when it was opened, after retries and after trying
+    /// every other representation, so the snapshot holds none of its records.
     Vanished,
+    /// The path was gone after a scan of the open file, as when a compressor finished or
+    /// an agent expired the file. The open file supplied every record of the snapshot, so
+    /// this alone loses nothing; a change to the open file is reported on its own.
+    RemovedAfterScan,
     /// The path names a different file after the scan.
     Replaced,
     /// The file became shorter than its snapshot length.
@@ -199,14 +250,55 @@ pub enum SourceChange {
         /// Length afterwards.
         observed_len: u64,
     },
+    /// The discovered primary was not read, because it was gone when opened or held no
+    /// complete record while another file of the source held one. [`ManifestEntry::file`]
+    /// names the file read instead.
+    ReadFromOtherRepresentation {
+        /// The discovered primary that was not read.
+        primary: PathBuf,
+        /// The representation read instead.
+        representation: Representation,
+    },
+}
+
+impl CoverageFailure {
+    /// The stable token for this kind of failure.
+    pub const fn token(&self) -> &'static str {
+        match self {
+            Self::Oversized { .. } => "oversized-record",
+            Self::CorruptCompressedData { .. } => "corrupt-compressed-data",
+            Self::IncompleteCompressedFrame { .. } => "incomplete-compressed-frame",
+            Self::TwinFingerprintMismatch { .. } => "twin-fingerprint-mismatch",
+            Self::UnreadableTwin { .. } => "unreadable-twin",
+            Self::ReadError { .. } => "read-error",
+        }
+    }
 }
 
 impl SourceChange {
+    /// The stable token for this kind of change.
+    pub const fn token(&self) -> &'static str {
+        match self {
+            Self::BrieflyAbsent { .. } => "briefly-absent",
+            Self::Vanished => "vanished",
+            Self::RemovedAfterScan => "removed-after-scan",
+            Self::Replaced => "replaced",
+            Self::Truncated { .. } => "truncated",
+            Self::ModifiedInPlace => "modified-in-place",
+            Self::FirstRecordChanged => "first-record-changed",
+            Self::GrewBeyondCutoff { .. } => "grew-beyond-cutoff",
+            Self::ReadFromOtherRepresentation { .. } => "read-from-other-representation",
+        }
+    }
+
     /// Whether the change can make the snapshot's records disagree with the file, as
     /// opposed to an append past the cutoff.
     pub const fn affects_snapshot(&self) -> bool {
         match self {
-            Self::GrewBeyondCutoff { .. } | Self::BrieflyAbsent { .. } => false,
+            Self::GrewBeyondCutoff { .. }
+            | Self::BrieflyAbsent { .. }
+            | Self::RemovedAfterScan
+            | Self::ReadFromOtherRepresentation { .. } => false,
             Self::Vanished
             | Self::Replaced
             | Self::Truncated { .. }
@@ -231,8 +323,10 @@ pub struct ManifestEntry {
     pub file: FileIdentity,
     /// How it is stored.
     pub representation: Representation,
-    /// The other representation of this logical source, when both exist.
-    pub twin: Option<FileIdentity>,
+    /// The other files of this logical source whose first record matches the file read,
+    /// in preference order. One whose first record differs or cannot be read is a coverage
+    /// failure instead, and one whose stream ends before its first record is neither.
+    pub twins: Vec<FileIdentity>,
     /// On-disk length when opened.
     pub file_len: u64,
     /// Modification time when opened.
@@ -252,6 +346,26 @@ pub struct ManifestEntry {
 }
 
 impl ManifestEntry {
+    /// What the snapshot lost, as sorted distinct tokens: coverage failures and changes
+    /// that affect the snapshot. Malformed lines and a pending tail are reported on their
+    /// own and are not losses here. Empty when nothing was lost.
+    pub fn losses(&self) -> Vec<&'static str> {
+        let mut losses: Vec<&'static str> = self
+            .failures
+            .iter()
+            .map(CoverageFailure::token)
+            .chain(
+                self.changes
+                    .iter()
+                    .filter(|change| change.affects_snapshot())
+                    .map(SourceChange::token),
+            )
+            .collect();
+        losses.sort_unstable();
+        losses.dedup();
+        losses
+    }
+
     /// Whether the snapshot read every byte of its extent as complete records, with no
     /// pending tail, corruption, failure or change that affects the snapshot.
     pub fn is_complete(&self) -> bool {
@@ -315,6 +429,44 @@ mod tests {
     }
 
     #[test]
+    fn losses_are_sorted_distinct_tokens_of_failures_and_snapshot_changes() {
+        use std::path::PathBuf;
+
+        use super::{CoverageFailure, Representation, SourceChange};
+
+        let mut entry = super::tests_support::entry();
+        assert!(entry.losses().is_empty());
+
+        // Changes that leave the snapshot's records intact are not losses.
+        entry.changes = vec![
+            SourceChange::GrewBeyondCutoff { observed_len: 40 },
+            SourceChange::BrieflyAbsent { attempts: 1 },
+            SourceChange::RemovedAfterScan,
+            SourceChange::ReadFromOtherRepresentation {
+                primary: PathBuf::from("a.jsonl"),
+                representation: Representation::Gzip,
+            },
+        ];
+        assert!(entry.losses().is_empty(), "{:?}", entry.losses());
+        assert!(entry.is_complete());
+
+        entry.failures = vec![
+            CoverageFailure::Oversized { offset: 8, length: 100 },
+            CoverageFailure::IncompleteCompressedFrame { decoded_offset: 120 },
+            CoverageFailure::Oversized { offset: 200, length: 100 },
+        ];
+        entry.changes.extend([
+            SourceChange::Truncated { snapshot_len: 300, observed_len: 10 },
+            SourceChange::Vanished,
+        ]);
+        assert_eq!(
+            entry.losses(),
+            ["incomplete-compressed-frame", "oversized-record", "truncated", "vanished"]
+        );
+        assert!(!entry.is_complete());
+    }
+
+    #[test]
     fn skew_is_the_spread_of_cutoffs() {
         let mut manifest = super::SnapshotManifest::default();
         assert_eq!(manifest.cutoff_skew(), None);
@@ -344,7 +496,7 @@ pub(crate) mod tests_support {
             locator: "a.jsonl".to_owned(),
             file: FileIdentity { path: PathBuf::from("a.jsonl"), device: None, inode: None },
             representation: Representation::Plain,
-            twin: None,
+            twins: Vec::new(),
             file_len: 0,
             modified: None,
             fingerprint: None,

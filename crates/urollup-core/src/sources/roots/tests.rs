@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use super::{Discovery, discover, locator_for};
+use crate::sources::manifest::Representation;
 #[cfg(unix)]
 use crate::sources::manifest::SkippedLinkReason;
 
@@ -48,10 +49,56 @@ fn a_plain_file_and_its_compressed_twin_share_one_locator() {
     assert_eq!(locators(&discovery), vec!["archived/old.jsonl", "s.jsonl"]);
     let twinned = &discovery.sources[1].files;
     assert_eq!(twinned.plain, Some(root.path().join("s.jsonl")));
-    assert_eq!(twinned.compressed, Some(root.path().join("s.jsonl.zst")));
+    assert_eq!(twinned.zstd, Some(root.path().join("s.jsonl.zst")));
     let compressed_only = &discovery.sources[0].files;
     assert_eq!(compressed_only.plain, None);
-    assert!(compressed_only.compressed.is_some());
+    assert!(compressed_only.zstd.is_some());
+}
+
+#[test]
+fn gzip_sources_are_found_and_share_a_locator_with_their_twins() {
+    let root = TempDir::new().unwrap();
+    for name in [
+        "a/only.jsonl.gz",
+        "b/all.jsonl",
+        "b/all.jsonl.zst",
+        "b/all.jsonl.gz",
+        "c/pair.jsonl.zst",
+        "c/pair.jsonl.gz",
+        "d/notes.gz",
+        "d/data.json.gz",
+    ] {
+        write(&root.path().join(name));
+    }
+
+    let discovery = discover(&[root.path().to_owned()]);
+    assert_eq!(locators(&discovery), vec!["a/only.jsonl", "b/all.jsonl", "c/pair.jsonl"]);
+    let only = &discovery.sources[0].files;
+    assert_eq!(
+        only.primary(),
+        Some((root.path().join("a/only.jsonl.gz").as_path(), Representation::Gzip))
+    );
+    assert_eq!(only.twins().count(), 0);
+
+    let all = &discovery.sources[1].files;
+    assert_eq!(
+        all.primary().map(|(_, representation)| representation),
+        Some(Representation::Plain)
+    );
+    assert_eq!(
+        all.twins().map(|(_, representation)| representation).collect::<Vec<_>>(),
+        vec![Representation::Zstd, Representation::Gzip]
+    );
+
+    let pair = &discovery.sources[2].files;
+    assert_eq!(
+        pair.primary().map(|(_, representation)| representation),
+        Some(Representation::Zstd)
+    );
+    assert_eq!(
+        pair.twins().map(|(path, _)| path.to_owned()).collect::<Vec<_>>(),
+        vec![root.path().join("c/pair.jsonl.gz")]
+    );
 }
 
 #[test]
@@ -164,6 +211,7 @@ mod links {
 fn locators_use_forward_slashes_and_escape_percent_signs() {
     assert_eq!(locator_for(Path::new("a/b/c.jsonl")), "a/b/c.jsonl");
     assert_eq!(locator_for(Path::new("a/c.jsonl.zst")), "a/c.jsonl");
+    assert_eq!(locator_for(Path::new("a/c.jsonl.gz")), "a/c.jsonl");
     assert_eq!(locator_for(Path::new("100%/c.jsonl")), "100%25/c.jsonl");
 }
 

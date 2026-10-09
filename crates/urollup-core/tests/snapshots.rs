@@ -115,6 +115,12 @@ fn coverage_failure(failure: &CoverageFailure) -> Value {
                 "locator": locator,
             },
         }),
+        CoverageFailure::UnreadableTwin { path, locator } => json!({
+            "unreadable_twin": {
+                "file": path.file_name().map(|name| name.to_string_lossy()),
+                "locator": locator,
+            },
+        }),
         CoverageFailure::ReadError { decoded_offset, kind } => json!({
             "read_error": { "decoded_offset": decoded_offset, "kind": format!("{kind:?}") },
         }),
@@ -127,6 +133,7 @@ fn source_change(change: &SourceChange) -> Value {
             json!({ "briefly_absent": { "attempts": attempts } })
         }
         SourceChange::Vanished => json!("vanished"),
+        SourceChange::RemovedAfterScan => json!("removed_after_scan"),
         SourceChange::Replaced => json!("replaced"),
         SourceChange::Truncated { snapshot_len, observed_len } => json!({
             "truncated": { "observed_len": observed_len, "snapshot_len": snapshot_len },
@@ -136,6 +143,12 @@ fn source_change(change: &SourceChange) -> Value {
         SourceChange::GrewBeyondCutoff { observed_len } => {
             json!({ "grew_beyond_cutoff": { "observed_len": observed_len } })
         }
+        SourceChange::ReadFromOtherRepresentation { primary, representation } => json!({
+            "read_from_other_representation": {
+                "primary": primary.file_name().map(|name| name.to_string_lossy()),
+                "representation": format!("{representation:?}"),
+            },
+        }),
     }
 }
 
@@ -168,7 +181,7 @@ fn manifest_entry(table: &SourceTable, entry: &ManifestEntry) -> Value {
         "locator": entry.locator,
         "representation": format!("{:?}", entry.representation),
         "source": entry.source.as_ref().map(|source| source.id.to_string()),
-        "twin": entry.twin.is_some(),
+        "twin": !entry.twins.is_empty(),
     })
 }
 

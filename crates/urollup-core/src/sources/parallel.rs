@@ -30,8 +30,9 @@ pub const MAX_DEFAULT_WORKERS: NonZeroUsize = match NonZeroUsize::new(8) {
     None => NonZeroUsize::MIN,
 };
 
-/// How many decoded bytes one compressed byte is assumed to expand to when ordering work.
-const ZSTD_WEIGHT_EXPANSION: u64 = 8;
+/// How many decoded bytes one compressed byte is assumed to expand to when ordering work;
+/// zstd and gzip both shrink agent JSONL by roughly this factor.
+const COMPRESSED_WEIGHT_EXPANSION: u64 = 8;
 
 /// A worker thread panicked, which no read should do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -54,7 +55,9 @@ pub fn source_weight(files: &LogicalSource) -> u64 {
     let length = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
     match representation {
         Representation::Plain => length,
-        Representation::Zstd => length.saturating_mul(ZSTD_WEIGHT_EXPANSION),
+        Representation::Zstd | Representation::Gzip => {
+            length.saturating_mul(COMPRESSED_WEIGHT_EXPANSION)
+        }
     }
 }
 
@@ -278,6 +281,7 @@ mod tests {
         MAX_DEFAULT_WORKERS, ParallelReadError, default_workers, heaviest_first, read_in_parallel,
         source_weight, try_read_in_parallel, try_read_in_parallel_for_each,
     };
+    use crate::sources::manifest::Representation;
     use crate::sources::reader::LogicalSource;
 
     fn workers(n: usize) -> NonZeroUsize {
@@ -441,19 +445,19 @@ mod tests {
     fn source_weights_scale_compressed_files_and_tolerate_missing_ones() {
         let root = tempfile::tempdir().unwrap();
         let plain = root.path().join("a.jsonl");
-        let compressed = root.path().join("b.jsonl.zst");
-        fs::write(&plain, [b'x'; 10]).unwrap();
-        fs::write(&compressed, [b'x'; 10]).unwrap();
+        let zstd = root.path().join("b.jsonl.zst");
+        let gzip = root.path().join("c.jsonl.gz");
+        for path in [&plain, &zstd, &gzip] {
+            fs::write(path, [b'x'; 10]).unwrap();
+        }
 
-        let weight = |plain: Option<&std::path::Path>, compressed: Option<&std::path::Path>| {
-            source_weight(&LogicalSource {
-                plain: plain.map(std::path::Path::to_owned),
-                compressed: compressed.map(std::path::Path::to_owned),
-            })
+        let weight = |path: &std::path::Path, representation: Representation| {
+            source_weight(&LogicalSource::single(path.to_owned(), representation))
         };
-        assert_eq!(weight(Some(&plain), None), 10);
-        assert_eq!(weight(None, Some(&compressed)), 80);
-        assert_eq!(weight(Some(&root.path().join("missing.jsonl")), None), 0);
-        assert_eq!(weight(None, None), 0);
+        assert_eq!(weight(&plain, Representation::Plain), 10);
+        assert_eq!(weight(&zstd, Representation::Zstd), 80);
+        assert_eq!(weight(&gzip, Representation::Gzip), 80);
+        assert_eq!(weight(&root.path().join("missing.jsonl"), Representation::Plain), 0);
+        assert_eq!(source_weight(&LogicalSource::default()), 0);
     }
 }

@@ -7,10 +7,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::ledger::coverage::{CoverageGap, UnobservedReason};
+use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{ProviderLimitObservation, Relationship, SourceArtifact, Thread};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::reconcile::{Ledger, ReconcileError};
-use crate::sources::manifest::SnapshotManifest;
+use crate::sources::evidence::EvidenceRef;
+use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::reader::SourceReadError;
 
 pub mod claude_project;
@@ -54,6 +57,64 @@ impl Ingested {
         self.relationships.clear();
         self.relationships.shrink_to_fit();
     }
+}
+
+/// A single `source-incomplete` diagnostic covering every snapshot that lost data, and an
+/// unreadable-source coverage gap for each, so a damaged, truncated, replaced or vanished
+/// source makes totals partial instead of silently smaller.
+///
+/// The diagnostic's occurrences count the losing sources, and its detail names each kind
+/// of loss with the number of sources that had it, such as "3 Codex rollouts could not be
+/// read completely: corrupt-compressed-data (2), incomplete-compressed-frame (1)". It is
+/// one diagnostic because [`crate::ledger::diagnostics::compact`] keeps a single detail
+/// per code, and sources without a `src-` ID cite nothing that tells their diagnostics
+/// apart. `evidence` cites a source by its `src-` ID; a source with no complete record has
+/// none. `kind` names the dialect's sources in the detail, which holds no path.
+pub(crate) fn snapshot_losses(
+    manifest: &SnapshotManifest,
+    kind: &str,
+    evidence: impl Fn(&ManifestEntry) -> Option<EvidenceRef>,
+) -> (Option<Diagnostic>, Vec<CoverageGap>) {
+    let mut sources: u64 = 0;
+    let mut by_loss: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut cited = Vec::new();
+    let mut gaps = Vec::new();
+    for entry in &manifest.entries {
+        let losses = entry.losses();
+        if losses.is_empty() {
+            continue;
+        }
+        sources = sources.saturating_add(1);
+        for loss in losses {
+            let count = by_loss.entry(loss).or_default();
+            *count = count.saturating_add(1);
+        }
+        let evidence: Vec<EvidenceRef> = evidence(entry).into_iter().collect();
+        cited.extend(evidence.iter().copied());
+        gaps.push(CoverageGap {
+            reason: UnobservedReason::UnreadableSource,
+            thread: None,
+            evidence,
+        });
+    }
+    let detail = match sources {
+        0 => return (None, gaps),
+        1 => format!(
+            "a {kind} could not be read completely: {}",
+            by_loss.into_keys().collect::<Vec<_>>().join(", ")
+        ),
+        _ => format!(
+            "{sources} {kind}s could not be read completely: {}",
+            by_loss
+                .iter()
+                .map(|(loss, count)| format!("{loss} ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let diagnostic = Diagnostic::new(DiagnosticCode::SourceIncomplete, None, cited, detail)
+        .with_occurrences(sources);
+    (Some(diagnostic), gaps)
 }
 
 /// A persistent-log adapter could not produce a normalized result.

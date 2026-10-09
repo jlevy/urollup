@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 use super::{
     LogicalSource, RawRecord, ReadOptions, RecordDisposition, ScanHooks, SourceReadError,
-    SourceSpec, read_source, read_source_with_hooks,
+    SourceSpec, peek, read_source, read_source_with_hooks,
 };
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{
@@ -37,12 +37,22 @@ fn compress(contents: &[u8]) -> Vec<u8> {
     zstd::stream::encode_all(contents, 3).unwrap()
 }
 
+fn gzip(contents: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(contents).unwrap();
+    encoder.finish().unwrap()
+}
+
 fn plain(path: &Path) -> LogicalSource {
-    LogicalSource { plain: Some(path.to_owned()), compressed: None }
+    LogicalSource::single(path.to_owned(), Representation::Plain)
 }
 
 fn compressed(path: &Path) -> LogicalSource {
-    LogicalSource { plain: None, compressed: Some(path.to_owned()) }
+    LogicalSource::single(path.to_owned(), Representation::Zstd)
+}
+
+fn gzipped(path: &Path) -> LogicalSource {
+    LogicalSource::single(path.to_owned(), Representation::Gzip)
 }
 
 /// Reads a source, collecting every record's evidence and bytes.
@@ -268,18 +278,19 @@ fn a_plain_file_and_its_compressed_twin_are_one_source() {
 
     let both = LogicalSource {
         plain: Some(plain_path.clone()),
-        compressed: Some(compressed_path.clone()),
+        zstd: Some(compressed_path.clone()),
+        gzip: None,
     };
     let (entry, records) = scan(&both);
     assert_eq!(entry.representation, Representation::Plain, "the plain file hides its twin");
-    assert_eq!(entry.twin.as_ref().map(|twin| twin.path.clone()), Some(compressed_path.clone()));
+    assert_eq!(twin_paths(&entry), vec![compressed_path.clone()]);
     assert_eq!(records.len(), 3);
     assert!(entry.failures.is_empty());
 
     // A ".zst" beside an unrelated file of the same name is not a twin.
     write(&compressed_path, &compress(b"{\"other\":true}\n"));
     let (mismatched, _) = scan(&both);
-    assert_eq!(mismatched.twin, None);
+    assert!(mismatched.twins.is_empty());
     assert_eq!(
         mismatched.failures,
         vec![CoverageFailure::TwinFingerprintMismatch {
@@ -287,6 +298,477 @@ fn a_plain_file_and_its_compressed_twin_are_one_source() {
             locator: SPEC.locator.to_owned(),
         }]
     );
+}
+
+fn twin_paths(entry: &ManifestEntry) -> Vec<PathBuf> {
+    entry.twins.iter().map(|twin| twin.path.clone()).collect()
+}
+
+#[test]
+fn a_gzip_source_reads_like_its_plain_twin_across_members() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&plain_path, THREE_RECORDS);
+    // Two members, as `cat a.gz b.gz` or an appending compressor writes.
+    let mut members = gzip(b"{\"i\":1}\n{\"i\":2}\n");
+    members.extend(gzip(b"{\"i\":3}\n"));
+    write(&gzip_path, &members);
+
+    let (from_plain, plain_records) = scan(&plain(&plain_path));
+    let (from_gzip, gzip_records) = scan(&gzipped(&gzip_path));
+    assert_eq!(from_gzip.representation, Representation::Gzip);
+    assert_eq!(from_gzip.source, from_plain.source, "one logical source, one src- ID");
+    assert_eq!(gzip_records, plain_records, "decoded offsets and bytes match");
+    assert_eq!(from_gzip.cutoff.complete_through, from_plain.cutoff.complete_through);
+    assert!(from_gzip.is_complete(), "{:?}", from_gzip.failures);
+}
+
+#[test]
+fn a_damaged_gzip_stream_is_reported_rather_than_read_as_complete() {
+    let root = TempDir::new().unwrap();
+    let full = gzip(THREE_RECORDS);
+
+    let cut = root.path().join("cut.jsonl.gz");
+    write(&cut, &full[..full.len() - 4]);
+    let (cut_entry, _) = scan(&gzipped(&cut));
+    assert!(
+        matches!(
+            cut_entry.failures.as_slice(),
+            [CoverageFailure::IncompleteCompressedFrame { .. }]
+        ),
+        "{:?}",
+        cut_entry.failures
+    );
+    assert!(!cut_entry.is_complete());
+
+    // The CRC-32 at the end of the member catches a flipped byte in the stored text.
+    let flipped = root.path().join("flipped.jsonl.gz");
+    let mut damaged = full.clone();
+    let checksum_offset = damaged.len() - 8;
+    damaged[checksum_offset] ^= 0xff;
+    write(&flipped, &damaged);
+    let (flipped_entry, _) = scan(&gzipped(&flipped));
+    assert!(
+        matches!(
+            flipped_entry.failures.as_slice(),
+            [CoverageFailure::CorruptCompressedData { .. }]
+        ),
+        "{:?}",
+        flipped_entry.failures
+    );
+
+    let garbage = root.path().join("garbage.jsonl.gz");
+    write(&garbage, b"not gzip at all\n");
+    let (garbage_entry, records) = scan(&gzipped(&garbage));
+    assert!(records.is_empty());
+    assert!(
+        matches!(
+            garbage_entry.failures.as_slice(),
+            [CoverageFailure::CorruptCompressedData { .. }]
+        ),
+        "{:?}",
+        garbage_entry.failures
+    );
+}
+
+#[test]
+fn compressed_empty_streams_are_empty_sources_but_zero_byte_files_are_incomplete() {
+    let root = TempDir::new().unwrap();
+    for (files, encoded) in [
+        (compressed(&root.path().join("empty.jsonl.zst")), compress(b"")),
+        (gzipped(&root.path().join("empty.jsonl.gz")), gzip(b"")),
+    ] {
+        let (path, _) = files.primary().unwrap();
+        write(path, &encoded);
+        let (entry, records) = scan(&files);
+        assert!(records.is_empty());
+        assert_eq!(entry.source, None);
+        assert!(entry.is_complete(), "{path:?}: {:?}", entry.failures);
+
+        // A compressor interrupted before its first byte leaves no valid stream.
+        write(path, b"");
+        let (interrupted, _) = scan(&files);
+        assert_eq!(
+            interrupted.failures,
+            vec![CoverageFailure::IncompleteCompressedFrame { decoded_offset: 0 }],
+            "{path:?}"
+        );
+    }
+}
+
+#[test]
+fn every_twin_of_a_source_is_verified_in_preference_order() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let zstd_path = root.path().join("session.jsonl.zst");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&plain_path, THREE_RECORDS);
+    write(&zstd_path, &compress(THREE_RECORDS));
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let all = LogicalSource {
+        plain: Some(plain_path.clone()),
+        zstd: Some(zstd_path.clone()),
+        gzip: Some(gzip_path.clone()),
+    };
+
+    let (entry, records) = scan(&all);
+    assert_eq!(records.len(), 3, "one representation is read, not three");
+    assert_eq!(entry.representation, Representation::Plain);
+    assert_eq!(twin_paths(&entry), vec![zstd_path.clone(), gzip_path.clone()]);
+    assert!(entry.is_complete());
+
+    // Without the plain file, zstd is read and gzip is its twin.
+    let compressed_pair = LogicalSource { plain: None, ..all.clone() };
+    write(&gzip_path, &gzip(b"{\"other\":true}\n"));
+    let (pair, _) = scan(&compressed_pair);
+    assert_eq!(pair.representation, Representation::Zstd);
+    assert!(pair.twins.is_empty());
+    assert_eq!(
+        pair.failures,
+        vec![CoverageFailure::TwinFingerprintMismatch {
+            path: gzip_path,
+            locator: SPEC.locator.to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn a_twin_whose_stream_ends_before_its_first_record_is_neither_verified_nor_a_loss() {
+    // gzip and zstd write their output under its final name and remove the input only when
+    // they finish, so a twin still being written sits beside the complete plain file. Every
+    // proper prefix of a valid stream ends early, as these do.
+    let gzipped = gzip(THREE_RECORDS);
+    let zstd = compress(THREE_RECORDS);
+    for (name, unfinished) in [
+        ("session.jsonl.zst", Vec::new()),
+        ("session.jsonl.zst", zstd[..6].to_vec()),
+        ("session.jsonl.gz", gzipped[..12].to_vec()),
+    ] {
+        let root = TempDir::new().unwrap();
+        let plain_path = root.path().join("session.jsonl");
+        let twin_path = root.path().join(name);
+        write(&plain_path, THREE_RECORDS);
+        write(&twin_path, &unfinished);
+        let mut files = plain(&plain_path);
+        files.insert(twin_path, Representation::of_path(Path::new(name)).unwrap());
+
+        let (entry, records) = scan(&files);
+        assert_eq!(records.len(), 3, "{name} {unfinished:?}");
+        assert!(entry.twins.is_empty(), "{name}: a twin with no first record is not verified");
+        assert!(
+            entry.failures.is_empty(),
+            "{name}: nor is it another source: {:?}",
+            entry.failures
+        );
+        assert!(entry.is_complete(), "{name}");
+    }
+}
+
+#[test]
+fn a_twin_whose_first_record_cannot_be_decoded_is_a_loss() {
+    // Bytes that are not a compressed stream are not a compressor's unfinished output: the
+    // twin may hold records the file read lacks, and nothing proves it does not.
+    for name in ["session.jsonl.gz", "session.jsonl.zst"] {
+        let root = TempDir::new().unwrap();
+        let plain_path = root.path().join("session.jsonl");
+        let twin_path = root.path().join(name);
+        write(&plain_path, THREE_RECORDS);
+        write(&twin_path, b"not a compressed stream at all\n");
+        let mut files = plain(&plain_path);
+        files.insert(twin_path.clone(), Representation::of_path(Path::new(name)).unwrap());
+
+        let (entry, records) = scan(&files);
+        assert_eq!(records.len(), 3, "{name}");
+        assert!(entry.twins.is_empty(), "{name}");
+        assert_eq!(
+            entry.failures,
+            vec![CoverageFailure::UnreadableTwin {
+                path: twin_path,
+                locator: SPEC.locator.to_owned(),
+            }],
+            "{name}"
+        );
+        assert_eq!(entry.losses(), ["unreadable-twin"], "{name}");
+    }
+
+    // With an empty primary, the damaged twin is the only file that might hold records.
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&plain_path, b"");
+    write(&gzip_path, b"not gzip at all\n");
+    let files =
+        LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(gzip_path.clone()) };
+    let (entry, records) = scan(&files);
+    assert!(records.is_empty());
+    assert_eq!(
+        entry.failures,
+        vec![CoverageFailure::UnreadableTwin { path: gzip_path, locator: SPEC.locator.to_owned() }]
+    );
+    assert!(!entry.is_complete());
+}
+
+/// A complete line longer than `limit`, then `rest`.
+fn oversized_then(limit: usize, rest: &[u8]) -> Vec<u8> {
+    let mut contents = Vec::from(b"{\"pad\":\"" as &[u8]);
+    contents.extend(std::iter::repeat_n(b'x', limit));
+    contents.extend(b"\"}\n");
+    contents.extend(rest);
+    contents
+}
+
+#[test]
+fn a_first_record_over_the_bound_is_skipped_by_twin_checks_as_by_the_scan() {
+    let small = ReadOptions { max_record_bytes: 1_024, ..options() };
+
+    // Read alone, the oversized line is a coverage failure and the next record fixes the
+    // source ID; re-reading the first record after the scan agrees.
+    let root = TempDir::new().unwrap();
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&gzip_path, &gzip(&oversized_then(1_024, THREE_RECORDS)));
+    let (alone, records) = scan_with(&gzipped(&gzip_path), &small, &mut super::NoHooks);
+    assert_eq!(records.len(), 3);
+    assert!(matches!(alone.failures.as_slice(), [CoverageFailure::Oversized { .. }]));
+    assert!(alone.changes.is_empty(), "the first record did not change: {:?}", alone.changes);
+
+    // An empty plain file gives way to that twin, whose records are read and whose
+    // oversized line is still a loss.
+    let plain_path = root.path().join("session.jsonl");
+    write(&plain_path, b"");
+    let files =
+        LogicalSource { plain: Some(plain_path.clone()), zstd: None, gzip: Some(gzip_path) };
+    let (entry, records) = scan_with(&files, &small, &mut super::NoHooks);
+    assert_eq!(records.len(), 3, "the twin's records are read");
+    assert_eq!(entry.representation, Representation::Gzip);
+    assert_eq!(entry.losses(), ["oversized-record"]);
+
+    // Beside a complete plain file, a twin of another source whose first line is
+    // oversized is still a different, unread source.
+    let other = root.path().join("other.jsonl.gz");
+    write(&other, &gzip(&oversized_then(1_024, b"{\"other\":1}\n")));
+    write(&plain_path, THREE_RECORDS);
+    let files = LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(other.clone()) };
+    let (entry, records) = scan_with(&files, &small, &mut super::NoHooks);
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        entry.failures,
+        vec![CoverageFailure::TwinFingerprintMismatch {
+            path: other,
+            locator: SPEC.locator.to_owned(),
+        }]
+    );
+
+    // A twin holding only an oversized record has no first record to compare.
+    let only = root.path().join("only.jsonl.gz");
+    write(&only, &gzip(&oversized_then(1_024, b"")));
+    let files = LogicalSource {
+        plain: Some(root.path().join("session.jsonl")),
+        zstd: None,
+        gzip: Some(only.clone()),
+    };
+    let (entry, _) = scan_with(&files, &small, &mut super::NoHooks);
+    assert_eq!(
+        entry.failures,
+        vec![CoverageFailure::UnreadableTwin { path: only, locator: SPEC.locator.to_owned() }]
+    );
+}
+
+#[test]
+fn a_damaged_primary_read_through_its_twin_keeps_its_own_loss() {
+    let root = TempDir::new().unwrap();
+    let zstd_path = root.path().join("session.jsonl.zst");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&zstd_path, b"not zstd at all\n");
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let files = LogicalSource { plain: None, zstd: Some(zstd_path.clone()), gzip: Some(gzip_path) };
+
+    let (entry, records) = scan(&files);
+    assert_eq!(records.len(), 3, "the twin's records are read");
+    assert_eq!(entry.representation, Representation::Gzip);
+    assert_eq!(
+        entry.changes,
+        vec![SourceChange::ReadFromOtherRepresentation {
+            primary: zstd_path.clone(),
+            representation: Representation::Gzip,
+        }]
+    );
+    assert_eq!(entry.losses(), ["corrupt-compressed-data"], "{:?}", entry.failures);
+
+    // A primary that only ends early, as while `zstd` converts the gzip file, lost nothing.
+    write(&zstd_path, &compress(THREE_RECORDS)[..6]);
+    let (entry, records) = scan(&files);
+    assert_eq!(records.len(), 3);
+    assert!(entry.losses().is_empty(), "{:?}", entry.failures);
+    assert!(entry.is_complete());
+}
+
+#[test]
+fn a_primary_that_reappears_empty_keeps_its_retry_record_when_a_twin_is_read() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let files = LogicalSource {
+        plain: Some(plain_path.clone()),
+        zstd: None,
+        gzip: Some(gzip_path.clone()),
+    };
+    // A decompressor creates the plain file while it is being retried.
+    let created = plain_path.clone();
+    let mut hooks = At::new(When::Retry, move |_| write(&created, b""));
+
+    let (entry, records) = scan_with(&files, &options(), &mut hooks);
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        entry.changes,
+        vec![
+            SourceChange::BrieflyAbsent { attempts: 1 },
+            SourceChange::ReadFromOtherRepresentation {
+                primary: plain_path,
+                representation: Representation::Gzip,
+            },
+        ]
+    );
+    assert!(entry.is_complete());
+}
+
+#[test]
+fn a_primary_without_a_complete_record_is_read_from_a_twin_that_has_one() {
+    // `gunzip -k`, `zstd -d` or a Codex resume creates the plain file before it writes the
+    // first line, so the plain file holds nothing its compressed twin lacks.
+    for unfinished in [&b""[..], b"{\"i\":1"] {
+        let root = TempDir::new().unwrap();
+        let plain_path = root.path().join("session.jsonl");
+        let gzip_path = root.path().join("session.jsonl.gz");
+        write(&plain_path, unfinished);
+        write(&gzip_path, &gzip(THREE_RECORDS));
+        let files = LogicalSource {
+            plain: Some(plain_path.clone()),
+            zstd: None,
+            gzip: Some(gzip_path.clone()),
+        };
+
+        let (entry, records) = scan(&files);
+        let label = String::from_utf8_lossy(unfinished);
+        assert_eq!(records.len(), 3, "{label}: the twin's records are read");
+        assert_eq!(entry.file.path, gzip_path, "{label}");
+        assert_eq!(entry.representation, Representation::Gzip, "{label}");
+        assert!(entry.twins.is_empty(), "{label}: the unread primary is not a verified twin");
+        assert_eq!(
+            entry.changes,
+            vec![SourceChange::ReadFromOtherRepresentation {
+                primary: plain_path,
+                representation: Representation::Gzip,
+            }],
+            "{label}"
+        );
+        assert!(entry.is_complete(), "{label}: {:?}", entry.failures);
+    }
+}
+
+#[test]
+fn a_source_compressed_after_discovery_is_read_from_its_new_file() {
+    for (suffix, encode) in [
+        (".jsonl.zst", compress as fn(&[u8]) -> Vec<u8>),
+        (".jsonl.gz", gzip as fn(&[u8]) -> Vec<u8>),
+    ] {
+        let root = TempDir::new().unwrap();
+        let discovered = root.path().join("session.jsonl");
+        let replacement = root.path().join(format!("session{suffix}"));
+        // `zstd --rm` or `gzip` replaces the file while the plain path is being retried.
+        let written = replacement.clone();
+        let mut hooks = At::new(When::Retry, move |_| write(&written, &encode(THREE_RECORDS)));
+
+        let (entry, records) = scan_with(&plain(&discovered), &options(), &mut hooks);
+        assert_eq!(records.len(), 3, "{suffix}");
+        assert_eq!(entry.file.path, replacement);
+        assert_eq!(
+            entry.changes,
+            vec![SourceChange::ReadFromOtherRepresentation {
+                primary: discovered,
+                representation: entry.representation,
+            }],
+            "{suffix}: the manifest says the discovered file was not read"
+        );
+        assert!(entry.is_complete(), "{suffix}: {:?} {:?}", entry.failures, entry.changes);
+    }
+}
+
+#[test]
+fn a_discovered_twin_is_read_when_the_primary_is_gone() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let files = LogicalSource {
+        plain: Some(plain_path.clone()),
+        zstd: None,
+        gzip: Some(gzip_path.clone()),
+    };
+
+    let (entry, records) = scan(&files);
+    assert_eq!(records.len(), 3);
+    assert_eq!(entry.representation, Representation::Gzip);
+    assert_eq!(entry.file.path, gzip_path);
+    assert!(entry.twins.is_empty());
+    assert_eq!(
+        entry.changes,
+        vec![SourceChange::ReadFromOtherRepresentation {
+            primary: plain_path,
+            representation: Representation::Gzip,
+        }]
+    );
+    assert!(entry.is_complete());
+}
+
+/// Discovery records only regular files and links that stay inside the declared roots, so
+/// a file it never saw is opened only when it is a regular file.
+#[cfg(unix)]
+#[test]
+fn an_undiscovered_file_that_is_not_a_regular_file_is_never_read() {
+    let outside = TempDir::new().unwrap();
+    let outside_source = outside.path().join("elsewhere.jsonl.gz");
+    write(&outside_source, &gzip(THREE_RECORDS));
+    let root = TempDir::new().unwrap();
+    let other_source = root.path().join("b/other.jsonl.gz");
+    write(&other_source, &gzip(THREE_RECORDS));
+
+    for (name, target) in [("outside", &outside_source), ("other-source", &other_source)] {
+        let discovered = root.path().join(format!("a/{name}.jsonl"));
+        fs::create_dir_all(discovered.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, root.path().join(format!("a/{name}.jsonl.gz"))).unwrap();
+        let (entry, records) = scan(&plain(&discovered));
+        assert!(records.is_empty(), "{name}: a link discovery did not follow is not read");
+        assert_eq!(entry.changes, vec![SourceChange::Vanished], "{name}");
+        assert!(!entry.is_complete(), "{name}");
+    }
+
+    // Opening a FIFO blocks until a writer appears, which would hang the worker.
+    let discovered = root.path().join("fifo.jsonl");
+    let fifo = root.path().join("fifo.jsonl.gz");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success(), "mkfifo creates the FIFO");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(scan(&plain(&discovered))).unwrap());
+    let (entry, records) = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a FIFO beside a vanished source does not block the read");
+    assert!(records.is_empty());
+    assert_eq!(entry.changes, vec![SourceChange::Vanished]);
+}
+
+#[test]
+fn a_source_deleted_after_discovery_is_an_empty_vanished_snapshot() {
+    let root = TempDir::new().unwrap();
+    let missing = root.path().join("expired.jsonl.zst");
+
+    let (entry, records) = scan(&compressed(&missing));
+    assert!(records.is_empty());
+    assert_eq!(entry.source, None);
+    assert_eq!(entry.file.path, missing);
+    assert_eq!(entry.changes, vec![SourceChange::Vanished]);
+    assert!(!entry.is_complete(), "lost records are never reported as complete");
 }
 
 #[test]
@@ -362,16 +844,52 @@ fn a_path_that_is_briefly_absent_is_retried_and_reported() {
 }
 
 #[test]
-fn a_source_that_vanishes_during_a_scan_is_reported() {
+fn a_source_removed_after_a_complete_scan_is_reported_but_not_a_loss() {
+    // The open file supplied every record of its extent, and it is unchanged, so a
+    // compressor finishing (`zstd --rm`, `gzip`) or an agent expiring the file after the
+    // scan loses nothing.
+    for compress_first in [false, true] {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("session.jsonl");
+        write(&path, THREE_RECORDS);
+        let removed = path.clone();
+        let mut hooks = At::new(When::AfterScan, move |_| {
+            if compress_first {
+                write(&removed.with_extension("jsonl.gz"), &gzip(THREE_RECORDS));
+            }
+            fs::remove_file(&removed).unwrap();
+        });
+
+        let (entry, records) = scan_with(&plain(&path), &options(), &mut hooks);
+        assert_eq!(records.len(), 3, "compressed first: {compress_first}");
+        assert_eq!(entry.file.path, path);
+        assert_eq!(entry.changes, vec![SourceChange::RemovedAfterScan], "{compress_first}");
+        assert!(entry.losses().is_empty(), "{compress_first}");
+        assert!(entry.is_complete(), "{compress_first}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_change_to_the_open_file_is_still_a_loss_when_its_path_is_gone() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("session.jsonl");
     write(&path, THREE_RECORDS);
-    let removed = path.clone();
-    let mut hooks = At::new(When::AfterScan, move |_| fs::remove_file(&removed).unwrap());
+    let changed = path.clone();
+    let mut hooks = At::new(When::AfterOpen, move |_| {
+        fs::OpenOptions::new().write(true).open(&changed).unwrap().set_len(8).unwrap();
+        fs::remove_file(&changed).unwrap();
+    });
 
     let (entry, records) = scan_with(&plain(&path), &options(), &mut hooks);
-    assert_eq!(records.len(), 3);
-    assert_eq!(entry.changes, vec![SourceChange::Vanished]);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        entry.changes,
+        vec![
+            SourceChange::Truncated { snapshot_len: 24, observed_len: 8 },
+            SourceChange::RemovedAfterScan,
+        ]
+    );
     assert!(!entry.is_complete());
 }
 
@@ -396,14 +914,28 @@ fn rewriting_the_first_record_changes_the_source_id_and_is_reported() {
 #[test]
 fn unreadable_and_unnamed_sources_are_errors() {
     let root = TempDir::new().unwrap();
-    let missing = root.path().join("gone.jsonl");
-    let no_retry = ReadOptions { absent_retries: 0, ..options() };
-    let error = read_source(&SPEC, &plain(&missing), &no_retry, |_| RecordDisposition::Skipped)
-        .unwrap_err();
-    assert!(matches!(error, SourceReadError::Open { .. }));
-    assert!(format!("{error}").contains("gone.jsonl"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let closed = root.path().join("closed.jsonl");
+        write(&closed, THREE_RECORDS);
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+        // A process that bypasses mode bits, such as root, opens the file anyway, so the
+        // error cannot occur there; decide that up front rather than from the result.
+        let bypasses_modes = fs::File::open(&closed).is_ok();
+        let result =
+            read_source(&SPEC, &plain(&closed), &options(), |_| RecordDisposition::Skipped);
+        fs::set_permissions(&closed, fs::Permissions::from_mode(0o644)).unwrap();
+        if bypasses_modes {
+            eprintln!("skipped the open error: this process can open a mode-000 file");
+        } else {
+            let error = result.expect_err("an unreadable file is an open error, not a snapshot");
+            assert!(matches!(error, SourceReadError::Open { .. }), "{error}");
+            assert!(format!("{error}").contains("closed.jsonl"));
+        }
+    }
 
-    let empty = LogicalSource { plain: None, compressed: None };
+    let empty = LogicalSource::default();
     assert!(matches!(
         read_source(&SPEC, &empty, &options(), |_| RecordDisposition::Skipped),
         Err(SourceReadError::NoFile)
@@ -535,4 +1067,24 @@ fn a_long_line_does_not_prevent_reading_the_next_record() {
     assert_eq!(records.len(), 2);
     assert_eq!(entry.counters.decoded, 2);
     assert_eq!(records[1].1, "{\"n\":2}");
+}
+
+#[test]
+fn a_peek_reads_the_first_file_of_the_source_that_the_look_accepts() {
+    let root = TempDir::new().unwrap();
+    let plain_path = root.path().join("session.jsonl");
+    let gzip_path = root.path().join("session.jsonl.gz");
+    // The plain file is still being written; its gzip twin is complete.
+    write(&plain_path, b"{\"i\":1");
+    write(&gzip_path, &gzip(THREE_RECORDS));
+    let files = LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(gzip_path) };
+    let first_line = |reader: &mut dyn std::io::BufRead| {
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).ok()?;
+        line.ends_with(b"\n").then_some(line)
+    };
+
+    assert_eq!(peek(&files, first_line), Some(b"{\"i\":1}\n".to_vec()));
+    assert_eq!(peek(&files, |_| None::<()>), None, "a look that accepts nothing finds nothing");
+    assert_eq!(peek(&LogicalSource::default(), first_line), None);
 }

@@ -53,6 +53,10 @@ pub enum DiagnosticCode {
     MalformedLine,
     /// A source ended with an incomplete pending line.
     PendingTail,
+    /// A source could not be read completely: damaged or truncated compressed data, an
+    /// oversized record, a read error, a mismatched twin, or a change or disappearance
+    /// during the scan.
+    SourceIncomplete,
     /// A thread names a parent whose rollout was not discovered.
     ThreadOrphan,
 }
@@ -85,6 +89,7 @@ impl DiagnosticCode {
             Self::CodexRolloutDuplicateLocation => "codex-rollout-duplicate-location",
             Self::MalformedLine => "malformed-line",
             Self::PendingTail => "pending-tail",
+            Self::SourceIncomplete => "source-incomplete",
             Self::ThreadOrphan => "thread-orphan",
         }
     }

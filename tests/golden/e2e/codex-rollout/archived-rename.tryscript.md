@@ -47,13 +47,11 @@ unknown | 5 | 18,000 | 870 | 18,870
 
 EFFORT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-medium | 4 | 15,500 | 730 | 16,230
-unknown | 1 | 2,500 | 140 | 2,640
+medium | 5 | 18,000 | 870 | 18,870
 
 MODEL BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-gpt-5.2-codex | 4 | 15,500 | 730 | 16,230
-unknown | 1 | 2,500 | 140 | 2,640
+gpt-5.2-codex | 5 | 18,000 | 870 | 18,870
 
 PROJECT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
@@ -139,36 +137,18 @@ $ urollup report --all --format json --timezone UTC
         "group": "effort",
         "value": "medium",
         "requests": {
-          "owned": 4,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 6700,
-          "cache_read": 8800,
+          "uncached_input": 8000,
+          "cache_read": 10000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 730,
-          "reasoning": 180,
-          "total": 16230
-        }
-      },
-      {
-        "group": "effort",
-        "value": "unknown",
-        "requests": {
-          "owned": 1,
-          "ambiguous": 0,
-          "unknown": 0
-        },
-        "tokens": {
-          "uncached_input": 1300,
-          "cache_read": 1200,
-          "cache_write": 0,
-          "cache_write_unspecified": 0,
-          "output": 140,
-          "reasoning": 60,
-          "total": 2640
+          "output": 870,
+          "reasoning": 240,
+          "total": 18870
         }
       }
     ],
@@ -177,36 +157,18 @@ $ urollup report --all --format json --timezone UTC
         "group": "model",
         "value": "gpt-5.2-codex",
         "requests": {
-          "owned": 4,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 6700,
-          "cache_read": 8800,
+          "uncached_input": 8000,
+          "cache_read": 10000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 730,
-          "reasoning": 180,
-          "total": 16230
-        }
-      },
-      {
-        "group": "model",
-        "value": "unknown",
-        "requests": {
-          "owned": 1,
-          "ambiguous": 0,
-          "unknown": 0
-        },
-        "tokens": {
-          "uncached_input": 1300,
-          "cache_read": 1200,
-          "cache_write": 0,
-          "cache_write_unspecified": 0,
-          "output": 140,
-          "reasoning": 60,
-          "total": 2640
+          "output": 870,
+          "reasoning": 240,
+          "total": 18870
         }
       }
     ],

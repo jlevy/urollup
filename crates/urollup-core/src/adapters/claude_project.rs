@@ -47,7 +47,9 @@ use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::admission::Admission;
 use crate::sources::decode::parse_timestamp;
 use crate::sources::evidence::{EvidenceRef, SourceTable};
-use crate::sources::manifest::{Fingerprint, ManifestEntry, SkippedLink, SnapshotManifest};
+use crate::sources::manifest::{
+    Fingerprint, ManifestEntry, Representation, SkippedLink, SnapshotManifest,
+};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
 use crate::sources::roots::{DiscoveredSource, Discovery, discover};
@@ -629,10 +631,11 @@ fn read_subagent_meta_with_limit(
     transcript: &Path,
     max_sidecar_bytes: u64,
 ) -> Result<Option<SubagentMetadata>, AdapterError> {
-    let transcript = if transcript.extension() == Some(std::ffi::OsStr::new("zst")) {
-        transcript.with_extension("")
-    } else {
-        transcript.to_owned()
+    // `agent-x.jsonl.zst` and `agent-x.jsonl.gz` share `agent-x.meta.json` with
+    // `agent-x.jsonl`; sidecars stay uncompressed.
+    let transcript = match Representation::of_path(transcript) {
+        Some(Representation::Zstd | Representation::Gzip) => transcript.with_extension(""),
+        Some(Representation::Plain) | None => transcript.to_owned(),
     };
     let path = transcript.with_extension("meta.json");
     let file = match File::open(&path) {
@@ -1015,12 +1018,18 @@ fn normalize(
     }
     // Building the input consumes the corpus and drops every map it needed, so only the
     // input is alive while reconciliation reaches its peak.
-    let input = reconcile_input(corpus)?;
+    let mut input = reconcile_input(corpus)?;
     for entry in &mut manifest.entries {
         if let (Some(source), Some(evidence)) = (&entry.source, &mut entry.first_malformed) {
             *evidence = stamp_ref(&input.source_table, &source.id, *evidence);
         }
     }
+    let (losses, gaps) = super::snapshot_losses(&manifest, "Claude Code transcript", |entry| {
+        let id = &entry.source.as_ref()?.id;
+        Some(stamp_ref(&input.source_table, id, EvidenceRef::new(0, 0, 0)))
+    });
+    input.diagnostics.extend(losses);
+    input.gaps.extend(gaps);
     let mut ledger = reconcile_with_capacity(input, &ClaudeBlockSelector, capacity)?;
     for diagnostic in &mut ledger.diagnostics {
         diagnostic.code = match diagnostic.code {
@@ -1048,6 +1057,7 @@ fn normalize(
             | DiagnosticCode::CodexRolloutDuplicateLocation
             | DiagnosticCode::MalformedLine
             | DiagnosticCode::PendingTail
+            | DiagnosticCode::SourceIncomplete
             | DiagnosticCode::ThreadOrphan) => code,
         };
     }

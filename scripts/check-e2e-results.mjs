@@ -5,9 +5,10 @@
 // is the structured layer beside them (golden-testing-guidelines, "Layer Domain-Focused
 // Assertions"). For each fixture case it runs the built binary's JSON commands in the
 // hermetic golden environment, with the case's directory as its only discovery root, and
-// compares the reconciled totals, ownership counts, excluded copies, limit observations
-// and diagnostics with the case's expected.json. A mismatch prints a field-by-field diff,
-// and every case prints the naive-sum overcount it guards against.
+// compares the reconciled totals, ownership counts, request counts per model and per
+// effort, excluded copies, limit observations and diagnostics with the case's
+// expected.json. A mismatch prints a field-by-field diff, and every case prints the
+// naive-sum overcount it guards against.
 //
 // It never passes silently:
 // - A command still exiting 2 as a scaffold stub is PENDING only while tests/golden/e2e.config.json
@@ -149,6 +150,8 @@ export function caseEnvironment(roots, caseDir, emptyRoot) {
 export const RESULT_READERS = {
   requests: (raw) => raw.totals?.requests?.unique,
   ownership: (raw) => selectCounts(raw.totals?.requests, OWNERSHIP_STATUSES),
+  models: (raw) => requestCounts(raw.requests, modelValues),
+  efforts: (raw) => requestCounts(raw.requests, (row) => [["effort", row.effort]]),
   tokens: (raw) => raw.totals?.tokens,
   unresolved: (raw) => selectCounts(raw.totals?.unresolved, ["requests", "tokens"]),
   possible: (raw) => selectCounts(raw.totals?.possible, ["requests", "tokens"]),
@@ -165,6 +168,46 @@ function selectCounts(value, keys) {
   }
   const picked = Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
   return Object.keys(picked).length > 0 ? picked : undefined;
+}
+
+/** Counts per value as an object with sorted keys, so differences print in a stable order. */
+function sortedCounts(counts) {
+  return Object.fromEntries([...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+/**
+ * The models one request row counts toward, as `[field, value]` pairs: each `model_usage`
+ * component's model when the row splits its usage, as the report's model breakdown does,
+ * and otherwise the row's own model.
+ */
+function modelValues(row) {
+  if (Array.isArray(row.model_usage) && row.model_usage.length > 0) {
+    return row.model_usage.map((component, index) => [`model_usage[${index}].model`, component?.model]);
+  }
+  return [["model", row.model]];
+}
+
+/**
+ * Request counts per value, read from a case's request rows, as the report's breakdown counts
+ * them (design §4.1, §4.3): `values(row)` lists the `[field, value]` pairs one row counts toward,
+ * and a null or missing value counts as `unknown`, the report's label. Undefined when the case
+ * lists no request rows, so the result is not compared.
+ */
+function requestCounts(rows, values) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return undefined;
+  }
+  const counts = new Map();
+  rows.forEach((row, index) => {
+    for (const [field, value] of values(isObject(row) ? row : {})) {
+      if (value !== undefined && value !== null && typeof value !== "string") {
+        throw new Error(`requests[${index}].${field} must be a string or null, found ${JSON.stringify(value)}`);
+      }
+      const name = value ?? "unknown";
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  });
+  return sortedCounts(counts);
 }
 
 /**
@@ -281,11 +324,26 @@ function rowsExtractor(json) {
   return { requests, ownership, tokens };
 }
 
+/** Request counts per breakdown row value, summing every ownership status of a row. */
+function breakdownCounts(rows) {
+  if (!Array.isArray(rows)) {
+    return undefined;
+  }
+  const counts = new Map();
+  for (const row of rows) {
+    const value = typeof row?.value === "string" ? row.value : String(row?.value);
+    counts.set(value, (counts.get(value) ?? 0) + (requestCount(row?.requests) ?? 0));
+  }
+  return sortedCounts(counts);
+}
+
 /** Per command, a function from parsed JSON output to canonical results. */
 export const EXTRACTORS = {
   report: (json) => ({
     requests: requestCount(json?.totals?.requests),
     ownership: isObject(json?.totals?.requests) ? json.totals.requests : undefined,
+    models: breakdownCounts(json?.breakdowns?.model),
+    efforts: breakdownCounts(json?.breakdowns?.effort),
     tokens: json?.totals?.tokens,
     unresolved: json?.totals?.unresolved,
     possible: json?.totals?.possible,
@@ -351,6 +409,26 @@ function compareDiagnostics(expected, actual, differences) {
   }
 }
 
+/** Results whose keys are values, so a key the case does not expect is a difference too. */
+const BUCKET_RESULTS = new Set(["models", "efforts"]);
+
+/**
+ * Compare request counts per value as exact buckets: a wrong or missing count fails, and so
+ * does a value the case does not expect, such as `unknown` for a request whose model or
+ * effort was lost. A bucket counting zero requests is the same as no bucket.
+ */
+function compareBuckets(field, expected, actual, differences) {
+  compareValue(field, expected, actual, differences);
+  if (!isObject(actual)) {
+    return;
+  }
+  for (const [value, count] of Object.entries(actual)) {
+    if (!Object.hasOwn(expected, value) && count !== 0) {
+      differences.push({ field: `${field}.${value}`, expected: 0, actual: count });
+    }
+  }
+}
+
 /** Field-by-field differences between expected and extracted results, for `fields`. */
 export function compareResults(expected, actual, fields = "all") {
   const names = Object.keys(expected).filter((name) => fields === "all" || fields.includes(name));
@@ -358,6 +436,8 @@ export function compareResults(expected, actual, fields = "all") {
   for (const name of names) {
     if (name === "diagnostics") {
       compareDiagnostics(expected.diagnostics, actual.diagnostics, differences);
+    } else if (BUCKET_RESULTS.has(name)) {
+      compareBuckets(name, expected[name], actual[name], differences);
     } else {
       compareValue(name, expected[name], actual[name], differences);
     }

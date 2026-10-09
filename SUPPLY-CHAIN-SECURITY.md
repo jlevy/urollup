@@ -147,6 +147,46 @@ Transitive crates pinned below their newest release with `cargo update --precise
 off, `portable-atomic` builds only for targets without pointer-width atomics, and
 `jiff-static` sits behind a never-true `cfg(any())`.
 
+## Reviewed Versions (gzip Sources)
+
+Checked on 2026-10-08 against the crates.io API, when the cool-off cutoff was
+2026-09-24, for bead `uro-nc34`. `urollup-core` decodes `.jsonl.gz` sources with
+flate2’s pure-Rust backend, so no C compiler or system zlib enters the build; the
+`urollup` executable uses flate2 and zstd only as dev-dependencies, to write compressed
+test inputs. Every crate below builds on the 1.85 MSRV.
+
+| Crate | Version | Published | Why, and what was held back |
+| --- | --- | --- | --- |
+| flate2 (`rust_backend` only) | 1.1.10 | 2026-08-28 | Multi-member gzip decoding; rust-lang/flate2-rs; default features disabled |
+| miniz_oxide | 0.9.1 | 2026-03-13 | flate2’s pure-Rust inflate; MIT OR Zlib OR Apache-2.0 |
+| simd-adler32 | 0.3.10 | 2026-07-14 | Adler-32 for miniz_oxide’s `simd` feature, which flate2’s backend enables |
+| adler2 | 2.0.1 | 2025-06-09 | Adler-32 fallback for miniz_oxide |
+| crc32fast | 1.5.2 | 2026-09-12 | gzip member CRC-32 |
+
+`cfg-if` stays at its locked 1.0.4; 1.0.5 (2026-09-16) is newer than the cutoff.
+
+`crc32fast` is the only new crate with a build script.
+Its `build.rs` reads the compiler version from `$RUSTC --version` and, by the minor
+version, emits the `stable_arm_crc32_intrinsics` and `stable_vpclmulqdq` cfgs; it does
+nothing else (read at 1.5.2).
+
+The `urollup` executable used to declare `zstd` as a normal dependency with its default
+features (`legacy`, `arrays` and `zdict_builder`). It is now a dev-dependency without
+them, so the shipped binary’s zstd, reached through `urollup-core`, has only `std`
+(`cargo tree -p urollup -e normal,build -e features -i zstd-sys`). Without `legacy`, the
+decoders for zstd frames older than format v0.8 are gone, which narrows the decoder
+surface; such a `.jsonl.zst` no longer decodes and is reported as corrupt compressed
+data.
+
+## Reviewed Versions (tryscript Audit Fix)
+
+Checked on 2026-10-08 for bead `uro-t4l1`. `npm audit` failed on GHSA-vfj7-8cjw-p6xm, a
+stack-exhaustion advisory in `braces` with no patched release, reached through tryscript
+0.2.1, `fast-glob` and `micromatch`. tryscript 0.3.0 (2026-10-04, first-party, so exempt
+from the cool-off) replaces `fast-glob` with `tinyglobby`, which removes 17 packages
+including `braces`. The new transitive packages, `tinyglobby` 0.2.17, `fdir` 6.5.0 and
+`picomatch` 4.0.7, pass the 14-day gate.
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

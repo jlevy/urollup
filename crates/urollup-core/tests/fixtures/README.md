@@ -60,16 +60,18 @@ Every `path:line` reference is relative to the case directory and 1-based.
 This record is the only expectation format in the repository.
 `make fixtures-check` validates all of it, including that `requests[]` and the threads’
 `own` counts add up to `totals`; `make e2e-results` then compares urollup’s output with
-the results read out of it — `totals`, and the lengths of `copies`, `limit_observations`
-and `diagnostics`. [tests/golden/README.md](../../../../tests/golden/README.md) lists
-that mapping, and a field a case leaves out is simply not compared.
+the results read out of it — `totals`, the request rows counted per `model` and per
+`effort`, and the lengths of `copies`, `limit_observations` and `diagnostics`.
+[tests/golden/README.md](../../../../tests/golden/README.md) lists that mapping, and a
+field a case leaves out is simply not compared.
 
 Diagnostic codes are provisional names for the ledger to adopt or rename:
 `claude-block-usage-conflict`, `claude-cache-creation-breakdown-mismatch`,
 `claude-nested-copy-without-original`, `identity-key-conflict`,
 `codex-counter-epoch-reset`, `codex-estimate-compaction`,
 `codex-estimate-context-window-fill`, `codex-copied-history-inferred`, `thread-orphan`,
-`codex-rollout-duplicate-location`, `malformed-line` and `pending-tail`.
+`codex-rollout-duplicate-location`, `malformed-line`, `pending-tail` and
+`source-incomplete`.
 
 ## Cases
 
@@ -96,6 +98,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/brief-repeated-snapshot` | Cumulative `token_count` with a repeated identical snapshot: the brief’s example | §3.4, §3.1 | Codex protocol and rollout tests | Codex CLI 0.150.0 |
 | `codex-rollout/info-null` | `info: null` before the first usage, and a rate-limit-only update | §3.4, §3.1 | Codex `turn.rs` and session tests | Codex CLI 0.150.0 |
 | `codex-rollout/counter-reset-epoch` | A cumulative total that restarts lower, opening a new epoch | §3.4, §3.3 | ccusage total-only path | Codex CLI 0.150.0 |
+| `codex-rollout/compaction-lowered-total` | A cumulative total lowered after `compacted` without restarting from zero; the record counts its own `last_token_usage` | §3.4, §3.3 | Codex `token_count` and `compacted`; uro-v1c9 report | Codex CLI 0.150.0 shape; releases unverified |
 | `codex-rollout/compaction-and-context-full` | A compaction estimate and a context-window-full fill | §3.4, §4.1 | Codex estimates, fills and compaction test | Codex CLI 0.150.0 |
 | `codex-rollout/token-usage-records` | `token_usage_record` across a resume, a `compacted` copy, and fork copies naming the parent thread | §3.4, §3.2 | Codex `TokenUsageRecord`, wire shapes, fork persistence | Codex CLI 0.154.0 |
 | `codex-rollout/legacy-subagent-prefix` | Legacy subagent prefixes with and without a discovered parent, and a prefix without counters | §3.4, §3.2 | Codex spawn copies; ccusage replay tests; squares prefix cut | Codex CLI 0.150.0 |

@@ -3,14 +3,17 @@
 //!
 //! Several sources write running totals rather than per-request usage: legacy Codex
 //! `token_count` events, app-server thread totals and `codex exec` `turn.completed.usage`.
-//! One rule serves all of them, so they cannot disagree:
+//! One tracker serves all of them, so they cannot disagree about epochs and advances:
 //!
 //! - A total identical to the previous one adds nothing, as does a total that omits
 //!   categories but changes none it reports.
 //! - A total with no category below the previous one advances the epoch; its delta is the
 //!   category-wise difference.
 //! - A total with any category below the previous one opens a new counter epoch with a
-//!   [`CounterEvent::Reset`] diagnostic, and its delta is the new total itself.
+//!   [`CounterEvent::Reset`] diagnostic, and its delta is the new total itself, which is
+//!   right for a counter that restarts from zero. A caller that also has the update's own
+//!   usage counts that instead: legacy Codex lowers its total at compaction rather than
+//!   restarting it, so its adapter counts the update's `last_token_usage` (design §3.4).
 //! - A sequence number that skips values is a [`CounterEvent::Gap`] diagnostic; the delta
 //!   still covers the skipped updates, since the total includes them.
 //! - A forked or resumed child continues its parent's running total, so the tracker starts
