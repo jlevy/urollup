@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PROBE_DIR, applyEdits, checkPrerequisites, judge, parseArgs, validateManifest } from "./prove-gates.mjs";
+import { PROBE_DIR, applyEdits, checkPrerequisites, judge, nameMatcher, parseArgs, validateManifest } from "./prove-gates.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -63,6 +63,22 @@ test("malformed probes are rejected before anything runs", () => {
     () => validateManifest({ probes: [probe({ edits: [{ path: "../outside", append: "x" }] })] }, gates),
     /outside the repository copy/,
   );
+  for (const pattern of ["", "e2e/*.md", "a\\b", true]) {
+    assert.throws(
+      () => validateManifest({ probes: [probe({ edits: [{ path: "tests", deleteMatching: pattern }] })] }, gates),
+      /non-empty file name pattern/,
+    );
+  }
+});
+
+test("name patterns match whole file names", () => {
+  const sessions = nameMatcher("*.tryscript.md");
+  assert.equal(sessions("cli-surface.tryscript.md"), true);
+  assert.equal(sessions("README.md"), false);
+  assert.equal(sessions("a.tryscript.md.bak"), false);
+  assert.equal(sessions("atryscriptxmd"), false, "a dot in the pattern is literal");
+  assert.equal(nameMatcher("v?.json")("v1.json"), true);
+  assert.equal(nameMatcher("v?.json")("v10.json"), false);
 });
 
 test("the committed manifest covers every gate in the Makefile", () => {
@@ -130,6 +146,37 @@ test("edits apply exactly and refuse stale probes", () => {
     assert.throws(
       () => applyEdits(copy, probes, { id: "missing", edits: [{ path: "nope.rs", append: "tail.probe" }] }),
       /does not exist/,
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("deleting by name reaches every depth and refuses stale patterns", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "urollup-prove-gates-test-"));
+  try {
+    const copy = join(scratch, "copy");
+    mkdirSync(join(copy, "golden", "e2e", "claude"), { recursive: true });
+    mkdirSync(join(copy, "golden", "samples"), { recursive: true });
+    for (const file of ["golden/cli.tryscript.md", "golden/new.tryscript.md", "golden/e2e/claude/case.tryscript.md", "golden/README.md", "golden/samples/expected.json"]) {
+      writeFileSync(join(copy, file), "x\n");
+    }
+
+    applyEdits(copy, scratch, { id: "corpus", edits: [{ path: "golden", deleteMatching: "*.tryscript.md" }] });
+    for (const gone of ["golden/cli.tryscript.md", "golden/new.tryscript.md", "golden/e2e/claude/case.tryscript.md"]) {
+      assert.throws(() => statSync(join(copy, gone)), /ENOENT/, gone);
+    }
+    for (const kept of ["golden/README.md", "golden/samples/expected.json"]) {
+      assert.ok(statSync(join(copy, kept)).isFile(), kept);
+    }
+
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "stale", edits: [{ path: "golden", deleteMatching: "*.tryscript.md" }] }),
+      /no file below golden matches "\*\.tryscript\.md"/,
+    );
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "file", edits: [{ path: "golden/README.md", deleteMatching: "*.md" }] }),
+      /not a directory/,
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

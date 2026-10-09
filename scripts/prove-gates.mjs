@@ -54,7 +54,34 @@ export function checkPrerequisites(makefileText) {
   return prerequisites;
 }
 
-const EDIT_KINDS = ["append", "create", "replace", "substitute", "delete"];
+const EDIT_KINDS = ["append", "create", "replace", "substitute", "delete", "deleteMatching"];
+
+/**
+ * A matcher for one file-name pattern, where `*` is any run of characters and `?` is one
+ * character. Patterns name files, not paths, so a separator is refused.
+ */
+export function nameMatcher(pattern) {
+  if (typeof pattern !== "string" || pattern.trim() === "" || /[\\/]/.test(pattern)) {
+    fail(`a deleteMatching pattern must be a non-empty file name pattern, got ${JSON.stringify(pattern)}`);
+  }
+  const source = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  const expression = new RegExp(`^${source}$`);
+  return (name) => expression.test(name);
+}
+
+/** Every file below `directory`, at any depth, whose name satisfies `matches`. */
+function filesBelow(directory, matches) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const child = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...filesBelow(child, matches));
+    } else if (matches(entry.name)) {
+      found.push(child);
+    }
+  }
+  return found;
+}
 
 /**
  * Validate the probe manifest against the gates `make check` runs.
@@ -91,6 +118,9 @@ export function validateManifest(manifest, gates) {
       if (path.isAbsolute(edit.path) || edit.path.split(/[\\/]/).includes("..")) {
         fail(`probe ${probe.id} edits ${edit.path}, outside the repository copy`);
       }
+      if ("deleteMatching" in edit) {
+        nameMatcher(edit.deleteMatching);
+      }
     }
   }
   for (const gate of gates) {
@@ -120,6 +150,19 @@ export function applyEdits(copyRoot, probeRoot, probe) {
         fail(`probe ${probe.id}: cannot delete ${edit.path}, which does not exist`);
       }
       rmSync(target, { recursive: true });
+    } else if ("deleteMatching" in edit) {
+      // Deleting by name keeps a probe valid as matching files are added, such as a new
+      // golden session; a pattern that matches nothing is stale and fails the proof.
+      if (!existsSync(target) || !statSync(target).isDirectory()) {
+        fail(`probe ${probe.id}: cannot delete files below ${edit.path}, which is not a directory`);
+      }
+      const files = filesBelow(target, nameMatcher(edit.deleteMatching));
+      if (files.length === 0) {
+        fail(`probe ${probe.id}: no file below ${edit.path} matches ${JSON.stringify(edit.deleteMatching)}`);
+      }
+      for (const file of files) {
+        rmSync(file);
+      }
     } else if ("create" in edit) {
       if (existsSync(target)) {
         fail(`probe ${probe.id}: cannot create ${edit.path}, which already exists`);

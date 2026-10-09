@@ -8,9 +8,12 @@ nonzero exit whose output matches the probe’s expected diagnostic.
 
 - **Probe files** live in `files/` with a `.probe` suffix, so no formatter, linter or
   build ever picks them up in the real tree.
-- **Edits** append, create, replace, delete or substitute text.
-  A substitution must match exactly once, so a probe that has gone stale fails the proof
-  rather than proving a gate against an unchanged tree.
+- **Edits** append, create, replace, delete or substitute text, or delete every file
+  below a directory whose name matches a pattern (`deleteMatching`, with `*` and `?`
+  wildcards), so a probe that removes the golden corpus survives new sessions.
+  A substitution must match exactly once, and a pattern must match at least one file, so
+  a probe that has gone stale fails the proof rather than proving a gate against an
+  unchanged tree.
 - **Coverage** is enforced: every prerequisite of `make check` needs a probe or a reason
   under `unprobed`, and `scripts/prove-gates.test.mjs` checks the committed manifest
   against the Makefile.
