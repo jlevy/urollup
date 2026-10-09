@@ -617,7 +617,7 @@ case = "codex-rollout/unverified-fork-boundary"
 cause = "semantics"
 citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-codex-parsing"
 design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
-retirement = "Remove if urollup counts a child's first step from last_token_usage when fork-boundary evidence cannot establish its inherited baseline, or if ccusage stops trusting last_token_usage across such a boundary."
+retirement = "Remove only when neither of the entry's two causes remains: the first child's unverifiable first counter step (2,700 tokens) and the second child's usage under an invalid subagent_history_start_ordinal (its own 1,050 tokens). Each goes when urollup counts that usage from last_token_usage, or when ccusage stops trusting last_token_usage across such a boundary."
 
 [[entry.difference]]
 metric = "cache_read"
