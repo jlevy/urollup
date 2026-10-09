@@ -443,8 +443,11 @@ rather than silently skipping data.
   including a path that is briefly absent while another tool rewrites it.
 - A `.jsonl` file and its `.jsonl.zst` and `.jsonl.gz` twins are one logical source
   whose representation changed, not two sources; for a Codex rollout they share a thread
-  and rollout ID. The plain file is read first, then zstd, then gzip, and each other
-  file must start with the same record or it is reported as a different, unread source.
+  and rollout ID. The plain file is read first, then zstd, then gzip. Each other file
+  whose first record differs is reported as a different, unread source, and one with no
+  complete first record yet, such as a compressor’s unfinished output, is neither a
+  verified twin nor a loss. When the file read has no complete record but another file
+  of the source has one, that file is read instead.
 - A file that disappears between discovery and reading, as when a compressor replaces it
   or an agent expires an old transcript, is read from its newer representation when one
   exists; otherwise the source is recorded as vanished.

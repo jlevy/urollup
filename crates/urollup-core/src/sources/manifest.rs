@@ -235,6 +235,15 @@ pub enum SourceChange {
         /// Length afterwards.
         observed_len: u64,
     },
+    /// The discovered primary was not read, because it was gone when opened or held no
+    /// complete record while another file of the source held one. [`ManifestEntry::file`]
+    /// names the file read instead.
+    ReadFromOtherRepresentation {
+        /// The discovered primary that was not read.
+        primary: PathBuf,
+        /// The representation read instead.
+        representation: Representation,
+    },
 }
 
 impl CoverageFailure {
@@ -261,6 +270,7 @@ impl SourceChange {
             Self::ModifiedInPlace => "modified-in-place",
             Self::FirstRecordChanged => "first-record-changed",
             Self::GrewBeyondCutoff { .. } => "grew-beyond-cutoff",
+            Self::ReadFromOtherRepresentation { .. } => "read-from-other-representation",
         }
     }
 
@@ -268,7 +278,9 @@ impl SourceChange {
     /// opposed to an append past the cutoff.
     pub const fn affects_snapshot(&self) -> bool {
         match self {
-            Self::GrewBeyondCutoff { .. } | Self::BrieflyAbsent { .. } => false,
+            Self::GrewBeyondCutoff { .. }
+            | Self::BrieflyAbsent { .. }
+            | Self::ReadFromOtherRepresentation { .. } => false,
             Self::Vanished
             | Self::Replaced
             | Self::Truncated { .. }
@@ -294,7 +306,8 @@ pub struct ManifestEntry {
     /// How it is stored.
     pub representation: Representation,
     /// The other files of this logical source whose first record matches the file read,
-    /// in preference order; a mismatched one is a coverage failure instead.
+    /// in preference order. One whose first record differs is a coverage failure instead,
+    /// and one with no complete first record is neither.
     pub twins: Vec<FileIdentity>,
     /// On-disk length when opened.
     pub file_len: u64,

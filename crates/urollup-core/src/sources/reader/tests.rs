@@ -434,6 +434,70 @@ fn every_twin_of_a_source_is_verified_in_preference_order() {
 }
 
 #[test]
+fn a_twin_without_a_complete_first_record_is_neither_verified_nor_a_loss() {
+    // gzip and zstd write their output under its final name and remove the input only when
+    // they finish, so a twin still being written sits beside the complete plain file.
+    let full = gzip(THREE_RECORDS);
+    for (name, unfinished) in [
+        ("session.jsonl.zst", Vec::new()),
+        ("session.jsonl.gz", full[..12].to_vec()),
+        ("session.jsonl.gz", b"not gzip at all\n".to_vec()),
+    ] {
+        let root = TempDir::new().unwrap();
+        let plain_path = root.path().join("session.jsonl");
+        let twin_path = root.path().join(name);
+        write(&plain_path, THREE_RECORDS);
+        write(&twin_path, &unfinished);
+        let mut files = plain(&plain_path);
+        files.insert(twin_path, Representation::of_path(Path::new(name)).unwrap());
+
+        let (entry, records) = scan(&files);
+        assert_eq!(records.len(), 3, "{name} {unfinished:?}");
+        assert!(entry.twins.is_empty(), "{name}: a twin with no first record is not verified");
+        assert!(
+            entry.failures.is_empty(),
+            "{name}: nor is it another source: {:?}",
+            entry.failures
+        );
+        assert!(entry.is_complete(), "{name}");
+    }
+}
+
+#[test]
+fn a_primary_without_a_complete_record_is_read_from_a_twin_that_has_one() {
+    // `gunzip -k`, `zstd -d` or a Codex resume creates the plain file before it writes the
+    // first line, so the plain file holds nothing its compressed twin lacks.
+    for unfinished in [&b""[..], b"{\"i\":1"] {
+        let root = TempDir::new().unwrap();
+        let plain_path = root.path().join("session.jsonl");
+        let gzip_path = root.path().join("session.jsonl.gz");
+        write(&plain_path, unfinished);
+        write(&gzip_path, &gzip(THREE_RECORDS));
+        let files = LogicalSource {
+            plain: Some(plain_path.clone()),
+            zstd: None,
+            gzip: Some(gzip_path.clone()),
+        };
+
+        let (entry, records) = scan(&files);
+        let label = String::from_utf8_lossy(unfinished);
+        assert_eq!(records.len(), 3, "{label}: the twin's records are read");
+        assert_eq!(entry.file.path, gzip_path, "{label}");
+        assert_eq!(entry.representation, Representation::Gzip, "{label}");
+        assert!(entry.twins.is_empty(), "{label}: the unread primary is not a verified twin");
+        assert_eq!(
+            entry.changes,
+            vec![SourceChange::ReadFromOtherRepresentation {
+                primary: plain_path,
+                representation: Representation::Gzip,
+            }],
+            "{label}"
+        );
+        assert!(entry.is_complete(), "{label}: {:?}", entry.failures);
+    }
+}
+
+#[test]
 fn a_source_compressed_after_discovery_is_read_from_its_new_file() {
     for (suffix, encode) in [
         (".jsonl.zst", compress as fn(&[u8]) -> Vec<u8>),

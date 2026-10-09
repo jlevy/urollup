@@ -136,6 +136,12 @@ fn source_change(change: &SourceChange) -> Value {
         SourceChange::GrewBeyondCutoff { observed_len } => {
             json!({ "grew_beyond_cutoff": { "observed_len": observed_len } })
         }
+        SourceChange::ReadFromOtherRepresentation { primary, representation } => json!({
+            "read_from_other_representation": {
+                "primary": primary.file_name().map(|name| name.to_string_lossy()),
+                "representation": format!("{representation:?}"),
+            },
+        }),
     }
 }
 
