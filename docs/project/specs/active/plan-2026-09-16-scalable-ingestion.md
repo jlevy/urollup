@@ -344,11 +344,10 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design checkpoint (2026-10-09), not implemented.
-The [decisions](#decisions-for-the-maintainer) need the maintainer before implementation
-starts. Values marked *guess* are placeholders that the [slices](#implementation-slices)
-measure or calibrate; *derived* values follow from type sizes and growth patterns in the
-current code.
+**Status:** design accepted (2026-10-09), not implemented.
+The maintainer settled the policy [decisions](#decisions) on 2026-10-09. Values marked
+*guess* are placeholders that the [slices](#implementation-slices) measure or calibrate;
+*derived* values follow from type sizes and growth patterns in the current code.
 
 One byte ledger per invocation replaces the per-agent row-shell ceiling described under
 [Memory Model](#memory-model).
@@ -583,37 +582,40 @@ decode and checkpoint, `stats: memory phase=… estimate=…` with the bracketed
 - `uro-erqo`’s reference-history runs record estimate and footprint at the default
   budget; those values stay local.
 
-#### Decisions for the Maintainer
+#### Decisions
 
-1. **Default base.** Recommended: 25% of effective memory `M`, the smallest of physical
-   RAM and the cgroup and rlimit allowances.
-   Alternative: 25% of physical RAM, capped by the container allowance.
-   Trade-off: a 4 GiB container gets 1 GiB rather than up to 4 GiB, and one rule applies
-   everywhere.
-2. **`--max-ram` migration.** Recommended: redefine it in place as the whole-process
-   budget, with no alias, since nothing is published.
-   Alternative: a new flag with `--max-ram` deprecated.
-   Trade-off: a scripted value admits several times fewer observations; help and README
-   say so.
-3. **`--max-rows`.** Recommended: an independent per-agent ceiling that never lifts the
-   byte budget. Alternative: keep `--max-rows` alone replacing the default budget.
-   Trade-off: lifting memory protection requires `--max-ram`, which names the risk.
-4. **Bypass.** Recommended: no unlimited switch; an explicit `--max-ram` size, or
-   `100%`, is honored even above `M`, and `UROLLUP_STATS` reports it.
-   Alternatives: `--no-memory-limit`, or refusing sizes above `M`. Trade-off: one
+The maintainer decided 1, 2, 4 and 5 on 2026-10-09, each as recommended.
+Decisions 3 and 6 are engineering choices adopted with them; a slice that finds a reason
+to change either records it here.
+
+1. **Default base: 25% of effective memory `M`**, the smallest of physical RAM and the
+   cgroup and rlimit allowances.
+   Rejected: 25% of physical RAM capped by the container allowance.
+   Consequence: a 4 GiB container gets 1 GiB, and one rule applies everywhere.
+2. **`--max-ram` is redefined in place** as the whole-process budget, with no alias,
+   since nothing is published.
+   Rejected: a new flag with `--max-ram` deprecated.
+   Consequence: a scripted value admits several times fewer observations; help and
+   README say so.
+3. **`--max-rows` is an independent per-agent ceiling** that never lifts the byte
+   budget. Rejected: `--max-rows` alone replacing the default budget.
+   Consequence: lifting memory protection requires `--max-ram`, which names the risk.
+4. **No unlimited switch.** An explicit `--max-ram` size, or `100%`, is honored even
+   above `M`, and `UROLLUP_STATS` reports it.
+   Rejected: `--no-memory-limit`, and refusing sizes above `M`. Consequence: one
    auditable control; a deliberate over-commit stays possible, but an accidental
    unbounded run like the 2026-09-16 incidents does not.
-5. **Uncertain estimates.** Recommended: upper bounds everywhere, refusal rather than a
-   warning, and `H` = 1.5 until calibration replaces it.
-   Alternative: warn and continue when only guessed components exceed the budget.
-   Trade-off: false refusals near the boundary are possible before calibration; the
+5. **Upper bounds everywhere, and refusal rather than a warning**, with `H` = 1.5 until
+   calibration replaces it.
+   Rejected: warning and continuing when only guessed components exceed the budget.
+   Consequence: false refusals near the boundary are possible before calibration; the
    indicative estimate for the historical whole-history counts is about 1.2 GiB, far
    inside 8 GiB.
-6. **Worker buffers.** Recommended: worker slots charged for `max(8, UROLLUP_JOBS)`
-   workers, fewer under small budgets, and one large-record permit for lines above 4 MiB
-   and zstd windows above 8 MiB. Alternative: charge every worker for a 64 MiB line and
-   a 128 MiB window, about 2.3 GiB at eight workers.
-   Trade-off: rare large lines decode one at a time.
+6. **Worker slots charged for `max(8, UROLLUP_JOBS)` workers**, fewer under small
+   budgets, and one large-record permit for lines above 4 MiB and zstd windows above 8
+   MiB. Rejected: charging every worker for a 64 MiB line and a 128 MiB window, about
+   2.3 GiB at eight workers.
+   Consequence: rare large lines decode one at a time.
 
 #### Implementation Slices
 
