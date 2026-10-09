@@ -190,7 +190,10 @@ impl ParsedRecord {
 struct UsageRecord {
     thread_id: Option<Sym>,
     response_id: Option<Sym>,
-    root_turn_id: Option<Sym>,
+    /// The turn whose context applies: the record's `turn_id`, else its `root_turn_id`.
+    /// A subagent's records name its parent's turn as their root, so only `turn_id`
+    /// matches the subagent's own `turn_context`.
+    turn: Option<Sym>,
     usage: UsageMask,
 }
 
@@ -200,7 +203,7 @@ impl UsageRecord {
             thread_id: self.thread_id.map(|thread| strings.resolve(thread)),
             response_id: self.response_id.map(|response| strings.resolve(response)),
             usage,
-            root_turn_id: self.root_turn_id,
+            turn: self.turn,
         }
     }
 }
@@ -210,7 +213,7 @@ struct UsagePayload<'a> {
     thread_id: Option<&'a str>,
     response_id: Option<&'a str>,
     usage: Option<CodexUsage>,
-    root_turn_id: Option<Sym>,
+    turn: Option<Sym>,
 }
 
 /// Where a record is and when it was written, as the observations built from it cite it.
@@ -781,11 +784,14 @@ impl SourceDecoder {
                 model: payload.model.as_deref().map(Name::new),
                 effort: payload.effort.as_deref().map(Name::new),
             }),
-            RecordType::TokenUsageRecord => {
-                Some(RecordKind::UsageRecord(self.usage_record(&payload.usage_record)))
-            }
+            RecordType::TokenUsageRecord => Some(RecordKind::UsageRecord(
+                self.usage_record(&payload.usage_record, payload.turn_id.as_deref()),
+            )),
             RecordType::Compacted => Some(RecordKind::Compacted(
-                payload.latest_token_usage_record.as_ref().map(|latest| self.usage_record(latest)),
+                payload
+                    .latest_token_usage_record
+                    .as_ref()
+                    .map(|latest| self.usage_record(latest, latest.turn_id.as_deref())),
             )),
             RecordType::EventMsg => match payload.event_type {
                 EventType::ThreadSettingsApplied => Some(RecordKind::ThreadSettingsApplied {
@@ -806,13 +812,13 @@ impl SourceDecoder {
         }
     }
 
-    fn usage_record(&mut self, fields: &UsageFields<'_>) -> UsageRecord {
+    fn usage_record(&mut self, fields: &UsageFields<'_>, turn_id: Option<&str>) -> UsageRecord {
         let mut usage = UsageMask::default();
         pack_usage(&mut self.counts, &mut usage, 0, fields.usage);
         UsageRecord {
             thread_id: self.interner.intern_some(fields.thread_id.as_deref()),
             response_id: self.interner.intern_some(fields.response_id.as_deref()),
-            root_turn_id: self.interner.intern_some(fields.root_turn_id.as_deref()),
+            turn: self.interner.intern_some(turn_id.or(fields.root_turn_id.as_deref())),
             usage,
         }
     }
@@ -1112,6 +1118,15 @@ fn observe_parsed_source(
                         continue;
                     }
                     if step.event != CounterEvent::Repeated {
+                        // Codex lowers its running total at compaction rather than
+                        // restarting it, so after a decrease the new total is not one
+                        // request's usage; the record's own last usage is. Where the
+                        // counter did restart from zero, the two agree.
+                        let delta = if step.event == CounterEvent::Reset {
+                            codex_usage(last)?
+                        } else {
+                            step.delta
+                        };
                         observations.push(counter_observation(
                             &view,
                             last,
@@ -1121,7 +1136,7 @@ fn observe_parsed_source(
                                 owner: file_thread_text,
                                 thread_ids,
                                 context: current_turn.and_then(|turn| turns.get(&turn)),
-                                delta: Some(step.delta),
+                                delta: Some(delta),
                             },
                         )?);
                     }
@@ -1628,7 +1643,7 @@ fn usage_observation(
         observation.usage = Some(codex_usage(usage)?.into());
     }
     observation.timestamp = record.timestamp;
-    if let Some(context) = payload.root_turn_id.and_then(|turn| turns.get(&turn)) {
+    if let Some(context) = payload.turn.and_then(|turn| turns.get(&turn)) {
         apply_context(&mut observation, context);
     }
     Ok(observation)
@@ -1996,7 +2011,7 @@ mod tests {
                         RecordKind::UsageRecord(super::UsageRecord {
                             thread_id: None,
                             response_id: None,
-                            root_turn_id: None,
+                            turn: None,
                             usage: mask,
                         })
                     }

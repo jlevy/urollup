@@ -129,6 +129,9 @@ pub(super) struct DecodedLimits {
 pub(super) struct UsageFields<'a> {
     pub(super) thread_id: Option<Cow<'a, str>>,
     pub(super) response_id: Option<Cow<'a, str>>,
+    /// The record's own turn, read here only from a usage record nested in a `compacted`
+    /// payload; a `token_usage_record` payload's `turn_id` is [`Payload::turn_id`].
+    pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) root_turn_id: Option<Cow<'a, str>>,
     pub(super) usage: Option<CodexUsage>,
 }
@@ -390,6 +393,7 @@ impl<'de> Visitor<'de> for PayloadSeed {
 enum UsageField {
     ThreadId,
     ResponseId,
+    TurnId,
     RootTurnId,
     Usage,
     Other,
@@ -400,6 +404,7 @@ impl UsageField {
         match name {
             "thread_id" => Self::ThreadId,
             "response_id" => Self::ResponseId,
+            "turn_id" => Self::TurnId,
             "root_turn_id" => Self::RootTurnId,
             "usage" => Self::Usage,
             _ => Self::Other,
@@ -413,6 +418,7 @@ impl<'de> UsageFields<'de> {
         match field {
             UsageField::ThreadId => self.thread_id = map.next_value_seed(Text)?,
             UsageField::ResponseId => self.response_id = map.next_value_seed(Text)?,
+            UsageField::TurnId => self.turn_id = map.next_value_seed(Text)?,
             UsageField::RootTurnId => self.root_turn_id = map.next_value_seed(Text)?,
             UsageField::Usage => self.usage = Some(map.next_value_seed(UsageSeed)?),
             UsageField::Other => map.next_value_seed(Skip)?,
@@ -768,6 +774,7 @@ mod tests {
         UsageFields {
             thread_id: owned(payload, "thread_id"),
             response_id: owned(payload, "response_id"),
+            turn_id: owned(payload, "turn_id"),
             root_turn_id: owned(payload, "root_turn_id"),
             usage: payload.get("usage").map(usage),
         }
@@ -811,7 +818,9 @@ mod tests {
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
                 effort: owned(payload, "effort"),
-                usage_record: usage_fields(payload),
+                // A payload-level `turn_id` is the payload's own field, not its usage
+                // record's.
+                usage_record: UsageFields { turn_id: None, ..usage_fields(payload) },
                 latest_token_usage_record: value
                     .pointer("/payload/latest_token_usage_record")
                     .map(usage_fields),

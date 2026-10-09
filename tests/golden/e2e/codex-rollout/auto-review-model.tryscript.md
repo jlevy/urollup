@@ -48,12 +48,12 @@ unknown | 2 | 10,200 | 560 | 10,760
 EFFORT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 high | 1 | 8,000 | 500 | 8,500
-unknown | 1 | 2,200 | 60 | 2,260
+low | 1 | 2,200 | 60 | 2,260
 
 MODEL BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
+codex-auto-review | 1 | 2,200 | 60 | 2,260
 gpt-5.2-codex | 1 | 8,000 | 500 | 8,500
-unknown | 1 | 2,200 | 60 | 2,260
 
 PROJECT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
@@ -146,7 +146,7 @@ $ urollup report --all --format json --timezone UTC
       },
       {
         "group": "effort",
-        "value": "unknown",
+        "value": "low",
         "requests": {
           "owned": 1,
           "ambiguous": 0,
@@ -166,6 +166,24 @@ $ urollup report --all --format json --timezone UTC
     "model": [
       {
         "group": "model",
+        "value": "codex-auto-review",
+        "requests": {
+          "owned": 1,
+          "ambiguous": 0,
+          "unknown": 0
+        },
+        "tokens": {
+          "uncached_input": 2200,
+          "cache_read": 0,
+          "cache_write": 0,
+          "cache_write_unspecified": 0,
+          "output": 60,
+          "reasoning": 20,
+          "total": 2260
+        }
+      },
+      {
+        "group": "model",
         "value": "gpt-5.2-codex",
         "requests": {
           "owned": 1,
@@ -180,24 +198,6 @@ $ urollup report --all --format json --timezone UTC
           "output": 500,
           "reasoning": 200,
           "total": 8500
-        }
-      },
-      {
-        "group": "model",
-        "value": "unknown",
-        "requests": {
-          "owned": 1,
-          "ambiguous": 0,
-          "unknown": 0
-        },
-        "tokens": {
-          "uncached_input": 2200,
-          "cache_read": 0,
-          "cache_write": 0,
-          "cache_write_unspecified": 0,
-          "output": 60,
-          "reasoning": 20,
-          "total": 2260
         }
       }
     ],

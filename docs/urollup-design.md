@@ -850,6 +850,8 @@ set these source-specific rules:
   provider limit observation, compaction estimates and context-window-full fills (zero
   input and output with nonzero `total_tokens`) are estimate diagnostics, and a decrease
   in any cumulative component opens a new counter epoch with a diagnostic.
+  The decreasing record counts its own `last_token_usage`, not the new total: Codex
+  lowers its running total at compaction instead of restarting it from zero.
 - **Codex decoding:** a line that contains none of the quoted relevant type tokens
   (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
   `thread_settings_applied`) is validated without building a document and counted as

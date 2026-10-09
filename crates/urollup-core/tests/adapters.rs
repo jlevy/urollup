@@ -701,3 +701,109 @@ fn a_source_deleted_after_discovery_leaves_partial_totals_with_a_diagnostic() {
         "a Claude Code transcript could not be read completely: vanished"
     );
 }
+
+#[test]
+fn codex_usage_takes_its_model_from_its_own_turn_not_the_root_turn() {
+    // A multi-agent subagent's records name the parent's turn as their root, so only
+    // `turn_id` matches the subagent's own `turn_context`.
+    let home = tempfile::tempdir().unwrap();
+    let thread = "019f0000-0000-7000-8000-00aa00000001";
+    let day = home.path().join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).unwrap();
+    let lines = [
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.160.0"}}}}"#
+        ),
+        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-own","root_turn_id":"turn-parent","model":"gpt-test","effort":"high"}}"#.to_owned(),
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:02.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-1","turn_id":"turn-own","root_turn_id":"turn-parent","usage":{{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}}}"#
+        ),
+        // A record without its own turn still falls back to the root turn.
+        r#"{"timestamp":"2026-10-01T07:00:03.000Z","type":"turn_context","payload":{"turn_id":"turn-legacy","model":"gpt-legacy","effort":"low"}}"#.to_owned(),
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:04.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-2","root_turn_id":"turn-legacy","usage":{{"input_tokens":50,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":55}}}}}}"#
+        ),
+    ];
+    std::fs::write(
+        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+
+    let ingested = ingest_codex(home.path()).unwrap();
+    let mut models: Vec<(String, String)> = ingested
+        .ledger
+        .requests
+        .values()
+        .map(|request| {
+            let name = |value: Option<&str>| value.unwrap_or("unknown").to_owned();
+            (
+                name(request.model.as_ref().map(|model| model.name.as_str())),
+                name(request.effort.as_ref().map(|effort| effort.as_str())),
+            )
+        })
+        .collect();
+    models.sort();
+    assert_eq!(
+        models,
+        vec![
+            ("gpt-legacy".to_owned(), "low".to_owned()),
+            ("gpt-test".to_owned(), "high".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn a_codex_total_lowered_at_compaction_counts_only_its_own_request() {
+    // Codex lowers its running total at compaction instead of restarting it. The
+    // decreasing token_count's last_token_usage is that request's usage; its new total
+    // is the session so far.
+    let home = tempfile::tempdir().unwrap();
+    let thread = "019f0000-0000-7000-8000-00bb00000001";
+    let day = home.path().join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).unwrap();
+    let count = |second: u32, total: [u64; 4], last: [u64; 4]| {
+        let usage = |[input, cached, output, reasoning]: [u64; 4]| {
+            format!(
+                r#"{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":{reasoning},"total_tokens":{}}}"#,
+                input + output
+            )
+        };
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:{second:02}.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{},"last_token_usage":{},"model_context_window":272000}},"rate_limits":null}}}}"#,
+            usage(total),
+            usage(last)
+        )
+    };
+    let lines = [
+        format!(
+            r#"{{"timestamp":"2026-10-01T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.150.0"}}}}"#
+        ),
+        r#"{"timestamp":"2026-10-01T07:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-test","effort":"medium"}}"#.to_owned(),
+        count(2, [3_000, 0, 300, 0], [3_000, 0, 300, 0]),
+        count(3, [7_000, 2_500, 800, 200], [4_000, 2_500, 500, 200]),
+        r#"{"timestamp":"2026-10-01T07:00:04.000Z","type":"compacted","payload":{"message":""}}"#.to_owned(),
+        count(5, [6_000, 2_000, 900, 200], [1_000, 500, 100, 0]),
+        count(6, [7_500, 3_000, 1_000, 200], [1_500, 1_000, 100, 0]),
+    ];
+    std::fs::write(
+        day.join(format!("rollout-2026-10-01T00-00-00-{thread}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+
+    let ingested = ingest_codex(home.path()).unwrap();
+    let totals = ledger_totals(&ingested.ledger).unwrap();
+    assert_eq!(totals.total.requests, 4);
+    let tokens = totals.total.tokens;
+    assert_eq!(tokens.uncached_input, Some(3_000 + 1_500 + 500 + 500));
+    assert_eq!(tokens.cache_read, Some(2_500 + 500 + 1_000));
+    assert_eq!(tokens.output, Some(300 + 500 + 100 + 100));
+    let resets = ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "codex-counter-epoch-reset")
+        .count();
+    assert_eq!(resets, 1, "the decrease still opens a new epoch with a diagnostic");
+}
