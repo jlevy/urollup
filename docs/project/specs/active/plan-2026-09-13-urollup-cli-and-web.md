@@ -429,8 +429,9 @@ records what each rule cost when it was missing, and
   since it turns a session test back into a unit test.
 - **Final-result checks.** `scripts/check-e2e-results.mjs` runs each command’s JSON
   output per case and compares unique requests, token categories, ownership counts,
-  excluded copies, limit observations and diagnostics with the case’s `expected.json`,
-  failing with a field-by-field diff and printing the naive-sum overcount for context
+  excluded copies, limit observations, diagnostics, and request counts per model and
+  effort with the case’s `expected.json`, failing with a field-by-field diff and
+  printing the naive-sum overcount for context
   ([§1.2](../../../urollup-design.md#12-why-urollup-exists),
   [§4.2](../../../urollup-design.md#42-ownership-and-totals)). Rollup rows must sum to
   the report’s totals, and each command runs twice and must print identical bytes.
