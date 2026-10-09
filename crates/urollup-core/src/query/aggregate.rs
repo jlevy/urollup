@@ -835,6 +835,56 @@ mod tests {
     }
 
     #[test]
+    fn a_request_two_sessions_both_prove_is_dated_on_the_unowned_row() {
+        use crate::ledger::identity::KeyComponent;
+        use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput, RequestObservation};
+        use crate::ledger::scope::tests::PROVIDER_RESPONSE;
+        let shared = PROVIDER_RESPONSE
+            .key(vec![KeyComponent::text("anthropic"), KeyComponent::text("copied-response")])
+            .unwrap()
+            .derive()
+            .unwrap();
+        let claimed = |offset, owner| {
+            let mut observation = observation(offset, owner, true);
+            observation.timestamp =
+                Some("2026-09-14T12:00:00Z".parse::<jiff::Timestamp>().unwrap().into());
+            observation.keys.push(shared.clone());
+            observation
+        };
+        let thread = |observation: &RequestObservation| {
+            let OwnerEvidence::Proven(id) = &observation.owner else { unreachable!() };
+            id.clone()
+        };
+        let requests = vec![claimed(0, "one"), claimed(1, "two")];
+        // Both sessions are selected, as in a whole-history run.
+        let selected = BTreeSet::from([thread(&requests[0]), thread(&requests[1])]);
+        let ingested = reconciled(ReconcileInput { requests, ..ReconcileInput::default() });
+        let source = [QuerySource { agent: Agent::Claude, ingested: &ingested }];
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
+        let rows = sessions(
+            &source,
+            &SessionIndex::default(),
+            &selected,
+            true,
+            QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            &timezone,
+        )
+        .unwrap()
+        .rows;
+
+        // The local aggregate counts neither session as stable: each has no owned request.
+        for id in &selected {
+            let row =
+                rows.iter().find(|row| row.thread.as_deref() == Some(&*id.to_string())).unwrap();
+            assert_eq!(row.requests, RequestCounts::default());
+            assert_eq!((row.last_date.as_deref(), row.undated_requests), (None, 0));
+        }
+        let unowned = rows.iter().find(|row| row.thread.is_none()).unwrap();
+        assert_eq!(unowned.requests, RequestCounts { ambiguous: 1, ..RequestCounts::default() });
+        assert_eq!(unowned.last_date.as_deref(), Some("2026-09-14"));
+    }
+
+    #[test]
     fn session_dates_match_a_daily_query_over_each_thread() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/codex-rollout/archived-rename");
