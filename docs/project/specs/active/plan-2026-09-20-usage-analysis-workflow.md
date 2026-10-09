@@ -84,9 +84,10 @@ Wall-clock benchmark metadata belongs to a separate run record, outside determin
 artifact identity.
 
 Extend the library entry point so several normalized queries can share a corpus without
-re-decoding it. The CLI workflow uses the existing `export` and `--source` surfaces when
-they land. Querying a saved artifact must not implicitly mix in current default logs;
-document explicit `--no-default-sources` until the interface enforces that choice.
+re-decoding it. The CLI workflow uses the existing `--source` and `--no-default-sources`
+options and the planned `export` command (`uro-cye3`). Querying a saved artifact must
+not implicitly mix in current default logs; document explicit `--no-default-sources`
+until the interface enforces that choice.
 A convenience command or multi-query flag, if needed, must have a documented contract
 and CLI goldens before it is advertised.
 
@@ -290,11 +291,11 @@ then on explicitly consented local input:
    arithmetic and external parity are separate checks.
    Live-day exclusion alone does not establish snapshot equality.
    Explain every parity residual.
-5. Run the existing full-history performance gates on a suitable host.
-   Record ingest, artifact load and query/render time separately; do not accept missing
-   features or reduced input to make the gate pass.
-   Establish a repeat-query target from the first implemented artifact benchmark; the
-   existing ingestion targets remain in force.
+5. Meet the
+   [accepted scale and memory policy](plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+   on a suitable host. Record ingest, artifact load and query/render time separately; do
+   not accept missing features or reduced input to make a check pass.
+   Record repeat-query timing against the first implemented artifact benchmark.
 6. Exercise the complete documented workflow in CLI goldens.
    No custom Python/`jq` stitching, per-session invocation loop or hidden schema
    conversion is required.
