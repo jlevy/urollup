@@ -347,8 +347,8 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 and 2 (budget source and ledger) and
-the slice 3 cost model implemented, with only the row ceiling wired into ingestion.
+**Status:** design accepted (2026-10-09); slices 1 to 3 (budget source, ledger, and
+model and harness) implemented, with only the row ceiling wired into ingestion.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -1100,6 +1100,36 @@ Choices made while implementing, where this design left room:
   makes at each new insert.
   `construction_estimate` exists for slices 5 and 6 but is not yet verified, since
   construction cannot be measured from outside the adapters.
+- **Harness and measured constants (slice 3).**
+  `crates/urollup-core/tests/memory_model.rs` runs without libtest and counts live heap
+  by the costing rule, holding both buffers through a moving reallocation; its `unsafe`
+  is the allocator, under a scoped `#[expect(unsafe_code)]`, and the lint policy is
+  unchanged. It fails when measured heap exceeds what the model can estimate from outside
+  ingestion: the retained ledger is 92–99% of its deep size on every fixture and
+  generated corpus at one and eight workers; reconciliation of 1,000 and 8,000 synthetic
+  observations peaks at 69–70% (Codex) and 44% (Claude) of the larger of the grouping
+  and finalize estimates, and retains 88–89% of its deep size; the report, daily and
+  sessions documents use 13–45% of the query estimate; and each decoder’s Rust heap is
+  within its slot components.
+  It reports, without failing, each ingest’s peak beside the forward estimate it can
+  compute after the fact, which omits payloads and worker slots: 1.11 MB against 1.53 MB
+  for a generated Claude corpus of 800 records and 0.61 MB against 0.95 MB for a Codex
+  one, with 2 KiB-padded twins within 0.5 KB of the unpadded peaks.
+  On the small fixtures the peak (up to 0.41 MB at eight workers) is the 128 KiB read
+  buffers, which the worker slots cover and the forward estimate leaves out.
+  Measured constants: `F` is 5 MiB, 1.25 × the 3,375,104-byte maximum RSS of a release
+  `report` over the smallest fixture on the reference macOS laptop, rounded up (its peak
+  physical footprint was 1,409,336 bytes); Linux maximum RSS is not measured, so the
+  macOS RSS stands in for it until calibration.
+  zstd 1.5.7 reports a 95,968-byte decoder context (`ZSTD_CONTEXT` is 96 KiB) and
+  8,877,856 bytes once an 8 MiB-window frame starts, plus the zstd crate’s 131,075-byte
+  Rust input buffer: about 8.6 MiB, as designed.
+  `flate2`’s gzip decoder holds 76,368 bytes beside the read buffer, so `GZIP_DECODER`
+  is 80 KiB rather than the guessed 64 KiB, and the boxed reader adds up to 512 bytes.
+  A scan of a 3.5 MiB line peaked at 6,422,848 bytes, 1.5 × the 4 MiB slot line capacity
+  plus the read buffer, inside the slot’s 10 MiB line allowance.
+  A sessions document costs about 112 bytes per row beyond its per-request and rendering
+  terms, well inside the 1 KiB row charge.
 
 ### Parallelism and Determinism
 
