@@ -5,7 +5,7 @@ title: Retain pricing context and expose cache-request metrics with coverage
 kind: feature
 status: in_progress
 priority: 1
-version: 14
+version: 15
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 delegate: claude-code@spud10.local
 labels: []
@@ -20,7 +20,7 @@ parent_id: is-01m2yrezrf530kbz15erhh7hw6
 hold: null
 hold_until: null
 created_at: 2026-09-20T06:36:54.265Z
-updated_at: 2026-10-09T07:16:39.961Z
+updated_at: 2026-10-09T17:45:30.725Z
 started_at: 2026-09-28T04:05:43.795Z
 ---
 R4 and cache contract: retain provider/billing-channel basis, exact model and served/requested basis, request timestamps, service tier/speed from recorded fields, inclusive input and cache lifetimes. Retain unknowns, conflicting lifetime diagnostics and reasoning as output subset. Report counted requests with positive/zero/unknown cache reads and writes; one request can read and write, not separate cache API calls. Expose token-read share and request-hit share with distinct observed populations, additive numerators/denominators and availability counts. No model-config inference for historical tier. Synthetic fixtures verify all fields survive reconciliation and cover missing/partial data; serialization ownership remains uro-ni7m/uro-vgea and pricing ownership uro-neii.
@@ -59,4 +59,4 @@ updated_at: 2026-09-29T00:48:51.578Z
 Deliver G5 in the linked plan: one reconciled snapshot, reusable artifacts, joint calendar/agent/provider/model grouping, cache metrics, tools and time, and explicit list-price estimates. Reuse existing summary/bundle and pricing work. Acceptance requires documented commands and a maintained runner without bespoke scripts. Full workflow remains milestone 0.5; this does not silently expand the 0.1 release scope.
 
 
-2026-10-09: the uncommitted pricing work is preserved as draft PR https://github.com/jlevy/urollup/pull/19 (branch codex/alpha-pricing-context, commits 9a6f6c9 code and 18f5260 docs), the top layer of formal stack #17 above #16. Not ready for review; rebase onto #18 when it lands (shared adapter and diagnostics files).
+2026-10-09 (restack): draft PR https://github.com/jlevy/urollup/pull/19 is rebased onto main bdaa7ce (PRs #15, #16, #18 and #22 merged). New head 95ae000 (code commit 0a102d8, docs commit 95ae000), base main, still a draft and not ready for review. Main's accounting rules, diagnostics, coverage and tests are unchanged apart from the intended Codex cache-write subtraction; pricing context follows main's turn_id context lookup, and docs/formats now describe main. Local fmt, clippy -D warnings, rustdoc, 347 workspace tests, make golden and 32 e2e result cases pass with no golden change (every Codex fixture records zero cache writes). Restack follow-ups are in the PR description: the service-tier filter versus main's unplaced (missing-ordinal) settings events, the 200-to-208-byte Claude record budget comment and its memory accounting, the AdapterError::Input doc comment, and no fixture with nonzero Codex cache writes.

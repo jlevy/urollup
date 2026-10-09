@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 12
+version: 13
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-10-09T07:16:42.295Z
+updated_at: 2026-10-09T17:45:33.356Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -75,4 +75,4 @@ updated_at: 2026-09-16T00:32:37.131Z
 Reviewed price table, PriceTable contract, overrides, staleness diagnostics, --require-priced and repricing goldens. Plan milestone 0.4.
 
 
-2026-10-09: the uncommitted pricing work is preserved as draft PR https://github.com/jlevy/urollup/pull/19 (branch codex/alpha-pricing-context, commits 9a6f6c9 code and 18f5260 docs), the top layer of formal stack #17 above #16. Not ready for review; rebase onto #18 when it lands (shared adapter and diagnostics files).
+2026-10-09 (restack): draft PR https://github.com/jlevy/urollup/pull/19 is rebased onto main bdaa7ce (PRs #15, #16, #18 and #22 merged). New head 95ae000 (code commit 0a102d8, docs commit 95ae000), base main, still a draft and not ready for review. Main's accounting rules, diagnostics, coverage and tests are unchanged apart from the intended Codex cache-write subtraction; pricing context follows main's turn_id context lookup, and docs/formats now describe main. Local fmt, clippy -D warnings, rustdoc, 347 workspace tests, make golden and 32 e2e result cases pass with no golden change (every Codex fixture records zero cache writes). Restack follow-ups are in the PR description: the service-tier filter versus main's unplaced (missing-ordinal) settings events, the 200-to-208-byte Claude record budget comment and its memory accounting, the AdapterError::Input doc comment, and no fixture with nonzero Codex cache writes.
