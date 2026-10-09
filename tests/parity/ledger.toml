@@ -612,6 +612,88 @@ expected_delta = -4000
 expected_matches = 6
 
 [[entry]]
+id = "codex-unverified-fork-boundary"
+case = "codex-rollout/unverified-fork-boundary"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-codex-parsing"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove only when neither of the entry's two causes remains: the first child's unverifiable first counter step (2,700 tokens) and the second child's usage under an invalid subagent_history_start_ordinal (its own 1,050 tokens). Each goes when urollup counts that usage from last_token_usage, or when ccusage stops trusting last_token_usage across such a boundary."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -1400
+expected_matches = 6
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -1000
+expected_matches = 4
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = -400
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -250
+expected_matches = 6
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -200
+expected_matches = 4
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -50
+expected_matches = 4
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = -60
+expected_matches = 4
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = -50
+expected_matches = 4
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = -10
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -3750
+expected_matches = 6
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -2700
+expected_matches = 4
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -1050
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -2100
+expected_matches = 6
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -1500
+expected_matches = 4
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -600
+expected_matches = 4
+[[entry]]
 id = "codex-session-since-record-clipping"
 case = "codex-rollout/zst-twin"
 cause = "semantics"

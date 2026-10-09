@@ -11,7 +11,7 @@
 //!   requests belong to no selection.
 //! - **Completeness** is partial whenever a counted member has no usage, unresolved or
 //!   possible usage exists, or an unobserved coverage gap applies: a group with any unknown
-//!   member is never complete.
+//!   member is never complete. Copy-only requests do not change completeness.
 //!
 //! All arithmetic is checked; `clippy::arithmetic_side_effects` is denied in this module.
 
@@ -71,6 +71,9 @@ pub enum PartialReason {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Completeness {
     /// Every counted request has usage, and nothing is unresolved, possible or unobserved.
+    ///
+    /// Requests observed only as copies are excluded from the totals and do not affect
+    /// completeness; whether they should is an open design decision.
     Complete,
     /// Something is missing, for these reasons.
     Partial(BTreeSet<PartialReason>),

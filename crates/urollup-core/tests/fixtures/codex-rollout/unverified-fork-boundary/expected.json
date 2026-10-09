@@ -1,0 +1,233 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "unverified-fork-boundary",
+  "dialect": "codex-rollout",
+  "summary": "Two paginated subagents whose fork-boundary evidence cannot separate inherited usage from their own: one has no copied counter to establish its baseline, the other has an invalid subagent_history_start_ordinal. Their unproven usage is excluded as a coverage gap while every other request still reports.",
+  "rules": [
+    "design §3.4 Codex copied history (subagent_history_start_ordinal)",
+    "design §3.4 Codex counters",
+    "design §2.1 coverage gaps"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 paginated rollouts with cumulative token_count only; the invalid boundary value is synthetic"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/18/rollout-2026-09-18T11-00-00-019f0000-0000-7000-8000-001600000001.jsonl",
+      "lines": 6,
+      "thread": "019f0000-0000-7000-8000-001600000001"
+    },
+    {
+      "path": "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl",
+      "lines": 9,
+      "thread": "019f0000-0000-7000-8000-001600000002"
+    },
+    {
+      "path": "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001600000003"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001600000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4000,
+          "cache_read": 2000,
+          "cache_write": 0,
+          "output": 400,
+          "reasoning": 100
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001600000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001600000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1000,
+          "cache_read": 500,
+          "cache_write": 0,
+          "output": 100,
+          "reasoning": 20
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001600000003",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001600000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:1"
+      ],
+      "own": {
+        "requests": 0,
+        "tokens": {
+          "uncached_input": 0,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 0,
+          "reasoning": 0
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001600000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/18/rollout-2026-09-18T11-00-00-019f0000-0000-7000-8000-001600000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001600000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-18T18:00:20.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 400,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-00-00-019f0000-0000-7000-8000-001600000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-00-00-019f0000-0000-7000-8000-001600000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001600000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:8"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001600000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-18T18:02:30.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 500,
+        "cache_write": 0,
+        "output": 100,
+        "reasoning": 20
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:8"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:7",
+      "kind": "unverified-first-counter-step",
+      "owner_thread": null,
+      "boundary_basis": "subagent_history_start_ordinal 3 with no copied counter, and a total that differs from last_token_usage"
+    },
+    {
+      "refs": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:2",
+        "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:7"
+      ],
+      "kind": "unplaced-region",
+      "copy_of_thread": null,
+      "boundary_basis": "subagent_history_start_ordinal is a string, so it places none of the rollout's usage"
+    },
+    {
+      "ref": "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:2",
+      "kind": "unplaced-token-count",
+      "owner_thread": null
+    },
+    {
+      "ref": "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:7",
+      "kind": "unplaced-token-count",
+      "owner_thread": null
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 5000,
+      "cache_read": 2500,
+      "cache_write": 0,
+      "output": 500,
+      "reasoning": 120
+    },
+    "total_tokens": 8000
+  },
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "refs": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-02-00-019f0000-0000-7000-8000-001600000002.jsonl:7"
+      ],
+      "detail": "the first child's first counter step: no copied counter proves its inherited baseline, and it is a coverage gap for that child"
+    },
+    {
+      "code": "codex-history-boundary-unverified",
+      "refs": [
+        "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:2",
+        "sessions/2026/09/18/rollout-2026-09-18T11-03-00-019f0000-0000-7000-8000-001600000003.jsonl:7"
+      ],
+      "detail": "the second child's string boundary places neither counter, and it is a coverage gap for that child"
+    }
+  ],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum each rollout's last cumulative total_token_usage",
+      "requests": null,
+      "tokens": {
+        "uncached_input": 15100,
+        "cache_read": 7900,
+        "cache_write": 0,
+        "output": 1550,
+        "reasoning": 380,
+        "total_tokens": 24550
+      }
+    }
+  ],
+  "notes": [
+    "The first child's first counter reports a 9,100-token total with a 2,700-token last usage. Without a copied counter, the 6,400 inherited tokens cannot be proven, so the step is excluded and its 2,700 tokens are a coverage gap; the second step's 1,600-token delta from 9,100 matches its last usage and counts.",
+    "The second child's string boundary cannot place either counter, so its copied 6,400-token counter and its own 1,050 tokens are both excluded rather than guessed.",
+    "Before the per-rollout degrade, either rollout aborted every report, the root's 6,400 tokens and every Claude session included."
+  ]
+}

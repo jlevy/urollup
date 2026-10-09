@@ -1,0 +1,183 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "paginated-counter-prefix",
+  "dialect": "codex-rollout",
+  "summary": "A counter-only paginated subagent whose copied prefix holds the parent's token_count but no parent session_meta, so only subagent_history_start_ordinal separates inherited usage from the child's own.",
+  "rules": [
+    "design §3.4 Codex copied history (subagent_history_start_ordinal)",
+    "design §3.4 Codex counters",
+    "design §3.2 Spawn"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 paginated rollouts with cumulative token_count only (ordinal and subagent_history_start_ordinal since rust-v0.145.0; token_usage_record from 0.153.0)"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/17/rollout-2026-09-17T11-00-00-019f0000-0000-7000-8000-001500000001.jsonl",
+      "lines": 6,
+      "thread": "019f0000-0000-7000-8000-001500000001"
+    },
+    {
+      "path": "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001500000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001500000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 5000,
+          "cache_read": 4000,
+          "cache_write": 0,
+          "output": 500,
+          "reasoning": 150
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001500000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001500000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:1"
+      ],
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 3000,
+          "cache_read": 2000,
+          "cache_write": 0,
+          "output": 300,
+          "reasoning": 100
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001500000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/17/rollout-2026-09-17T11-00-00-019f0000-0000-7000-8000-001500000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001500000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-17T18:00:20.000Z",
+      "tokens": {
+        "uncached_input": 5000,
+        "cache_read": 4000,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 150
+      },
+      "selected": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-00-00-019f0000-0000-7000-8000-001500000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-00-00-019f0000-0000-7000-8000-001500000001.jsonl:5",
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001500000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:7"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001500000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-17T18:02:15.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 2000,
+        "cache_write": 0,
+        "output": 300,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:7"
+      ],
+      "evidence": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:7"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "refs": [
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:2",
+        "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:3"
+      ],
+      "kind": "paginated-subagent-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-001500000001",
+      "boundary_basis": "subagent_history_start_ordinal 3, with no parent session_meta in the prefix"
+    },
+    {
+      "ref": "sessions/2026/09/17/rollout-2026-09-17T11-02-00-019f0000-0000-7000-8000-001500000002.jsonl:2",
+      "kind": "token-count-copy",
+      "copy_of": "sessions/2026/09/17/rollout-2026-09-17T11-00-00-019f0000-0000-7000-8000-001500000001.jsonl:5",
+      "owner_thread": "019f0000-0000-7000-8000-001500000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 2,
+      "owned": 2,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 8000,
+      "cache_read": 6000,
+      "cache_write": 0,
+      "output": 800,
+      "reasoning": 250
+    },
+    "total_tokens": 14800
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Treat records before subagent_history_start_ordinal as the child's own when the prefix carries no parent session_meta",
+      "requests": 3,
+      "tokens": {
+        "uncached_input": 13000,
+        "cache_read": 10000,
+        "cache_write": 0,
+        "output": 1300,
+        "reasoning": 400,
+        "total_tokens": 24300
+      }
+    }
+  ],
+  "notes": [
+    "This is the uro-kpbp shape: before the fix the copied 9,500-token counter at ordinal 1 counted as a child request and the child's own counter added 5,300, so the child reported 14,800 tokens over two requests.",
+    "The copied counter seeds the child's inherited baseline, so the child's first own delta is 14,800 - 9,500 = 5,300, which equals its last_token_usage."
+  ]
+}

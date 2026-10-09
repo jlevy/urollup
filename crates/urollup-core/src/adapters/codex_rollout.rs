@@ -21,11 +21,14 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use self::line::{DecodedLimits, EventType, Line, Payload, RecordType, UsageFields};
+use self::line::{
+    DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
+};
 use super::{AdapterError, Ingested};
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
-use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
+use crate::ledger::coverage::{CoverageGap, UnobservedReason};
+use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode, SAMPLE_EVIDENCE_LIMIT};
 use crate::ledger::entities::{
     Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, ProviderLimitObservation,
     Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
@@ -130,14 +133,16 @@ struct ObservedSource {
     observations: Vec<RequestObservation>,
     limit_observations: Vec<ProviderLimitObservation>,
     diagnostics: Vec<Diagnostic>,
+    gaps: Vec<CoverageGap>,
     copied_regions: u64,
 }
 
-/// Observations, limits and diagnostics from one rollout.
+/// Observations, limits, diagnostics and coverage gaps from one rollout.
 struct SourceObserve {
     observations: Vec<RequestObservation>,
     limit_observations: Vec<ProviderLimitObservation>,
     diagnostics: Vec<Diagnostic>,
+    gaps: Vec<CoverageGap>,
     copied_regions: u64,
 }
 
@@ -231,7 +236,7 @@ struct SessionMeta {
     project: Option<String>,
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
-    subagent_history_start_ordinal: Option<u64>,
+    subagent_history_start_ordinal: HistoryBoundary,
 }
 
 impl SessionMeta {
@@ -929,6 +934,148 @@ fn decode_rollout(
     }
 }
 
+/// Where a rollout's own records start, from its own `subagent_history_start_ordinal`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeBoundary {
+    /// None is declared; ownership follows session headers and settings events.
+    Absent,
+    /// Records before this ordinal are inherited history.
+    At(u64),
+    /// The declared value is not an ordinal, so it cannot place any record.
+    Invalid,
+}
+
+impl NativeBoundary {
+    fn of(meta: Option<&SessionMeta>) -> Self {
+        match meta.map(|meta| meta.subagent_history_start_ordinal) {
+            None | Some(HistoryBoundary::Missing) => Self::Absent,
+            Some(HistoryBoundary::Ordinal(ordinal)) => Self::At(ordinal),
+            Some(HistoryBoundary::Invalid) => Self::Invalid,
+        }
+    }
+
+    fn is_declared(self) -> bool {
+        self != Self::Absent
+    }
+
+    /// Whether a record at `ordinal` is inherited history before the boundary.
+    fn precedes(self, ordinal: Option<u64>) -> bool {
+        match self {
+            Self::At(boundary) => ordinal.is_some_and(|ordinal| ordinal < boundary),
+            Self::Absent | Self::Invalid => false,
+        }
+    }
+
+    /// Whether a declared boundary leaves a record at `ordinal` on neither side of it.
+    fn cannot_place(self, ordinal: Option<u64>) -> bool {
+        match self {
+            Self::Absent => false,
+            Self::At(_) => ordinal.is_none(),
+            Self::Invalid => true,
+        }
+    }
+}
+
+/// Explains a [`DiagnosticCode::CodexHistoryBoundaryUnverified`] without naming a path or
+/// any value from the rollout.
+const UNVERIFIED_BOUNDARY_DETAIL: &str = concat!(
+    "Codex fork-boundary evidence could not prove which usage is this thread's own, so that ",
+    "usage is excluded as a coverage gap; inspect the rollout's ",
+    "subagent_history_start_ordinal, its record ordinals and its first token_count after the ",
+    "boundary",
+);
+
+/// Explains an unseeded child counter that starts a new epoch above its inherited total.
+const UNSEEDED_COUNTER_DETAIL: &str =
+    "Codex cumulative usage did not continue the inherited total and opened a new counter epoch";
+
+/// Usage records whose ownership a declared fork boundary could not establish.
+#[derive(Default)]
+struct UnverifiedUsage {
+    /// The first few records, as diagnostic and gap samples.
+    evidence: Vec<EvidenceRef>,
+    occurrences: u64,
+}
+
+impl UnverifiedUsage {
+    fn add(&mut self, evidence: EvidenceRef) {
+        if self.evidence.len() < SAMPLE_EVIDENCE_LIMIT {
+            self.evidence.push(evidence);
+        }
+        self.occurrences = self.occurrences.saturating_add(1);
+    }
+}
+
+/// How a rollout's first own cumulative total relates to the baseline it may continue.
+enum FirstStep {
+    /// The baseline accounts for the total, or the step reports no usage it could check:
+    /// count from it.
+    Continues(RunningTotal),
+    /// The total repeats the baseline, so the step adds nothing and the next step that
+    /// reports usage is still the one to check.
+    Repeated,
+    /// The total is the step's own usage alone, so the inherited baseline does not apply.
+    Unseeded,
+    /// The total fell below the baseline and its own usage is zero: it reports no usage,
+    /// so the next step is checked, from this total.
+    Lowered,
+    /// Neither the baseline nor a zero start accounts for the total.
+    Unverified,
+}
+
+/// Checks a first own total against `last`, the usage of the request it reports.
+///
+/// A seeded child continues its parent's running total, so its first delta from the
+/// inherited baseline equals `last`; an unseeded one starts from zero, so its total does.
+/// Without an inherited baseline, only the zero start can be proven.
+fn first_step(
+    inherited: Option<TokenMeasures>,
+    total: &TokenMeasures,
+    last: Option<&TokenMeasures>,
+) -> Result<FirstStep, AdapterError> {
+    let tracker = inherited.map_or_else(RunningTotal::new, RunningTotal::inheriting);
+    let Some(last) = last else { return Ok(FirstStep::Continues(tracker)) };
+    let step = tracker.clone().observe(total, None)?;
+    let proven = match step.event {
+        CounterEvent::Repeated => return Ok(FirstStep::Repeated),
+        CounterEvent::Reset
+            if !same_usage(total, last) && same_usage(last, &TokenMeasures::default()) =>
+        {
+            return Ok(FirstStep::Lowered);
+        }
+        CounterEvent::Reset => same_usage(total, last),
+        CounterEvent::Advanced | CounterEvent::Gap { .. } => same_usage(&step.delta, last),
+    };
+    Ok(if proven {
+        FirstStep::Continues(tracker)
+    } else if same_usage(total, last) {
+        FirstStep::Unseeded
+    } else {
+        FirstStep::Unverified
+    })
+}
+
+/// Whether `total` changes the running total the rollout's next own step continues: the
+/// counter's, or else the inherited total. A total that only repeats it carries no usage.
+fn changes_running_total(
+    counter: Option<&RunningTotal>,
+    inherited: Option<TokenMeasures>,
+    total: &TokenMeasures,
+) -> Result<bool, AdapterError> {
+    let mut tracker = counter
+        .cloned()
+        .unwrap_or_else(|| inherited.map_or_else(RunningTotal::new, RunningTotal::inheriting));
+    Ok(tracker.observe(total, None)?.event != CounterEvent::Repeated)
+}
+
+/// Category-wise equality, reading a missing count as zero.
+fn same_usage(left: &TokenMeasures, right: &TokenMeasures) -> bool {
+    left.categories()
+        .into_iter()
+        .zip(right.categories())
+        .all(|((_, left), (_, right))| left.unwrap_or(0) == right.unwrap_or(0))
+}
+
 fn observe_parsed_source(
     source: &ParsedSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
@@ -937,9 +1084,16 @@ fn observe_parsed_source(
     let mut observations = Vec::with_capacity(source.observation_slots);
     let mut limit_observations = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut gaps = Vec::new();
     let mut copied_regions = 0_u64;
     let Some(_source_id) = source.id.as_ref() else {
-        return Ok(SourceObserve { observations, limit_observations, diagnostics, copied_regions });
+        return Ok(SourceObserve {
+            observations,
+            limit_observations,
+            diagnostics,
+            gaps,
+            copied_regions,
+        });
     };
     let strings = &source.strings;
     let file_thread = source.file_thread;
@@ -947,11 +1101,24 @@ fn observe_parsed_source(
     let has_direct = has_direct_usage(source);
     let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
     let parent_thread = own_meta.and_then(SessionMeta::parent);
-    let native_boundary = own_meta.and_then(|meta| meta.subagent_history_start_ordinal);
+    let native_boundary = NativeBoundary::of(own_meta);
     let has_foreign_meta = source.metas.foreign;
-    if parent_thread.is_some() && has_foreign_meta && (!has_direct || native_boundary.is_some()) {
+    let has_native_prefix = match native_boundary {
+        NativeBoundary::Absent => false,
+        NativeBoundary::At(boundary) => source.records.iter().any(|record| {
+            record.ordinal.is_some_and(|ordinal| ordinal < boundary)
+                && can_emit_observation(&record.kind)
+        }),
+        NativeBoundary::Invalid => {
+            source.records.iter().any(|record| can_emit_observation(&record.kind))
+        }
+    };
+    if parent_thread.is_some()
+        && (has_foreign_meta || has_native_prefix)
+        && (!has_direct || native_boundary.is_declared())
+    {
         copied_regions = copied_regions.saturating_add(1);
-        if !has_direct && native_boundary.is_none() {
+        if !has_direct && !native_boundary.is_declared() {
             let copied = legacy_copied_evidence(source, known_turns);
             diagnostics.push(
                 Diagnostic::new(
@@ -967,19 +1134,57 @@ fn observe_parsed_source(
     let mut active_thread = file_thread;
     let mut turns = Turns::new();
     let mut current_turn: Option<Sym> = None;
-    let mut last_response_by_thread: HashMap<Sym, Sym> = HashMap::new();
+    let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
     let mut inherited_total = None;
     let mut counter = None;
+    let mut unverified = UnverifiedUsage::default();
     let mut previous_limits = BTreeMap::new();
     let mut counts = CountReader::new(&source.counts);
     for record in &source.records {
         let [first_usage, second_usage] = counts.record(&record.kind);
         let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
-        if native_boundary
-            .is_some_and(|boundary| record.ordinal.is_some_and(|ordinal| ordinal >= boundary))
-        {
-            active_thread = file_thread;
+        if let NativeBoundary::At(boundary) = native_boundary {
+            if record.ordinal.is_some_and(|ordinal| ordinal >= boundary) {
+                active_thread = file_thread;
+            }
         }
+        // A paginated prefix need not contain a foreign session header: an explicit
+        // ordinal boundary alone assigns the records before it to the parent. It
+        // establishes ownership of the inherited prefix, not a counter baseline.
+        let before_boundary = native_boundary.precedes(record.ordinal);
+        let owner = if before_boundary && active_thread == file_thread {
+            parent_thread
+        } else {
+            Some(strings.resolve(active_thread))
+        };
+        // Usage that would count as this rollout's own, but that a declared boundary
+        // cannot place, is copied history of no proven owner: never the child's usage.
+        // A cumulative total that only repeats the running total carries no usage; Codex
+        // re-sends the current totals with every rate-limit refresh.
+        let unplaced = native_boundary.cannot_place(record.ordinal)
+            && match &record.kind {
+                RecordKind::UsageRecord(usage) => usage
+                    .thread_id
+                    .map_or(active_thread == file_thread, |thread| thread == file_thread),
+                RecordKind::TokenCount { .. } => match &first_usage {
+                    Some(total) if !has_direct && active_thread == file_thread => {
+                        changes_running_total(
+                            counter.as_ref(),
+                            inherited_total,
+                            &codex_usage(total)?,
+                        )?
+                    }
+                    Some(_) | None => false,
+                },
+                RecordKind::SessionMeta { .. }
+                | RecordKind::TurnContext { .. }
+                | RecordKind::Compacted(_)
+                | RecordKind::ThreadSettingsApplied { .. } => false,
+            };
+        if unplaced {
+            unverified.add(view.evidence);
+        }
+        let usage_owner = if unplaced { None } else { owner };
         match &record.kind {
             RecordKind::SessionMeta { id } => {
                 if let Some(thread_id) = *id {
@@ -1004,20 +1209,29 @@ fn observe_parsed_source(
                 active_thread = thread_id.unwrap_or(file_thread);
             }
             RecordKind::UsageRecord(usage_record) => {
-                let payload = usage_record.payload(strings, first_usage);
+                let mut payload = usage_record.payload(strings, first_usage);
+                payload.thread_id = payload.thread_id.or(usage_owner);
+                let role = if before_boundary || unplaced {
+                    ObservationRole::Copy
+                } else {
+                    ObservationRole::Original
+                };
                 let observation =
-                    direct_observation(&view, &payload, file_thread_text, thread_ids, &turns)?;
-                if let Some(response_id) = usage_record.response_id {
-                    let owner = usage_record.thread_id.unwrap_or(file_thread);
+                    usage_observation(&view, &payload, role, file_thread_text, thread_ids, &turns)?;
+                if let (Some(response_id), Some(owner)) =
+                    (usage_record.response_id, payload.thread_id)
+                {
                     last_response_by_thread.insert(owner, response_id);
                 }
                 observations.push(observation);
             }
             RecordKind::Compacted(latest) => {
                 if let Some(latest) = latest {
+                    let mut payload = latest.payload(strings, first_usage);
+                    payload.thread_id = payload.thread_id.or(owner);
                     observations.push(usage_observation(
                         &view,
-                        &latest.payload(strings, first_usage),
+                        &payload,
                         ObservationRole::Copy,
                         file_thread_text,
                         thread_ids,
@@ -1031,22 +1245,24 @@ fn observe_parsed_source(
                     append_limits(
                         &view,
                         limits,
-                        strings.resolve(active_thread),
+                        owner,
                         thread_ids,
                         &mut previous_limits,
                         &mut limit_observations,
                     );
                 }
-                if has_direct && active_thread != file_thread {
+                if has_direct && owner != Some(file_thread_text) {
                     if let Some(usage) = &last {
                         let mut observation = RequestObservation::new(view.evidence);
                         observation.role = ObservationRole::Copy;
-                        observation.owner = thread_ids
-                            .get(strings.resolve(active_thread))
+                        observation.owner = owner
+                            .and_then(|owner| thread_ids.get(owner))
                             .cloned()
                             .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
                         observation.usage = Some(codex_usage(usage)?.into());
-                        if let Some(response_id) = last_response_by_thread.get(&active_thread) {
+                        if let Some(response_id) =
+                            owner.and_then(|owner| last_response_by_thread.get(owner))
+                        {
                             observation.keys.push(
                                 RESPONSE_KEY
                                     .key(vec![
@@ -1066,7 +1282,51 @@ fn observe_parsed_source(
                     let Some(total) = &total else { continue };
                     let total_usage = codex_usage(total)?;
                     let last = last.as_ref();
-                    if active_thread != file_thread {
+                    let silent = last.is_some_and(|last| {
+                        last.input.unwrap_or(0) == 0 && last.output.unwrap_or(0) == 0
+                    });
+                    let estimated = silent && last.is_some_and(|last| last.total.unwrap_or(0) > 0);
+                    if unplaced {
+                        // The next own step is checked against this total, so usage this
+                        // record may carry never reaches that step's delta.
+                        counter = None;
+                    }
+                    let mut copy_owner =
+                        (usage_owner != Some(file_thread_text)).then_some(usage_owner);
+                    let needs_baseline = inherited_total.is_some()
+                        || matches!(native_boundary, NativeBoundary::At(_));
+                    if copy_owner.is_none() && counter.is_none() && needs_baseline {
+                        let last_usage =
+                            last.filter(|_| !estimated).map(codex_usage).transpose()?;
+                        match first_step(inherited_total, &total_usage, last_usage.as_ref())? {
+                            FirstStep::Continues(tracker) => counter = Some(tracker),
+                            FirstStep::Repeated => continue,
+                            FirstStep::Unseeded => {
+                                diagnostics.push(Diagnostic::new(
+                                    DiagnosticCode::CodexCounterEpochReset,
+                                    thread_ids.get(file_thread_text).cloned(),
+                                    [view.evidence],
+                                    UNSEEDED_COUNTER_DETAIL,
+                                ));
+                                counter = Some(RunningTotal::new());
+                            }
+                            FirstStep::Lowered => {
+                                diagnostics.push(Diagnostic::new(
+                                    DiagnosticCode::CodexCounterEpochReset,
+                                    thread_ids.get(file_thread_text).cloned(),
+                                    [view.evidence],
+                                    "Codex cumulative usage decreased and opened a new counter epoch",
+                                ));
+                                inherited_total = Some(total_usage);
+                                continue;
+                            }
+                            FirstStep::Unverified => {
+                                unverified.add(view.evidence);
+                                copy_owner = Some(None);
+                            }
+                        }
+                    }
+                    if let Some(copy_owner) = copy_owner {
                         inherited_total = Some(total_usage);
                         if let Some(last) = last {
                             observations.push(counter_observation(
@@ -1075,7 +1335,7 @@ fn observe_parsed_source(
                                 total,
                                 CounterObservation {
                                     role: ObservationRole::Copy,
-                                    owner: strings.resolve(active_thread),
+                                    owner: copy_owner,
                                     thread_ids,
                                     context: current_turn.and_then(|turn| turns.get(&turn)),
                                     delta: None,
@@ -1098,8 +1358,6 @@ fn observe_parsed_source(
                         ));
                     }
                     let Some(last) = last else { continue };
-                    let silent = last.input.unwrap_or(0) == 0 && last.output.unwrap_or(0) == 0;
-                    let estimated = silent && last.total.unwrap_or(0) > 0;
                     if estimated {
                         let context_fill = total.input.unwrap_or(0) == 0
                             && total.output.unwrap_or(0) == 0
@@ -1134,7 +1392,7 @@ fn observe_parsed_source(
                             total,
                             CounterObservation {
                                 role: ObservationRole::Original,
-                                owner: file_thread_text,
+                                owner: Some(file_thread_text),
                                 thread_ids,
                                 context: current_turn.and_then(|turn| turns.get(&turn)),
                                 delta: (step.event != CounterEvent::Reset).then_some(step.delta),
@@ -1145,7 +1403,25 @@ fn observe_parsed_source(
             }
         }
     }
-    Ok(SourceObserve { observations, limit_observations, diagnostics, copied_regions })
+    if unverified.occurrences > 0 {
+        let subject = thread_ids.get(file_thread_text).cloned();
+        let evidence = unverified.evidence;
+        diagnostics.push(
+            Diagnostic::new(
+                DiagnosticCode::CodexHistoryBoundaryUnverified,
+                subject.clone(),
+                evidence.iter().copied(),
+                UNVERIFIED_BOUNDARY_DETAIL,
+            )
+            .with_occurrences(unverified.occurrences),
+        );
+        gaps.push(CoverageGap {
+            reason: UnobservedReason::UnverifiedHistoryBoundary,
+            thread: subject,
+            evidence,
+        });
+    }
+    Ok(SourceObserve { observations, limit_observations, diagnostics, gaps, copied_regions })
 }
 
 fn observe_to_observed(
@@ -1163,6 +1439,7 @@ fn observe_to_observed(
         observations: observed.observations,
         limit_observations: observed.limit_observations,
         diagnostics: observed.diagnostics,
+        gaps: observed.gaps,
         copied_regions: observed.copied_regions,
     })
 }
@@ -1182,6 +1459,7 @@ fn stamp_refs(
     observations: &mut [RequestObservation],
     limits: &mut [ProviderLimitObservation],
     diagnostics: &mut [Diagnostic],
+    gaps: &mut [CoverageGap],
     source: u32,
 ) {
     for observation in observations {
@@ -1192,6 +1470,11 @@ fn stamp_refs(
     }
     for diagnostic in diagnostics {
         for evidence in &mut diagnostic.evidence {
+            *evidence = evidence.with_source(source);
+        }
+    }
+    for gap in gaps {
+        for evidence in &mut gap.evidence {
             *evidence = evidence.with_source(source);
         }
     }
@@ -1310,7 +1593,7 @@ fn normalize(
     // worker result still holds its own copy.
     let mut observations = Vec::new();
     let mut diagnostics = source_diagnostics(&manifest, &source_table);
-    let (losses, gaps) = super::snapshot_losses(&manifest, "Codex rollout", |entry| {
+    let (losses, mut gaps) = super::snapshot_losses(&manifest, "Codex rollout", |entry| {
         let id = &entry.source.as_ref()?.id;
         Some(EvidenceRef::new(source_index(&source_table, Some(id)), 0, 0))
     });
@@ -1356,6 +1639,7 @@ fn normalize(
                     &mut observed.observations,
                     &mut observed.limit_observations,
                     &mut observed.diagnostics,
+                    &mut observed.gaps,
                     index,
                 );
                 copied_regions = copied_regions.saturating_add(observed.copied_regions);
@@ -1363,6 +1647,7 @@ fn normalize(
                 observations.append(&mut observed.observations);
                 limit_observations.append(&mut observed.limit_observations);
                 diagnostics.append(&mut observed.diagnostics);
+                gaps.append(&mut observed.gaps);
             }
             DecodedRollout::Pending(source) => {
                 let index = source_index(&source_table, source.id.as_ref());
@@ -1371,6 +1656,7 @@ fn normalize(
                     &mut observed.observations,
                     &mut observed.limit_observations,
                     &mut observed.diagnostics,
+                    &mut observed.gaps,
                     index,
                 );
                 copied_regions = copied_regions.saturating_add(observed.copied_regions);
@@ -1378,6 +1664,7 @@ fn normalize(
                 observations.append(&mut observed.observations);
                 limit_observations.append(&mut observed.limit_observations);
                 diagnostics.append(&mut observed.diagnostics);
+                gaps.append(&mut observed.gaps);
             }
         }
     }
@@ -1470,7 +1757,7 @@ struct CopiedEvidence {
 #[derive(Clone, Copy)]
 struct CounterObservation<'a> {
     role: ObservationRole,
-    owner: &'a str,
+    owner: Option<&'a str>,
     thread_ids: &'a BTreeMap<String, AnalyticalId>,
     context: Option<&'a TurnContext>,
     delta: Option<TokenMeasures>,
@@ -1485,11 +1772,11 @@ fn counter_observation(
     let mut observation = RequestObservation::new(record.evidence);
     observation.role = counter.role;
     observation.owner = counter
-        .thread_ids
-        .get(counter.owner)
+        .owner
+        .and_then(|owner| counter.thread_ids.get(owner))
         .cloned()
         .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-    if let Some(thread_id) = counter.thread_ids.get(counter.owner) {
+    if let Some(thread_id) = counter.owner.and_then(|owner| counter.thread_ids.get(owner)) {
         observation.keys.push(
             COUNTER_KEY
                 .key(vec![
@@ -1519,12 +1806,12 @@ type LimitStream = (Option<AnalyticalId>, Option<String>, &'static str);
 fn append_limits(
     record: &RecordView,
     limits: &Arc<RateLimits>,
-    owner: &str,
+    owner: Option<&str>,
     thread_ids: &BTreeMap<String, AnalyticalId>,
     previous: &mut BTreeMap<LimitStream, Arc<RateLimits>>,
     observations: &mut Vec<ProviderLimitObservation>,
 ) {
-    let owner_thread = thread_ids.get(owner).cloned();
+    let owner_thread = owner.and_then(|owner| thread_ids.get(owner)).cloned();
     for window in &limits.windows {
         let stream = (owner_thread.clone(), limits.limit_name.clone(), *window);
         let repeated = previous.get(&stream).is_some_and(|last| last.native == limits.native);
@@ -1606,16 +1893,6 @@ fn counter_signature(total: &CodexUsage) -> String {
     .join(":")
 }
 
-fn direct_observation(
-    record: &RecordView,
-    payload: &UsagePayload<'_>,
-    file_thread: &str,
-    thread_ids: &BTreeMap<String, AnalyticalId>,
-    turns: &Turns,
-) -> Result<RequestObservation, AdapterError> {
-    usage_observation(record, payload, ObservationRole::Original, file_thread, thread_ids, turns)
-}
-
 fn usage_observation(
     record: &RecordView,
     payload: &UsagePayload<'_>,
@@ -1624,15 +1901,17 @@ fn usage_observation(
     thread_ids: &BTreeMap<String, AnalyticalId>,
     turns: &Turns,
 ) -> Result<RequestObservation, AdapterError> {
-    let owner = payload.thread_id.unwrap_or(file_thread);
+    let owner = payload.thread_id;
     let mut observation = RequestObservation::new(record.evidence);
-    observation.role = if default_role == ObservationRole::Copy || owner != file_thread {
+    observation.role = if default_role == ObservationRole::Copy || owner != Some(file_thread) {
         ObservationRole::Copy
     } else {
         ObservationRole::Original
     };
-    observation.owner =
-        thread_ids.get(owner).cloned().map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+    observation.owner = owner
+        .and_then(|owner| thread_ids.get(owner))
+        .cloned()
+        .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
     if let Some(response_id) = payload.response_id {
         observation.keys.push(
             RESPONSE_KEY

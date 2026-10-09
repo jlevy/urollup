@@ -41,19 +41,54 @@ owns the broader repository standards.
 
 ## Current Readiness and Critical Path
 
-As of 2026-09-19, readiness is divided into four gates so a locally testable alpha is
-not confused with a publishable release:
+This section is the project’s single record of release readiness.
+The README, `AGENTS.md`, the product plan and the governing review link here rather than
+restating blockers, so a status change is one edit.
+
+As of 2026-10-09 UTC, readiness is divided into four gates so a locally testable alpha
+is not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implemented on stacked PRs #4 and #8, both CI-green. Whole-history ingestion continues on the unpushed `scalable-ingestion` branch; remaining 512 MiB cuts are `uro-q1ik`, `uro-g7pi` and `uro-as4a` under `uro-n1cp` |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | The opt-in local tools and privacy sentinels are implemented; G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) wait on Phase 1 of the scalable-ingestion plan (512 MiB), not on Phase 2’s 10-second target |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). `main` still has the [open correctness fixes](#open-correctness-fixes) below. Current CLI and local-QA corrections are tracked as `uro-oz6w` and `uro-qg1a` |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on the Codex fork fix (`uro-kpbp`), the aggregate helper’s per-session rescans (`uro-qg1a`) and process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
 The local alpha can be installed and exercised before packaging machinery exists.
 Publication begins only after both the product-acceptance and packaging-rehearsal gates
 pass; neither gate is evidence for the other.
+The
+[memory and scale policy](plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+the maintainer approved on 2026-09-27 retired the representative 512 MiB/10-second
+blockers. `uro-zrr0` still gates G1 on process-wide admission safety (`uro-6pi8`),
+density-based scale evidence (`uro-z1h1`) and representative evidence (`uro-erqo`).
+Retiring those thresholds does not close the release gate.
+Hybrid spill is a follow-up.
+The [whole-history analysis workflow](plan-2026-09-20-usage-analysis-workflow.md) is G5
+across milestones 0.2–0.5. Cache-hit request metrics, tool/time reports and list-price
+valuation must not be advertised as completed 0.1 features.
+
+### Open Correctness Fixes
+
+These defects were present on `main` as of the date above.
+PR #18 merged on 2026-10-09, and PR #16 lands with this record.
+Codex totals stay provisional until the real-history comparison is rerun.
+
+- **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
+  copies its parent’s history before an explicit boundary counts that copied prefix
+  again. In a synthetic case, a parent with 100 tokens and a child that copies that
+  100-token prefix and adds 20 tokens reports 220 instead of 120, with
+  `coverage.complete: true` and no diagnostic.
+  It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
+  (`uro-aakb`). The fix is in [PR #16](https://github.com/jlevy/urollup/pull/16).
+- **Source reading and Codex usage (fixed in
+  [PR #18](https://github.com/jlevy/urollup/pull/18), merged 2026-10-09):** `.jsonl.gz`
+  sources are silently excluded (`uro-nc34`); a source deleted or compressed during a
+  run aborts the command (`uro-2abk`); a corrupt, truncated or unreadable source lowers
+  totals while coverage stays complete (`uro-1h5s`); Codex subagent requests report an
+  `unknown` model and effort (`uro-5nkv`); and a lowered Codex cumulative total is
+  charged to one request (`uro-v1c9`).
 
 ## Goals
 

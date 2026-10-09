@@ -1054,6 +1054,7 @@ fn normalize(
             | DiagnosticCode::CodexCounterEpochReset
             | DiagnosticCode::CodexEstimateCompaction
             | DiagnosticCode::CodexEstimateContextWindowFill
+            | DiagnosticCode::CodexHistoryBoundaryUnverified
             | DiagnosticCode::CodexRolloutDuplicateLocation
             | DiagnosticCode::MalformedLine
             | DiagnosticCode::PendingTail

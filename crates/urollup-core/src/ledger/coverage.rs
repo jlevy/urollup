@@ -16,6 +16,9 @@ pub enum UnobservedReason {
     /// Usage was written to a source that could not be read completely, such as a
     /// truncated compressed file or a transcript deleted during the run.
     UnreadableSource,
+    /// A Codex fork boundary could not separate inherited history from the thread's own
+    /// usage, so usage that may be the thread's own was excluded rather than counted.
+    UnverifiedHistoryBoundary,
     /// Another reason, named by a registry token.
     Other(String),
 }

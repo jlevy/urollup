@@ -3,7 +3,7 @@ title: Full-History Rollup QA
 description: Manual end-to-end validation that urollup rolls up the whole local Claude Code and Codex history on a real machine, fast and within its memory bound, with correct per-project, per-session and resumed-history totals.
 date: 2026-09-16
 author: Joshua Levy (github.com/jlevy) with LLM assistance
-status: Active; ready to run now that the input guard is removed
+status: Active manual checklist; full acceptance pending, maintained workflow runner planned
 ---
 # QA Playbook: Full-History Rollup
 
@@ -11,10 +11,9 @@ Manual QA playbook for urollup’s default whole-history reports on a machine wi
 real corpus of Claude Code and Codex logs.
 
 **Purpose:** prove that `sessions`, `daily` and `report --all` read the entire local
-history without an input-size limit, finish in seconds within a few hundred MiB, and
-produce totals that are internally consistent, deterministic, correct for individual
-sessions and projects, and not double counted or dropped across resumed and forked
-sessions.
+history without an input-size limit, keep whole-process memory manageable, and produce
+totals that are internally consistent, deterministic, correct for individual sessions
+and projects, and not double counted or dropped across resumed and forked sessions.
 
 **Estimated time:** about 45 minutes: 5 for setup, 5 for whole-history runs, 10 for
 invariants and determinism, 15 for project and session cross-checks, and 10 for resumed
@@ -27,7 +26,43 @@ history and recording.
 
 * * *
 
-## Current Status (Last Update 2026-09-16)
+## Execution Modes and Workflow Follow-Up
+
+This is a manual investigative checklist.
+The
+[usage-analysis workflow plan](../../docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md)
+tracks a maintained runner under G5 (`uro-i6xb`); `uro-ky6c` continues to own 0.1
+full-history acceptance.
+Do not copy a session-specific scratch driver into the product as a second accounting or
+measurement engine.
+
+- **Exploratory live run:** commands may observe different source boundaries.
+  Record input growth and host contention.
+  Complete-day comparisons are useful partial evidence, but they do not prove
+  immutable-snapshot determinism or external parity.
+- **Acceptance run:** compare all views and worker counts against the same recorded,
+  reproducible input boundary.
+  Use the accepted revision’s release binary and record build mode, workers, timezone,
+  cache state, host load and measurement definitions.
+  If that boundary cannot be reproduced, leave determinism and affected checks pending.
+- **Result organization:** retain private reports, source manifests and diagnostics in
+  an ignored local run directory.
+  Separate immutable snapshot/query metadata from wall timings.
+  Record every check as pass, fail or not run.
+  Publishing any aggregate needs authorization for the destination and payload; consent
+  to read logs does not grant it.
+
+`make e2e-local` currently calls a per-session loop in `local_aggregate.py`; `uro-qg1a`
+must replace it with bounded shared queries and preserve cache lifetimes and unknown
+metric fields. Do not use that loop as the whole-history performance recipe.
+Reuse `run-rss-watchdog.py` and the existing scale measurement helpers in the maintained
+runner. Build time, input scans, saved-artifact loading, query rendering and optional
+postprocessing are measured separately.
+First execution does not establish a cold cache.
+
+* * *
+
+## Current Status (Last Update 2026-10-09)
 
 | Phase | Status | Notes |
 | --- | --- | --- |
@@ -36,24 +71,29 @@ history and recording.
 | Phase 3: Invariants and determinism | ⏸️ Blocked | Commands validated on fixtures |
 | Phase 4: Per-project cross-checks | ⏸️ Blocked | Needs Phase 2 whole-history runs |
 | Phase 5: Hand-summed sessions | ⏸️ Blocked | Commands validated on fixtures |
-| Phase 6: Resumed and forked history | ⏸️ Blocked | Order bug `uro-sn1e` reproduced on fixtures |
+| Phase 6: Resumed and forked history | ⏸️ Blocked | Claude order bug `uro-sn1e` is fixed; the fix for the Codex paginated-fork double count (`uro-kpbp`) is not yet merged |
 | Phase 7: Live current session and local parity | ⏸️ Blocked | Needs Phase 2 whole-history runs |
 | Phase 8: Record and clean up | ⏸️ Blocked |  |
 
 **Status legend:** ✅ Passed | ❌ Failed | ⏳ Pending | ⏸️ Blocked
 
-**Test results (last update 2026-09-16):**
+**Test results (last update 2026-10-09):**
 
 - Invariant, hand-sum and measurement commands → ✅ validated against fixture corpora
   with the current engine.
-- Whole-history runs → ⏳ pending; the 512 MiB input guard and read budgets are removed,
-  so the default corpus is no longer refused.
+- Whole-history runs → ⏳ pending acceptance; the 512 MiB input guard and read budgets
+  are removed, so the default corpus is no longer refused.
+  Exploratory runs of all three commands completed; they are not acceptance runs, and
+  their results stay local.
 
 **Next steps:**
 
-1. Finish Phase 1 of the
+1. Land and revalidate the
+   [open correctness fixes](../../docs/project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes),
+   starting with `uro-kpbp`.
+2. Finish process-wide safety and scale validation in Phase 2 of the
    [scalable ingestion plan](../../docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md).
-2. Run Phases 1–8 of this playbook and record results in a dated QA report.
+3. Run Phases 1–8 of this playbook and record results in a dated QA report.
 
 * * *
 
@@ -61,16 +101,28 @@ history and recording.
 
 - A macOS machine with the maintainer’s real Claude Code and Codex history in the
   default locations, and the maintainer’s consent to read it.
+- **Claude transcript retention:** Claude Code deletes project transcripts older than
+  `cleanupPeriodDays` (30 days by default) at startup, compressed or not
+  ([transcript storage](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)).
+  The default Claude corpus covers only that window unless the setting was raised in
+  `~/.claude/settings.json` or older transcripts were archived to a root passed with
+  `--source`. Do not start new Claude Code sessions during a run: startup cleanup can
+  delete a file mid-scan, which currently aborts the command (`uro-2abk`).
 - The pinned Rust toolchain, uv and npm dependencies from [AGENTS.md](../../AGENTS.md),
   `jq`, and `make parity` run once so the pinned ccusage 20.0.20 binary is installed.
-- At least 3 GB of free disk and no heavy memory users running, such as other agents
-  building or testing.
+- A mounted, writable external scratch volume (`QA_SCRATCH_ROOT`) with space for builds
+  and bounded test inputs, plus a private persistent evidence directory (`QA`) outside
+  disposable scratch. Stop disk-heavy work if the scratch volume is unavailable.
+- Normal memory pressure and no competing heavy builds or test runs.
 
 **Privacy rules:**
 
-- Keep every capture under the ignored `target/qa/full-history/` directory.
-- The dated QA report records only aggregate counts, timings, footprints, deltas and
-  pass or fail results.
+- Keep captures in the private evidence directory named by `QA`, outside the repository
+  and disposable scratch.
+  Do not publish captures or derived measurements without separate authorization for the
+  destination and payload.
+- An authorized shared QA report records only permitted aggregate counts, timings,
+  footprints, deltas and pass or fail results.
   Name this repository as `urollup`; name other repositories `Repo A`, `Repo B` and
   `Repo C`. Never record paths, session IDs, prompts or custom model names.
 
@@ -93,40 +145,69 @@ history and recording.
 
 ```bash
 git rev-parse --short HEAD
-cargo build --locked --release --workspace
-df -h ~ | tail -1
+qa_setup() {
+  if [ -z "${QA:-}" ] || [ -z "${QA_SCRATCH_ROOT:-}" ]; then
+    echo "Set QA (private evidence directory) and QA_SCRATCH_ROOT (scratch mount point)" >&2
+    return 1
+  fi
+  if ! mount | awk -v root="$QA_SCRATCH_ROOT" '$3 == root { found = 1 } END { exit !found }' ||
+    ! test -w "$QA_SCRATCH_ROOT"; then
+    echo "Scratch volume unavailable or not writable: $QA_SCRATCH_ROOT" >&2
+    return 1
+  fi
+  df -h "$QA_SCRATCH_ROOT"
+  export QA_SCRATCH="${QA_SCRATCH:-$QA_SCRATCH_ROOT/agent-scratch/urollup-full-history-qa}"
+  export TMPDIR="$QA_SCRATCH/tmp"
+  export CARGO_TARGET_DIR="$QA_SCRATCH/target"
+  export UV_CACHE_DIR="$QA_SCRATCH/uv-cache"
+  umask 077
+  mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$UV_CACHE_DIR" "$QA"
+}
+qa_setup && cargo build --locked --release --workspace
 memory_pressure | tail -1
-mkdir -p target/qa/full-history
-export UR=target/release/urollup
-export QA=target/qa/full-history
+export UR="$CARGO_TARGET_DIR/release/urollup"
+export QA_RAM_MIB=$(( $(sysctl -n hw.memsize) / 1048576 ))
+export QA_WATCHDOG_MIB=$(( QA_RAM_MIB / 4 ))
 export CCUSAGE=tests/parity/ccusage/node_modules/@ccusage/ccusage-darwin-arm64/bin/ccusage
 export UROLLUP_STATS=1
 unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID UROLLUP_JOBS
 measure() {
   local name=$1; shift
   uv --config-file uv.toml run --frozen python scripts/run-rss-watchdog.py \
-    --limit-mib 1024 --report "$QA/$name.watchdog.json" -- \
+    --limit-mib "$QA_WATCHDOG_MIB" --report "$QA/$name.watchdog.json" -- \
     /usr/bin/time -l "$@" > "$QA/$name.json" 2> "$QA/$name.stderr"
   local status=$?
   printf '%s exit=%s wall=%ss footprint=%sMiB\n' "$name" "$status" \
     "$(awk '$2 == "real" {print $1; exit}' "$QA/$name.stderr")" \
     "$(awk '/peak memory footprint/ {printf "%.1f", $1 / 1048576}' "$QA/$name.stderr")"
+  return "$status"
 }
 ```
 
-Always measure the freshly built `target/release/urollup`, never an installed copy.
-`/usr/bin/time -l` reports **peak memory footprint**, which includes compressed pages
-and is the number this playbook records.
-The watchdog’s 1 GiB RSS limit is only a kill switch, because RSS omits compressed
-memory on macOS. `UROLLUP_STATS=1` adds `stats:` lines to each run’s stderr file with
-phase wall times, the worker count, and source, observation, request, limit-observation
-and diagnostic counts per agent; they contain no paths, IDs or model names, so the dated
-report may quote them.
+Before running the block, set `QA` to the private evidence directory and
+`QA_SCRATCH_ROOT` to the external volume’s mount point, such as `/Volumes/<name>`.
+`qa_setup` prints an error and returns without creating files when either is unset or
+the volume is not mounted and writable; do not continue past that error.
+Verify that `df` identifies the external volume.
+Give each worktree its own scratch path by setting `QA_SCRATCH` before the block.
+Always measure the freshly built `$CARGO_TARGET_DIR/release/urollup`, never an installed
+copy. `/usr/bin/time -l` reports **peak memory footprint**, which includes compressed
+pages and is the number this playbook records.
+The watchdog’s RAM-relative RSS limit is only a kill switch, because RSS omits
+compressed memory on macOS. Lower it if available machine headroom requires that, record
+the limit, and stop if memory pressure reaches warning or critical.
+Passing the watchdog does not establish the physical-footprint or runtime-admission
+checks. `UROLLUP_STATS=1` adds `stats:` lines to each run’s stderr file with phase wall
+times, the worker count, and source, observation, request, limit-observation and
+diagnostic counts per agent.
+They contain no paths, IDs or model names, but publication still requires authorization
+for the aggregate values.
 
 **Verify:**
 
 - [ ] The release build succeeds.
-- [ ] At least 3 GB of disk is free, and `memory_pressure` reports a normal level.
+- [ ] External scratch has enough free disk for the planned run, and `memory_pressure`
+  reports a normal level.
 - [ ] `"$CCUSAGE" --version` prints `ccusage 20.0.20`.
 
 **Troubleshooting:**
@@ -141,6 +222,8 @@ report may quote them.
 du -sh ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions 2>/dev/null
 find ~/.claude/projects -name '*.jsonl' | wc -l
 find ~/.codex/sessions ~/.codex/archived_sessions -name 'rollout-*' 2>/dev/null | wc -l
+jq '.cleanupPeriodDays // "unset (default 30)"' ~/.claude/settings.json 2>/dev/null
+find ~/.claude/projects -name '*.jsonl*' -type f -exec stat -f '%Sm' -t '%F' {} + | sort | head -1
 ```
 
 **Verify:**
@@ -149,6 +232,9 @@ find ~/.codex/sessions ~/.codex/archived_sessions -name 'rollout-*' 2>/dev/null 
   about 2.7 GB in 2,920 Claude files and 19 GB in 9,900 Codex rollouts on 2026-09-17, 7
   GB of them archived.
   Measure an archive reached through a symlink with `du -shL`.
+- [ ] The `cleanupPeriodDays` value and the oldest retained Claude transcript’s
+  modification date are recorded, so whole-history Claude totals are read as covering
+  that window, not all time.
 
 ## Phase 2: Whole-History Runs
 
@@ -161,14 +247,21 @@ measure report "$UR" report --all --group-by project,model --format json --no-pr
 for name in sessions daily report; do jq empty "$QA/$name.json" && echo "$name valid"; done
 ```
 
-**Expected output:** three lines like `sessions exit=0 wall=8.42s footprint=301.5MiB`,
+**Expected output:** three measurement lines with `exit=0`, wall time and footprint,
 then three `valid` lines.
+The numeric values are measurements, not fixed targets.
 
 **Verify:**
 
 - [ ] Every command exits 0; none prints a reconciliation capacity error.
-- [ ] Wall time is at most 25 s after plan Phase 1 and at most 10 s after plan Phase 2.
-- [ ] Peak footprint is at most 512 MiB for every command.
+- [ ] Wall time and throughput are recorded with input density, load and cache state;
+  regressions against equivalent workloads are explained.
+- [ ] Peak physical footprint for each complete invocation is at most 25% of physical
+  RAM, and machine memory pressure stays normal.
+- [ ] The process-wide safety and density-scale checks in the
+  [accepted policy](../../docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+  are recorded separately (`uro-6pi8`, `uro-z1h1`). Success on this reference corpus
+  alone does not prove them or establish a measured 100 GiB result.
 - [ ] No watchdog report has `"killed_for_rss": true`.
 - [ ] `jq '.coverage.limit_observations' "$QA/report.json"` is greater than 0 and
   `jq '.diagnostics | length' "$QA/report.json"` is at most 30.
@@ -184,8 +277,8 @@ then three `valid` lines.
   Rerun on a single project root and compare its `stats:` lines to find the phase that
   grows.
 - **Issue:** a run is much slower the first time.
-  **Fix:** record the first run as cold and rerun once for a warm time; the thresholds
-  apply to the warm run.
+  **Fix:** record its observed cache/load conditions and rerun once for comparison.
+  First execution alone does not prove a cold filesystem cache.
 
 ### 2.2 Row Counts
 
@@ -315,7 +408,7 @@ Choose a recent main transcript of this repository with no `subagents` directory
 records whose `sessionId` differs from the file name.
 
 ```bash
-export SESSION_FILE=~/.claude/projects/"$CLAUDE_DIR"/<session-id>.jsonl
+export SESSION_FILE=~/.claude/projects/"$CLAUDE_DIR"/'<session-id>.jsonl'
 stem=$(basename "$SESSION_FILE" .jsonl)
 jq -s --arg s "$stem" '[.[] | select(.type == "assistant" and .message.usage.output_tokens != null and ((.sessionId // $s) == $s) and (.isSidechain != true) and ((.message.model != "<synthetic>") or (.requestId != null)))] | group_by(.message.id) | map(sort_by(.message.usage.output_tokens, (.apiBlockIndex // -1)) | last) | {requests: length, uncached_input: (map(.message.usage.input_tokens // 0) | add), cache_read: (map(.message.usage.cache_read_input_tokens // 0) | add), cache_write: (map(.message.usage.cache_creation_input_tokens // 0) | add), output: (map(.message.usage.output_tokens) | add)}' "$SESSION_FILE"
 "$UR" report --session "$SESSION_FILE" --scope self --format json --no-progress | jq '{requests: .totals.requests.owned, tokens: .totals.tokens}'
@@ -334,7 +427,7 @@ the file.
 Choose a recent rollout of this repository without `forked_from_id` in its first line.
 
 ```bash
-export ROLLOUT=<path-to-rollout.jsonl>
+export ROLLOUT='<path-to-rollout.jsonl>'
 jq -sc '[.[] | select(.type == "event_msg" and .payload.type == "token_count" and .payload.info.total_token_usage != null)] | last | .payload.info.total_token_usage | {uncached_input: (.input_tokens - .cached_input_tokens), cache_read: .cached_input_tokens, output: .output_tokens, reasoning: .reasoning_output_tokens, total: .total_tokens}' "$ROLLOUT"
 "$UR" report --session "$ROLLOUT" --scope self --format json --no-progress | jq -c '{tokens: (.totals.tokens | {uncached_input, cache_read, output, reasoning, total}), diagnostics: [.diagnostics[].code]}'
 ```
@@ -343,8 +436,8 @@ jq -sc '[.[] | select(.type == "event_msg" and .payload.type == "token_count" an
 
 - [ ] The token objects match exactly when urollup reports no
   `codex-counter-epoch-reset`, `codex-estimate-compaction`,
-  `codex-estimate-context-window-fill`, `malformed-line`, `pending-tail` or
-  `source-incomplete` diagnostic.
+  `codex-estimate-context-window-fill`, `codex-history-boundary-unverified`,
+  `malformed-line`, `pending-tail` or `source-incomplete` diagnostic.
 - [ ] If one of those diagnostics appears, choose another rollout; those cases are
   covered by fixtures, where the last cumulative total intentionally differs.
 
@@ -369,23 +462,30 @@ wc -l < "$QA/resumed.txt"
 ### 6.2 Resumed Usage Is Neither Double Counted Nor Dropped
 
 For one resumed file, find its original session, the foreign `sessionId` its replayed
-records carry, and copy both transcripts into a scratch root under two naming orders.
+records carry, and copy both transcripts into a disposable scratch root under two naming
+orders. The copies are full private transcripts: keep them under `$TMPDIR`, never in
+`$QA`, and record only the derived JSON lines.
 
 ```bash
-export RESUMED=<resumed-session.jsonl>
-export ORIGINAL=<original-session.jsonl>
-work=$(mktemp -d "$QA/resume.XXXX")
+export RESUMED='<resumed-session.jsonl>'
+export ORIGINAL='<original-session.jsonl>'
+work=$(mktemp -d "$TMPDIR/resume.XXXX")
 mkdir -p "$work/forward/projects/p" "$work/reverse/projects/p"
 cp "$ORIGINAL" "$RESUMED" "$work/forward/projects/p/"
-"$UR" report --all --source "$work/forward/projects" --no-default-sources --format json --no-progress | jq -c '{requests: .totals.requests, total: .totals.tokens.total, copies: .coverage.copies_excluded}'
-"$UR" report --session "$ORIGINAL" --scope self --format json --no-progress | jq '.totals.tokens.total'
-"$UR" report --session "$RESUMED" --scope self --format json --no-progress | jq '.totals.tokens.total'
+"$UR" report --all --source "$work/forward/projects" --no-default-sources --format json --no-progress | jq -c '{order: "forward", requests: .totals.requests, total: .totals.tokens.total, copies: .coverage.copies_excluded}' | tee -a "$QA/resume.jsonl"
+"$UR" report --session "$ORIGINAL" --scope self --format json --no-progress | jq -c '{self: "original", total: .totals.tokens.total}' | tee -a "$QA/resume.jsonl"
+"$UR" report --session "$RESUMED" --scope self --format json --no-progress | jq -c '{self: "resumed", total: .totals.tokens.total}' | tee -a "$QA/resume.jsonl"
 ```
 
 Then build the reverse order by renaming the resumed file so it sorts before the
 original, rewriting only that file’s own `sessionId` values to the new name, and rerun
-the first report on `$work/reverse/projects`. The fixture reproduction for `uro-sn1e` in
-the plan uses the same transformation.
+the first report on `$work/reverse/projects` with `order: "reverse"`, appending its line
+to `$QA/resume.jsonl`. The fixture reproduction for `uro-sn1e` in the plan uses the same
+transformation. When both orders are recorded, delete the transcript copies:
+
+```bash
+rm -rf "$work"
+```
 
 **Verify:**
 
@@ -393,6 +493,8 @@ the plan uses the same transformation.
   `copies_excluded` greater than 0 and no ambiguous requests.
 - [ ] Forward and reverse orders give identical totals and request counts.
   This fails on the pre-plan engine and must pass after Phase 1.
+- [ ] `$work` is deleted; this phase left only the derived lines in `$QA/resume.jsonl`
+  and no transcript copy under `$QA`.
 
 ### 6.3 Forked Codex Rollouts
 
@@ -455,9 +557,11 @@ rows to ccusage on the native `session` field.
 
 ### 8.1 Write the Dated Report
 
-Create `docs/project/qa/qa-report-YYYY-MM-DD-full-history.md` with the commit, corpus
-volume, wall times and footprints, invariant and determinism results, per-project and
+Create a dated report in the private evidence directory with the commit, corpus volume,
+wall times and footprints, invariant and determinism results, per-project and
 hand-summed deltas, resumed and forked results, and parity residuals.
+After separate publication authorization, put only approved evidence in
+`docs/project/qa/qa-report-YYYY-MM-DD-full-history.md`.
 
 **Verify:**
 
@@ -467,10 +571,10 @@ hand-summed deltas, resumed and forked results, and parity residuals.
 
 ### 8.2 Clean Up
 
-```bash
-rm -rf target/qa/full-history
-git status --short
-```
+Preserve the private evidence directory.
+Retire only verified disposable scratch after checking that no run or worktree still
+uses it; follow the local recoverable-cleanup policy.
+Run `git status --short` to inspect repository changes.
 
 **Verify:**
 
@@ -478,8 +582,11 @@ git status --short
 
 ## Success Criteria
 
-- [ ] Whole-history `sessions`, `daily` and `report --all` exit 0 within the wall-time
-  threshold at no more than 512 MiB peak footprint.
+- [ ] Whole-history `sessions`, `daily` and `report --all` exit 0 with normal memory
+  pressure and peak physical footprint within 25% of physical RAM.
+- [ ] Density scaling, the conservative 100 GiB projection, raw-byte independence and
+  process-wide capacity refusal satisfy the accepted policy; timings and regressions are
+  recorded without a fixed whole-history deadline.
 - [ ] Totals agree across daily, report, sessions and project breakdowns.
 - [ ] Output is byte-identical across reruns and worker counts.
 - [ ] Four projects match ccusage or differ only by ledgered behaviors.

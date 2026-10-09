@@ -69,7 +69,8 @@ Diagnostic codes are provisional names for the ledger to adopt or rename:
 `claude-block-usage-conflict`, `claude-cache-creation-breakdown-mismatch`,
 `claude-nested-copy-without-original`, `identity-key-conflict`,
 `codex-counter-epoch-reset`, `codex-estimate-compaction`,
-`codex-estimate-context-window-fill`, `codex-copied-history-inferred`, `thread-orphan`,
+`codex-estimate-context-window-fill`, `codex-copied-history-inferred`,
+`codex-history-boundary-unverified`, `thread-orphan`,
 `codex-rollout-duplicate-location`, `malformed-line`, `pending-tail` and
 `source-incomplete`.
 
@@ -104,6 +105,8 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/legacy-subagent-prefix` | Legacy subagent prefixes with and without a discovered parent, and a prefix without counters | §3.4, §3.2 | Codex spawn copies; ccusage replay tests; squares prefix cut | Codex CLI 0.150.0 |
 | `codex-rollout/paginated-subagent` | A native boundary from `subagent_history_start_ordinal` | §3.4, §3.2 | Codex live thread and ordinal validation | Codex CLI 0.154.0 |
 | `codex-rollout/legacy-user-fork-counters` | A legacy user fork copying `token_count` events, its counter continuing the parent’s | §3.4, §3.2 | Codex thread manager; ccusage copied-branch test | Codex CLI 0.150.0 |
+| `codex-rollout/paginated-counter-prefix` | A counter-only paginated subagent whose prefix copies the parent’s `token_count` without its session header | §3.4, §3.2 | Codex paginated prefix and counter seeding; `uro-kpbp` | Codex CLI 0.150.0 |
+| `codex-rollout/unverified-fork-boundary` | Fork-boundary evidence that cannot prove a child’s own usage: excluded as a coverage gap, other sessions still report | §3.4, §2.1 | Codex paginated prefix; review A of PR #16 | Codex CLI 0.150.0 |
 | `codex-rollout/revert-file` | One thread over an original and a `_<rollout-id>` revert file with `history_base` | §2.1, §3.3, §3.6 | Codex revert, file names and ordinals | Codex CLI 0.154.0 |
 | `codex-rollout/zst-twin` | A `.jsonl` and its `.jsonl.zst` twin as one logical source | §2.2, §3.3 | Codex compression worker and discovery | Codex CLI 0.154.0 |
 | `codex-rollout/archived-rename` | Flat `archived_sessions/`, a compressed archived child, a leftover active copy, local-time names | §2.1, §3.6, §3.2 | Codex archive rename; ccusage archived discovery | Codex CLI 0.154.0 |

@@ -887,19 +887,52 @@ set these source-specific rules:
   belongs to that thread and is a copy.
   A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
   `thread_settings_applied` event (0.152 and later), which assigns later records to the
-  thread it names. In a rollout without `token_usage_record` lines, the copy also ends at
+  thread it names. An explicit ordinal boundary also identifies an inherited prefix
+  without an embedded parent session header; direct records, compacted usage copies and
+  cumulative counters use that ownership consistently.
+  A prefix without a known parent remains unowned copy evidence, never child usage.
+  Usage that a declared boundary cannot place is excluded, never counted as the child’s:
+  an invalid `subagent_history_start_ordinal` places none of the rollout’s usage, and a
+  usage record or cumulative total without an `ordinal` is not placed.
+  A `token_count` that carries no usage needs no ordinal: one that reports only rate
+  limits (`info: null`), or one whose total repeats the running total, which Codex sends
+  with every rate-limit refresh.
+  In a child with an explicit boundary, including a boundary of 0, or in any child after
+  copied counters, the first own counter step that reports usage must match its
+  `last_token_usage`, either as its delta from the inherited total (a seeded child) or
+  as its whole total (an unseeded child, which opens a new counter epoch with a
+  `codex-counter-epoch-reset` diagnostic).
+  A first step that matches neither is excluded, including the first step of an
+  explicit-boundary child with no copied counter whose total differs from its
+  `last_token_usage`; later steps count from its total.
+  A first step below the inherited total has no delta, so it counts only when its whole
+  total is its `last_token_usage`; the rule for a total lowered at compaction applies
+  from the next step, within the child’s own counter epoch.
+  A step that only repeats the inherited total reports no usage, so the step after it is
+  the one checked. A child with neither an explicit boundary nor copied counters starts
+  from zero unchecked.
+  The parent’s latest total is not a substitute for its total at the fork.
+  Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
+  diagnostic and a coverage gap for its thread, so that thread and the whole history
+  report partial coverage while every other session still reports; the anomaly never
+  stops the run. In a rollout without `token_usage_record` lines, the copy also ends at
   the first `turn_context` whose turn ID the copied thread’s root rollout never
   recorded; turn IDs are matched across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.
   In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
-  is a copy keyed to the copied thread’s last response ID. A fork or subagent continues
-  the parent’s running total, so the child’s counters start from the inherited total.
+  is a copy keyed to the copied thread’s last response ID when the prefix holds that
+  thread’s usage record; from 0.153 forked prefixes drop those records, so such a copy
+  stays an unkeyed copy-only request, excluded from totals.
+  A fork or subagent continues the parent’s running total, so the child’s counters start
+  from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
-  copied lines contribute neither usage nor times to the child; paginated forks copy
-  nothing and reference the parent’s file.
+  copied lines contribute neither usage nor times to the child.
+  A paginated history can reference a parent file rather than embed its records;
+  declaring a boundary alone does not establish a counter baseline or prove that any
+  copied usage records were present.
 - **`codex-exec`:** `turn.completed.usage` is the thread’s cumulative total: after
   `codex exec resume` it includes earlier runs, it has no `total_tokens`, it excludes
   subagents, and failed or interrupted turns report none.
@@ -1127,6 +1160,17 @@ An `unitemized` measure for source totals that exceed reconciled requests, and e
 time measures, are queued review decisions ([§9.2](#unitemized-usage) and
 [§9.2](#extended-time-measures)).
 
+**Planned analysis coverage:** Each optional metric needs an observed population and an
+unknown population alongside its known sum.
+Request-accounting completeness alone does not prove complete cache or timing evidence.
+Cache-read tokens and requests with positive cache reads are separate measures; a model
+request can both read and write cache.
+Hit-rate numerators and denominators must survive aggregation, and percentages are
+recomputed rather than averaged.
+Keep 5-minute, 1-hour and unspecified-lifetime cache writes disjoint.
+The [workflow plan](project/specs/active/plan-2026-09-20-usage-analysis-workflow.md)
+owns these implementation requirements and G5 acceptance.
+
 ### 4.2 Ownership and Totals
 
 **Status:** Candidate ([§9.1](#ownership-in-totals)); scope defaults are Confirmed
@@ -1189,6 +1233,13 @@ rows carry request counts and token sums by ownership status, plus `unresolved` 
 - Groups include time bucket, agent and dialect, account, project, session or thread,
   model, effort, purpose, tool category, and any independent thread property.
   Null is an explicit group.
+- Planned joint queries group by a tuple such as calendar month × agent × provider ×
+  model. Agent, attributed provider and billing channel are distinct dimensions; provider
+  carries an observed, explicitly mapped or unknown basis.
+  Independent one-dimensional breakdowns are labeled as such.
+  A summary whose bucket boundaries do not align with a requested calendar boundary must
+  use finer bundle evidence or report its precision limit; it cannot promise exact
+  rebucketing.
 - Percentiles are recomputed from observations or from mergeable histograms, never
   averaged across groups.
   Query reports compute exact percentiles in memory from the reconciled requests
@@ -1303,6 +1354,15 @@ Updates and overrides:
   override file’s fingerprint.
 - A staleness diagnostic appears when a report window ends more than 90 days after the
   table review date, because that release cannot know later price changes.
+
+The planned G5 workflow also supports a chosen price-table date applied as a
+counterfactual across history.
+Reports must distinguish that valuation from historical rates at each request date and
+retain the table version, currency, assumptions and unpriced coverage.
+Matching requires request-level context or an equivalent lossless pricing partition
+before aggregation; per-model lifetime totals alone cannot recover date, service-tier or
+context-band differences.
+This is part of the Candidate pricing policy in §4.5, not an implemented 0.1 feature.
 
 ### 4.6 Accounts and Plans (Later)
 
@@ -2436,6 +2496,13 @@ records how the engine reached this shape, with dated whole-history measurements
   `--source` roots with `--no-default-sources`. It replaced the temporary 512 MiB input
   guard and its read budgets; per-record and sidecar size limits remain.
   No run spills to disk.
+  Before 0.1 acceptance, `uro-6pi8` must replace this incomplete estimate with
+  conservative process-wide admission covering both agents and peak construction
+  overlap. This is planned work, not current enforcement.
+  The
+  [accepted scale policy](project/specs/active/plan-2026-09-16-scalable-ingestion.md#accepted-scale-and-memory-policy-2026-09-27)
+  requires safe early refusal for over-budget retained state; hybrid spill (`uro-924y`)
+  is a follow-up for completing those histories.
 - **Run statistics:** `UROLLUP_STATS=1` writes `stats:` lines of `key=value` pairs to
   stderr after the command runs and before its output or error: the worker count, wall
   time per phase (discovery, Claude Code ingest, Codex ingest, session index, and query
@@ -2458,8 +2525,11 @@ raw-bytes independence check, a footprint extrapolation bound and a `daily --all
 under an RSS watchdog ([scale measurement guide](project/qa/scale-measurement.md)).
 Dedicated Ubuntu and macOS CI jobs execute the release workload behind the supply-chain
 gate and archive its output.
-These small synthetic checks do not establish the 512 MiB and 10-second whole-history
-acceptance targets.
+These small synthetic checks do not establish representative whole-history acceptance.
+That requires measured observation-density scaling, a conservative 100 GiB projection
+within 25% of reference-machine RAM, and process-wide capacity safety under the accepted
+scale policy. Raw bytes can exceed RAM because transcript content is streamed; retained
+usage records and identity state still have to fit the validated budget.
 
 #### Capture Cache
 
