@@ -2,7 +2,7 @@
 
 urollup’s command-line behavior is tested in two complementary layers, following
 `tbd guidelines golden-testing-guidelines` and the reference of the pinned
-[tryscript](https://github.com/jlevy/tryscript) 0.2.1, which the package prints with
+[tryscript](https://github.com/jlevy/tryscript) 0.3.0, which the package prints with
 `node_modules/.bin/tryscript docs`:
 
 | Layer | What it holds | What it catches |

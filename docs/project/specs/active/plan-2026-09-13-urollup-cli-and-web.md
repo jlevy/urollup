@@ -415,7 +415,7 @@ Each area tests the rules in these design sections:
 ### Golden and end-to-end result checks
 
 CLI behavior is tested in two complementary layers over one fixture corpus, following
-`tbd guidelines golden-testing-guidelines` and the pinned tryscript 0.2.1. The
+`tbd guidelines golden-testing-guidelines` and the pinned tryscript 0.3.0. The
 [golden testing audit](../../research/research-2026-09-15-golden-testing-audit.md)
 records what each rule cost when it was missing, and
 [tests/golden/README.md](../../../../tests/golden/README.md) is the operating guide.

@@ -7,6 +7,6 @@
   },
   "devDependencies": {
     "@taplo/cli": "0.7.0",
-    "tryscript": "0.2.1"
+    "tryscript": "0.3.0"
   }
 }
