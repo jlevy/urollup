@@ -3,7 +3,7 @@ title: "Cursor Dialect with Model and Provider Facets"
 description: Plan for adding Cursor as a urollup agent with first-class model and provider facets, without folding the work into milestone 0.1 or the Phase 2 Pi and Gemini CLI slice.
 author: Joshua Levy with LLM assistance
 date: 2026-09-19
-status: Active; Phase 0 format facts locked from research-2026-09-19-cursor-agent-logs.md (uro-890b); implementation is not part of milestone 0.1
+status: Active; this plan's Phase 0 format facts are locked from research-2026-09-19-cursor-agent-logs.md (uro-890b); Cursor admission awaits a recorded decision (uro-jfaw); implementation is not part of milestone 0.1
 ---
 # Feature: Cursor Dialect with Model and Provider Facets
 
@@ -24,8 +24,12 @@ See
 (`uro-890b`).
 
 This plan owns that dialect work: opt-in discovery, identity, the usage that is actually
-present, facets, synthetic fixtures, and the design decision that admits Cursor as a
-planned agent. It does not change milestone 0.1, the
+present, facets, and synthetic fixtures.
+Cursor is a candidate agent, not yet admitted.
+A confirmed design decision (`uro-jfaw`) must record its admission before adapter work
+starts, together with this plan’s departures from the candidate policy: no
+`ccusage cursor` parity case, opt-in rather than default discovery, and the usage gap.
+This plan does not change milestone 0.1, the
 [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md), or ingest-capacity
 code.
 
@@ -34,8 +38,9 @@ Phase 3. Its Phase 2 dialect slice remains Pi and Gemini CLI
 ([Decision 28](../../../urollup-design.md#decision-28-gemini-cli-planned-support)). The
 candidate policy for further agents stays in
 [§9.1 Additional Agent Adapters](../../../urollup-design.md#additional-agent-adapters);
-this plan pulls Cursor out of that list by maintainer use, the same rule that admitted
-Gemini CLI.
+this plan proposes admitting Cursor by maintainer use, the rule that admitted Gemini CLI
+through Decision 28. Until that decision is confirmed, Cursor stays a §9.1 candidate.
+This plan’s own Phase 0 and Phase 1 are stages of this plan, not product phases.
 
 ## Goals
 
@@ -50,13 +55,15 @@ Gemini CLI.
   usage. Current session `selectedModels[]` and picker values describe selections, not
   historical usage. `--group-by model` leaves unattributed usage unknown.
   Map stored `default` to Auto.
-  Leave Fable unmapped until a `claude-fable-*` or similar value is seen.
+  Leave Fable’s picker-to-catalog model mapping open until a stored Fable value is seen.
 - Record **provider** as the inferred vendor from a versioned catalog-family table
   (`Basis::Inferred` plus a diagnostic): Grok and Composer → `cursor`; `claude-*` →
   `anthropic`; `gpt-*` / `o3-*` → `openai`; `gemini-*` → `google`; `kimi-*` →
   `moonshot`; `glm-*` → `zai`. Provider is a first-class request facet and a
   `--group-by provider` dimension.
   There is no provider column on disk.
+  A stored `claude-fable-*` value maps to `anthropic` through the `claude-*` rule; only
+  a Fable spelling without that prefix stays unknown until a fixture shows it.
 - Dedup by `composerId` so a JSONL transcript and a `composerData` row are one session.
   Subagent, resume, and Best-of-N edges follow recorded fields
   ([§3.3](../../../urollup-design.md#33-reconciliation),
@@ -75,8 +82,9 @@ Gemini CLI.
 
 ## Non-Goals
 
-- Milestone 0.1, the 512 MiB peak, or any change to ingest-capacity or
-  scalable-ingestion work (`uro-n1cp` and its children).
+- Milestone 0.1, its ingest acceptance (owned by `uro-zrr0` in the scalable-ingestion
+  plan), or any change to ingest-capacity or scalable-ingestion work (`uro-n1cp` and its
+  children).
 - Phase 2 Pi and Gemini CLI adapters, `serve`, capture-cache reads, or the account
   registry.
 - Claude-grade or Codex-grade per-request token and cache reconciliation from local
@@ -131,7 +139,7 @@ The 0.1 engine already separates surface, format, vendor namespace, and model:
 
 | Facet | Where it lives | Claude Code (`claude-project`) | Codex (`codex-rollout`) |
 | --- | --- | --- | --- |
-| Agent | `selection::Agent`, `QuerySource.agent`, summary `properties.agent` | `claude` | `codex` |
+| Agent | `selection::Agent`, `QuerySource.agent`; summary `properties.agent` is designed ([§5.2](../../../urollup-design.md#52-usage-summary-format)), not implemented | `claude` | `codex` |
 | Dialect | source / adapter | `claude-project` | `codex-rollout` |
 | Model | `Request.model` (`served` or `requested`) | `message.model`, `ModelBasis::Served` | `turn_context.model`, `ModelBasis::Requested` |
 | Provider (identity only) | request-key namespace | `anthropic` | `openai` |
@@ -155,7 +163,7 @@ field in the files.
 
 ### Locked Format Facts
 
-Phase 0 (`uro-3fbc`) is locked to
+This plan’s Phase 0 (`uro-3fbc`, closed) locked these facts to
 [research-2026-09-19-cursor-agent-logs.md](../../research/research-2026-09-19-cursor-agent-logs.md)
 (`uro-890b`, closed).
 Evidence is one maintainer Mac on **Cursor 3.21.13** (2026-09-19). The schema is
@@ -200,10 +208,10 @@ honest coverage for missing tokens.
 
 | Facet | Cursor rule | Justification |
 | --- | --- | --- |
-| **Agent** | `cursor` | Cursor is the coding-agent surface, the same role as `claude` and `codex`. Selection (`--agent cursor`), `QuerySource.agent`, and summary `properties.agent` use this token. |
-| **Dialect** | One registry token for the state-store owner (`composerData` / `bubbleId`), with JSONL as the same session when the folder UUID matches. Do not emit a second session from JSONL. A `store.db` dialect waits until that tree is seen. | A dialect is one format written by one agent ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)). The brief names the stores, not a urollup token; Phase 1 picks the token. |
+| **Agent** | `cursor` | Cursor is the coding-agent surface, the same role as `claude` and `codex`. Selection (`--agent cursor`) and `QuerySource.agent` use this token, as will summary `properties.agent` once the designed summary artifact ([§5.2](../../../urollup-design.md#52-usage-summary-format)) exists. |
+| **Dialect** | One registry token for the state-store owner (`composerData` / `bubbleId`), with JSONL as the same session when the folder UUID matches. Do not emit a second session from JSONL. A `store.db` dialect waits until that tree is seen. | A dialect is one format written by one agent ([§2.1](../../../urollup-design.md#21-dialects-and-discovery)). The brief names the stores, not a urollup token; this plan’s Phase 1 picks the token. |
 | **Model** | Use the model field attached to the measured record: `usageData` key for session/model cost, bubble `modelInfo.modelName` for bubble tokens. Preserve current session `selectedModels[]` and picker `modelName` separately as selection metadata. Do not use them to relabel historical usage. Map `default` to Auto; absent historical attribution stays unknown. | `--group-by model` must split catalog families. The token `cursor` is never a model value. Claude and Codex record a provider model id; Cursor records Cursor’s own catalog and picker spellings. |
-| **Provider** | Inferred vendor from the catalog-family table, `Basis::Inferred`, with a diagnostic. Never invent a column. Auto and unmapped families (including Fable until seen) stay unknown. | This is the existing identity and price-table meaning of provider. Cursor is the first agent that multiplexes vendors, so provider becomes a request field and a `--group-by` dimension rather than an adapter constant. |
+| **Provider** | Inferred vendor from the catalog-family table, `Basis::Inferred`, with a diagnostic. Never invent a column. Auto and unmapped families stay unknown. A `claude-fable-*` value maps to `anthropic` through the `claude-*` rule; a Fable spelling without that prefix stays unknown until seen. | This is the existing identity and price-table meaning of provider. Cursor is the first agent that multiplexes vendors, so provider becomes a request field and a `--group-by` dimension rather than an adapter constant. |
 | **Account** | Observed stable account identifier, else unknown | Same rule as Claude and Codex: never guess from model or subscription ([§2.1 Projects and Accounts](../../../urollup-design.md#projects-and-accounts)). |
 | **Effort** | Recorded thinking or effort field, else omitted. Picker labels often encode effort (`-high-thinking`, `-xhigh-fast`); do not parse those suffixes into `Request.effort` unless a later brief shows a separate field. | Same as `Request.effort` today. |
 
@@ -222,10 +230,13 @@ Historical model attribution follows the grain of each measurement:
 - Provider inference follows the model attributed to that measurement.
   An unknown historical model also leaves its provider unknown.
 
-`--group-by provider` is required for this dialect.
-`--group-by agent` is useful in mixed Claude, Codex, and Cursor reports and is already
-promised in the coverage table; implement it when Cursor lands if it is still missing,
-without expanding that change into a presentation rewrite.
+`--group-by provider` is required for this dialect, and `--group-by agent` is useful in
+mixed Claude, Codex, and Cursor reports (promised in the
+[coverage table](../../../urollup-design.md#106-ccusage-use-case-coverage)). The generic
+agent and provider facets, with their versioned mappings and a separate billing channel,
+belong to `uro-qvp1` in the usage-analysis workflow plan.
+This plan contributes only the Cursor catalog-family mapping table and its fixtures, and
+the Cursor adapter uses those generic facets.
 
 Identity keys follow the brief’s uniqueness scope
 ([§3.6](../../../urollup-design.md#36-analytical-identities)):
@@ -244,7 +255,7 @@ Do not add Cursor paths to the default root list until a later decision.
 
 | Root class | Conventional locations | Role |
 | --- | --- | --- |
-| Application user state | macOS `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`; Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/` (default `~/.config/Cursor/…`); Windows `%APPDATA%\Cursor\User\globalStorage\` | Usage owner: `composerData` and `bubbleId`. Requires a snapshot of the live SQLite file and WAL. |
+| Application user state | macOS `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (surveyed); Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/` (default `~/.config/Cursor/…`) and Windows `%APPDATA%\Cursor\User\globalStorage\`, both conventional mappings that the brief did not verify | Usage owner: `composerData` and `bubbleId`. Requires a snapshot of the live SQLite file and WAL. |
 | Project transcripts | `~/.cursor/projects/*/agent-transcripts/` | Same session as `composerId` when the folder UUID matches; evidence for tool-call text. Not a usage owner. Do not invent usage from these files. |
 | Chat SQLite | `~/.cursor/chats/<workspace-hash>/<session-id>/store.db` | Absent on the surveyed Mac. Coverage gap until a later install confirms it; then a join or a second dialect, still keyed by the same UUID. |
 | Workspace state | sibling `User/workspaceStorage/*/state.vscdb` | UI pointers (`composer.composerData`). Not a second transcript. |
@@ -255,6 +266,8 @@ candidate in [§9.1](../../../urollup-design.md#dialect-ids-and-override-variabl
 another name. `--source` and `--no-default-sources` work as for other agents.
 A missing override or `--source` root exits 1. A machine with only default Claude and
 Codex roots, and no Cursor opt-in, sees no Cursor rows.
+What one override entry or `--source` path names for each root class, and what
+JSONL-only input does, are open (`uro-tvc0`).
 
 Do not discover even after opt-in:
 
@@ -349,14 +362,23 @@ Mixed-agent `--all` reports keep Claude, Codex, and opted-in Cursor in one ledge
 grouped by the requested dimensions.
 Default `--all` without a Cursor opt-in stays Claude and Codex only.
 
-Pricing, when milestone 0.4’s table exists, matches on provider plus model
-([§4.5](../../../urollup-design.md#45-price-table)). Unpriced Cursor models are
-pricing-coverage diagnostics, not invented rates.
+Pricing, when milestone 0.4’s table exists, matches on provider, billing channel and
+model ([§4.5](../../../urollup-design.md#45-price-table)). Cursor rows carry billing
+channel `cursor`, not the first-party API channel: Cursor bills its own hosted models
+and charges third-party models at API rates
+([research brief](../../research/research-2026-09-19-cursor-agent-logs.md)). A
+first-party API list price applied to a Cursor row is therefore an estimate for that
+channel.
+The price matcher takes the native picker or catalog label through the versioned
+label mapping in the Facet Contract (for example `claude-4.5-opus-high-thinking` →
+`claude-opus-4-5`) and keeps the native label.
+Unpriced Cursor models are pricing-coverage diagnostics, not invented rates.
 Cursor-hosted Grok and Composer rows use provider `cursor`.
 
 ## Implementation Plan
 
-Two phases. Phase 0 is research lock-in; Phase 1 is the adapter.
+This plan has two phases of its own, separate from the product plan’s Phases 1 to 3:
+Phase 0 locks format facts, and Phase 1 builds the adapter.
 There is no Phase 2 in this plan.
 
 ### Phase 0: Lock Format Facts
@@ -370,20 +392,47 @@ There is no Phase 2 in this plan.
   provider column.
 - [x] Record the first-fixture Cursor version: 3.21.13 on the surveyed Mac.
 
-Adapter implementation waits for `uro-3fbc` and the product’s Phase 3 database-input
-work under Decision 20. Research completion alone does not authorize an earlier database
-adapter.
+Phase 0 is complete (`uro-3fbc` is closed).
+Adapter implementation waits for the product’s Phase 3 database-input work under
+Decision 20, or a confirmed exception to it, and for the questions below.
+Research completion alone does not authorize an earlier database adapter.
+
+### Open Questions Before Implementation
+
+Each of these blocks the adapter bead `uro-p9ay`:
+
+- **Admission decision (`uro-jfaw`).** A confirmed design decision must admit Cursor and
+  record its departures from the
+  [§9.1](../../../urollup-design.md#additional-agent-adapters) candidate policy: no
+  `ccusage cursor` parity case, opt-in discovery, and the usage gap.
+- **Snapshot and evidence (`uro-9m75`).** How a live WAL-backed store is snapshotted,
+  what that costs on a multi-GiB file, what the manifest records, how a row is cited as
+  evidence when the design’s evidence references are byte extents, and how decode stays
+  within the ingest budget.
+- **Usage mapping (`uro-jrir`).** For session `usageData.costInCents`: ledger entity,
+  call count, timestamp and money measure.
+  For bubble `tokenCount`: field semantics.
+  For both: cache categories.
+- **Request identity (`uro-qy0e`).** Which of `requestId` and `usageUuid` keys a
+  request, and how bubbles that share a key combine their tokens.
+- **SQLite reader (`uro-kddq`).** The proposed reader, `rusqlite` with bundled SQLite,
+  reviewed under [SUPPLY-CHAIN-SECURITY.md](../../../../SUPPLY-CHAIN-SECURITY.md),
+  recorded with the Decision 20 exception tracked on `uro-2hck`, and reconciled with the
+  product’s Phase 3 storage choice.
+- **Opt-in roots (`uro-tvc0`).** What an override entry or `--source` path names for
+  each root class, and what JSONL-only input does.
 
 ### Phase 1: Facets, Adapter, and Fixtures
 
 - [ ] Add `Agent::Cursor` (`cursor`) through selection, discovery, CLI `--agent`, and
   report `QuerySource` wiring, beside `Claude`, `Codex`, and the existing Pi diagnostic
   variant.
-- [ ] Add request-level provider (`Basis::Inferred` plus a registry token) and
-  `--group-by provider`. Add `--group-by agent` if it is still absent.
+- [ ] Use the generic request-level provider and agent facets, `--group-by provider` and
+  `--group-by agent` from `uro-qvp1`, and add the Cursor catalog-family mapping
+  (`Basis::Inferred` plus a registry token) with its fixtures.
 - [ ] Implement opt-in discovery, the override, a WAL-safe snapshot of `state.vscdb`,
   snapshot manifests, and content-based identification of Cursor sources under
-  `--source`.
+  `--source`, as settled in `uro-9m75` and `uro-tvc0`.
 - [ ] Implement the state-store adapter: decode `composerData` / `bubbleId`, strip,
   `composerId` dedup, JSONL as the same session, subagent edges, coverage gaps for
   missing tokens and Auto, and provider limit observations only when the store records
@@ -396,10 +445,9 @@ adapter.
   If detection precedes selection support, add and test the exit-2 unsupported-dialect
   diagnostic. Without an exact signal, document that Cursor current-session detection is
   absent.
-- [ ] Record a design decision (Cursor planned support) in
-  [`docs/urollup-design.md`](../../../urollup-design.md) §2.1, §3.4, and §10.1,
-  including opt-in discovery and the usage gap, and keep the one-line pointers in the
-  product plan current.
+- [ ] Carry the confirmed admission decision (`uro-jfaw`) into
+  [`docs/urollup-design.md`](../../../urollup-design.md) §2.1, §3.4, and §10.2, and keep
+  the one-line pointers in the product plan current.
 - [ ] Run a consented local verification that prints aggregates only, under the same
   privacy sentinels as `make e2e-local`. Do not commit that corpus.
 
@@ -421,12 +469,14 @@ adapter.
 
 ## Rollout Plan
 
-Implementation belongs no earlier than the product’s Phase 3 database-input work, with
-`uro-3fbc` also complete.
+Implementation belongs no earlier than the product’s Phase 3 database-input work, and
+only after the questions before implementation are settled.
 A confirmed exception to Decision 20 is required to change that ordering.
 It must not land in the 0.1.0 alpha
 ([first-release publishing](plan-2026-09-16-first-release-publishing.md)). This plan
-does not change the 512 MiB ingest gate or other product acceptance dependencies.
+does not change ingest acceptance, which `uro-zrr0` and the
+[scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) own, or other product
+acceptance dependencies.
 
 Ship behind opt-in discovery: users without a Cursor override or `--source` see no
 change, including users who have a 4 GiB `state.vscdb`. `--agent cursor` with no
@@ -434,6 +484,10 @@ opted-in Cursor roots is an empty selection, not an error, matching other agents
 missing default roots.
 
 ## Open Questions
+
+The questions that block implementation are under
+[Open Questions Before Implementation](#open-questions-before-implementation).
+These remain open without blocking it:
 
 - Are Best-of-N siblings separately billed, or is one winner the sole counted usage?
 - What exact environment or hook fields identify `--current`?
