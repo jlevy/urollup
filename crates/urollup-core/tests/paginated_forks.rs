@@ -13,6 +13,7 @@ use urollup_core::ledger::coverage::UnobservedReason;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use urollup_core::ledger::entities::{Counting, Ownership, RelationshipKind};
 use urollup_core::ledger::identity::AnalyticalId;
+use urollup_core::ledger::scope::IdentityBasis;
 use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex, agent_thread_identity};
 use urollup_core::sources::roots::discover;
@@ -615,11 +616,12 @@ fn a_counter_reset_after_the_child_advanced_opens_a_new_epoch_for_the_child() {
 }
 
 #[test]
-fn an_unkeyed_copied_token_count_with_its_parent_present_keeps_coverage_complete() {
+fn a_copied_token_count_without_its_record_is_a_counter_copy_with_complete_coverage() {
     // From 0.153 forked prefixes keep the parent's token_count but drop its usage record,
-    // so the copy has no response key to reconcile with. Paginated (ordinals and an
-    // explicit boundary) and legacy (embedded parent header, then a settings event that
-    // names the child) destinations both hold such a copy.
+    // so no usage record beside the copy reports its response: the counter rules account
+    // for it, as a counter-digest copy that seeds the child's inherited total. Paginated
+    // (ordinals and an explicit boundary) and legacy (embedded parent header, then a
+    // settings event that names the child) destinations both hold such a copy.
     let parent = [direct(1, PARENT, "parent-response", 90, 10), counter(2, 90, 10, 90, 10)];
     let paginated = fork_root(Some(&parent), &[]);
     write_child(
@@ -646,15 +648,40 @@ fn an_unkeyed_copied_token_count_with_its_parent_present_keeps_coverage_complete
             unpositioned(&counter(0, 108, 12, 18, 2)),
         ],
     );
-    for root in [paginated, legacy] {
+    // The legacy destination infers its copied history, as a counter-only rollout of that
+    // shape does: its diagnostic counts the parent header and the copied counter.
+    for (root, inferred) in [(paginated, None), (legacy, Some(2))] {
         let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
         let mut totals = counted_totals(&ingested);
         totals.sort_unstable();
         assert_eq!(totals, [20, 100]);
         let totals = ledger_totals(&ingested.ledger).expect("totals");
-        assert_eq!(totals.copy_only.requests, 1, "the unkeyed copy is excluded");
+        assert_eq!(totals.copy_only.requests, 1, "the copy is excluded");
         assert_eq!(totals.completeness, Completeness::Complete);
         assert_eq!(select(&ingested, &[PARENT]).completeness, Completeness::Complete);
+        let copy = ingested
+            .ledger
+            .requests
+            .values()
+            .find(|request| request.counting == Counting::CopyOnly)
+            .expect("the copy-only request");
+        assert_eq!(copy.basis, IdentityBasis::Fallback, "keyed by its thread-counter digest");
+        assert_eq!(
+            ingested.ledger.coverage.copies, 2,
+            "the copy and the copied region; inferred={inferred:?}"
+        );
+        assert_eq!(
+            ingested
+                .ledger
+                .diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.code, diagnostic.occurrences))
+                .collect::<Vec<_>>(),
+            inferred
+                .map(|occurrences| (DiagnosticCode::CodexCopiedHistoryInferred, occurrences))
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
     }
 }
 
