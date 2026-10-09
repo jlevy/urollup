@@ -559,6 +559,15 @@ mod tests {
         Ingested { ledger: reconcile(input, &LatestRevision).unwrap(), ..Ingested::default() }
     }
 
+    /// Los Angeles time from its POSIX rule. A named zone needs a time zone database,
+    /// which Windows runners lack (`uro-o3l4`); the rule is exact for 2026.
+    fn pacific() -> ResolvedTimeZone {
+        ResolvedTimeZone {
+            zone: jiff::tz::TimeZone::posix("PST8PDT,M3.2.0,M11.1.0").expect("valid rule"),
+            name: "America/Los_Angeles".to_owned(),
+        }
+    }
+
     fn coverage_report(
         input: crate::ledger::reconcile::ReconcileInput,
         selected: &BTreeSet<crate::ledger::identity::AnalyticalId>,
@@ -797,8 +806,7 @@ mod tests {
         let threads = [thread(&requests[0]), thread(&requests[2]), thread(&requests[4])];
         let ingested = reconciled(ReconcileInput { requests, ..ReconcileInput::default() });
         let source = [QuerySource { agent: Agent::Claude, ingested: &ingested }];
-        let calendar = |zone| {
-            let timezone = ResolvedTimeZone::resolve(Some(zone)).unwrap();
+        let calendar = |timezone: ResolvedTimeZone| {
             let rows = sessions(
                 &source,
                 &SessionIndex::default(),
@@ -819,10 +827,11 @@ mod tests {
         };
 
         assert_eq!(
-            calendar("America/Los_Angeles"),
+            calendar(pacific()),
             [(Some("2026-09-15".to_owned()), 0), (Some("2026-09-13".to_owned()), 1), (None, 1)]
         );
-        assert_eq!(calendar("UTC")[0], (Some("2026-09-16".to_owned()), 0));
+        let utc = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
+        assert_eq!(calendar(utc)[0], (Some("2026-09-16".to_owned()), 0));
     }
 
     #[test]
@@ -835,7 +844,7 @@ mod tests {
         let selected = index
             .select(&SelectionQuery { all: true, ..SelectionQuery::default() })
             .expect("all sessions select");
-        let timezone = ResolvedTimeZone::resolve(Some("America/Los_Angeles")).expect("zone");
+        let timezone = pacific();
         let source = [QuerySource { agent: Agent::Codex, ingested: &ingested }];
         let rows = sessions(
             &source,
