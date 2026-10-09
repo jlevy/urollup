@@ -2,9 +2,9 @@
   "format": "urollup-fixture-expected/v1",
   "case": "mixed-counter-direct",
   "dialect": "codex-rollout",
-  "summary": "A session that Codex 0.150.0 started with cumulative token_count events only and 0.154.0 resumed with token_usage_record lines counts its counter-only turns and its usage records once each, and a token_count written just before the usage record of the same response adds nothing.",
+  "summary": "A session that Codex 0.150.0 started with cumulative token_count events only and 0.154.0 resumed with token_usage_record lines counts its counter-only turns and its usage records once each, and each token_count written just after the usage record of the same response, with exactly its usage, adds nothing.",
   "rules": [
-    "design §3.4 Codex resumed rollouts (counters before the first token_usage_record count, except twins)",
+    "design §3.4 Codex counters beside usage records (a token_count adjacent to a token_usage_record with exactly its usage is its twin; every other token_count that reports usage goes through the counter rules)",
     "design §3.4 Codex counters",
     "design §3.4 Codex requests (token_usage_record)"
   ],
@@ -167,10 +167,10 @@
         "reasoning": 250
       },
       "selected": [
-        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:14"
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:13"
       ],
       "evidence": [
-        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:14"
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:13"
       ],
       "turn_id": "turn-c17-m3"
     },
@@ -194,10 +194,10 @@
         "reasoning": 300
       },
       "selected": [
-        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:16"
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:15"
       ],
       "evidence": [
-        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:16"
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:15"
       ],
       "turn_id": "turn-c17-m3"
     },
@@ -221,10 +221,10 @@
         "reasoning": 100
       },
       "selected": [
-        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:7"
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:6"
       ],
       "evidence": [
-        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:7"
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:6"
       ],
       "turn_id": "turn-c17-f1"
     },
@@ -248,10 +248,10 @@
         "reasoning": 200
       },
       "selected": [
-        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:9"
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:8"
       ],
       "evidence": [
-        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:9"
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:8"
       ],
       "turn_id": "turn-c17-f1"
     }
@@ -292,15 +292,15 @@
       }
     },
     {
-      "rule": "Count every token_count before a rollout's first token_usage_record, including the one written for that record's own response",
-      "requests": 9,
+      "rule": "Count every token_count and every token_usage_record, so each response 0.154.0 wrote counts twice",
+      "requests": 11,
       "tokens": {
-        "uncached_input": 51000,
-        "cache_read": 122000,
+        "uncached_input": 61000,
+        "cache_read": 160000,
         "cache_write": 0,
-        "output": 7000,
-        "reasoning": 2100,
-        "total_tokens": 180000
+        "output": 8700,
+        "reasoning": 2600,
+        "total_tokens": 229700
       }
     },
     {
@@ -317,9 +317,9 @@
     }
   ],
   "notes": [
-    "In the resumed session, lines 5, 6 and 9 come before its first token_usage_record (line 14), in turns no usage record names, so the counter rules count them. Line 13 is a twin: the token_count of the response whose record is line 14, in turn-c17-m3, which has usage records, so it adds nothing.",
-    "In the session 0.154.0 started, line 6 is the twin of line 7's record in turn-c17-f1, and the rollout is accounted from its usage records alone.",
-    "Lines 15 of the resumed session and 8 of the new one come after their rollout's first token_usage_record, so the usage records account for their responses.",
+    "In the resumed session, lines 5, 6 and 9 are counter-only responses: no usage record is next to them, so the counter rules count them. Lines 14 and 16 are twins: each follows the usage record of its response (lines 13 and 15) with exactly its usage, so it adds nothing but the running total.",
+    "In the session 0.154.0 started, lines 7 and 9 are the twins of the usage records on lines 6 and 8, so the rollout is accounted from its usage records alone, as before uro-h2sf.",
+    "Each usage record precedes its token_count, the order Codex 0.153 and 0.154 write. The resumed records' thread_token_usage starts from the first resumed response, since 0.154.0 seeds it from the rollout's last usage record and this rollout had none; urollup does not read thread_token_usage or turn_token_usage.",
     "The resumed session keeps the cli_version 0.150.0 session_meta it started with; whether a resumed rollout repeats session_meta or writes thread_settings_applied when resumed is unverified and does not change the accounting."
   ]
 }
