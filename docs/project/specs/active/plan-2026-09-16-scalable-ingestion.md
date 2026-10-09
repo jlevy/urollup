@@ -342,6 +342,315 @@ The ceiling bounds these rows, not total process memory: line buffers, metadata,
 interned values, auxiliary ledger tables and the other agent’s ledger also consume
 memory.
 
+### Process-Wide Admission (uro-6pi8)
+
+**Status:** design checkpoint (2026-10-09), not implemented.
+The [decisions](#decisions-for-the-maintainer) need the maintainer before implementation
+starts. Values marked *guess* are placeholders that the [slices](#implementation-slices)
+measure or calibrate; *derived* values follow from type sizes and growth patterns in the
+current code.
+
+One byte ledger per invocation replaces the per-agent row-shell ceiling described under
+[Memory Model](#memory-model).
+Each component that holds memory is charged an upper bound of the heap bytes urollup
+requests for it, before the allocation, and the invocation refuses as soon as the
+charged total with headroom would exceed the budget.
+The ledger bounds an estimate; it does not cap RSS or physical footprint, and a sampled
+watchdog stays a test backstop.
+[Validation](#validation-with-uro-z1h1) ties the estimate to measured footprint.
+
+#### Budget Check
+
+An invocation proceeds while, at every phase,
+
+```text
+F + H × (A_workers + A_large + E) ≤ B
+```
+
+- `B` is the budget ([Budget Source](#budget-source-and-flag-semantics)).
+- `F` is the process baseline: binary, runtime, timezone data and C-library state.
+  It is 1.25 × the larger of the macOS peak footprint and the Linux maximum RSS of a
+  `report` over the smallest fixture (*guess* 16 MiB until measured).
+  It is a measurement, so it takes no headroom.
+- `A_workers` and `A_large` are the worker slots and the large-record permit
+  ([Admission Determinism](#admission-determinism)).
+- `E` is the modeled heap of the current phase: committed state plus the current agent’s
+  charges.
+- `H` covers allocator size-class rounding, memory the allocator keeps after frees,
+  pages that footprint or RSS count but urollup never requested, and zstd’s C
+  allocations, which a Rust allocator never sees.
+  It is a *guess* of 1.5 until calibration.
+
+Every charge follows one costing rule, so the numbers below come from code rather than
+choice:
+
+- An allocation of `n` bytes costs `round_up(n, 16) + 16`.
+- An element of a vector that grows by doubling costs 3 × its size: when capacity `C`
+  doubles, the old `C` and new `2C` buffers are both live, and `shrink_to_fit` has the
+  same bound. A vector sized once costs 1 ×.
+- A hash-map entry costs 3.5 × (entry + one control byte), for power-of-two buckets at
+  7/8 load plus the old table during a resize.
+  A B-tree entry costs 2.5 ×, for half-full nodes.
+
+#### Reservation Model
+
+| Component | Charged per | Charge | Basis | Held until |
+| --- | --- | --- | --- | --- |
+| Baseline `F` | invocation | measured | measured constant | exit |
+| Discovery metadata | discovered source, catalog entry, Codex locator thread | struct plus owned path and string bytes of `DiscoveredSource`, `CatalogSource` and the thread-ID map | derived | that agent’s ingest returns |
+| Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`), 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`), 10 MiB for lines up to 4 MiB (1.5 × growth plus one parse-owned copy), 2 MiB thread stack; when discovery found a `.zst` source, zstd’s `ZSTD_estimateDStreamSize` for an 8 MiB window plus the crate’s input buffer, about 8.6 MiB; gzip state | derived; the 4 MiB and 8 MiB thresholds and gzip’s 64 KiB are *guesses* | the agent’s decode ends |
+| Large-record permit (`A_large`) | invocation | 2.5 × the largest line buffer above 4 MiB seen so far (at most 160 MiB at `ReadOptions::DEFAULT_MAX_RECORD_BYTES`), plus any zstd window above 8 MiB (at most 128 MiB at zstd’s default `ZSTD_WINDOWLOG_LIMIT_DEFAULT`) | derived | the agent’s decode ends |
+| Decoded record | every retained record, request-bearing or not, including Codex rollouts pending for `normalize` and Claude copies and replays | 3 × its size: Claude ≤ 200 B, Codex 80 B (size assertions) | derived | Codex: its rollout is observed; Claude: its chunk is consumed by `reconcile_input` |
+| Request structure (κ) | request-bearing record | the dialect’s largest per-record total over its later phases: the observation (224 B; 3 × while `normalize` or `reconcile_input` appends), key-graph nodes (30 B in three vectors at 3 × and 16 B of slots at 1.5 ×, times the dialect’s key bound including split-part keys, asserted by a test), 12 B of grouping order, the request (216 B × 33/32, then 3 × plus an 8 B permutation in `Requests::from_unsorted`), and Claude owner state (owner and uuid maps, eligibility vector, ambiguity map) | derived; indicatively 0.9 KB for Codex and 1.0 KB for Claude | the retained ledger is committed |
+| Record payloads | allocation | exact bytes by the costing rule: per-source strings (Claude `Arc<str>`, vector slot and map entry; Codex 3 × text, 8 B end offset and map entry), Claude extras and tool-use digests, Codex usage counts, distinct rate-limit snapshots and session metadata, spilled keys, `model_usage` and invariants | derived | construction ends, or with the retained ledger |
+| Limit row | provider limit observation | 3 × 128 B as built, or 128 B input plus its sort-cache tuple plus 128 B output during limit reconciliation, whichever is larger | derived | retained ledger |
+| Diagnostic | occurrence | `Diagnostic`, its detail text and 16 B per evidence reference | derived | compaction; retained ones stay |
+| Process interns | new distinct `Name`; new overflow `Measures` pattern | text allocation, leaked reference and B-tree entry; 72 B row in a vector plus its map key | derived from `names.rs` and `tokens.rs` | exit |
+| Retained ledger | agent | deep size of `Ingested` after finalize, which replaces that agent’s decode and construction charges | computed | exit; discovery tables leave at `release_discovery` |
+| Session index | indexed thread | deep size of its `IndexedSession` | derived | exit |
+| Query and render | selected session, day or group row | document cost per row plus 3 × rendered bytes | *guess* until measured | exit |
+
+The model closes two gaps in today’s admission, which retains but never charges Claude
+`<synthetic>` records without a request ID and Codex session-meta, turn-context,
+settings and zero-usage token-count records (`decode_with_admission` in both adapters).
+`--max-rows` keeps counting request-bearing rows only.
+
+#### Phases and Checkpoints
+
+An invocation runs these phases in order: discovery of both agents; Codex decode,
+construction (`normalize`), grouping (`reconcile_with_capacity`) and finalize
+(`Requests::from_unsorted`, limit reconciliation, diagnostic compaction); the Codex
+session index and `release_discovery`; the same for Claude, with the Codex ledger
+committed; then query and render.
+
+- **Decode** runs on parallel workers.
+  Before a record is pushed, it is charged its decoded size, κ when it bears a request,
+  its payload allocations, its limit rows and any new process intern.
+  Because κ covers the record’s share of every later phase, decode refuses as soon as
+  the admitted records could not complete reconciliation, without reading the rest of
+  the input.
+- **Checkpoints** run on the coordinating thread before construction, grouping,
+  finalize, each session index and query.
+  Each recomputes the phase estimate from exact counts, replacing the forward charges,
+  and refuses before the phase allocates.
+  Growth inside a single-threaded phase that counts cannot predict (split keys,
+  diagnostics, aliases, multi-record references) is charged where it is pushed.
+- **Commit** after finalize releases the agent’s decode and construction charges and
+  charges its retained ledger exactly.
+  Worker slots and the permit are released when decode ends.
+
+Indicatively, scaling the historical whole-history counts in [Progress](#progress)
+(about 1.03 million observations) from the roughly 22 GB corpus in the
+[Overview](#overview) to 100 GiB gives about 5 million observations and an estimate near
+5 GiB at `H` = 1.5, inside 8 GiB. This is arithmetic on derived charges, not a
+measurement; `uro-z1h1` replaces it.
+
+#### Admission Determinism
+
+- Charges depend only on the input (record sizes, string bytes and distinct interned
+  texts), never on capacity reached through timing.
+- Within a parallel phase, charges never decrease, and release and commit happen only at
+  checkpoints, after workers join.
+  Charges are read-modify-write operations on one counter, so they are totally ordered.
+  A charge is refused exactly when the running total would pass the budget, which
+  happens if and only if the phase’s final total exceeds it, whatever the worker count
+  or scheduling. Workers stop at their next record, as `Admission::stopped` does today.
+- The process `Name` and overflow tables charge an insert only when it is new.
+  Which thread inserts first varies, but the total is the size of the distinct texts.
+  Threshold tests run the binary, because tests in one process share these tables.
+- **Worker slots:** `slots = clamp(⌊B / (8 × H × b)⌋, 1, max(8, UROLLUP_JOBS))`, where
+  `b` is one slot’s charge, and decode runs on `min(workers, slots)` threads.
+  The charge depends on the budget and on an explicit `UROLLUP_JOBS` above 8, never on
+  the default worker count or on one to eight workers.
+  Fewer threads never change output.
+- **Large-record permit:** one worker at a time may grow a line buffer past 4 MiB or
+  decode a zstd frame whose window exceeds 8 MiB; the others wait for it.
+  Its charge is the largest such need seen so far, so the final charge is the input’s
+  largest need in any order.
+  Decoders open with `window_log_max(23)`. A source that hits that limit is reread from
+  its start under the permit with zstd’s default limit of 2^27; the first attempt’s
+  state is dropped and its charges are kept.
+- A successful run’s output is unchanged: admission decides only whether the run
+  proceeds and on how many threads.
+- Refusal text names the phase, agent and budget, plus an exact estimate at checkpoints.
+  When a source read error coincides with a decode refusal, which one is reported may
+  vary, as it may today; success versus failure does not.
+  When `--max-rows` and the byte budget are both exceeded, either may be named.
+
+#### Budget Source and Flag Semantics
+
+- **Effective memory** `M` is the smallest discoverable of physical RAM (`hw.memsize`,
+  `/proc/meminfo` or `GlobalMemoryStatusEx`, as today) and, on Linux, three allowances.
+  These are the cgroup v2 `memory.max` and `memory.high` of the process cgroup and each
+  ancestor, located through `/proc/self/cgroup` and `/proc/self/mountinfo` (`max` means
+  none); the cgroup v1 `hierarchical_memory_limit` from `memory.stat` (values at or
+  above physical RAM mean none); and the soft `Max address space` and `Max data size`
+  limits in `/proc/self/limits`. Unreadable or malformed files are ignored.
+  macOS and Windows use physical RAM in 0.1; Windows job-object limits are a follow-up.
+  Available or free memory is never used, because it changes between runs.
+- **Default:** `B` is 25% of `M`, or 2 GiB when `M` is unknown, as today.
+- **`--max-ram`** and `UROLLUP_MAX_RAM` keep their syntax and precedence.
+  A size sets `B` exactly without probing the host; `P%` takes P% of `M` and fails as a
+  usage error when `M` is unknown.
+  The value now means the whole-process estimated peak rather than per-agent row shells,
+  so the same value admits several times fewer observations (indicatively 1.6–2 KB per
+  record with payloads at `H` = 1.5, against 224 B). No version has been published, so
+  the change lands in one slice with the help text, README, design §8.3, the AGENTS.md
+  status and this plan’s Memory Model, without an alias.
+- **`--max-rows N`** stays an exact per-agent ceiling on request-bearing observations
+  with its current message.
+  Both limits apply: `--max-rows` alone no longer replaces the byte budget, and the
+  stricter-wins conversion goes away.
+- **Labels** name the source, such as `25% of 32 GiB physical RAM (8 GiB)`,
+  `25% of the 4 GiB cgroup limit (1 GiB)`, `--max-ram 6G` or
+  `2 GiB fallback (physical RAM unknown)`.
+- A budget below `F + H × b`, one worker slot, refuses before discovery; with the
+  placeholder values that floor is about 35 MiB, or 50 MiB when a zstd source is
+  present.
+
+#### Refusal Behavior
+
+A refusal exits 1, the capacity-limit class of design §6.5, and writes nothing to
+stdout: `execute` returns rendered output only after the query checkpoint, as it does
+today. stderr carries one line, such as:
+
+```text
+error: estimated memory for reconciling Codex requests (9.4 GiB) exceeds the budget of 25% of 32 GiB physical RAM (8 GiB); raise --max-ram (for example --max-ram 50%), select fewer sessions with --session, or pass narrower --source roots with --no-default-sources
+```
+
+A decode refusal reads `while reading Codex rollouts` and gives no estimate.
+`UROLLUP_STATS=1` adds `stats: memory budget=… source=… slots=…` and, for each completed
+decode and checkpoint, `stats: memory phase=… estimate=…` with the bracketed heap term
+`A_workers + A_large + E`, numbers only.
+
+#### Admission Tests
+
+- **Budget source:** fixture `/proc` and cgroup trees cover v2 numeric values, `max`,
+  nested minimums and `memory.high`; v1 hierarchical limits and the unlimited sentinel;
+  `/proc/self/limits`; and malformed files.
+  Explicit sizes never probe (the existing test stays), and a percent without RAM fails.
+- **Ledger:** concurrent charges never pass the budget (extending today’s admission
+  test); checkpoints release and commit; refusal text is fixed per phase.
+- **Model bound:** an integration-test binary with a counting global allocator asserts
+  that live Rust heap above its starting level stays within the estimate during decode
+  and at every checkpoint, on every fixture and on small generated corpora, for each
+  agent and both. Its `unsafe` stays in that binary under the lint policy, and it adds no
+  dependency.
+- **Combined agents:** a generated corpus in which each agent fits a chosen budget alone
+  and both together do not refuses during Claude decode or at a Claude checkpoint, with
+  exit 1 and empty stdout.
+- **High cardinality:** distinct rate-limit payloads on every token count, many models,
+  aliases and long session families refuse at a budget whose row-shell count would have
+  admitted them.
+- **Dense records:** an unpadded corpus and its padded twin with the same records print
+  identical estimate lines while lines stay below 4 MiB. A 5 MiB line and an oversized
+  65 MiB line exercise the permit.
+- **Low budget:** a budget below the floor refuses before discovery; one just above it
+  completes a fixture on one worker (`stats: workers=1`).
+- **Worker determinism:** for each case, a success run’s largest estimate gives the
+  threshold `T = F + H × estimate`. Budgets `T` and `T` − 1 produce byte-identical
+  outcomes and stderr under `UROLLUP_JOBS=1` and `8` across repeated runs, and `T` − 1
+  refuses whenever it leaves the slot count unchanged.
+- **Exact output:** goldens, fixture results and one/eight-worker identity stay
+  unchanged at the default budget; new goldens pin exit 1 and empty stdout for refusals.
+- **zstd window:** a generated frame whose header declares a 16 MiB window decodes
+  through the retry path to the same output as its plain twin.
+
+#### Validation With uro-z1h1
+
+- The model-bound test proves the estimate covers requested bytes.
+  Footprint adds allocator behavior and zstd’s C allocations, which `H` must cover.
+- Each `uro-z1h1` run records the estimate lines beside the measured peak (macOS
+  physical footprint, Linux maximum RSS) for its three observation counts of
+  Claude-heavy, Codex-heavy and mixed corpora, with one and eight workers.
+  With each run’s largest estimate line, `H_cal` is the largest
+  `(measured − F) / estimate` over the runs, and `H` becomes `max(1.1, 1.2 × H_cal)`, a
+  code constant whose provenance this plan records.
+  Every run must fall within `F + H × estimate`; a run that does not blocks acceptance
+  until the missing component is modeled.
+- The model is linear in counts by construction.
+  A measured slope above the model’s slope times `H`, or curvature, points to an
+  unmodeled component.
+- **100 GiB envelope:** the largest observation count the model admits at 8 GiB for the
+  reference mix must exceed the count `uro-z1h1` projects at 100 GiB from its upper
+  linear envelope with margin.
+  Admission then keeps such a history within 25% of RAM through the calibrated bound;
+  the result stays labeled a projection.
+- **Streaming:** a padded synthetic input larger than an explicit `--max-ram` completes,
+  with the watchdog at that allowance as the backstop.
+- **Early refusal:** a dense synthetic input above `--max-ram` refuses during decode,
+  before a watchdog at 1.1 × the allowance fires, with empty stdout.
+- `uro-erqo`’s reference-history runs record estimate and footprint at the default
+  budget; those values stay local.
+
+#### Decisions for the Maintainer
+
+1. **Default base.** Recommended: 25% of effective memory `M`, the smallest of physical
+   RAM and the cgroup and rlimit allowances.
+   Alternative: 25% of physical RAM, capped by the container allowance.
+   Trade-off: a 4 GiB container gets 1 GiB rather than up to 4 GiB, and one rule applies
+   everywhere.
+2. **`--max-ram` migration.** Recommended: redefine it in place as the whole-process
+   budget, with no alias, since nothing is published.
+   Alternative: a new flag with `--max-ram` deprecated.
+   Trade-off: a scripted value admits several times fewer observations; help and README
+   say so.
+3. **`--max-rows`.** Recommended: an independent per-agent ceiling that never lifts the
+   byte budget. Alternative: keep `--max-rows` alone replacing the default budget.
+   Trade-off: lifting memory protection requires `--max-ram`, which names the risk.
+4. **Bypass.** Recommended: no unlimited switch; an explicit `--max-ram` size, or
+   `100%`, is honored even above `M`, and `UROLLUP_STATS` reports it.
+   Alternatives: `--no-memory-limit`, or refusing sizes above `M`. Trade-off: one
+   auditable control; a deliberate over-commit stays possible, but an accidental
+   unbounded run like the 2026-09-16 incidents does not.
+5. **Uncertain estimates.** Recommended: upper bounds everywhere, refusal rather than a
+   warning, and `H` = 1.5 until calibration replaces it.
+   Alternative: warn and continue when only guessed components exceed the budget.
+   Trade-off: false refusals near the boundary are possible before calibration; the
+   indicative estimate for the historical whole-history counts is about 1.2 GiB, far
+   inside 8 GiB.
+6. **Worker buffers.** Recommended: worker slots charged for `max(8, UROLLUP_JOBS)`
+   workers, fewer under small budgets, and one large-record permit for lines above 4 MiB
+   and zstd windows above 8 MiB. Alternative: charge every worker for a 64 MiB line and
+   a 128 MiB window, about 2.3 GiB at eight workers.
+   Trade-off: rare large lines decode one at a time.
+
+#### Implementation Slices
+
+Each slice keeps `make check` green.
+Until slice 7 the CLI passes an unlimited ledger, so today’s row ceiling stays the
+user-visible behavior.
+
+1. **Budget source.** Effective-memory discovery (cgroup v2 and v1, `/proc/self/limits`)
+   and source-naming labels in `ledger::capacity`, unit-tested on fixture trees.
+2. **Ledger.** A process-wide `MemoryAdmission` with one monotone charge counter, the
+   stop flag, checkpoint commit and release, worker slots and a structured capacity
+   error. The per-agent row counter moves inside it for `--max-rows`.
+3. **Model and harness.** Per-unit charges from `size_of` and the costing rule, κ per
+   dialect, phase estimates, deep size for metadata types, the counting-allocator test
+   binary, and measured `F`, decoder and query constants.
+   It reports bound violations and wires nothing into ingestion.
+4. **Readers and workers.** Worker slots for the `try_read_in_parallel` callers, the
+   permit in `read_line`, and the zstd window limit with its retry, with generated
+   long-line and wide-window tests.
+5. **Codex.** Decode charges for every retained record, strings, counts, limit
+   snapshots, worker-built observations, new `Name` inserts (`Name::new` reports a new
+   insert’s bytes) and diagnostics; checkpoints in `normalize` and reconciliation;
+   commit; high-cardinality and threshold tests.
+6. **Claude.** The same for every retained record, per-source strings, tool uses,
+   extras, the merge and owner state.
+   Slices 5 and 6 are independent of each other.
+7. **CLI and semantics.** Discovery, catalog, session-index and query checkpoints; agent
+   ordering and commit; the `--max-ram` and `--max-rows` semantics; refusal text and
+   stats lines; help, README, design §8.3, the AGENTS.md status and the Memory Model;
+   goldens; combined-agent, dense-record and low-budget tests.
+   The byte-to-row conversion (`rows_for_budget`, `FALLBACK_MAX_OBSERVATIONS`,
+   `MAX_OBSERVATIONS`) is removed.
+8. **Calibration.** `measure-scale.py` and `check-scale.py` capture estimate lines
+   beside measured peaks and check measured ≤ `F + H × estimate` on the CI synthetic
+   workloads. `H` is set from that matrix, and the full matrix and representative runs
+   pass to `uro-z1h1` and `uro-erqo`.
+
 ### Parallelism and Determinism
 
 Family batches are slotted by catalog index, and every global step sorts by canonical
@@ -473,7 +782,8 @@ meet the [accepted policy](#accepted-scale-and-memory-policy-2026-09-27).
 
 ### Phase 2: Process-Wide Safety and Scale Gates
 
-- [ ] Enforce conservative process-wide admission (`uro-6pi8`).
+- [ ] Enforce conservative process-wide admission (`uro-6pi8`), as designed in
+  [Process-Wide Admission](#process-wide-admission-uro-6pi8).
 - [ ] Prove density scaling, raw-byte independence and the projected 100 GiB envelope
   (`uro-z1h1`); record representative evidence (`uro-erqo`).
 - [ ] Accept the complete revised policy (`uro-zrr0`). Phase 1 row compaction is
