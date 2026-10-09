@@ -9,7 +9,10 @@
 //!   model and effort names.
 //! - [`reconcile`] merges observations into logical requests (§3.3), using [`counters`]
 //!   for running totals and reporting [`diagnostics`] and [`coverage`].
+//! - [`capacity`] discovers the memory budget and [`admission`] charges modeled memory
+//!   and request rows against it, process-wide.
 
+pub mod admission;
 pub mod canonical_json;
 pub mod capacity;
 pub mod counters;
