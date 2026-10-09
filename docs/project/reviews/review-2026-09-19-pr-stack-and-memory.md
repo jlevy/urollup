@@ -16,23 +16,26 @@ heads. Audit evidence is recorded in `uro-y7zm`; `uro-28fc` governs implementati
 validation. The dated snapshots below preserve the decisions and evidence available at
 the time; subsequent accepted policy is recorded separately.
 
-## Current PR Landscape: 2026-09-27 Pacific
+## PR Landscape: 2026-09-27 Pacific
 
 GitHub’s open and merged PR inventory was checked on 2026-09-28 UTC. The earlier
 implementation stack is merged into main `4c55617`; its dated readiness tables below are
 historical, not a current merge queue.
+The
+[release readiness record](../specs/active/plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
+holds current status.
 
-| PRs | Current disposition | Action |
+| PRs | Disposition at inspection | Action |
 | --- | --- | --- |
 | #1, #2, #3 | Setup, plan and design merged | No outstanding PR work |
 | #5, #6, #7 | Parity research, source reviews and Gemini plan merged | Research is not adapter implementation |
 | #4 → #8 → #10 → #11 → #12 | Accounting, terminal UX and ingestion stack merged | Follow-up correctness and safety work belongs in new layers |
-| [#15](https://github.com/jlevy/urollup/pull/15) | Open against main; head `04a3fdd` has 15 successful checks | Planning foundation for the core CLI delivery stack |
-| [#14](https://github.com/jlevy/urollup/pull/14) | Open against main; head `20a89be` has 15 successful checks | Independent Cursor plan; outside the core CLI critical path |
+| [#15](https://github.com/jlevy/urollup/pull/15) | Open against main with 15 successful checks | Planning foundation for the core CLI delivery stack |
+| [#14](https://github.com/jlevy/urollup/pull/14) | Open against main; head `20a89be` had 15 successful checks | Independent Cursor plan; outside the core CLI critical path |
 
 Both open PRs were reported mergeable at inspection time.
 That is a GitHub mergeability result, not a new technical approval or alpha acceptance.
-Neither has a formal GitHub review recorded.
+Neither had a formal GitHub review recorded at inspection.
 They overlap in `docs/urollup-design.md` and the product milestone plan; recheck those
 files and CI when either base changes.
 Cursor does not depend on the new CLI implementation and should not be stacked into its
@@ -45,11 +48,11 @@ cleanup decision.
 The
 [core CLI delivery slice](../specs/active/plan-2026-09-20-usage-analysis-workflow.md#core-cli-delivery-slice-2026-09-27)
 owns the new dependency order and scope.
-The first runtime blocker is `uro-kpbp`: a synthetic paginated fork with parent usage
-100 and child usage 20 reports 220 instead of 120. Existing green CI does not cover that
-shape.
-Correctness, process-wide safety and whole-history acceptance remain open; the CLI
-is not yet accepted as a trustworthy public alpha.
+The first runtime blocker at inspection was `uro-kpbp`: a synthetic paginated fork whose
+parent uses 100 tokens and whose child copies that 100-token prefix and adds 20 tokens
+reports 220 instead of 120. The green CI of that date did not cover that shape.
+Correctness, process-wide safety and whole-history acceptance remained open; the CLI was
+not accepted as a trustworthy public alpha.
 
 ## Accepted Scale Policy: 2026-09-27
 
@@ -105,11 +108,16 @@ as evidence for a changed base.
 | 1 | Record acceptance or explicit deferral of the six policy choices below and the unverified Claude-shape claims. Apply any accepted behavior changes with regression coverage before milestone acceptance. | `uro-mzvt`, `uro-wt2q`, `uro-je0v`, `uro-xpd0`, `uro-c7ro`, `uro-01xj`, `uro-89s7` |
 | 2 | Implement process-wide admission and demonstrate the accepted memory/scale policy. Measure release `sessions`, `daily` and `report` on the accepted head, distinguish footprint from RSS, and compare one/eight workers. Keep private evidence local unless publication is authorized. | `uro-zrr0`, `uro-6pi8`, `uro-z1h1`, `uro-erqo` |
 | 3 | After the performance gate, complete project G1 and full-history parity/coverage QA, explaining residuals and recording a privacy-safe acceptance report. | `uro-d36a`, `uro-ky6c`, `uro-n8h5` |
-| 4 | Land code in order #4 → #8 → #10 → #11 → #12 when the maintainer chooses to merge; separately rebase #14, resolve the product-plan conflict and validate its implementation-dependent links and docs CI. Code landing may precede milestone acceptance. | `uro-28fc`, `uro-knnz` |
+| 4 | Done for code: #4 → #8 → #10 → #11 → #12 merged into main `4c55617` before milestone acceptance. Still open: rebase #14, resolve its product-plan overlap and validate its implementation-dependent links and docs CI. | `uro-28fc`, `uro-knnz` |
 | 5 | After milestone acceptance, implement native release builds, publishing, provenance, release documentation and installation/release rehearsal. | `uro-30ef` and its children |
 
 Steps 1 and 2 can proceed independently.
-The next release work is process-wide safety and density-scale validation.
+The open correctness fixes in the
+[release readiness record](../specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes),
+starting with `uro-kpbp`, also block G1 in step 3. The
+[core CLI delivery slice](../specs/active/plan-2026-09-20-usage-analysis-workflow.md#core-cli-delivery-slice-2026-09-27)
+owns the current dependency order: accounting correctness first, then process-wide
+safety and density-scale validation.
 Profiling under `uro-lsaz` is a throughput follow-up.
 The typed-sidecar work `uro-a3fo` is complete; its effect on the representative corpus
 is still unmeasured.
