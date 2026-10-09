@@ -166,10 +166,10 @@ tag:
 modes. `status` is `completed` (618), `none` (302) or `aborted` (101).
 
 Subagents appear three ways: 189 JSONL files under `subagents/`, 196
-`composerHeaders.isSubagent` rows (`generalPurpose`, `shell`, `explore`, `opus-xhigh`,
-`ci-investigator`), and 51 parent composers with `subComposerIds`. JSONL `Task` tool
-inputs sometimes set `input.model` to `inherit` (47) or `cursor-grok-4.6-xhigh-fast`
-(6).
+`composerHeaders.isSubagent` rows (`subagentTypeName` holds built-in types such as
+`generalPurpose`, `shell` and `explore`, plus user-defined types), and 51 parent
+composers with `subComposerIds`. JSONL `Task` tool inputs sometimes set `input.model` to
+`inherit` (47) or `cursor-grok-4.6-xhigh-fast` (6).
 
 ### How Turns Are Stored
 
