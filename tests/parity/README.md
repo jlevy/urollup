@@ -37,9 +37,11 @@ make parity-local CONSENT_LOCAL_LOGS=1
 `e2e-local` writes `target/acceptance/local-aggregate.json` in the
 `urollup.local-aggregate/v2` format.
 It starts four urollup processes however many sessions the history holds: `--version`,
-then whole-history `sessions`, `daily` and `report`, so a stale binary fails before any
-ingest. The record includes only complete days before the current local day: per-day and
-total request counters, every urollup token field including the 5-minute, 1-hour and
+then whole-history `sessions`, `daily` and `report`. A binary that cannot report its
+version fails before any ingest, and one whose `sessions` rows lack the calendar fields
+stops after that first ingest.
+The record includes only complete days before the current local day: per-day and total
+request counters, every urollup token field including the 5-minute, 1-hour and
 unspecified cache-write lifetimes, coverage counters, internal diagnostic codes and
 session counts.
 
@@ -48,11 +50,11 @@ A token field that no counted request reported is null, not zero.
 carried it, `some_days` when only some did, and `no_days` when none did.
 The unit is the day row, not the request: a urollup day row carries a field when any of
 its counted requests reported it.
-On a day that mixes Claude and Codex requests, an agent-specific field such as
-`reasoning` therefore reads `all_days` although the other agent’s requests lacked it,
-and its sum covers only the requests that reported it.
-Request-level availability waits on per-metric request counts in urollup’s query rows
-(`uro-r67m`).
+A day that mixes Claude and Codex requests therefore counts as carrying an
+agent-specific field such as `reasoning` although the other agent’s requests lacked it,
+so a window of such days can read `all_days`, and the sum covers only the requests that
+reported the field. Request-level availability waits on per-metric request counts in
+urollup’s query rows (`uro-r67m`).
 
 Sessions are classified on the whole-history ledger, the one the record’s totals use.
 A session is stable when its `sessions` row owns a counted request, has no
@@ -60,8 +62,8 @@ A session is stable when its `sessions` row owns a counted request, has no
 urollup dates those rows by the rule `daily` uses.
 `sessions.excluded` counts the rest: `active_or_undated` for sessions with usage on or
 after the cutoff day or without a timestamp, `without_owned_requests` for sessions that
-own no counted request, and `unowned_or_unknown_agent` for the unowned group and
-unexpected agent tokens.
+own no counted request, and `unowned_or_unrecognized_agent` for unowned rows, which have
+no thread, and rows whose agent token this tool does not recognize.
 A request that two sessions both prove they own is ambiguous in the whole-history ledger
 and belongs to neither, so a finished session whose requests are all ambiguous counts as
 `without_owned_requests`. A per-session `urollup daily --session` run narrows discovery

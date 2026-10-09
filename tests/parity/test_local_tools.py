@@ -270,7 +270,7 @@ class LocalAggregateTests(unittest.TestCase):
                 "excluded": {
                     "active_or_undated": 4,
                     "without_owned_requests": 2,
-                    "unowned_or_unknown_agent": 2,
+                    "unowned_or_unrecognized_agent": 2,
                 },
             },
         )
@@ -409,8 +409,8 @@ class LocalAggregateTests(unittest.TestCase):
                 for marker in PRIVATE_MARKERS:
                     self.assertNotIn(marker, messages[name])
         self.assertIn("rebuild", messages.get("sessions without calendar fields", ""))
-        # A stale binary fails before any ingest, and an old sessions contract before
-        # the other two.
+        # A failed version check stops before any ingest, and an old sessions contract
+        # before the other two.
         self.assertEqual(len(cases["failed version"].calls), 1)
         self.assertEqual(len(cases["sessions without calendar fields"].calls), 2)
 

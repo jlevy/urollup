@@ -88,9 +88,9 @@ def token_totals(
     The label is `all_days` when every summed day row carried the metric, even as zero;
     `some_days` when only some did, so the sum covers those days; and `no_days`, with a
     null sum, when none did. A urollup day row carries a field when any one of its
-    counted requests reported it, so on a day mixing Claude and Codex requests an
-    agent-specific field such as `reasoning` reads `all_days` although some requests
-    lacked it. Request-level availability needs per-metric request counts that urollup
+    counted requests reported it, so a day mixing Claude and Codex requests counts as
+    carrying an agent-specific field such as `reasoning` although some requests lacked
+    it. Request-level availability needs per-metric request counts that urollup
     does not report yet.
     """
 
@@ -203,7 +203,11 @@ def stable_session_summary(sessions: dict[str, Any], *, cutoff: str) -> dict[str
     if not isinstance(rows, list):
         raise LocalAggregateError("sessions output has no rows")
     stable = 0
-    excluded = {"active_or_undated": 0, "without_owned_requests": 0, "unowned_or_unknown_agent": 0}
+    excluded = {
+        "active_or_undated": 0,
+        "without_owned_requests": 0,
+        "unowned_or_unrecognized_agent": 0,
+    }
     by_agent = {agent: 0 for agent in sorted(AGENTS)}
     for row in rows:
         if not isinstance(row, dict):
@@ -222,7 +226,7 @@ def stable_session_summary(sessions: dict[str, Any], *, cutoff: str) -> dict[str
         thread = row.get("thread")
         agent = row.get("agent")
         if not isinstance(thread, str) or not isinstance(agent, str) or agent not in AGENTS:
-            excluded["unowned_or_unknown_agent"] += 1
+            excluded["unowned_or_unrecognized_agent"] += 1
         elif requests == 0:
             excluded["without_owned_requests"] += 1
         elif undated > 0 or last_date is None or last_date >= cutoff:
@@ -365,8 +369,8 @@ def main(argv: list[str] | None = None) -> int:
         "never",
         "--no-progress",
     ]
-    # A stale binary fails before any ingest, and one whose `sessions` rows lack the
-    # calendar fields fails before the other two ingests.
+    # A binary that cannot report its version fails before any ingest, and one whose
+    # `sessions` rows lack the calendar fields fails before the other two ingests.
     tool = version(binary)
     session_summary = stable_session_summary(
         execute_json(binary, ["sessions", *common]), cutoff=cutoff
