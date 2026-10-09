@@ -33,6 +33,24 @@ Use repeated `--source` options with `--no-default-sources` to restrict input
 explicitly. “All” means all sessions discovered from those roots, not every log anywhere
 on disk.
 
+Claude Code deletes project transcripts older than `cleanupPeriodDays` (30 days by
+default) when it starts, whether or not they are compressed
+([transcript storage](https://code.claude.com/docs/en/sessions#where-transcripts-are-stored)).
+A whole-history Claude report therefore covers about the last month.
+To keep more, raise `cleanupPeriodDays` in `~/.claude/settings.json`, or copy
+transcripts to an archive directory and pass it with `--source`; urollup reads `.jsonl`
+and `.jsonl.zst` files there, and `.jsonl.gz` support is tracked as `uro-nc34`. If the
+archive also holds transcripts still under `~/.claude/projects`, add
+`--no-default-sources` and name each root explicitly so no transcript is read from two
+roots. Codex keeps archived sessions under `archived_sessions`, which default discovery
+reads.
+
+Known accounting defects remain open, including a Codex paginated-fork double count that
+still reports complete coverage (`uro-kpbp`); treat Codex totals as provisional.
+The
+[release readiness record](project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes)
+lists each open fix.
+
 Each command currently rereads the logs.
 Separate commands can observe different input when sessions are active.
 `report --group-by project,model` produces separate project and model breakdowns, not
@@ -54,15 +72,15 @@ diagnostic detail; keep it local unless you have reviewed it for the intended re
 | Daily totals | Available in the selected timezone | Group by day together with agent/provider/model |
 | Weeks and months | No native command yet; daily token sums can be rebucketed externally | Native calendar queries and explicit week start |
 | Claude versus Codex | Session rows identify agent; explicit roots can isolate one agent | First-class agent filter/grouping |
-| Provider and account | Provider grouping absent; account breakdown is currently unknown | Recorded or explicitly mapped provider basis; unknown account retained |
-| Cache-read and cache-write tokens | Available, including recorded write lifetimes | Request hit counts/rates and field-availability coverage |
+| Provider and account | Provider grouping absent; `report --group-by account` is accepted, but every row is `unknown` because no adapter records an account | Recorded or explicitly mapped provider basis; unknown account retained |
+| Cache-read and cache-write tokens | Available; JSON output also splits writes by recorded lifetime | Request hit counts/rates and field-availability coverage |
 | Tool calls and usage durations | Not exposed by current reports | Native evidence, tool counts and separate time measures |
 | API list-price estimate | Not implemented | Reviewed rates, request-level matching and coverage |
 | Requery without original logs | Not implemented | Existing summary/bundle and export design |
 
 ## Cache Tokens and Cache Hits
 
-The token model already separates these fields:
+JSON output uses these token fields and omits a field that no counted request reported:
 
 | Field | Meaning |
 | --- | --- |
@@ -74,10 +92,19 @@ The token model already separates these fields:
 | `cache_write` | Sum of the three write categories; do not add it again to those categories |
 | `output` | Generated output, including reasoning when reported as a subset |
 | `reasoning` | The reasoning subset; do not add it again to output |
+| `provider_only` | Provider-specific additive tokens; the Claude and Codex adapters report none |
+| `total` | Sum of the disjoint categories: uncached input, cache reads, the three write lifetimes, output and `provider_only`; `cache_write` and `reasoning` are already inside it |
+
+Tables show at most one cache-write total, and the `sessions` table folds every input
+category into one column; the write lifetimes appear only in JSON.
 
 Claude input counters exclude cache reads and writes.
-Codex input counters include cached input, which the adapter subtracts to derive
-uncached input. The ledger normalizes these meanings before summing.
+Codex input counters include cached input.
+When a record reports its cached split, the adapter subtracts it to derive uncached
+input; a record without that split keeps its whole input as uncached input, which the
+[workflow plan](project/specs/active/plan-2026-09-20-usage-analysis-workflow.md#cache-accounting-and-list-price-estimates)
+plans to keep as an unknown allocation instead.
+The ledger normalizes these meanings before summing.
 Reconciliation handles repeated usage observations rather than summing every raw log
 line.
 
