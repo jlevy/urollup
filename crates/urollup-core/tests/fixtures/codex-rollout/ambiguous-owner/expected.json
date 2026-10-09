@@ -207,7 +207,7 @@
     }
   ],
   "notes": [
-    "The shared response is counted once in every total. Neither thread's own usage includes it, and a selection of one thread reports it as possible usage, never counted.",
+    "The shared response is counted once in every total, and neither thread's own usage includes it. Selecting one thread should report it as possible usage, never counted (design §4.2). Today exact --session selection reads only the selected thread's files, so it counts the response as owned and reports Possible 0 (uro-s71z).",
     "Both records name the thread of the file that holds them, so both are originals; token_count events are reconciliation checks when records exist.",
     "The shared request takes the agent its candidates share, Codex, even though it has no single thread (design §4.2): a sessions listing shows it in Codex's unowned row, never in another agent's."
   ]

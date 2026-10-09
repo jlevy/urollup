@@ -228,6 +228,143 @@ $ urollup sessions --all --format json --timezone UTC
 ? 0
 ```
 
+## Exact Session Selection Counts the Shared Response
+
+Exact `--session` selection reads only the selected session’s files, so it never sees
+the other session’s claim on the shared response.
+Each single-session run below counts that response as the selected session’s own, and
+its report shows `Possible 0`, where design §4.2 would report the response as possible
+usage (`uro-s71z`). The whole-history rows above give each session only its own
+response. These blocks pin today’s behavior, so the fix appears here as a deliberate
+diff.
+
+```console
+$ urollup sessions --session 00000000-0000-4000-8000-001700000001 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-552thqtbre5b2fbhx3xrwcvz1e | claude | project | 2 | 3,350 | 130 | 3,480
+? 0
+```
+
+```console
+$ urollup sessions --session 00000000-0000-4000-8000-001700000002 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-1ctftnp1tgm3qwb85vbdshjahb | claude | project | 2 | 2,745 | 120 | 2,865
+? 0
+```
+
+```console
+$ urollup report --session 00000000-0000-4000-8000-001700000002 --group-by model --timezone UTC
+urollup report
+Selection session  Scope descendants  Timezone UTC
+
+TOTALS
+Requests  2
+Owned     2
+Ambiguous 0
+Unknown   0
+Uncached input 45
+Cache read     2,500
+Cache write    200
+Output         120
+Reasoning      -
+Total tokens   2,865
+
+COVERAGE
+Status complete  Copies excluded 0  Limit observations 0
+Unresolved 0  Possible 0  Requests without usage 0
+
+REQUEST SIZES (inclusive input tokens)
+Count 2  p50 515  p90 2,230  p99 2,230  max 2,230
+
+MODEL BREAKDOWN
+VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
+claude-sonnet-4-5 | 2 | 2,745 | 120 | 2,865
+? 0
+```
+
+```console
+$ urollup sessions --session 019f0000-0000-7000-8000-001700000001 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-262jyyetjxsmg2wc05d3txhh68 | codex | project | 2 | 20,000 | 1,000 | 21,000
+? 0
+```
+
+```console
+$ urollup sessions --session 019f0000-0000-7000-8000-001700000002 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+thr-v1-4bs081r5c7z8t920qtmrps06f0 | codex | project | 2 | 17,000 | 900 | 17,900
+? 0
+```
+
+```console
+$ urollup report --session 019f0000-0000-7000-8000-001700000002 --group-by model --timezone UTC
+urollup report
+Selection session  Scope descendants  Timezone UTC
+
+TOTALS
+Requests  2
+Owned     2
+Ambiguous 0
+Unknown   0
+Uncached input 4,000
+Cache read     13,000
+Cache write    0
+Output         900
+Reasoning      200
+Total tokens   17,900
+
+COVERAGE
+Status complete  Copies excluded 0  Limit observations 0
+Unresolved 0  Possible 0  Requests without usage 0
+
+REQUEST SIZES (inclusive input tokens)
+Count 2  p50 5,000  p90 12,000  p99 12,000  max 12,000
+
+MODEL BREAKDOWN
+VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
+gpt-5.2-codex | 2 | 17,000 | 900 | 17,900
+? 0
+```
+
+Selecting both sessions of one agent restores the ambiguity: the shared response returns
+to that agent’s unowned row, and the other agent’s sessions stay out.
+
+```console
+$ urollup sessions --session 00000000-0000-4000-8000-001700000001 --session 00000000-0000-4000-8000-001700000002 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+unowned | claude | - | 1 | 2,230 | 80 | 2,310
+thr-v1-1ctftnp1tgm3qwb85vbdshjahb | claude | project | 1 | 515 | 40 | 555
+thr-v1-552thqtbre5b2fbhx3xrwcvz1e | claude | project | 1 | 1,120 | 50 | 1,170
+? 0
+```
+
+```console
+$ urollup sessions --session 019f0000-0000-7000-8000-001700000001 --session 019f0000-0000-7000-8000-001700000002 --timezone UTC
+urollup sessions
+Selection session  Scope descendants  Timezone UTC
+
+THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
+unowned | codex | - | 1 | 12,000 | 600 | 12,600
+thr-v1-262jyyetjxsmg2wc05d3txhh68 | codex | project | 1 | 8,000 | 400 | 8,400
+thr-v1-4bs081r5c7z8t920qtmrps06f0 | codex | project | 1 | 5,000 | 300 | 5,300
+? 0
+```
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

@@ -191,7 +191,7 @@
     }
   ],
   "notes": [
-    "The shared response is counted once in every total. Neither session's own usage includes it, and a selection of one session reports it as possible usage, never counted.",
+    "The shared response is counted once in every total, and neither session's own usage includes it. Selecting one session should report it as possible usage, never counted (design §4.2). Today exact --session selection reads only the selected session's files, so it counts the response as owned and reports Possible 0 (uro-s71z).",
     "Session 2's copy names session 2 and has new uuids, and session 2 is a main session, so neither the uuid nor the message replay rule marks it as a copy; both observations are originals.",
     "The shared request takes the agent its candidates share, Claude Code, even though it has no single session (design §4.2): a sessions listing shows it in Claude Code's unowned row, never in another agent's."
   ]

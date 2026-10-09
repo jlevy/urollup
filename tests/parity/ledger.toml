@@ -3,44 +3,58 @@ schema = 1
 # Deltas are urollup minus ccusage 20.0.20. Omitted rule dimensions match any value,
 # while expected_matches pins the number of matrix cells a rule may explain.
 
-# Whole-history runs see both sessions claim the shared response and report it as
-# ambiguous. An exact `--session` selection ingests only the selected session's files,
-# where that session is the sole proven owner, so each single-session run counts it.
-# ccusage deduplicates the response across sessions and keeps it in the first session.
+# A urollup gap, not an accepted policy difference: uro-s71z. Whole-history runs see
+# both sessions claim the shared response and report it as ambiguous. An exact
+# `--session` selection ingests only the selected session's files, where that session is
+# the sole proven owner, so each single-session run counts the response that design §4.2
+# would report as possible usage. ccusage deduplicates the response across sessions and
+# keeps it in the first session, so only session 2 differs, by the shared response.
+#
+# The Codex twin, codex-rollout/ambiguous-owner, has the same gap but needs no entry
+# today: ccusage's Codex session view counts the shared response in both threads, as
+# urollup's single-thread runs wrongly do, so the two agree. Once uro-s71z is fixed, each
+# Codex thread will differ by the shared response (12,600 tokens) and the Claude delta
+# will move to session 1. The ledger fails on both, so the fix must replace this entry
+# and add a Codex one.
 [[entry]]
 id = "claude-ambiguous-owner-session-selection"
 case = "claude-project/ambiguous-owner"
 cause = "dedupe"
 citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-claude-parsing"
 design = "docs/urollup-design.md#42-ownership-and-totals"
-retirement = "Revisit when exact session selection reads owner claims outside the selected session's files and reports the shared response as possible usage, or when ccusage stops deduplicating responses across sessions."
+retirement = "Replace when uro-s71z makes exact session selection read owner claims outside the selected session's files and report the shared response as possible usage; the fix also needs a codex-rollout/ambiguous-owner entry. Revisit if ccusage stops deduplicating responses across sessions."
 
 [[entry.difference]]
 report = "claude-session"
+key = "00000000-0000-4000-8000-001700000002"
 metric = "cache_read"
 expected_delta = 2000
 expected_matches = 4
 
 [[entry.difference]]
 report = "claude-session"
+key = "00000000-0000-4000-8000-001700000002"
 metric = "cache_write"
 expected_delta = 200
 expected_matches = 4
 
 [[entry.difference]]
 report = "claude-session"
+key = "00000000-0000-4000-8000-001700000002"
 metric = "output"
 expected_delta = 80
 expected_matches = 4
 
 [[entry.difference]]
 report = "claude-session"
+key = "00000000-0000-4000-8000-001700000002"
 metric = "total"
 expected_delta = 2310
 expected_matches = 4
 
 [[entry.difference]]
 report = "claude-session"
+key = "00000000-0000-4000-8000-001700000002"
 metric = "uncached_input"
 expected_delta = 30
 expected_matches = 4
