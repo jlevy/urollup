@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use self::line::{LineHead, LineType};
 use super::{AdapterError, Ingested};
+use crate::ledger::chunked::ChunkedVec;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
@@ -1019,7 +1020,7 @@ fn reconcile_input(corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
     let Corpus { strings, chunks, facts, subagent_meta, tool_owners } = corpus;
     drop((facts, subagent_meta, tool_owners));
 
-    let mut observations = Vec::with_capacity(chunks.iter().map(|chunk| chunk.records.len()).sum());
+    let mut observations = ChunkedVec::new();
     let mut limit_observations = Vec::new();
     for RecordChunk { source, records } in chunks {
         // Each chunk's records are freed as soon as they are observed.

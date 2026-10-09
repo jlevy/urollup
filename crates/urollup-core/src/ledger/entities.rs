@@ -14,6 +14,7 @@ use std::num::NonZeroU32;
 
 use jiff::Timestamp;
 
+use super::chunked::{self, ChunkedVec};
 use super::identity::{AnalyticalId, StoredIdentity};
 use super::inline_list::InlineList;
 use super::names::Name;
@@ -402,28 +403,40 @@ impl Request {
 
 /// Logical requests sorted by canonical ID.
 ///
-/// A sorted vector rather than a map: a whole-history ledger holds hundreds of thousands
-/// of requests, and tree nodes would more than double their footprint.
+/// A sorted list rather than a map: a whole-history ledger holds hundreds of thousands
+/// of requests, and tree nodes would more than double their footprint. The rows are
+/// chunked, so reconciliation builds them into the chunks its observations free and sorts
+/// them in place, never needing one allocation the size of the table.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Requests {
-    rows: Vec<Request>,
+    rows: ChunkedVec<Request>,
 }
 
 impl Requests {
     /// Sorts requests by ID. IDs must be distinct; for a repeated ID the last request
     /// given wins, as inserting into a map would.
-    pub fn from_unsorted(mut rows: Vec<Request>) -> Self {
+    pub fn from_unsorted(rows: Vec<Request>) -> Self {
+        Self::sorted(rows.into(), true)
+    }
+
+    /// Sorts requests given in reverse order: for a repeated ID the first request given
+    /// wins, which is the last one in the order they were built in.
+    pub(crate) fn from_reversed(rows: ChunkedVec<Request>) -> Self {
+        Self::sorted(rows, false)
+    }
+
+    fn sorted(mut rows: ChunkedVec<Request>, last_wins: bool) -> Self {
         // Sort a permutation and apply it in place: a stable sort of wide rows would
-        // allocate a buffer of half the table. Among equal IDs the latest comes first.
-        let mut order: Vec<usize> = (0..rows.len()).collect();
+        // allocate a buffer of half the table. Among equal IDs the winner comes first.
+        let count = u32::try_from(rows.len()).expect("fewer than 2^32 requests");
+        let mut order: Vec<u32> = (0..count).collect();
         order.sort_unstable_by(|&left, &right| {
-            rows[left].id.cmp(&rows[right].id).then(right.cmp(&left))
+            let arrival = if last_wins { right.cmp(&left) } else { left.cmp(&right) };
+            rows[left as usize].id.cmp(&rows[right as usize].id).then(arrival)
         });
-        apply_permutation(&mut rows, &mut order);
+        rows.permute(&mut order);
+        drop(order);
         rows.dedup_by(|later, earlier| later.id == earlier.id);
-        if rows.capacity() - rows.len() > rows.len() / 16 {
-            rows.shrink_to_fit();
-        }
         Self { rows }
     }
 
@@ -457,7 +470,7 @@ impl Requests {
     }
 
     /// Requests in ID order.
-    pub fn values(&self) -> std::slice::Iter<'_, Request> {
+    pub fn values(&self) -> chunked::Iter<'_, Request> {
         self.rows.iter()
     }
 
@@ -469,23 +482,6 @@ impl Requests {
     /// Requests with their IDs, in ID order.
     pub fn iter(&self) -> impl Iterator<Item = (&AnalyticalId, &Request)> {
         self.rows.iter().map(|request| (&request.id, request))
-    }
-}
-
-/// Reorders `rows` so position `k` holds the row that was at `order[k]`, by swapping along
-/// the permutation's cycles; `order` is left as the identity.
-fn apply_permutation<T>(rows: &mut [T], order: &mut [usize]) {
-    for start in 0..rows.len() {
-        let mut current = start;
-        while order[current] != current {
-            let source = order[current];
-            order[current] = current;
-            if source == start {
-                break;
-            }
-            rows.swap(current, source);
-            current = source;
-        }
     }
 }
 
@@ -540,7 +536,7 @@ mod tests {
     use jiff::Timestamp;
     use proptest::prelude::*;
 
-    use super::{CompactTimestamp, apply_permutation};
+    use super::CompactTimestamp;
 
     /// Timestamps across jiff's whole range, and near the epoch with sub-second parts of
     /// either sign, which jiff normalizes to the sign of the seconds.
@@ -564,19 +560,6 @@ mod tests {
             prop_assert_eq!(compact_left.get(), left);
             prop_assert_eq!(compact_left.cmp(&compact_right), left.cmp(&right));
             prop_assert_eq!(compact_left == compact_right, left == right);
-        }
-
-        #[test]
-        fn applying_a_sorting_permutation_matches_sorting(
-            rows in prop::collection::vec(0u16..50, 0..64),
-        ) {
-            let mut order: Vec<usize> = (0..rows.len()).collect();
-            order.sort_by_key(|&index| (rows[index], std::cmp::Reverse(index)));
-            let expected: Vec<(u16, usize)> = order.iter().map(|&index| (rows[index], index)).collect();
-            let mut tagged: Vec<(u16, usize)> = rows.iter().copied().zip(0..).collect();
-            apply_permutation(&mut tagged, &mut order);
-            prop_assert_eq!(tagged, expected);
-            prop_assert!(order.iter().enumerate().all(|(position, value)| position == *value));
         }
     }
 }

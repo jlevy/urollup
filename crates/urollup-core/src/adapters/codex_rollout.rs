@@ -25,6 +25,7 @@ use serde_json::{Map, Value};
 
 use self::line::{EventType, Line, Payload, RecordType, UsageFields};
 use super::{AdapterError, Ingested};
+use crate::ledger::chunked::ChunkedVec;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
@@ -838,8 +839,7 @@ fn normalize(
         });
     }
 
-    let mut observations =
-        Vec::with_capacity(sources.iter().map(|source| source.records.len()).sum());
+    let mut observations = ChunkedVec::new();
     let mut diagnostics = source_diagnostics(&manifest);
     for (thread, (meta, evidence)) in &meta_by_thread {
         if meta.parent().is_some_and(|parent| !thread_ids.contains_key(parent)) {

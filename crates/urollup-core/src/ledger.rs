@@ -9,8 +9,10 @@
 //!   model and effort names.
 //! - [`reconcile`] merges observations into logical requests (§3.3), using [`counters`]
 //!   for running totals and reporting [`diagnostics`] and [`coverage`].
+//! - [`inline_list`] and [`chunked`] are the compact containers those rows are stored in.
 
 pub mod canonical_json;
+pub mod chunked;
 pub mod counters;
 pub mod coverage;
 pub mod diagnostics;

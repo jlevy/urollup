@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 
 use super::{
-    KeyGraph, LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError,
-    ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector, reconcile,
+    LatestRevision, LineageLink, ObservationRole, OwnerEvidence, ReconcileError, ReconcileInput,
+    RequestObservation, RevisionChoice, RevisionSelector, reconcile,
 };
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
+use crate::ledger::chunked::ChunkedVec;
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::DiagnosticCode;
 use crate::ledger::entities::{
@@ -19,6 +20,8 @@ use crate::ledger::scope::{DerivedKey, IdentityBasis, ScopedKey};
 use crate::ledger::tokens::{Measures, TokenMeasures};
 use crate::sources::evidence::EvidenceRef;
 use crate::test_support::shuffle;
+
+mod oracle;
 
 fn source(n: u8) -> AnalyticalId {
     IdentityKey::new(IdPrefix::Source, "test-source", vec![KeyComponent::Integer(i64::from(n))])
@@ -124,7 +127,11 @@ fn limit_observation(stream: u8, src: u8, offset: u64, value: u8) -> ProviderLim
 }
 
 fn run(requests: Vec<RequestObservation>) -> super::Ledger {
-    reconcile(ReconcileInput { requests, ..ReconcileInput::default() }, &LatestRevision).unwrap()
+    reconcile(
+        ReconcileInput { requests: requests.into(), ..ReconcileInput::default() },
+        &LatestRevision,
+    )
+    .unwrap()
 }
 
 fn codes(ledger: &super::Ledger) -> Vec<DiagnosticCode> {
@@ -299,7 +306,7 @@ fn lineage_links_merge_keys_and_keep_aliases() {
     let native_id = response_key("msg_1").id;
     let fallback_id = digest_key("child", "d1").id;
     let input = ReconcileInput {
-        requests: vec![child_copy, parent],
+        requests: vec![child_copy, parent].into(),
         links: vec![LineageLink {
             a: fallback_id.clone(),
             b: native_id.clone(),
@@ -319,7 +326,7 @@ fn unobserved_gaps_and_unknown_usage_make_totals_partial() {
     let mut no_usage = observed(0, 0, "msg_1", 1);
     no_usage.usage = None;
     let input = ReconcileInput {
-        requests: vec![no_usage],
+        requests: vec![no_usage].into(),
         gaps: vec![CoverageGap {
             reason: UnobservedReason::EphemeralThread,
             thread: None,
@@ -372,7 +379,8 @@ fn a_dialect_selector_plugs_in_and_reports_disagreements() {
     first.usage = Some(usage(100, 40));
     let mut second = observed(0, 10, "msg_1", 12);
     second.usage = Some(usage(101, 12));
-    let input = ReconcileInput { requests: vec![second, first], ..ReconcileInput::default() };
+    let input =
+        ReconcileInput { requests: vec![second, first].into(), ..ReconcileInput::default() };
     let ledger = reconcile(input, &LargestOutput).unwrap();
     let request = ledger.requests.values().next().unwrap();
     assert_eq!(
@@ -400,8 +408,10 @@ impl RevisionSelector for OutOfRange {
 
 #[test]
 fn engine_errors_are_values() {
-    let input =
-        ReconcileInput { requests: vec![observed(0, 0, "m", 1)], ..ReconcileInput::default() };
+    let input = ReconcileInput {
+        requests: vec![observed(0, 0, "m", 1)].into(),
+        ..ReconcileInput::default()
+    };
     assert!(matches!(
         reconcile(input.clone(), &OutOfRange),
         Err(ReconcileError::InvalidRevisionChoice { selected: 1, count: 1, .. })
@@ -417,7 +427,7 @@ fn engine_errors_are_values() {
         .unwrap(),
     ]
     .into();
-    let input = ReconcileInput { requests: vec![wrong], ..ReconcileInput::default() };
+    let input = ReconcileInput { requests: vec![wrong].into(), ..ReconcileInput::default() };
     assert!(matches!(reconcile(input, &LatestRevision), Err(ReconcileError::WrongPrefix { .. })));
 }
 
@@ -486,7 +496,7 @@ fn entity_references_follow_reconciled_aliases() {
         ReconcileInput {
             threads: vec![fallback_thread, canonical_thread],
             relationships: vec![relationship],
-            requests: vec![request],
+            requests: vec![request].into(),
             tool_actions: vec![action],
             limit_observations: vec![limit],
             ..ReconcileInput::default()
@@ -693,36 +703,226 @@ proptest! {
     }
 }
 
-#[test]
-fn different_keys_deriving_one_id_are_a_collision() {
-    let key = response_key("msg_1");
-    let mut graph = KeyGraph::default();
-    let node = graph.register(&key).unwrap();
-    assert_eq!(graph.register(&key).unwrap(), node);
+/// A key with the same ID as `key` and different further digest bits, as a digest
+/// collision would derive.
+fn forged(key: DerivedKey) -> DerivedKey {
     let check = u64::from_be_bytes(key.check).wrapping_add(1).to_be_bytes();
-    let forged = DerivedKey { check, ..key };
-    assert!(matches!(
-        graph.register(&forged),
-        Err(crate::ledger::identity::IdentityError::DigestCollision { .. })
-    ));
+    DerivedKey { check, ..key }
+}
+
+/// An observation at `offset` of source 0 carrying `keys`.
+fn keyed(offset: u64, keys: Vec<DerivedKey>) -> RequestObservation {
+    let mut observation = RequestObservation::new(evidence(0, offset));
+    observation.keys = keys.into();
+    observation
 }
 
 #[test]
-fn key_graph_roots_are_the_lowest_id_in_any_link_order() {
+fn different_keys_deriving_one_id_are_a_collision() {
+    let key = response_key("msg_1");
+    let same = run(vec![keyed(0, vec![key.clone()]), keyed(10, vec![key.clone()])]);
+    assert_eq!(same.requests.len(), 1);
+
+    let input = ReconcileInput {
+        requests: vec![keyed(0, vec![key.clone()]), keyed(10, vec![forged(key.clone())])].into(),
+        ..ReconcileInput::default()
+    };
+    assert_eq!(
+        reconcile(input, &LatestRevision),
+        Err(ReconcileError::Identity(crate::ledger::identity::IdentityError::DigestCollision {
+            id: key.id
+        }))
+    );
+}
+
+/// The linked sets `super::grouping::group` finds in `observations`, as runs of
+/// observations in group order.
+fn grouped_sets(
+    observations: Vec<RequestObservation>,
+    links: &[LineageLink],
+) -> Result<Vec<Vec<RequestObservation>>, ReconcileError> {
+    let mut chunked: ChunkedVec<RequestObservation> = observations.into();
+    let grouping = super::grouping::group(&mut chunked, links)?;
+    let mut sets: Vec<Vec<RequestObservation>> = Vec::new();
+    let mut observations = chunked.iter().cloned();
+    for run in grouping.ranks.chunk_by(|left, right| left == right) {
+        sets.push(observations.by_ref().take(run.len()).collect());
+    }
+    Ok(sets)
+}
+
+#[test]
+fn sets_are_ordered_by_their_lowest_id_in_any_link_order() {
     let keys: Vec<DerivedKey> = (0..6).map(|n| response_key(&format!("msg_{n}"))).collect();
-    let lowest = keys.iter().map(|key| key.id.clone()).min().unwrap();
-    for reversed in [false, true] {
-        let mut graph = KeyGraph::default();
-        let mut nodes: Vec<u32> = keys.iter().map(|key| graph.register(key).unwrap()).collect();
-        if reversed {
-            nodes.reverse();
-        }
-        for pair in nodes.windows(2) {
-            graph.link(pair[0], pair[1]);
-        }
-        for node in nodes {
-            let root = graph.find(node);
-            assert_eq!(graph.id(root), &lowest);
+    let observations: Vec<RequestObservation> =
+        keys.iter().zip(0..).map(|(key, offset)| keyed(offset * 10, vec![key.clone()])).collect();
+    let chain: Vec<LineageLink> = keys
+        .windows(2)
+        .map(|pair| LineageLink { a: pair[0].id.clone(), b: pair[1].id.clone(), evidence: vec![] })
+        .collect();
+    let mut reversed = chain.clone();
+    reversed.reverse();
+    let forward = grouped_sets(observations.clone(), &chain).unwrap();
+    assert_eq!(forward.len(), 1);
+    assert_eq!(forward[0], observations);
+    assert_eq!(grouped_sets(observations.clone(), &reversed).unwrap(), forward);
+
+    // Two unlinked sets come in order of their IDs. A link to an ID no observation carries
+    // joins nothing, but that ID can still be a set's lowest and move it first.
+    let (low, high) = if keys[0].id < keys[1].id { (0, 1) } else { (1, 0) };
+    let pair = vec![observations[high].clone(), observations[low].clone()];
+    let sets = grouped_sets(pair.clone(), &[]).unwrap();
+    assert_eq!(sets, vec![vec![observations[low].clone()], vec![observations[high].clone()]]);
+    let lowest = (0..64)
+        .map(|n| response_key(&format!("link_{n}")).id)
+        .find(|id| *id < keys[low].id)
+        .unwrap();
+    let link = LineageLink { a: keys[high].id.clone(), b: lowest, evidence: vec![] };
+    let sets = grouped_sets(pair, std::slice::from_ref(&link)).unwrap();
+    assert_eq!(sets, vec![vec![observations[high].clone()], vec![observations[low].clone()]]);
+    assert_eq!(
+        sets,
+        oracle::linked_sets(
+            vec![observations[low].clone(), observations[high].clone()],
+            std::slice::from_ref(&link)
+        )
+        .unwrap()
+    );
+}
+
+/// A selector that fails on some revision sets, so errors from choices can race identity
+/// errors and each other. The invalid index includes the first revision's input tokens and
+/// offset, so errors from different sets differ.
+struct FailsOnSevens;
+
+impl RevisionSelector for FailsOnSevens {
+    fn rule(&self) -> &'static str {
+        "fails-on-sevens"
+    }
+
+    fn select(&self, revisions: &[&RequestObservation]) -> RevisionChoice {
+        let first = revisions[0];
+        let usage = first.usage.map(TokenMeasures::from).unwrap_or_default();
+        let selected = if usage.output.is_some_and(|output| output % 7 == 0) {
+            let marker = usage.uncached_input.unwrap_or(0) * 1000 + first.evidence.offset % 1000;
+            revisions.len() + usize::try_from(marker).unwrap()
+        } else {
+            0
+        };
+        RevisionChoice { selected, status: RevisionStatus::Selected, disagreements: Vec::new() }
+    }
+}
+
+/// Observations over a tiny key universe that includes forged keys, wrong prefixes, keys
+/// equal to or colliding with artifact-local keys, offsets beyond artifact-local keys,
+/// record locations read with two lengths, and conflicting invariants.
+fn arbitrary_grouping_observation() -> impl Strategy<Value = RequestObservation> {
+    (
+        (0u8..2, 0u64..4, prop::bool::weighted(0.15), prop::bool::weighted(0.04)),
+        prop::collection::vec(0u8..14, 0..3),
+        any::<bool>(),
+        0u8..3,
+        prop::option::of((0u64..50, 0u64..30)),
+        prop::option::weighted(0.4, 0u8..3),
+        prop::bool::weighted(0.05),
+    )
+        .prop_map(|((src, slot, long, huge), keys, copy, owner, used, session, twice)| {
+            let offset = if huge { u64::MAX - u64::from(src) } else { slot * 100 };
+            let mut observation = RequestObservation::new(EvidenceRef {
+                source: source(src),
+                offset,
+                length: if long { 11 } else { 10 },
+            });
+            let local =
+                |src: u8, offset: u64| super::artifact_local(&evidence(src, offset)).unwrap();
+            for key in keys {
+                observation.keys.push(match key {
+                    0..=3 => response_key(&format!("msg_{key}")),
+                    4..=6 => digest_key("t1", &format!("d{key}")),
+                    7 => forged(response_key("msg_0")),
+                    8 => forged(digest_key("t1", "d4")),
+                    9 => ScopedKey {
+                        precedence: 0,
+                        basis: IdentityBasis::Native,
+                        key: IdentityKey::new(IdPrefix::Thread, "t", vec![KeyComponent::text("x")]),
+                    }
+                    .derive()
+                    .unwrap(),
+                    10 => local(0, 0),
+                    11 => forged(local(0, 0)),
+                    12 => forged(local(1, 100)),
+                    _ => local(1, 100),
+                });
+            }
+            if copy {
+                observation.role = ObservationRole::Copy;
+            }
+            observation.owner = match owner {
+                0 => OwnerEvidence::None,
+                1 => OwnerEvidence::Proven(thread("t1")),
+                _ => OwnerEvidence::Proven(thread("t2")),
+            };
+            observation.usage = used.map(|(input, output)| usage(input, output));
+            if let Some(session) = session {
+                observation.invariants.push(("session", format!("s{session}").into()));
+                if twice {
+                    observation.invariants.push(("session", format!("s{}", session + 1).into()));
+                }
+            }
+            observation
+        })
+}
+
+/// Links among the observation key IDs and two IDs no observation carries.
+fn arbitrary_links() -> impl Strategy<Value = Vec<LineageLink>> {
+    let id = |n: u8| match n {
+        0..=3 => response_key(&format!("msg_{n}")).id,
+        4..=6 => digest_key("t1", &format!("d{n}")).id,
+        _ => response_key(&format!("link_{n}")).id,
+    };
+    prop::collection::vec((0u8..9, 0u8..9), 0..3).prop_map(move |pairs| {
+        pairs
+            .into_iter()
+            .map(|(a, b)| LineageLink { a: id(a), b: id(b), evidence: Vec::new() })
+            .collect()
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn sorted_grouping_matches_the_key_graph(
+        observations in prop::collection::vec(arbitrary_grouping_observation(), 0..16),
+        links in arbitrary_links(),
+    ) {
+        let mut deduplicated = observations;
+        let mut coverage = crate::ledger::coverage::ReconcileCoverage::default();
+        oracle::dedupe_rereads(&mut deduplicated, &mut Vec::new(), &mut coverage);
+        prop_assert_eq!(
+            grouped_sets(deduplicated.clone(), &links),
+            oracle::linked_sets(deduplicated, &links)
+        );
+    }
+
+    #[test]
+    fn reconciliation_matches_the_forward_key_graph_engine(
+        observations in prop::collection::vec(arbitrary_grouping_observation(), 0..16),
+        links in arbitrary_links(),
+        seed in any::<u64>(),
+    ) {
+        let mut shuffled = observations;
+        shuffle(&mut shuffled, seed);
+        let input = ReconcileInput {
+            requests: shuffled.into(),
+            links,
+            ..ReconcileInput::default()
+        };
+        for selector in [&LatestRevision as &dyn RevisionSelector, &FailsOnSevens, &LargestOutput] {
+            prop_assert_eq!(
+                reconcile(input.clone(), selector),
+                oracle::reconcile(input.clone(), selector)
+            );
         }
     }
 }
