@@ -418,6 +418,44 @@ mod tests {
     }
 
     #[test]
+    fn losses_are_sorted_distinct_tokens_of_failures_and_snapshot_changes() {
+        use std::path::PathBuf;
+
+        use super::{CoverageFailure, Representation, SourceChange};
+
+        let mut entry = super::tests_support::entry();
+        assert!(entry.losses().is_empty());
+
+        // Changes that leave the snapshot's records intact are not losses.
+        entry.changes = vec![
+            SourceChange::GrewBeyondCutoff { observed_len: 40 },
+            SourceChange::BrieflyAbsent { attempts: 1 },
+            SourceChange::RemovedAfterScan,
+            SourceChange::ReadFromOtherRepresentation {
+                primary: PathBuf::from("a.jsonl"),
+                representation: Representation::Gzip,
+            },
+        ];
+        assert!(entry.losses().is_empty(), "{:?}", entry.losses());
+        assert!(entry.is_complete());
+
+        entry.failures = vec![
+            CoverageFailure::Oversized { offset: 8, length: 100 },
+            CoverageFailure::IncompleteCompressedFrame { decoded_offset: 120 },
+            CoverageFailure::Oversized { offset: 200, length: 100 },
+        ];
+        entry.changes.extend([
+            SourceChange::Truncated { snapshot_len: 300, observed_len: 10 },
+            SourceChange::Vanished,
+        ]);
+        assert_eq!(
+            entry.losses(),
+            ["incomplete-compressed-frame", "oversized-record", "truncated", "vanished"]
+        );
+        assert!(!entry.is_complete());
+    }
+
+    #[test]
     fn skew_is_the_spread_of_cutoffs() {
         let mut manifest = super::SnapshotManifest::default();
         assert_eq!(manifest.cutoff_skew(), None);

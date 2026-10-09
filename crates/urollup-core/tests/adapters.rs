@@ -702,6 +702,87 @@ fn a_source_deleted_after_discovery_leaves_partial_totals_with_a_diagnostic() {
     );
 }
 
+/// The `source-incomplete` diagnostics of an ingest, as (occurrences, detail).
+fn incomplete_sources(ingested: &urollup_core::adapters::Ingested) -> Vec<(u64, String)> {
+    ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "source-incomplete")
+        .map(|diagnostic| (diagnostic.occurrences, diagnostic.detail.clone()))
+        .collect()
+}
+
+#[test]
+fn truncated_compressed_rollouts_are_reported_and_leave_readable_totals_unchanged() {
+    use urollup_core::accounting::totals::{Completeness, PartialReason};
+
+    let home = tempfile::tempdir().unwrap();
+    copy_compressed(&codex_fixture("token-usage-records"), home.path(), Compression::Zstd);
+    let readable = ledger_totals(&ingest_codex(home.path()).unwrap().ledger).unwrap();
+    assert_eq!(readable.completeness, Completeness::Complete);
+
+    // Two rollouts whose `.jsonl.zst` ends mid-frame, as an interrupted `zstd` leaves it.
+    // Neither decodes a record, so neither has a src- ID to tell its diagnostic apart.
+    let day = home.path().join("sessions/2026/09/05");
+    std::fs::create_dir_all(&day).unwrap();
+    for thread in ["019f0000-0000-7000-8000-00dd00000001", "019f0000-0000-7000-8000-00dd00000002"] {
+        let rollout = [
+            format!(
+                r#"{{"timestamp":"2026-09-05T07:00:00.000Z","type":"session_meta","payload":{{"id":"{thread}","cwd":"/work/project","cli_version":"0.160.0"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"2026-09-05T07:00:02.000Z","type":"token_usage_record","payload":{{"thread_id":"{thread}","response_id":"resp-{thread}","usage":{{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}}}"#
+            ),
+        ]
+        .join("\n")
+            + "\n";
+        let compressed = Compression::Zstd.encode(rollout.as_bytes());
+        std::fs::write(
+            day.join(format!("rollout-2026-09-05T07-00-00-{thread}.jsonl.zst")),
+            &compressed[..compressed.len() / 2],
+        )
+        .unwrap();
+    }
+
+    let damaged = ingest_codex(home.path()).expect("an unreadable rollout is not fatal");
+    let totals = ledger_totals(&damaged.ledger).unwrap();
+    assert_eq!(totals.total, readable.total, "the readable rollouts' totals are unchanged");
+    assert!(
+        matches!(&totals.completeness, Completeness::Partial(reasons)
+            if reasons.contains(&PartialReason::UnobservedGap)),
+        "{:?}",
+        totals.completeness
+    );
+    assert_eq!(
+        incomplete_sources(&damaged),
+        vec![(
+            2,
+            "a Codex rollout could not be read completely: incomplete-compressed-frame".to_owned()
+        )],
+        "each unreadable rollout is counted once"
+    );
+}
+
+#[test]
+fn every_unreadable_transcript_is_counted_once() {
+    let root = tempfile::tempdir().unwrap();
+    copy_compressed(&fixture("brief-double-counting"), root.path(), Compression::Gzip);
+    let project = root.path().join("projects/-Users-example-project");
+    std::fs::write(project.join("bad-1.jsonl.gz"), b"not gzip at all\n").unwrap();
+    std::fs::write(project.join("bad-2.jsonl.gz"), b"not gzip either\n").unwrap();
+    std::fs::write(project.join("bad-3.jsonl.gz"), b"").unwrap();
+    std::fs::write(project.join("bad-4.jsonl.gz"), b"").unwrap();
+
+    let ingested = ingest_root(root.path()).unwrap();
+    let incomplete = incomplete_sources(&ingested);
+    assert_eq!(
+        incomplete.iter().map(|(occurrences, _)| occurrences).sum::<u64>(),
+        4,
+        "four sources lost data: {incomplete:?}"
+    );
+}
+
 #[test]
 fn codex_usage_takes_its_model_from_its_own_turn_not_the_root_turn() {
     // A multi-agent subagent's records name the parent's turn as their root, so only

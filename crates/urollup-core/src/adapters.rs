@@ -59,18 +59,21 @@ impl Ingested {
     }
 }
 
-/// A `source-incomplete` diagnostic and an unreadable-source coverage gap for each snapshot
+/// `source-incomplete` diagnostics and an unreadable-source coverage gap for each snapshot
 /// that lost data, so a damaged, truncated, replaced or vanished source makes totals
 /// partial instead of silently smaller.
 ///
-/// `evidence` cites a source by its `src-` ID; a source that vanished before its first
-/// record has none. `kind` names the dialect's sources in the detail, which holds no path.
+/// `evidence` cites a source by its `src-` ID; a source with no complete record has none.
+/// Sources that lost the same things share one diagnostic whose occurrences count them,
+/// because [`crate::ledger::diagnostics::compact`] would merge identical per-source
+/// diagnostics, and two sources without a `src-` ID cite nothing that tells them apart.
+/// `kind` names the dialect's sources in the detail, which holds no path.
 pub(crate) fn snapshot_losses(
     manifest: &SnapshotManifest,
     kind: &str,
     evidence: impl Fn(&ManifestEntry) -> Option<EvidenceRef>,
 ) -> (Vec<Diagnostic>, Vec<CoverageGap>) {
-    let mut diagnostics = Vec::new();
+    let mut by_losses: BTreeMap<Vec<&'static str>, (u64, Vec<EvidenceRef>)> = BTreeMap::new();
     let mut gaps = Vec::new();
     for entry in &manifest.entries {
         let losses = entry.losses();
@@ -78,18 +81,27 @@ pub(crate) fn snapshot_losses(
             continue;
         }
         let cited: Vec<EvidenceRef> = evidence(entry).into_iter().collect();
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::SourceIncomplete,
-            None,
-            cited.iter().copied(),
-            format!("a {kind} could not be read completely: {}", losses.join(", ")),
-        ));
+        let (sources, group_evidence) = by_losses.entry(losses).or_default();
+        *sources = sources.saturating_add(1);
+        group_evidence.extend(cited.iter().copied());
         gaps.push(CoverageGap {
             reason: UnobservedReason::UnreadableSource,
             thread: None,
             evidence: cited,
         });
     }
+    let diagnostics = by_losses
+        .into_iter()
+        .map(|(losses, (sources, cited))| {
+            Diagnostic::new(
+                DiagnosticCode::SourceIncomplete,
+                None,
+                cited,
+                format!("a {kind} could not be read completely: {}", losses.join(", ")),
+            )
+            .with_occurrences(sources)
+        })
+        .collect();
     (diagnostics, gaps)
 }
 
