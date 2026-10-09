@@ -5,7 +5,7 @@ title: "Milestone 0.1: Uncached Claude Code and Codex reports"
 kind: epic
 status: open
 priority: 1
-version: 56
+version: 64
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -32,8 +32,16 @@ child_order_hints:
   - is-01m2yrfn1gy2xtyxayev3rgr7t
   - is-01m3jd1gd0n3w6ck4kj09kat05
   - is-01m3jx84rbxf06bdgrx0q9kn74
+  - is-01m4fahrdcbg0m87y2mr5vvb30
+  - is-01m4fdqhrppmjeyhjv4kw8996p
+  - is-01m4fdqj9jcaznh6n663rb94b2
+  - is-01m4fdqwfd2wrev2js5xfn466v
+  - is-01m4fdqwy15hznwazg6cjweps6
+  - is-01m4fdr8epn84nfkrtbxsd1txr
+  - is-01m4fjgjt4ddq8sc99h0g6n2rm
+  - is-01m4fjgkg90srrjzxn7ks96dvr
 created_at: 2026-09-15T21:03:18.178Z
-updated_at: 2026-09-28T02:25:35.687Z
+updated_at: 2026-10-09T05:34:57.544Z
 ---
 The uncached Claude Code and Codex reporting engine is merged at main 4c55617, with completed technical review and green automated checks. Current real-history QA found a confirmed Codex paginated-fork double count (uro-kpbp): an entirely synthetic parent=100, child-own=20 case reports 220 instead of 120, with complete coverage and no diagnostics. Do not treat whole-history Codex totals as trustworthy or accept the public alpha until fixed and revalidated. Claude exploratory use has stronger independent-comparison evidence, with private results retained locally. Other remaining work: CLI honesty uro-oz6w; aggregate QA uro-qg1a; process-wide memory admission uro-6pi8, density scale proofs uro-z1h1 and accepted-head evidence uro-erqo under uro-zrr0; G1 uro-d36a; full-history QA uro-ky6c; recorded or deferred maintainer policies and unverified provider shapes. The representative 512 MiB and 10-second gates were retired on 2026-09-27. Require manageable whole-process memory, a conservative 100 GiB projection within 25% of reference-machine RAM, raw-byte streaming within the retained-state envelope and safe early refusal for dense histories. Small synthetic regression limits remain. Spill and further decode optimization are follow-ups. Release packaging uro-30ef follows acceptance. Green CI and documentation plans do not constitute release acceptance.
 
