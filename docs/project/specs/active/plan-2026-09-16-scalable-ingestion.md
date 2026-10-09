@@ -347,10 +347,13 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09), not implemented.
-The maintainer settled the policy [decisions](#decisions) on 2026-10-09. Values marked
-*guess* are placeholders that the [slices](#implementation-slices) measure or calibrate;
-*derived* values follow from type sizes and growth patterns in the current code.
+**Status:** design accepted (2026-10-09); slice 1 (budget source) implemented, nothing
+wired into ingestion yet.
+[Implementation Notes](#implementation-notes) records choices the slices made where this
+design left room. The maintainer settled the policy [decisions](#decisions) on
+2026-10-09. Values marked *guess* are placeholders that the
+[slices](#implementation-slices) measure or calibrate; *derived* values follow from type
+sizes and growth patterns in the current code.
 
 One byte ledger per invocation replaces the per-agent row-shell ceiling described under
 [Memory Model](#memory-model).
@@ -966,6 +969,27 @@ user-visible behavior.
    workloads, with musl and Windows `scale` jobs beside the glibc and macOS ones.
    `H` and `F` are set from that matrix, and the full matrix and representative runs
    pass to `uro-z1h1` and `uro-erqo`.
+
+#### Implementation Notes
+
+Choices made while implementing, where this design left room:
+
+- **Budget source (slice 1).** `ledger::capacity::effective_memory_under` takes the
+  filesystem root, so fixture trees test it on every platform.
+  A cgroup is located through the `cgroup2`, or v1 `memory`, mount whose root contains
+  the path in `/proc/self/cgroup`; a path outside every mount root, as in some cgroup
+  namespaces, is not located and contributes nothing.
+  The v2 walk reads `memory.max` and `memory.high` from the process cgroup up to and
+  including the mount point.
+  A v1 `hierarchical_memory_limit` at or above 2^62 is the kernel sentinel and counts as
+  no limit even when physical RAM is unknown.
+  Physical RAM wins a tie, then the first smallest allowance, so the label is stable.
+  Labels add `the 3 GiB cgroup memory.high limit`, `the 8 GiB address-space limit` and
+  `the 8 GiB data-size limit` to the forms under
+  [Budget Source](#budget-source-and-flag-semantics), and sizes that are not whole units
+  print one decimal (`15.6 GiB`). A percent without a known size is the new
+  `RamBudgetError::UnknownEffectiveMemory`, whose text no longer suggests `--max-rows`;
+  the row-ceiling error text is unchanged until slice 7.
 
 ### Parallelism and Determinism
 

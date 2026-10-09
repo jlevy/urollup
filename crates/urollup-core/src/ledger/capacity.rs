@@ -1,13 +1,24 @@
-//! Per-agent observation-row ceiling derived from a RAM budget.
+//! Per-agent observation-row ceiling derived from a RAM budget, and the effective memory
+//! and whole-process budget that replace it (scalable-ingestion plan, "Process-Wide
+//! Admission").
 //!
 //! Decode admission bounds retained request-bearing rows; reconciliation checks again
 //! before request construction. This is a row-shell budget, not a process memory cap.
 //! The default is 25% of
 //! physical RAM, falling back to 2 GiB when RAM cannot be read. `--max-ram` and
 //! `UROLLUP_MAX_RAM` parse a byte size or a percent; `--max-rows` is an exact count.
+//!
+//! [`effective_memory`] is the smallest of physical RAM and, on Linux, the cgroup v2
+//! `memory.max` and `memory.high` of the process's cgroup and its ancestors, the cgroup v1
+//! `hierarchical_memory_limit`, and the soft address-space and data-size rlimits.
+//! [`MemoryBudget`] takes 25% of it by default and names where the number came from.
+//! The CLI still uses the row ceiling until process-wide admission is wired in.
+
+mod linux;
 
 use std::fmt;
 use std::mem::size_of;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use super::reconcile::RequestObservation;
@@ -174,6 +185,12 @@ pub enum RamBudgetError {
         /// The requested percent.
         percent: u8,
     },
+    /// A percent of the whole-process budget was given, but no effective memory size
+    /// could be discovered.
+    UnknownEffectiveMemory {
+        /// The requested percent.
+        percent: u8,
+    },
 }
 
 impl fmt::Display for RamBudgetError {
@@ -194,6 +211,10 @@ impl fmt::Display for RamBudgetError {
             Self::UnknownPhysicalMemory { percent } => write!(
                 f,
                 "cannot apply {percent}% because physical RAM is unknown; pass a byte size such as 2G or --max-rows"
+            ),
+            Self::UnknownEffectiveMemory { percent } => write!(
+                f,
+                "cannot apply {percent}% because this machine's memory size is unknown; pass a byte size such as 2G"
             ),
         }
     }
@@ -232,6 +253,178 @@ pub fn rows_for_budget(bytes: u64) -> usize {
         return 0;
     }
     usize::try_from(bytes / row).unwrap_or(usize::MAX)
+}
+
+/// What bounds the memory this process may use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemorySource {
+    /// Physical RAM: `hw.memsize`, `/proc/meminfo` `MemTotal` or `GlobalMemoryStatusEx`.
+    PhysicalRam,
+    /// A cgroup v2 `memory.max` of the process's cgroup or an ancestor.
+    CgroupMax,
+    /// A cgroup v2 `memory.high` of the process's cgroup or an ancestor.
+    CgroupHigh,
+    /// The cgroup v1 `hierarchical_memory_limit` of the process's memory cgroup.
+    CgroupV1Limit,
+    /// The soft `RLIMIT_AS` (`Max address space`).
+    AddressSpaceLimit,
+    /// The soft `RLIMIT_DATA` (`Max data size`).
+    DataSizeLimit,
+}
+
+/// The smallest discoverable memory allowance and what set it.
+///
+/// Available or free memory never counts: it changes between runs, and admission must
+/// decide the same way for the same input and budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EffectiveMemory {
+    /// The allowance in bytes.
+    pub bytes: u64,
+    /// What set it.
+    pub source: MemorySource,
+}
+
+impl EffectiveMemory {
+    /// The smallest of `physical_ram` and `allowances`. Physical RAM wins a tie, and
+    /// otherwise the first smallest allowance does, so the label is deterministic.
+    pub fn smallest(
+        physical_ram: Option<u64>,
+        allowances: impl IntoIterator<Item = (u64, MemorySource)>,
+    ) -> Option<Self> {
+        physical_ram
+            .map(|bytes| (bytes, MemorySource::PhysicalRam))
+            .into_iter()
+            .chain(allowances)
+            .fold(None, |smallest: Option<Self>, (bytes, source)| match smallest {
+                Some(current) if current.bytes <= bytes => Some(current),
+                _ => Some(Self { bytes, source }),
+            })
+    }
+
+    /// The allowance as a label names it, such as `32 GiB physical RAM` or
+    /// `the 4 GiB cgroup limit`.
+    pub fn describe(&self) -> String {
+        let size = format_memory(self.bytes);
+        match self.source {
+            MemorySource::PhysicalRam => format!("{size} physical RAM"),
+            MemorySource::CgroupMax | MemorySource::CgroupV1Limit => {
+                format!("the {size} cgroup limit")
+            }
+            MemorySource::CgroupHigh => format!("the {size} cgroup memory.high limit"),
+            MemorySource::AddressSpaceLimit => format!("the {size} address-space limit"),
+            MemorySource::DataSizeLimit => format!("the {size} data-size limit"),
+        }
+    }
+}
+
+/// This process's effective memory, discovered once: physical RAM and, on Linux, the
+/// cgroup and rlimit allowances. `None` when nothing can be read.
+///
+/// macOS and Windows use physical RAM; Windows job-object limits are not read.
+pub fn effective_memory() -> Option<EffectiveMemory> {
+    static CACHED: OnceLock<Option<EffectiveMemory>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        let memory = effective_memory_under(Path::new("/"), physical_memory_bytes());
+        #[cfg(not(target_os = "linux"))]
+        let memory = EffectiveMemory::smallest(physical_memory_bytes(), []);
+        memory
+    })
+}
+
+/// The Linux discovery of [`effective_memory`], reading `proc/self/cgroup`,
+/// `proc/self/mountinfo`, `proc/self/limits` and the cgroup files below `root` instead of
+/// `/`, with `physical_ram` supplied by the caller.
+///
+/// Missing, unreadable and malformed files are ignored. A cgroup v2 value of `max`, a v1
+/// value at or above physical RAM (or the kernel's unlimited sentinel), and an
+/// `unlimited` rlimit are no allowance.
+pub fn effective_memory_under(root: &Path, physical_ram: Option<u64>) -> Option<EffectiveMemory> {
+    EffectiveMemory::smallest(physical_ram, linux::allowances(root, physical_ram))
+}
+
+/// The whole-process memory budget `B` and the label that names its source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryBudget {
+    bytes: u64,
+    label: String,
+}
+
+impl MemoryBudget {
+    /// 25% of `memory`, or [`FALLBACK_BUDGET_BYTES`] when it is unknown.
+    pub fn default_for(memory: Option<EffectiveMemory>) -> Self {
+        match memory {
+            Some(memory) => Self::percent_of(DEFAULT_RAM_PERCENT, memory),
+            None => Self {
+                bytes: FALLBACK_BUDGET_BYTES,
+                label: format!(
+                    "{} fallback (physical RAM unknown)",
+                    format_memory(FALLBACK_BUDGET_BYTES)
+                ),
+            },
+        }
+    }
+
+    /// An exact budget, such as an explicit `--max-ram` size, labeled `label`.
+    pub fn exact(bytes: u64, label: impl Into<String>) -> Self {
+        Self { bytes, label: label.into() }
+    }
+
+    /// `percent` of `memory`, labeled like `25% of 32 GiB physical RAM (8 GiB)`.
+    pub fn percent_of(percent: u8, memory: EffectiveMemory) -> Self {
+        let bytes = memory.bytes.saturating_mul(u64::from(percent)) / 100;
+        Self {
+            bytes,
+            label: format!("{percent}% of {} ({})", memory.describe(), format_memory(bytes)),
+        }
+    }
+
+    /// The budget a `--max-ram` or `UROLLUP_MAX_RAM` value requests.
+    ///
+    /// A byte size is exact, labeled `explicit_label` (such as `--max-ram 6G`), and never
+    /// calls `memory`. A percent takes that share of the discovered effective memory and
+    /// fails when it is unknown. Either may exceed the effective memory: an explicit
+    /// over-commit is honored.
+    pub fn from_request(
+        request: RamBudget,
+        explicit_label: &str,
+        memory: impl FnOnce() -> Option<EffectiveMemory>,
+    ) -> Result<Self, RamBudgetError> {
+        match request {
+            RamBudget::Bytes(bytes) => Ok(Self::exact(bytes, explicit_label)),
+            RamBudget::Percent(percent) => memory()
+                .map(|memory| Self::percent_of(percent, memory))
+                .ok_or(RamBudgetError::UnknownEffectiveMemory { percent }),
+        }
+    }
+
+    /// The budget in bytes.
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// What the budget is, for refusals and statistics.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+/// A byte count for people: whole binary units when exact, otherwise one decimal of the
+/// largest unit that fits, such as `8 GiB`, `9.4 GiB` or `512 bytes`.
+pub fn format_memory(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 4] =
+        [(1 << 40, "TiB"), (1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    for (unit, name) in UNITS {
+        if bytes < unit {
+            continue;
+        }
+        if bytes % unit == 0 {
+            return format!("{} {name}", bytes / unit);
+        }
+        let tenths = (u128::from(bytes) * 10 + u128::from(unit) / 2) / u128::from(unit);
+        return format!("{}.{} {name}", tenths / 10, tenths % 10);
+    }
+    format!("{bytes} bytes")
 }
 
 /// Physical RAM in bytes, or `None` when the host does not publish it.
@@ -453,5 +646,232 @@ mod tests {
     #[test]
     fn fallback_row_count_tracks_the_observation_row() {
         assert_eq!(FALLBACK_MAX_OBSERVATIONS, rows_for_budget(FALLBACK_BUDGET_BYTES));
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// A fake `/` with the given files, relative to it.
+    fn tree(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (path, text) in files {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    const UNIFIED_MOUNT: &str =
+        "30 25 0:26 / /sys/fs/cgroup rw,nosuid,nodev shared:4 - cgroup2 cgroup2 rw,nsdelegate\n";
+    const SESSION: &str = "0::/user.slice/user-1000.slice/session-3.scope\n";
+
+    fn effective(root: &tempfile::TempDir, physical: Option<u64>) -> Option<EffectiveMemory> {
+        effective_memory_under(root.path(), physical)
+    }
+
+    #[test]
+    fn cgroup_v2_takes_the_smallest_limit_of_the_cgroup_and_its_ancestors() {
+        let root = tree(&[
+            ("proc/self/cgroup", SESSION),
+            ("proc/self/mountinfo", UNIFIED_MOUNT),
+            ("sys/fs/cgroup/user.slice/memory.max", "8589934592\n"),
+            ("sys/fs/cgroup/user.slice/user-1000.slice/memory.max", "4294967296\n"),
+            ("sys/fs/cgroup/user.slice/user-1000.slice/memory.high", "max\n"),
+            ("sys/fs/cgroup/user.slice/user-1000.slice/session-3.scope/memory.max", "max\n"),
+            // The mount point is the root cgroup; a value there is still read.
+            ("sys/fs/cgroup/memory.max", "17179869184\n"),
+        ]);
+        let memory = effective(&root, Some(32 * GIB)).unwrap();
+        assert_eq!(memory, EffectiveMemory { bytes: 4 * GIB, source: MemorySource::CgroupMax });
+        assert_eq!(memory.describe(), "the 4 GiB cgroup limit");
+        assert_eq!(
+            MemoryBudget::default_for(Some(memory)).label(),
+            "25% of the 4 GiB cgroup limit (1 GiB)"
+        );
+    }
+
+    #[test]
+    fn cgroup_v2_memory_high_counts_when_it_is_smaller() {
+        let root = tree(&[
+            ("proc/self/cgroup", "0::/app\n"),
+            ("proc/self/mountinfo", UNIFIED_MOUNT),
+            ("sys/fs/cgroup/app/memory.max", "4294967296\n"),
+            ("sys/fs/cgroup/app/memory.high", "3221225472\n"),
+        ]);
+        let memory = effective(&root, Some(32 * GIB)).unwrap();
+        assert_eq!(memory, EffectiveMemory { bytes: 3 * GIB, source: MemorySource::CgroupHigh });
+        assert_eq!(memory.describe(), "the 3 GiB cgroup memory.high limit");
+    }
+
+    #[test]
+    fn cgroup_v2_without_any_limit_keeps_physical_ram() {
+        let root = tree(&[
+            ("proc/self/cgroup", SESSION),
+            ("proc/self/mountinfo", UNIFIED_MOUNT),
+            ("sys/fs/cgroup/user.slice/memory.max", "max\n"),
+        ]);
+        let memory = effective(&root, Some(32 * GIB)).unwrap();
+        assert_eq!(memory, EffectiveMemory { bytes: 32 * GIB, source: MemorySource::PhysicalRam });
+        assert_eq!(
+            MemoryBudget::default_for(Some(memory)).label(),
+            "25% of 32 GiB physical RAM (8 GiB)"
+        );
+    }
+
+    #[test]
+    fn a_container_mount_root_maps_the_cgroup_path_to_the_mount_point() {
+        // Without a cgroup namespace, a container sees its full path in /proc/self/cgroup
+        // and the cgroup filesystem mounted from that path.
+        let root = tree(&[
+            ("proc/self/cgroup", "0::/docker/abc\n"),
+            (
+                "proc/self/mountinfo",
+                "40 30 0:26 /docker/abc /sys/fs/cgroup ro - cgroup2 cgroup2 rw\n",
+            ),
+            ("sys/fs/cgroup/memory.max", "2147483648\n"),
+        ]);
+        assert_eq!(
+            effective(&root, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 2 * GIB, source: MemorySource::CgroupMax })
+        );
+    }
+
+    #[test]
+    fn cgroup_v1_reads_the_hierarchical_limit_and_ignores_unlimited_values() {
+        let files = |limit: &str| {
+            tree(&[
+                ("proc/self/cgroup", "5:memory:/job\n3:cpu,cpuacct:/job\n"),
+                (
+                    "proc/self/mountinfo",
+                    "31 25 0:27 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n",
+                ),
+                (
+                    "sys/fs/cgroup/memory/job/memory.stat",
+                    &format!("cache 0\nhierarchical_memory_limit {limit}\nrss 1\n"),
+                ),
+            ])
+        };
+        assert_eq!(
+            effective(&files("6442450944"), Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 6 * GIB, source: MemorySource::CgroupV1Limit })
+        );
+        // The page-counter maximum, and anything at or above physical RAM, is no limit.
+        let physical = Some(EffectiveMemory { bytes: 32 * GIB, source: MemorySource::PhysicalRam });
+        assert_eq!(effective(&files("9223372036854771712"), Some(32 * GIB)), physical);
+        assert_eq!(effective(&files("34359738368"), Some(32 * GIB)), physical);
+        assert_eq!(effective(&files("9223372036854771712"), None), None);
+    }
+
+    #[test]
+    fn soft_rlimits_bound_the_effective_memory() {
+        let limits = |address: &str, data: &str| {
+            tree(&[(
+                "proc/self/limits",
+                &format!(
+                    "Limit                     Soft Limit           Hard Limit           Units     \n\
+                     Max data size             {data:<20} unlimited            bytes     \n\
+                     Max stack size            8388608              unlimited            bytes     \n\
+                     Max address space         {address:<20} unlimited            bytes     \n"
+                ),
+            )])
+        };
+        let address = effective(&limits("8589934592", "unlimited"), Some(32 * GIB)).unwrap();
+        assert_eq!(address.source, MemorySource::AddressSpaceLimit);
+        assert_eq!(address.describe(), "the 8 GiB address-space limit");
+        let data = effective(&limits("8589934592", "2147483648"), Some(32 * GIB)).unwrap();
+        assert_eq!(data, EffectiveMemory { bytes: 2 * GIB, source: MemorySource::DataSizeLimit });
+        assert_eq!(
+            effective(&limits("unlimited", "unlimited"), Some(32 * GIB)).unwrap().source,
+            MemorySource::PhysicalRam
+        );
+    }
+
+    #[test]
+    fn malformed_and_missing_files_are_ignored() {
+        let root = tree(&[
+            ("proc/self/cgroup", "not a cgroup line\n0::/app\n"),
+            ("proc/self/mountinfo", "garbage\n30 25 0:26 / /sys/fs/cgroup - cgroup2\n"),
+            ("sys/fs/cgroup/app/memory.max", "4G\n"),
+            ("sys/fs/cgroup/app/memory.high", "\n"),
+            ("proc/self/limits", "Max address space         -1 unlimited bytes\n"),
+        ]);
+        assert_eq!(
+            effective(&root, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 32 * GIB, source: MemorySource::PhysicalRam })
+        );
+        let empty = tree(&[]);
+        assert_eq!(effective(&empty, None), None);
+        assert_eq!(effective(&empty, Some(GIB)).unwrap().source, MemorySource::PhysicalRam);
+    }
+
+    #[test]
+    fn an_allowance_counts_when_physical_ram_is_unknown() {
+        let root = tree(&[
+            ("proc/self/cgroup", "0::/\n"),
+            ("proc/self/mountinfo", UNIFIED_MOUNT),
+            ("sys/fs/cgroup/memory.max", "1073741824\n"),
+        ]);
+        let memory = effective(&root, None).unwrap();
+        assert_eq!(memory, EffectiveMemory { bytes: GIB, source: MemorySource::CgroupMax });
+        assert_eq!(MemoryBudget::default_for(Some(memory)).bytes(), GIB / 4);
+    }
+
+    #[test]
+    fn physical_ram_wins_a_tie_and_the_first_smallest_allowance_wins_otherwise() {
+        let tie = EffectiveMemory::smallest(Some(GIB), [(GIB, MemorySource::CgroupMax)]);
+        assert_eq!(tie.unwrap().source, MemorySource::PhysicalRam);
+        let first = EffectiveMemory::smallest(
+            None,
+            [(GIB, MemorySource::CgroupHigh), (GIB, MemorySource::CgroupMax)],
+        );
+        assert_eq!(first.unwrap().source, MemorySource::CgroupHigh);
+    }
+
+    #[test]
+    fn budgets_name_their_source() {
+        assert_eq!(
+            MemoryBudget::default_for(None),
+            MemoryBudget::exact(2 * GIB, "2 GiB fallback (physical RAM unknown)")
+        );
+        let ram = EffectiveMemory { bytes: 32 * GIB, source: MemorySource::PhysicalRam };
+        let half =
+            MemoryBudget::from_request(RamBudget::Percent(50), "--max-ram 50%", || Some(ram))
+                .unwrap();
+        assert_eq!(half, MemoryBudget::exact(16 * GIB, "50% of 32 GiB physical RAM (16 GiB)"));
+        // Above the effective memory, an explicit size is still honored.
+        let over =
+            MemoryBudget::from_request(RamBudget::Bytes(64 * GIB), "--max-ram 64G", || Some(ram))
+                .unwrap();
+        assert_eq!(over, MemoryBudget::exact(64 * GIB, "--max-ram 64G"));
+        let odd = EffectiveMemory { bytes: 16_715_173_888, source: MemorySource::PhysicalRam };
+        assert_eq!(
+            MemoryBudget::default_for(Some(odd)).label(),
+            "25% of 15.6 GiB physical RAM (3.9 GiB)"
+        );
+    }
+
+    #[test]
+    fn an_explicit_size_never_probes_and_a_percent_needs_a_known_size() {
+        let explicit =
+            MemoryBudget::from_request(RamBudget::Bytes(6 * GIB), "--max-ram 6G", || {
+                unreachable!("an explicit size must not probe the host")
+            });
+        assert_eq!(explicit.unwrap(), MemoryBudget::exact(6 * GIB, "--max-ram 6G"));
+        assert_eq!(
+            MemoryBudget::from_request(RamBudget::Percent(25), "--max-ram 25%", || None)
+                .unwrap_err(),
+            RamBudgetError::UnknownEffectiveMemory { percent: 25 }
+        );
+    }
+
+    #[test]
+    fn memory_sizes_print_exact_units_or_one_decimal() {
+        assert_eq!(format_memory(8 * GIB), "8 GiB");
+        assert_eq!(format_memory(512 << 20), "512 MiB");
+        assert_eq!(format_memory(10_093_173_555), "9.4 GiB");
+        assert_eq!(format_memory(1536), "1.5 KiB");
+        assert_eq!(format_memory(512), "512 bytes");
+        assert_eq!(format_memory(0), "0 bytes");
+        assert_eq!(format_memory(u64::MAX), "16777216.0 TiB");
     }
 }
