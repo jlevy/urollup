@@ -13,6 +13,9 @@ pub enum UnobservedReason {
     ParallelGuardianReview,
     /// Legacy remote compaction consumed usage the rollout does not record.
     LegacyRemoteCompaction,
+    /// Usage was written to a source that could not be read completely, such as a
+    /// truncated compressed file or a transcript deleted during the run.
+    UnreadableSource,
     /// Another reason, named by a registry token.
     Other(String),
 }

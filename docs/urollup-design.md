@@ -337,9 +337,9 @@ gives each dialect’s fields, counters and linkage.
 
 | Agent | Dialect | Definition | Default discovery |
 | --- | --- | --- | --- |
-| Claude Code | `claude-project` | Session and subagent transcripts under Claude Code’s config directory | Yes |
+| Claude Code | `claude-project` | Session and subagent transcripts under Claude Code’s config directory, plain, zstd- or gzip-compressed | Yes |
 | Claude Code | `claude-stream` | Saved `claude -p --output-format stream-json` output | No |
-| Codex | `codex-rollout` | Thread rollouts, plain or zstd-compressed, active or archived | Yes |
+| Codex | `codex-rollout` | Thread rollouts, plain, zstd- or gzip-compressed, active or archived | Yes |
 | Codex | `codex-exec` | Saved `codex exec --json` output | No |
 | Pi | `pi-session` | Tree-structured session files written by the `pi` coding agent | Yes, once validated |
 | Pi | `pi-events` | Saved `pi --mode json` output | No |
@@ -441,8 +441,17 @@ rather than silently skipping data.
 - An unfinished last line is recorded as pending, distinct from interior corruption.
 - Replacement, truncation or mutation during the scan is detected and reported,
   including a path that is briefly absent while another tool rewrites it.
-- A Codex `.jsonl` rollout and its `.jsonl.zst` twin with the same thread and rollout ID
-  are one logical source whose representation changed, not two sources.
+- A `.jsonl` file and its `.jsonl.zst` and `.jsonl.gz` twins are one logical source
+  whose representation changed, not two sources; for a Codex rollout they share a thread
+  and rollout ID. The plain file is read first, then zstd, then gzip, and each other
+  file must start with the same record or it is reported as a different, unread source.
+- A file that disappears between discovery and reading, as when a compressor replaces it
+  or an agent expires an old transcript, is read from its newer representation when one
+  exists; otherwise the source is recorded as vanished.
+- Every source whose snapshot lost data, through damaged or truncated compressed data,
+  an oversized record, a read error, a mismatched twin, a change that affects the
+  snapshot or a disappearance, raises a `source-incomplete` diagnostic and makes
+  coverage partial.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a
@@ -1879,11 +1888,11 @@ Rules that keep detection exact:
 - **ID resolution:** IDs resolve by searching every root: Claude `<root>/*/<id>.jsonl`,
   preferring the project whose recorded `cwd` matches (two matches exit 2, none exits 1
   listing the roots); Codex `rollout-*-<thread-id>.jsonl`, with an optional
-  `_<rollout-id>` suffix and `.zst` extension, in `sessions/` and `archived_sessions/`,
-  where several files are one thread; Pi’s `PI_SESSION_FILE`; and Gemini CLI
-  `<root>/<project>/chats/session-*-<first 8 characters of the ID>.jsonl`, confirmed by
-  the file’s recorded `sessionId`, since the name keeps only a prefix, with subagents at
-  `chats/<session ID>/<agent ID>.jsonl`.
+  `_<rollout-id>` suffix and `.zst` or `.gz` extension, in `sessions/` and
+  `archived_sessions/`, where several files are one thread; Pi’s `PI_SESSION_FILE`; and
+  Gemini CLI `<root>/<project>/chats/session-*-<first 8 characters of the ID>.jsonl`,
+  confirmed by the file’s recorded `sessionId`, since the name keeps only a prefix, with
+  subagents at `chats/<session ID>/<agent ID>.jsonl`.
 - **Claude Code subagents:** inside a Claude Code subagent the variable names the
   parent, so only hook input or `--session` selects a subagent alone.
 - **In-flight requests:** Claude Code transcripts are flushed asynchronously, so a
@@ -2350,7 +2359,7 @@ records how the engine reached this shape, with dated whole-history measurements
   sources to the selected session families before any source is decoded.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
-  weighting zstd files by an assumed expansion.
+  weighting compressed files by an assumed expansion.
   The default is `min(available_parallelism, 8)` workers.
   `UROLLUP_JOBS` sets a count from 1 to 256; an empty value counts as unset, and any
   other value is a usage error.

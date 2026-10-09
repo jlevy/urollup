@@ -42,7 +42,7 @@ use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::admission::Admission;
 use crate::sources::decode::{parse_timestamp, validate_record};
 use crate::sources::evidence::{EvidenceRef, SourceTable};
-use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
+use crate::sources::manifest::{ManifestEntry, Representation, SnapshotManifest};
 use crate::sources::parallel::{default_workers, source_weight, try_read_in_parallel};
 use crate::sources::reader::{RawRecord, ReadOptions, RecordDisposition, SourceSpec, read_source};
 use crate::sources::roots::{DiscoveredSource, Discovery, discover};
@@ -1294,6 +1294,11 @@ fn normalize(
     // worker result still holds its own copy.
     let mut observations = Vec::new();
     let mut diagnostics = source_diagnostics(&manifest, &source_table);
+    let (losses, gaps) = super::snapshot_losses(&manifest, "Codex rollout", |entry| {
+        let id = &entry.source.as_ref()?.id;
+        Some(EvidenceRef::new(source_index(&source_table, Some(id)), 0, 0))
+    });
+    diagnostics.extend(losses);
     for (thread, (meta, evidence)) in &meta_by_thread {
         if meta.parent().is_some_and(|parent| !thread_ids.contains_key(parent)) {
             diagnostics.push(Diagnostic::new(
@@ -1368,6 +1373,7 @@ fn normalize(
             relationships,
             requests: observations,
             limit_observations,
+            gaps,
             diagnostics,
             source_table,
             ..ReconcileInput::default()
@@ -1660,8 +1666,10 @@ fn rollout_name(locator: &str) -> RolloutName {
     let name = PathBuf::from(locator)
         .file_name()
         .map_or_else(|| locator.to_owned(), |name| name.to_string_lossy().into_owned());
-    let stem =
-        name.strip_suffix(".jsonl.zst").or_else(|| name.strip_suffix(".jsonl")).unwrap_or(&name);
+    let stem = Representation::ALL
+        .into_iter()
+        .find_map(|representation| name.strip_suffix(representation.suffix()))
+        .unwrap_or(&name);
     if let Some((base, rollout)) = stem.rsplit_once('_') {
         let thread = base.get(base.len().saturating_sub(36)..).unwrap_or(base);
         return RolloutName { thread_id: thread.to_owned(), rollout_id: rollout.to_owned() };

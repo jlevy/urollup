@@ -168,7 +168,7 @@ fn manifest_entry(table: &SourceTable, entry: &ManifestEntry) -> Value {
         "locator": entry.locator,
         "representation": format!("{:?}", entry.representation),
         "source": entry.source.as_ref().map(|source| source.id.to_string()),
-        "twin": entry.twin.is_some(),
+        "twin": !entry.twins.is_empty(),
     })
 }
 

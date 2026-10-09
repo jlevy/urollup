@@ -549,3 +549,155 @@ fn claude_largest_u64_block_index_wins_equal_output_ties() {
     assert_eq!(usage.uncached_input, Some(100));
     assert_eq!(usage.output, Some(10));
 }
+
+/// A way to store a fixture's `.jsonl` files compressed.
+#[derive(Clone, Copy, Debug)]
+enum Compression {
+    Gzip,
+    Zstd,
+}
+
+impl Compression {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Gzip => ".gz",
+            Self::Zstd => ".zst",
+        }
+    }
+
+    fn encode(self, contents: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        match self {
+            Self::Gzip => {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(contents).expect("gzip encodes in memory");
+                encoder.finish().expect("gzip finishes in memory")
+            }
+            Self::Zstd => zstd::stream::encode_all(contents, 3).expect("zstd encodes in memory"),
+        }
+    }
+}
+
+/// Copies a fixture case, storing every `.jsonl` file that has no compressed twin as
+/// `.jsonl.gz` or `.jsonl.zst` and every other file unchanged. Returns how many files were
+/// compressed.
+fn copy_compressed(
+    case: &std::path::Path,
+    destination: &std::path::Path,
+    compression: Compression,
+) -> usize {
+    let mut compressed = 0;
+    let mut pending = vec![case.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("fixture directory is readable") {
+            let path = entry.expect("fixture entry").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let target = destination.join(path.strip_prefix(case).expect("file is under its case"));
+            std::fs::create_dir_all(target.parent().expect("target has a parent"))
+                .expect("target directory is writable");
+            let name = path.file_name().expect("fixture file has a name").to_string_lossy();
+            let has_twin = [".zst", ".gz"]
+                .iter()
+                .any(|suffix| path.with_file_name(format!("{name}{suffix}")).exists());
+            let contents = std::fs::read(&path).expect("fixture file is readable");
+            if name.ends_with(".jsonl") && !has_twin {
+                let target = target.with_file_name(format!("{name}{}", compression.suffix()));
+                std::fs::write(target, compression.encode(&contents)).expect("copy is writable");
+                compressed += 1;
+            } else {
+                std::fs::write(target, contents).expect("copy is writable");
+            }
+        }
+    }
+    compressed
+}
+
+#[test]
+fn every_fixture_ingests_identically_from_gzip_and_zstd_files() {
+    type Ingest =
+        fn(
+            &std::path::Path,
+        )
+            -> Result<urollup_core::adapters::Ingested, urollup_core::adapters::AdapterError>;
+    for (dialect, ingest) in
+        [("claude-project", ingest_root as Ingest), ("codex-rollout", ingest_codex as Ingest)]
+    {
+        let mut cases: Vec<_> = std::fs::read_dir(fixture("").join("..").join(dialect))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.join("expected.json").is_file())
+            .collect();
+        cases.sort();
+        assert!(!cases.is_empty(), "{dialect} has fixtures");
+        let mut compressed_files = 0;
+
+        for case in cases {
+            let name = case.file_name().unwrap().to_string_lossy().into_owned();
+            let original = ingest(&case).unwrap();
+            for compression in [Compression::Gzip, Compression::Zstd] {
+                let copy = tempfile::tempdir().unwrap();
+                // A case that already holds compressed twins, such as zst-twin, keeps them.
+                compressed_files += copy_compressed(&case, copy.path(), compression);
+
+                let decoded = ingest(copy.path()).unwrap();
+                let label = format!("{dialect}/{name} as {compression:?}");
+                assert_eq!(decoded.ledger, original.ledger, "{label}: ledger");
+                assert_eq!(decoded.threads, original.threads, "{label}: threads");
+                assert_eq!(decoded.relationships, original.relationships, "{label}: relationships");
+                assert_eq!(
+                    decoded.limit_observations, original.limit_observations,
+                    "{label}: limit observations"
+                );
+                assert_eq!(
+                    decoded.manifest.entries.len(),
+                    original.manifest.entries.len(),
+                    "{label}: one source per logical file"
+                );
+            }
+        }
+        assert!(compressed_files > 0, "{dialect}: sources were compressed");
+    }
+}
+
+#[test]
+fn a_source_deleted_after_discovery_leaves_partial_totals_with_a_diagnostic() {
+    use urollup_core::accounting::totals::{Completeness, PartialReason};
+    use urollup_core::adapters::claude_project::ingest_discovery;
+    use urollup_core::sources::roots::discover;
+
+    let root = tempfile::tempdir().unwrap();
+    copy_compressed(&fixture("brief-double-counting"), root.path(), Compression::Gzip);
+    let projects = root.path().join("projects");
+    let discovery = discover(std::slice::from_ref(&projects));
+    let complete = ingest_discovery(discovery.clone(), true).unwrap();
+    assert_eq!(ledger_totals(&complete.ledger).unwrap().completeness, Completeness::Complete);
+
+    // Claude Code expires old transcripts; one disappears between discovery and reading.
+    let (removed, _) = discovery.sources[0].files.primary().unwrap();
+    std::fs::remove_file(removed).unwrap();
+    let partial = ingest_discovery(discovery, true).expect("a vanished source is not fatal");
+
+    let totals = ledger_totals(&partial.ledger).unwrap();
+    assert!(
+        matches!(&totals.completeness, Completeness::Partial(reasons)
+            if reasons.contains(&PartialReason::UnobservedGap)),
+        "{:?}",
+        totals.completeness
+    );
+    assert!(totals.total.requests < ledger_totals(&complete.ledger).unwrap().total.requests);
+    let incomplete: Vec<_> = partial
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.token() == "source-incomplete")
+        .collect();
+    assert_eq!(incomplete.len(), 1, "{:?}", partial.ledger.diagnostics);
+    assert_eq!(
+        incomplete[0].detail,
+        "a Claude Code transcript could not be read completely: vanished"
+    );
+}

@@ -16,17 +16,24 @@
 //!   [`SourceChange::BrieflyAbsent`] rather than counted as a lost source. An in-place
 //!   mutation that keeps both the length and the modification time is the one case this
 //!   check misses.
+//! - **Files that disappear after discovery.** A compressor such as `zstd --rm` or
+//!   `gzip` replaces a `.jsonl` file with its compressed form, and agents delete expired
+//!   transcripts. When the discovered file is gone, the next representation of the same
+//!   source is read instead, including one written after discovery; when none remains,
+//!   the source is an empty snapshot with [`SourceChange::Vanished`], not an error.
 //! - **Oversized records.** A record over [`ReadOptions::max_record_bytes`] is never
 //!   silently skipped: it is counted and recorded as [`CoverageFailure::Oversized`], and
 //!   the scan continues at the next record without buffering it.
-//! - **Compression.** `.jsonl` and `.jsonl.zst` decode to the same bytes, so evidence
-//!   offsets are decoded offsets and a `.jsonl` file and its `.jsonl.zst` twin are one
-//!   logical source with one `src-` ID. A compressed stream that ends inside a frame is
+//! - **Compression.** `.jsonl`, `.jsonl.zst` and `.jsonl.gz` decode to the same bytes, so
+//!   evidence offsets are decoded offsets and a `.jsonl` file and its compressed twins are
+//!   one logical source with one `src-` ID. [`decode`] is the one place a representation
+//!   maps to a decoder. A compressed stream that ends inside a frame or member is
 //!   [`CoverageFailure::IncompleteCompressedFrame`], distinct from
-//!   [`CoverageFailure::CorruptCompressedData`]. Only structural damage fails the decoder:
-//!   a zstd frame carries a content checksum only when its writer asked for one, so a
-//!   flipped byte inside a frame usually decodes to damaged text and is counted as
-//!   interior corruption instead.
+//!   [`CoverageFailure::CorruptCompressedData`]. Only structural damage fails a zstd
+//!   decoder: a zstd frame carries a content checksum only when its writer asked for one,
+//!   so a flipped byte inside a frame usually decodes to damaged text and is counted as
+//!   interior corruption instead. Every gzip member ends with a CRC-32, so the same flip
+//!   in a `.jsonl.gz` is also corrupt compressed data, found when the member ends.
 //!
 //! The `src-` ID is derived from the first complete record's [`Fingerprint`], so records
 //! appended later keep the ID, and a rewrite of the first record produces a new one.
@@ -104,33 +111,57 @@ pub struct RawRecord<'a> {
     pub bytes: &'a [u8],
 }
 
-/// The files of one logical source: a plain file, a compressed file, or both while a
+/// The files of one logical source: a plain file, compressed files, or several while a
 /// compression or resume is in flight.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LogicalSource {
     /// The `.jsonl` file, when it exists.
     pub plain: Option<PathBuf>,
     /// The `.jsonl.zst` file, when it exists.
-    pub compressed: Option<PathBuf>,
+    pub zstd: Option<PathBuf>,
+    /// The `.jsonl.gz` file, when it exists.
+    pub gzip: Option<PathBuf>,
 }
 
 impl LogicalSource {
-    /// The representation to read: the plain file hides its compressed twin, as Codex's
-    /// own discovery does, because a resume decompresses before appending.
-    pub fn primary(&self) -> Option<(&Path, Representation)> {
-        match (&self.plain, &self.compressed) {
-            (Some(plain), _) => Some((plain.as_path(), Representation::Plain)),
-            (None, Some(compressed)) => Some((compressed.as_path(), Representation::Zstd)),
-            (None, None) => None,
-        }
+    /// A source stored as one file.
+    pub fn single(path: PathBuf, representation: Representation) -> Self {
+        let mut files = Self::default();
+        files.insert(path, representation);
+        files
     }
 
-    /// The other representation, when both exist.
-    pub fn twin(&self) -> Option<&Path> {
-        match (&self.plain, &self.compressed) {
-            (Some(_), Some(compressed)) => Some(compressed.as_path()),
-            _ => None,
-        }
+    /// Records `path` as this source's file in `representation`.
+    pub fn insert(&mut self, path: PathBuf, representation: Representation) {
+        let slot = match representation {
+            Representation::Plain => &mut self.plain,
+            Representation::Zstd => &mut self.zstd,
+            Representation::Gzip => &mut self.gzip,
+        };
+        *slot = Some(path);
+    }
+
+    /// Every file, in [`Representation`] preference order.
+    pub fn files(&self) -> impl Iterator<Item = (&Path, Representation)> {
+        [
+            (&self.plain, Representation::Plain),
+            (&self.zstd, Representation::Zstd),
+            (&self.gzip, Representation::Gzip),
+        ]
+        .into_iter()
+        .filter_map(|(path, representation)| Some((path.as_deref()?, representation)))
+    }
+
+    /// The representation to read: the plain file hides its compressed twins, as Codex's
+    /// own discovery does, because a resume decompresses before appending; zstd, Codex's
+    /// own compressed form, hides gzip.
+    pub fn primary(&self) -> Option<(&Path, Representation)> {
+        self.files().next()
+    }
+
+    /// The other files, when several exist.
+    pub fn twins(&self) -> impl Iterator<Item = (&Path, Representation)> {
+        self.files().skip(1)
     }
 }
 
@@ -163,7 +194,7 @@ pub enum SourceReadError {
     #[error("source visitor stopped the scan")]
     VisitorStopped,
     /// The logical source names no file.
-    #[error("logical source has neither a plain nor a compressed file")]
+    #[error("logical source has no plain or compressed file")]
     NoFile,
     /// The path could not be opened, after any retries.
     #[error("cannot open {path}: {source}")]
@@ -226,11 +257,16 @@ pub(crate) fn read_source_with_hooks<F>(
 where
     F: FnMut(&RawRecord<'_>) -> RecordDisposition,
 {
-    let Some((path, representation)) = files.primary() else {
+    let Some((primary, primary_representation)) = files.primary() else {
         return Err(SourceReadError::NoFile);
     };
     let mut changes = Vec::new();
-    let opened = open_with_retry(path, options, hooks, &mut changes)?;
+    let Some((path, representation, opened)) =
+        open_source(files, (primary, primary_representation), options, hooks, &mut changes)?
+    else {
+        return Ok(vanished_entry(spec, primary, primary_representation));
+    };
+    let path = path.as_path();
     let captured_at = SystemTime::now();
     // The open file's own metadata fixes the extent, so a replacement of the path after
     // this point cannot change what this snapshot covers.
@@ -257,12 +293,13 @@ where
         pending: None,
     };
     let mut reader = reader_for(opened, snapshot_len, representation);
-    scan.run(&mut reader, spec, options, &mut visit)?;
+    scan.run(&mut reader, spec, options, &mut visit, representation)?;
     hooks.after_scan(path);
 
-    let twin = twin_identity(files, spec, options, &mut scan.failures);
+    let twins = twin_identities(files, path, scan.fingerprint, spec, &mut scan.failures);
     detect_changes(
         path,
+        representation,
         &file_identity,
         snapshot_len,
         modified,
@@ -280,7 +317,7 @@ where
         locator: spec.locator.to_owned(),
         file: file_identity,
         representation,
-        twin,
+        twins,
         file_len: snapshot_len,
         modified,
         fingerprint: scan.fingerprint,
@@ -290,6 +327,71 @@ where
         failures: scan.failures,
         changes,
     })
+}
+
+/// Opens the file to read: the primary with retries, then, when it is gone, each other
+/// representation of the source in preference order, whether discovered or written
+/// since. `None` when no file of the source exists.
+fn open_source(
+    files: &LogicalSource,
+    primary: (&Path, Representation),
+    options: &ReadOptions,
+    hooks: &mut dyn ScanHooks,
+    changes: &mut Vec<SourceChange>,
+) -> Result<Option<(PathBuf, Representation, File)>, SourceReadError> {
+    let (primary, primary_representation) = primary;
+    if let Some(file) = open_with_retry(primary, options, hooks, changes)? {
+        return Ok(Some((primary.to_owned(), primary_representation, file)));
+    }
+    for representation in Representation::ALL {
+        let discovered = files
+            .files()
+            .find(|(_, held)| *held == representation)
+            .map(|(path, _)| path.to_owned());
+        let Some(candidate) = discovered.or_else(|| sibling(primary, representation)) else {
+            continue;
+        };
+        if candidate == primary {
+            continue;
+        }
+        if let Some(file) = open_once(&candidate)? {
+            return Ok(Some((candidate, representation, file)));
+        }
+    }
+    Ok(None)
+}
+
+/// The file of the same source in `representation`, such as `a/b.jsonl.zst` for
+/// `a/b.jsonl`; `None` when the name is not UTF-8 or names no representation.
+fn sibling(path: &Path, representation: Representation) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let base = name.strip_suffix(Representation::of_path(path)?.suffix())?;
+    Some(path.with_file_name(format!("{base}{}", representation.suffix())))
+}
+
+/// The snapshot of a source none of whose files exists any more.
+fn vanished_entry(
+    spec: &SourceSpec<'_>,
+    path: &Path,
+    representation: Representation,
+) -> ManifestEntry {
+    ManifestEntry {
+        source: None,
+        environment: spec.environment.to_owned(),
+        dialect: spec.dialect.to_owned(),
+        locator: spec.locator.to_owned(),
+        file: FileIdentity { path: path.to_owned(), device: None, inode: None },
+        representation,
+        twins: Vec::new(),
+        file_len: 0,
+        modified: None,
+        fingerprint: None,
+        cutoff: Cutoff { complete_through: 0, pending_tail: None, captured_at: SystemTime::now() },
+        counters: RecordCounters::default(),
+        first_malformed: None,
+        failures: Vec::new(),
+        changes: vec![SourceChange::Vanished],
+    }
 }
 
 /// The running state of one scan.
@@ -317,6 +419,7 @@ impl Scan {
         spec: &SourceSpec<'_>,
         options: &ReadOptions,
         visit: &mut F,
+        representation: Representation,
     ) -> Result<(), SourceReadError>
     where
         F: FnMut(&RawRecord<'_>) -> RecordDisposition,
@@ -328,7 +431,7 @@ impl Scan {
             let line = match read_line(reader, &mut buffer, options.max_record_bytes) {
                 Ok(line) => line,
                 Err(error) => {
-                    self.failures.push(read_failure(&error, self.offset));
+                    self.failures.push(read_failure(&error, self.offset, representation));
                     return Ok(());
                 }
             };
@@ -413,16 +516,35 @@ fn source_identity(
 }
 
 fn reader_for(file: File, extent: u64, representation: Representation) -> Box<dyn BufRead> {
-    let extent = file.take(extent);
-    match representation {
-        Representation::Plain => Box::new(BufReader::with_capacity(128 * 1024, extent)),
-        Representation::Zstd => match zstd::stream::read::Decoder::new(extent) {
-            Ok(decoder) => Box::new(BufReader::with_capacity(128 * 1024, decoder)),
-            // A decoder is only built here; a failure is a corrupt or empty stream, which
-            // the scan reports as a read failure at offset 0.
-            Err(error) => Box::new(FailingReader(Some(error))),
-        },
-    }
+    // A decoder is only built here; a failure is a corrupt or empty stream, which the scan
+    // reports as a read failure at offset 0.
+    decode(file.take(extent), representation)
+        .unwrap_or_else(|error| Box::new(FailingReader(Some(error))))
+}
+
+/// Decodes `stored`, a source's bytes in `representation`, into a buffered reader of its
+/// records: the one mapping from a representation to its decoder.
+///
+/// zstd and gzip decoding read every frame or member, so files concatenated by `cat` or
+/// appended to by a streaming compressor decode whole.
+///
+/// # Errors
+///
+/// A zstd decoder that cannot be created. Damaged data surfaces from the reader instead.
+pub fn decode<R: Read + 'static>(
+    stored: R,
+    representation: Representation,
+) -> io::Result<Box<dyn BufRead>> {
+    const CAPACITY: usize = 128 * 1024;
+    Ok(match representation {
+        Representation::Plain => Box::new(BufReader::with_capacity(CAPACITY, stored)),
+        Representation::Zstd => {
+            Box::new(BufReader::with_capacity(CAPACITY, zstd::stream::read::Decoder::new(stored)?))
+        }
+        Representation::Gzip => {
+            Box::new(BufReader::with_capacity(CAPACITY, flate2::read::MultiGzDecoder::new(stored)))
+        }
+    })
 }
 
 /// A reader that yields one error, so a decoder that cannot start is reported like any
@@ -449,16 +571,23 @@ impl BufRead for FailingReader {
     fn consume(&mut self, _amount: usize) {}
 }
 
-fn read_failure(error: &io::Error, offset: u64) -> CoverageFailure {
-    if error.kind() == io::ErrorKind::UnexpectedEof {
+/// Classifies an error that ended a scan. zstd reports damaged data as
+/// [`io::ErrorKind::Other`] and flate2 as [`io::ErrorKind::InvalidInput`] or
+/// [`io::ErrorKind::InvalidData`]; both end a truncated stream with
+/// [`io::ErrorKind::UnexpectedEof`].
+fn read_failure(error: &io::Error, offset: u64, representation: Representation) -> CoverageFailure {
+    let kind = error.kind();
+    let compressed = representation != Representation::Plain;
+    let damaged = [io::ErrorKind::Other, io::ErrorKind::InvalidInput, io::ErrorKind::InvalidData];
+    if compressed && kind == io::ErrorKind::UnexpectedEof {
         CoverageFailure::IncompleteCompressedFrame { decoded_offset: offset }
-    } else if error.kind() == io::ErrorKind::Other {
+    } else if compressed && damaged.contains(&kind) {
         CoverageFailure::CorruptCompressedData {
             decoded_offset: offset,
             message: error.to_string(),
         }
     } else {
-        CoverageFailure::ReadError { decoded_offset: offset, kind: error.kind() }
+        CoverageFailure::ReadError { decoded_offset: offset, kind }
     }
 }
 
@@ -525,12 +654,13 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
     }
 }
 
+/// Opens `path`, re-checking an absent path; `None` when it stays absent.
 fn open_with_retry(
     path: &Path,
     options: &ReadOptions,
     hooks: &mut dyn ScanHooks,
     changes: &mut Vec<SourceChange>,
-) -> Result<File, SourceReadError> {
+) -> Result<Option<File>, SourceReadError> {
     let mut attempts = 0;
     loop {
         match File::open(path) {
@@ -538,11 +668,12 @@ fn open_with_retry(
                 if attempts > 0 {
                     changes.push(SourceChange::BrieflyAbsent { attempts });
                 }
-                return Ok(file);
+                return Ok(Some(file));
             }
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound && attempts < options.absent_retries =>
-            {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if attempts >= options.absent_retries {
+                    return Ok(None);
+                }
                 attempts = attempts.saturating_add(1);
                 hooks.before_retry(path, attempts);
                 if !options.absent_retry_delay.is_zero() {
@@ -554,12 +685,22 @@ fn open_with_retry(
     }
 }
 
+/// Opens `path` once; `None` when it does not exist.
+fn open_once(path: &Path) -> Result<Option<File>, SourceReadError> {
+    match File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(SourceReadError::Open { path: path.to_owned(), source }),
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; splitting it would only move the arguments"
 )]
 fn detect_changes(
     path: &Path,
+    representation: Representation,
     snapshot: &FileIdentity,
     snapshot_len: u64,
     snapshot_modified: Option<SystemTime>,
@@ -606,7 +747,7 @@ fn detect_changes(
         changes.push(SourceChange::ModifiedInPlace);
     }
     if let Some(fingerprint) = fingerprint {
-        if first_record_fingerprint(path) != Some(fingerprint) {
+        if first_record_fingerprint(path, representation) != Some(fingerprint) {
             changes.push(SourceChange::FirstRecordChanged);
         }
     }
@@ -614,15 +755,10 @@ fn detect_changes(
 
 /// Re-reads a file's first complete record to check that the bytes the source ID covers
 /// did not change; `None` when the file cannot be read or holds no complete record.
-fn first_record_fingerprint(path: &Path) -> Option<Fingerprint> {
+fn first_record_fingerprint(path: &Path, representation: Representation) -> Option<Fingerprint> {
     let mut file = File::open(path).ok()?;
     file.seek(SeekFrom::Start(0)).ok()?;
-    let mut reader: Box<dyn BufRead> =
-        if path.extension().is_some_and(|extension| extension == "zst") {
-            Box::new(BufReader::new(zstd::stream::read::Decoder::new(file).ok()?))
-        } else {
-            Box::new(BufReader::new(file))
-        };
+    let mut reader = decode(file, representation).ok()?;
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
@@ -637,31 +773,36 @@ fn first_record_fingerprint(path: &Path) -> Option<Fingerprint> {
     }
 }
 
-/// Checks a compressed twin against the primary file and records its identity, or reports
-/// that it is a different logical source that this scan did not read.
-fn twin_identity(
+/// Checks each other discovered file of the source against the file read and records its
+/// identity, or reports that it is a different logical source that this scan did not read.
+fn twin_identities(
     files: &LogicalSource,
+    read: &Path,
+    fingerprint: Option<Fingerprint>,
     spec: &SourceSpec<'_>,
-    _options: &ReadOptions,
     failures: &mut Vec<CoverageFailure>,
-) -> Option<FileIdentity> {
-    let twin = files.twin()?;
-    let primary = files.primary()?.0;
-    let (primary_fingerprint, twin_fingerprint) =
-        (first_record_fingerprint(primary), first_record_fingerprint(twin));
-    if primary_fingerprint.is_some() && primary_fingerprint != twin_fingerprint {
-        failures.push(CoverageFailure::TwinFingerprintMismatch {
+) -> Vec<FileIdentity> {
+    let mut identities = Vec::new();
+    for (twin, representation) in files.files().filter(|(path, _)| *path != read) {
+        // A twin that vanished with the primary is not a second source.
+        if !twin.exists() {
+            continue;
+        }
+        if fingerprint.is_some() && fingerprint != first_record_fingerprint(twin, representation) {
+            failures.push(CoverageFailure::TwinFingerprintMismatch {
+                path: twin.to_owned(),
+                locator: spec.locator.to_owned(),
+            });
+            continue;
+        }
+        let metadata = std::fs::metadata(twin).ok();
+        identities.push(FileIdentity {
             path: twin.to_owned(),
-            locator: spec.locator.to_owned(),
+            device: metadata.as_ref().and_then(device_of_opt),
+            inode: metadata.as_ref().and_then(inode_of_opt),
         });
-        return None;
     }
-    let metadata = std::fs::metadata(twin).ok();
-    Some(FileIdentity {
-        path: twin.to_owned(),
-        device: metadata.as_ref().and_then(device_of_opt),
-        inode: metadata.as_ref().and_then(inode_of_opt),
-    })
+    identities
 }
 
 // The Option is the platform-independent shape: Windows reports neither value.

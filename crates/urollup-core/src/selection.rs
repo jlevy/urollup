@@ -141,7 +141,7 @@ impl SessionIndex {
             let mut paths = Vec::new();
             for source in matched {
                 paths.push(source.snapshot.file.path.clone());
-                paths.extend(source.snapshot.twin.iter().map(|twin| twin.path.clone()));
+                paths.extend(source.snapshot.twins.iter().map(|twin| twin.path.clone()));
             }
             paths.sort();
             paths.dedup();
@@ -764,7 +764,7 @@ mod tests {
                     })
                     .flat_map(|source| {
                         std::iter::once(source.snapshot.file.path.clone())
-                            .chain(source.snapshot.twin.iter().map(|twin| twin.path.clone()))
+                            .chain(source.snapshot.twins.iter().map(|twin| twin.path.clone()))
                     })
                     .collect();
                 paths.sort();

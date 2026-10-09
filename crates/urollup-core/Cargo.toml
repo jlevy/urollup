@@ -20,6 +20,8 @@ path = "src/lib.rs"
 # No CLI, HTTP or async-runtime dependencies, ever (design §8.1). The CI dependency guard
 # (`make dependency-guard`) fails if one appears in this crate's tree.
 [dependencies]
+# Pure-Rust inflate (miniz_oxide) for `.jsonl.gz` sources; no C backend.
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 jiff = { version = "0.2.35", default-features = false, features = [
   "std",
   "tz-fat",

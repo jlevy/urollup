@@ -38,10 +38,11 @@ clap = { version = "4.6.6", default-features = false, features = [
   "color",
 ] }
 serde_json = "1.0.151"
-zstd = "0.13.3"
 
 [dev-dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 tempfile = "3.27.0"
+zstd = { version = "0.13.3", default-features = false }
 
 [lints]
 workspace = true

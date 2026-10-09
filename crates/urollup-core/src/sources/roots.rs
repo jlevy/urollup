@@ -1,7 +1,8 @@
 //! Walking declared roots for source files (design §2.1, §2.2).
 //!
 //! [`discover`] walks each declared root in a deterministic order and returns the logical
-//! sources it found, pairing a `.jsonl` file with its `.jsonl.zst` twin under one locator.
+//! sources it found, grouping a `.jsonl` file with its `.jsonl.zst` and `.jsonl.gz` twins
+//! under one locator.
 //! Its boundaries are the ones the design states:
 //!
 //! - **Symlinks are followed only within declared roots.** A link whose target resolves
@@ -14,8 +15,8 @@
 //!   listed in [`Discovery::missing_roots`] for the caller to decide about, since a
 //!   missing default root is skipped while a missing named one is an error.
 //! - **Locators are stable and path-shaped.** A locator is the root-relative path with
-//!   `/` separators and any `.zst` suffix removed, so a source keeps its ID when it is
-//!   compressed. Bytes that are not UTF-8 are percent-escaped rather than replaced, so two
+//!   `/` separators and any `.zst` or `.gz` suffix removed, so a source keeps its ID when
+//!   it is compressed. Bytes that are not UTF-8 are percent-escaped rather than replaced, so two
 //!   different names cannot collide into one locator.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,7 +35,7 @@ pub struct DiscoveredSource {
     pub root: PathBuf,
     /// The root-relative locator, without any compression suffix.
     pub locator: String,
-    /// Its plain file, compressed file, or both.
+    /// Its plain and compressed files.
     pub files: LogicalSource,
 }
 
@@ -62,7 +63,7 @@ pub struct Discovery {
     pub duplicate_paths: Vec<PathBuf>,
 }
 
-/// Walks `roots` and groups the `.jsonl` and `.jsonl.zst` files under them.
+/// Walks `roots` and groups the `.jsonl`, `.jsonl.zst` and `.jsonl.gz` files under them.
 pub fn discover(roots: &[PathBuf]) -> Discovery {
     let mut discovery = Discovery::default();
     let mut canonical_roots = Vec::new();
@@ -95,7 +96,7 @@ pub fn discover(roots: &[PathBuf]) -> Discovery {
             seen_dirs: &mut seen_dirs,
         };
         if canonical_root.is_file() {
-            if representation_of(root).is_some() {
+            if Representation::of_path(root).is_some() {
                 let parent = root.parent().unwrap_or_else(|| Path::new(""));
                 record_file(root, canonical_root, parent, &mut state);
             } else {
@@ -252,35 +253,19 @@ fn resolve_link(path: &Path, canonical_roots: &[PathBuf], state: &mut Walk<'_>) 
 }
 
 fn record_file(path: &Path, canonical: &Path, root: &Path, state: &mut Walk<'_>) {
-    let Some(representation) = representation_of(path) else { return };
+    let Some(representation) = Representation::of_path(path) else { return };
     if !state.seen_files.insert(canonical.to_owned()) {
         state.discovery.duplicate_paths.push(path.to_owned());
         return;
     }
     let Some(relative) = path.strip_prefix(root).ok() else { return };
     let locator = locator_for(relative);
-    let files =
-        state.found.entry(locator).or_insert(LogicalSource { plain: None, compressed: None });
-    match representation {
-        Representation::Plain => files.plain = Some(path.to_owned()),
-        Representation::Zstd => files.compressed = Some(path.to_owned()),
-    }
+    state.found.entry(locator).or_default().insert(path.to_owned(), representation);
 }
 
-/// `.jsonl` and `.jsonl.zst` are source files; anything else is not.
-fn representation_of(path: &Path) -> Option<Representation> {
-    let name = path.file_name()?.to_string_lossy();
-    if name.ends_with(".jsonl") {
-        Some(Representation::Plain)
-    } else if name.ends_with(".jsonl.zst") {
-        Some(Representation::Zstd)
-    } else {
-        None
-    }
-}
-
-/// The root-relative locator: `/` separators, no `.zst` suffix, and percent-escaped bytes
-/// that are not UTF-8, so two names cannot collide into one locator.
+/// The root-relative locator: `/` separators, no `.zst` or `.gz` suffix after `.jsonl`,
+/// and percent-escaped bytes that are not UTF-8, so two names cannot collide into one
+/// locator.
 pub fn locator_for(relative: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     for component in relative.components() {
@@ -293,7 +278,11 @@ pub fn locator_for(relative: &Path) -> String {
         }
     }
     let joined = parts.join("/");
-    let trimmed = joined.strip_suffix(".zst").map(str::to_owned);
+    let trimmed = Representation::ALL.into_iter().find_map(|representation| {
+        let extension = representation.compression_extension()?;
+        let stem = joined.strip_suffix(extension)?;
+        stem.ends_with(Representation::Plain.suffix()).then(|| stem.to_owned())
+    });
     trimmed.unwrap_or(joined)
 }
 

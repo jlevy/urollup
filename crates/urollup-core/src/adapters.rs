@@ -7,10 +7,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::ledger::coverage::{CoverageGap, UnobservedReason};
+use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{ProviderLimitObservation, Relationship, SourceArtifact, Thread};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::reconcile::{Ledger, ReconcileError};
-use crate::sources::manifest::SnapshotManifest;
+use crate::sources::evidence::EvidenceRef;
+use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
 use crate::sources::reader::SourceReadError;
 
 pub mod claude_project;
@@ -54,6 +57,40 @@ impl Ingested {
         self.relationships.clear();
         self.relationships.shrink_to_fit();
     }
+}
+
+/// A `source-incomplete` diagnostic and an unreadable-source coverage gap for each snapshot
+/// that lost data, so a damaged, truncated, replaced or vanished source makes totals
+/// partial instead of silently smaller.
+///
+/// `evidence` cites a source by its `src-` ID; a source that vanished before its first
+/// record has none. `kind` names the dialect's sources in the detail, which holds no path.
+pub(crate) fn snapshot_losses(
+    manifest: &SnapshotManifest,
+    kind: &str,
+    evidence: impl Fn(&ManifestEntry) -> Option<EvidenceRef>,
+) -> (Vec<Diagnostic>, Vec<CoverageGap>) {
+    let mut diagnostics = Vec::new();
+    let mut gaps = Vec::new();
+    for entry in &manifest.entries {
+        let losses = entry.losses();
+        if losses.is_empty() {
+            continue;
+        }
+        let cited: Vec<EvidenceRef> = evidence(entry).into_iter().collect();
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::SourceIncomplete,
+            None,
+            cited.iter().copied(),
+            format!("a {kind} could not be read completely: {}", losses.join(", ")),
+        ));
+        gaps.push(CoverageGap {
+            reason: UnobservedReason::UnreadableSource,
+            thread: None,
+            evidence: cited,
+        });
+    }
+    (diagnostics, gaps)
 }
 
 /// A persistent-log adapter could not produce a normalized result.

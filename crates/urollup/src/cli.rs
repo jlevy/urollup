@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -31,7 +31,7 @@ use urollup_core::selection::{
 };
 use urollup_core::sources::manifest::Representation;
 use urollup_core::sources::parallel;
-use urollup_core::sources::reader::ReadOptions;
+use urollup_core::sources::reader::{self, ReadOptions};
 use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
 
 const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
@@ -791,14 +791,7 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
 }
 
 fn source_paths(source: &DiscoveredSource) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some((path, _)) = source.files.primary() {
-        paths.push(path.to_owned());
-    }
-    if let Some(path) = source.files.twin() {
-        paths.push(path.to_owned());
-    }
-    paths
+    source.files.files().map(|(path, _)| path.to_owned()).collect()
 }
 
 fn codex_thread_from_locator(locator: &str) -> String {
@@ -816,18 +809,12 @@ fn read_codex_session_links(source: &DiscoveredSource) -> Result<BTreeSet<String
     let Some((path, representation)) = source.files.primary() else {
         return Ok(BTreeSet::new());
     };
-    let file = File::open(path).map_err(|error| {
-        Failure::runtime(format!("cannot open source {}: {error}", path.display()))
-    })?;
-    let reader: Box<dyn Read> = if representation == Representation::Zstd {
-        let decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
-            Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
-        })?;
-        Box::new(decoder)
-    } else {
-        Box::new(file)
+    // A rollout compressed or deleted since discovery has no header to link here; the
+    // ingest that follows reads its new representation or reports it as vanished.
+    let Some(reader) = open_decoded(path, representation)? else {
+        return Ok(BTreeSet::new());
     };
-    let mut reader = BufReader::new(reader).take(MAX_CATALOG_HEADER_BYTES.saturating_add(1));
+    let mut reader = reader.take(MAX_CATALOG_HEADER_BYTES.saturating_add(1));
     let mut line = Vec::new();
     reader.read_until(b'\n', &mut line).map_err(|error| {
         Failure::runtime(format!("cannot read source {}: {error}", path.display()))
@@ -855,6 +842,26 @@ fn read_codex_session_links(source: &DiscoveredSource) -> Result<BTreeSet<String
     .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
     .map(str::to_owned)
     .collect())
+}
+
+/// Opens a source file through its decoder; `None` when it no longer exists.
+fn open_decoded(
+    path: &Path,
+    representation: Representation,
+) -> Result<Option<Box<dyn BufRead>>, Failure> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(Failure::runtime(format!(
+                "cannot open source {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    reader::decode(file, representation).map(Some).map_err(|error| {
+        Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
+    })
 }
 
 enum ExplicitDialect {
@@ -916,16 +923,9 @@ fn classify_jsonl(path: &Path) -> Result<Option<Agent>, Failure> {
 /// Classifies a transcript by its first recognized record type, or `None` when none of
 /// its first 100 records belongs to a supported dialect.
 fn classify_jsonl_with_limit(path: &Path, max_line_bytes: u64) -> Result<Option<Agent>, Failure> {
-    let file = File::open(path).map_err(|error| {
-        Failure::runtime(format!("cannot open source {}: {error}", path.display()))
-    })?;
-    let mut reader: Box<dyn BufRead> = if path.to_string_lossy().ends_with(".zst") {
-        let decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
-            Failure::runtime(format!("cannot decode source {}: {error}", path.display()))
-        })?;
-        Box::new(BufReader::new(decoder))
-    } else {
-        Box::new(BufReader::new(file))
+    let representation = Representation::of_path(path).unwrap_or(Representation::Plain);
+    let Some(mut reader) = open_decoded(path, representation)? else {
+        return Ok(None);
     };
     let mut line = Vec::new();
     for _ in 0..100 {
@@ -1576,15 +1576,19 @@ mod tests {
     }
 
     #[test]
-    fn explicit_artifact_classification_bounds_plain_and_decoded_zstd_lines() {
+    fn explicit_artifact_classification_bounds_plain_and_decoded_compressed_lines() {
         let root = tempfile::tempdir().unwrap();
         let line = format!(r#"{{"type":"assistant","padding":"{}"}}\n"#, "x".repeat(128));
         let plain = root.path().join("oversized.jsonl");
         fs::write(&plain, &line).unwrap();
         let compressed = root.path().join("oversized.jsonl.zst");
         fs::write(&compressed, zstd::stream::encode_all(line.as_bytes(), 1).unwrap()).unwrap();
+        let gzipped = root.path().join("oversized.jsonl.gz");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(line.as_bytes()).unwrap();
+        fs::write(&gzipped, encoder.finish().unwrap()).unwrap();
 
-        for path in [plain, compressed] {
+        for path in [plain, compressed, gzipped] {
             let error = classify_jsonl_with_limit(&path, 32).unwrap_err();
             assert!(error.message.contains("classification record exceeds"));
         }

@@ -12,7 +12,7 @@
 
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::ledger::identity::{IdPrefix, StoredIdentity, crockford_base32_128, sha256_128};
@@ -38,7 +38,8 @@ pub const SOURCE_STABLE_LOCATOR: KeySpec = KeySpec {
 };
 
 /// The `src-` key kind for a root-relative locator, with `/` separators and any
-/// compression suffix removed, so a `.jsonl` file and its `.jsonl.zst` twin share it.
+/// compression suffix removed, so a `.jsonl` file and its `.jsonl.zst` or `.jsonl.gz`
+/// twins share it.
 pub const SOURCE_ROOT_RELATIVE: KeySpec = KeySpec {
     prefix: IdPrefix::Source,
     kind: "root-relative",
@@ -73,12 +74,47 @@ impl fmt::Display for Fingerprint {
 }
 
 /// How a source's bytes are stored.
+///
+/// The variants are in preference order: when one logical source has several files, the
+/// earliest representation is read and the others are verified twins.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Representation {
     /// Plain `.jsonl`.
     Plain,
     /// zstd-compressed `.jsonl.zst`, possibly in several frames.
     Zstd,
+    /// gzip-compressed `.jsonl.gz`, possibly in several members.
+    Gzip,
+}
+
+impl Representation {
+    /// Every representation, in preference order.
+    pub const ALL: [Self; 3] = [Self::Plain, Self::Zstd, Self::Gzip];
+
+    /// The file-name suffix that marks a source file in this representation.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Plain => ".jsonl",
+            Self::Zstd => ".jsonl.zst",
+            Self::Gzip => ".jsonl.gz",
+        }
+    }
+
+    /// The compression extension after `.jsonl`, which locators drop so that a source
+    /// keeps its ID when it is compressed; `None` for a plain file.
+    pub const fn compression_extension(self) -> Option<&'static str> {
+        match self {
+            Self::Plain => None,
+            Self::Zstd => Some(".zst"),
+            Self::Gzip => Some(".gz"),
+        }
+    }
+
+    /// The representation a file name marks, or `None` for a file that is not a source.
+    pub fn of_path(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy();
+        Self::ALL.into_iter().find(|representation| name.ends_with(representation.suffix()))
+    }
 }
 
 /// A file's identity when it was opened.
@@ -201,7 +237,33 @@ pub enum SourceChange {
     },
 }
 
+impl CoverageFailure {
+    /// The stable token for this kind of failure.
+    pub const fn token(&self) -> &'static str {
+        match self {
+            Self::Oversized { .. } => "oversized-record",
+            Self::CorruptCompressedData { .. } => "corrupt-compressed-data",
+            Self::IncompleteCompressedFrame { .. } => "incomplete-compressed-frame",
+            Self::TwinFingerprintMismatch { .. } => "twin-fingerprint-mismatch",
+            Self::ReadError { .. } => "read-error",
+        }
+    }
+}
+
 impl SourceChange {
+    /// The stable token for this kind of change.
+    pub const fn token(&self) -> &'static str {
+        match self {
+            Self::BrieflyAbsent { .. } => "briefly-absent",
+            Self::Vanished => "vanished",
+            Self::Replaced => "replaced",
+            Self::Truncated { .. } => "truncated",
+            Self::ModifiedInPlace => "modified-in-place",
+            Self::FirstRecordChanged => "first-record-changed",
+            Self::GrewBeyondCutoff { .. } => "grew-beyond-cutoff",
+        }
+    }
+
     /// Whether the change can make the snapshot's records disagree with the file, as
     /// opposed to an append past the cutoff.
     pub const fn affects_snapshot(&self) -> bool {
@@ -231,8 +293,9 @@ pub struct ManifestEntry {
     pub file: FileIdentity,
     /// How it is stored.
     pub representation: Representation,
-    /// The other representation of this logical source, when both exist.
-    pub twin: Option<FileIdentity>,
+    /// The other files of this logical source whose first record matches the file read,
+    /// in preference order; a mismatched one is a coverage failure instead.
+    pub twins: Vec<FileIdentity>,
     /// On-disk length when opened.
     pub file_len: u64,
     /// Modification time when opened.
@@ -252,6 +315,26 @@ pub struct ManifestEntry {
 }
 
 impl ManifestEntry {
+    /// What the snapshot lost, as sorted distinct tokens: coverage failures and changes
+    /// that affect the snapshot. Malformed lines and a pending tail are reported on their
+    /// own and are not losses here. Empty when nothing was lost.
+    pub fn losses(&self) -> Vec<&'static str> {
+        let mut losses: Vec<&'static str> = self
+            .failures
+            .iter()
+            .map(CoverageFailure::token)
+            .chain(
+                self.changes
+                    .iter()
+                    .filter(|change| change.affects_snapshot())
+                    .map(SourceChange::token),
+            )
+            .collect();
+        losses.sort_unstable();
+        losses.dedup();
+        losses
+    }
+
     /// Whether the snapshot read every byte of its extent as complete records, with no
     /// pending tail, corruption, failure or change that affects the snapshot.
     pub fn is_complete(&self) -> bool {
@@ -344,7 +427,7 @@ pub(crate) mod tests_support {
             locator: "a.jsonl".to_owned(),
             file: FileIdentity { path: PathBuf::from("a.jsonl"), device: None, inode: None },
             representation: Representation::Plain,
-            twin: None,
+            twins: Vec::new(),
             file_len: 0,
             modified: None,
             fingerprint: None,

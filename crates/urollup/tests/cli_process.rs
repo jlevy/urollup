@@ -243,3 +243,137 @@ fn percent_budget_works_without_helper_programs_and_keeps_home_untouched() {
     assert!(!output.stdout.is_empty());
     assert_eq!(std::fs::read_dir(home.path()).expect("HOME remains readable").count(), 0);
 }
+
+/// Copies a fixture case, storing each `.jsonl` file as `.jsonl<suffix>` encoded by
+/// `encode` and every other file, such as a subagent's `.meta.json`, unchanged.
+fn copy_compressed(
+    case: &std::path::Path,
+    destination: &std::path::Path,
+    suffix: &str,
+    encode: fn(&[u8]) -> Vec<u8>,
+) {
+    let mut pending = vec![case.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("fixture directory is readable") {
+            let path = entry.expect("fixture entry is readable").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let mut target =
+                destination.join(path.strip_prefix(case).expect("file is under its case"));
+            std::fs::create_dir_all(target.parent().expect("target has a parent"))
+                .expect("target directory is writable");
+            let mut contents = std::fs::read(&path).expect("fixture file is readable");
+            if path.extension().is_some_and(|extension| extension == "jsonl") {
+                let name = format!(
+                    "{}{suffix}",
+                    target.file_name().expect("fixture file has a name").to_string_lossy()
+                );
+                target.set_file_name(name);
+                contents = encode(&contents);
+            }
+            std::fs::write(target, contents).expect("copy is writable");
+        }
+    }
+}
+
+fn gzip(contents: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(contents).expect("gzip encodes in memory");
+    encoder.finish().expect("gzip finishes in memory")
+}
+
+fn zstd(contents: &[u8]) -> Vec<u8> {
+    zstd::stream::encode_all(contents, 3).expect("zstd encodes in memory")
+}
+
+fn json_view(args: &[&str], source: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_urollup"))
+        .args(args)
+        .arg("--source")
+        .arg(source)
+        .args(["--no-default-sources", "--format", "json", "--timezone", "UTC"])
+        .env("NO_COLOR", "1")
+        .env_remove("UROLLUP_STATS")
+        .output()
+        .expect("the urollup binary runs")
+}
+
+#[test]
+fn gzip_and_zstd_logs_report_exactly_like_plain_logs() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+    for case in ["claude-project/workflow-subagents", "codex-rollout/legacy-subagent-prefix"] {
+        let plain = fixtures.join(case);
+        for (suffix, encode) in [(".gz", gzip as fn(&[u8]) -> Vec<u8>), (".zst", zstd)] {
+            let copy = tempfile::tempdir().expect("temporary directory is created");
+            copy_compressed(&plain, copy.path(), suffix, encode);
+            for view in [&["report", "--all"][..], &["daily", "--all"], &["sessions", "--all"]] {
+                let expected = json_view(view, &plain);
+                assert_eq!(expected.status.code(), Some(0), "{case} {view:?}");
+                let actual = json_view(view, copy.path());
+                assert_eq!(
+                    actual.status.code(),
+                    Some(0),
+                    "{case}{suffix} {view:?}: {}",
+                    String::from_utf8_lossy(&actual.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&actual.stdout),
+                    String::from_utf8_lossy(&expected.stdout),
+                    "{case}{suffix} {view:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_compressed_transcript_path_selects_its_session() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+    let plain = fixtures.join("claude-project/workflow-subagents");
+    let copy = tempfile::tempdir().expect("temporary directory is created");
+    copy_compressed(&plain, copy.path(), ".gz", gzip);
+    let transcript = "projects/-Users-example-project/00000000-0000-4000-8000-001100000001.jsonl";
+
+    let by_plain_path = json_view(
+        &[
+            "report",
+            "--scope",
+            "descendants",
+            "--session",
+            &plain.join(transcript).to_string_lossy(),
+        ],
+        &plain,
+    );
+    let by_gzip_path = json_view(
+        &[
+            "report",
+            "--scope",
+            "descendants",
+            "--session",
+            &copy.path().join(format!("{transcript}.gz")).to_string_lossy(),
+        ],
+        copy.path(),
+    );
+    assert_eq!(
+        by_plain_path.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&by_plain_path.stderr)
+    );
+    assert_eq!(
+        by_gzip_path.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&by_gzip_path.stderr)
+    );
+    assert_eq!(by_gzip_path.stdout, by_plain_path.stdout);
+
+    // One compressed file named directly is classified and read like its directory.
+    let single = json_view(&["report", "--all"], &copy.path().join(format!("{transcript}.gz")));
+    assert_eq!(single.status.code(), Some(0), "{}", String::from_utf8_lossy(&single.stderr));
+}
