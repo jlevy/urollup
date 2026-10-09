@@ -261,6 +261,10 @@
         {
           "path": "tests/golden/e2e",
           "delete": true
+        },
+        {
+          "path": "tests/golden/mixed-agent-unowned.tryscript.md",
+          "delete": true
         }
       ],
       "expect": "golden corpus is missing"
