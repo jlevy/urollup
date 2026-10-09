@@ -134,7 +134,8 @@ pub struct LogicalSource {
 
 impl LogicalSource {
     /// A source stored as one file.
-    pub fn single(path: PathBuf, representation: Representation) -> Self {
+    #[cfg(test)]
+    pub(crate) fn single(path: PathBuf, representation: Representation) -> Self {
         let mut files = Self::default();
         files.insert(path, representation);
         files
@@ -169,7 +170,8 @@ impl LogicalSource {
     }
 
     /// The other files, when several exist.
-    pub fn twins(&self) -> impl Iterator<Item = (&Path, Representation)> {
+    #[cfg(test)]
+    pub(crate) fn twins(&self) -> impl Iterator<Item = (&Path, Representation)> {
         self.files().skip(1)
     }
 }
