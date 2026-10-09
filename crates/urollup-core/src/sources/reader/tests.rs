@@ -750,12 +750,17 @@ fn unreadable_and_unnamed_sources_are_errors() {
         let closed = root.path().join("closed.jsonl");
         write(&closed, THREE_RECORDS);
         fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+        // A process that bypasses mode bits, such as root, opens the file anyway, so the
+        // error cannot occur there; decide that up front rather than from the result.
+        let bypasses_modes = fs::File::open(&closed).is_ok();
         let result =
             read_source(&SPEC, &plain(&closed), &options(), |_| RecordDisposition::Skipped);
         fs::set_permissions(&closed, fs::Permissions::from_mode(0o644)).unwrap();
-        // Root can open a mode-000 file, so only an unprivileged run sees the error.
-        if let Err(error) = result {
-            assert!(matches!(error, SourceReadError::Open { .. }));
+        if bypasses_modes {
+            eprintln!("skipped the open error: this process can open a mode-000 file");
+        } else {
+            let error = result.expect_err("an unreadable file is an open error, not a snapshot");
+            assert!(matches!(error, SourceReadError::Open { .. }), "{error}");
             assert!(format!("{error}").contains("closed.jsonl"));
         }
     }
