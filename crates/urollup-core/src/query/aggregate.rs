@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use jiff::civil::Date;
 
 use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
+use crate::adapters::Ingested;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
@@ -146,27 +147,31 @@ pub fn sessions(
     metadata: QueryMetadata,
     timezone: &ResolvedTimeZone,
 ) -> Result<SessionsDocument, QueryError> {
-    let requests = selected_requests(sources, selected, all);
     let mut groups: BTreeMap<SessionGroup, SessionAccumulator> = selected
         .iter()
         .cloned()
         .map(|thread| (SessionGroup::Thread(thread), SessionAccumulator::default()))
         .collect();
-    for selected_request in requests {
-        let ownership = &selected_request.request.ownership;
-        let group = match ownership {
-            Ownership::Owned { thread } => SessionGroup::Thread(thread.clone()),
-            Ownership::Ambiguous { .. } | Ownership::Unknown => {
-                SessionGroup::Unowned(selected_request.agent)
-            }
-        };
-        let row = groups.entry(group).or_default();
-        row.source.get_or_insert(selected_request.agent);
-        row.totals.add(ownership_class(ownership), selected_request.measures())?;
-        match request_date(selected_request.request, timezone) {
-            Some(date) => row.last_date = row.last_date.max(Some(date)),
-            None => {
-                row.undated_requests = checked_count(row.undated_requests, 1, "undated requests")?;
+    // Walk one source at a time, where its agent is in scope, so the requests every
+    // command selects need not each carry an agent.
+    for source in sources {
+        for selected_request in source_requests(source.ingested, selected, all) {
+            let ownership = &selected_request.request.ownership;
+            let group = match ownership {
+                Ownership::Owned { thread } => SessionGroup::Thread(thread.clone()),
+                Ownership::Ambiguous { .. } | Ownership::Unknown => {
+                    SessionGroup::Unowned(source.agent)
+                }
+            };
+            let row = groups.entry(group).or_default();
+            row.source.get_or_insert(source.agent);
+            row.totals.add(ownership_class(ownership), selected_request.measures())?;
+            match request_date(selected_request.request, timezone) {
+                Some(date) => row.last_date = row.last_date.max(Some(date)),
+                None => {
+                    row.undated_requests =
+                        checked_count(row.undated_requests, 1, "undated requests")?;
+                }
             }
         }
     }
@@ -340,8 +345,6 @@ fn diagnostic_summaries(
 }
 
 struct SelectedRequest<'a> {
-    /// The agent whose source reported the request.
-    agent: Agent,
     request: &'a Request,
 }
 
@@ -359,15 +362,22 @@ fn selected_requests<'a>(
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
 ) -> Vec<SelectedRequest<'a>> {
-    sources
-        .iter()
-        .flat_map(|source| {
-            source.ingested.ledger.requests.values().map(|request| (source.agent, request))
-        })
-        .filter(|(_, request)| request.counting == Counting::Counted)
-        .filter(|(_, request)| all || request_is_inside(request, selected))
-        .map(|(agent, request)| SelectedRequest { agent, request })
-        .collect()
+    sources.iter().flat_map(|source| source_requests(source.ingested, selected, all)).collect()
+}
+
+/// One source's counted requests inside the selection, in ledger order.
+fn source_requests<'a>(
+    ingested: &'a Ingested,
+    selected: &BTreeSet<AnalyticalId>,
+    all: bool,
+) -> impl Iterator<Item = SelectedRequest<'a>> {
+    ingested
+        .ledger
+        .requests
+        .values()
+        .filter(|request| request.counting == Counting::Counted)
+        .filter(move |request| all || request_is_inside(request, selected))
+        .map(|request| SelectedRequest { request })
 }
 
 /// The calendar date `daily` buckets a request under: its last, else its first, timestamp
@@ -895,6 +905,16 @@ mod tests {
                 document.rows.iter().filter(|row| row.agent == agent).cloned().collect();
             assert_rows_reconcile(&rows, &totals(source));
         }
+    }
+
+    #[test]
+    fn selected_requests_stay_one_pointer_wide() {
+        // Every command collects one per selected request. Only `sessions` needs the
+        // source agent, and it reads that from the source instead.
+        assert_eq!(
+            std::mem::size_of::<super::SelectedRequest<'_>>(),
+            std::mem::size_of::<&crate::ledger::entities::Request>()
+        );
     }
 
     #[test]
