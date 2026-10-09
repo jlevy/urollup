@@ -323,7 +323,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 250,
         "reasoning": 50,
         "total": 6750
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-0k2vgw8f5a6ad575m7j27e8vnf",
@@ -343,7 +345,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 550,
         "reasoning": 200,
         "total": 15050
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-52wfqca3118hs6n8v43yabkqmp",
@@ -363,7 +367,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 200,
         "reasoning": 70,
         "total": 4700
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-7q3rw8a20ffnp0hn5738jdpmnm",
@@ -383,7 +389,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 1500,
         "reasoning": 500,
         "total": 16500
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     }
   ],
   "diagnostics": [
@@ -452,7 +460,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 250,
         "reasoning": 50,
         "total": 6750
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-0k2vgw8f5a6ad575m7j27e8vnf",
@@ -472,7 +482,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 550,
         "reasoning": 200,
         "total": 15050
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-52wfqca3118hs6n8v43yabkqmp",
@@ -492,7 +504,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 200,
         "reasoning": 70,
         "total": 4700
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-7q3rw8a20ffnp0hn5738jdpmnm",
@@ -512,7 +526,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 1500,
         "reasoning": 500,
         "total": 16500
-      }
+      },
+      "last_date": "2026-09-05",
+      "undated_requests": 0
     }
   ],
   "diagnostics": [

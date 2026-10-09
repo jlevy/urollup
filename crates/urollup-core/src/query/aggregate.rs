@@ -3,6 +3,8 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
+use jiff::civil::Date;
+
 use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{Counting, Ownership, Request};
@@ -81,11 +83,7 @@ pub fn daily(
     let requests = selected_requests(sources, selected, all);
     let mut dated: BTreeMap<Option<String>, Accumulator> = BTreeMap::new();
     for selected_request in requests {
-        let date = selected_request
-            .request
-            .last_seen
-            .or(selected_request.request.first_seen)
-            .map(|timestamp| timezone.zone.to_datetime(timestamp.get()).date().to_string());
+        let date = request_date(selected_request.request, timezone).map(|date| date.to_string());
         dated.entry(date).or_default().add(
             ownership_class(&selected_request.request.ownership),
             selected_request.measures(),
@@ -115,6 +113,14 @@ pub fn daily(
     })
 }
 
+/// One session row's totals and the calendar extent `daily` would show for them.
+#[derive(Clone, Copy, Debug, Default)]
+struct SessionAccumulator {
+    totals: Accumulator,
+    last_date: Option<Date>,
+    undated_requests: u64,
+}
+
 /// Builds one row per selected session, plus an explicit unowned row when needed.
 pub fn sessions(
     sources: &[QuerySource<'_>],
@@ -122,19 +128,30 @@ pub fn sessions(
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
     metadata: QueryMetadata,
+    timezone: &ResolvedTimeZone,
 ) -> Result<SessionsDocument, QueryError> {
     let requests = selected_requests(sources, selected, all);
-    let mut by_thread: BTreeMap<Option<AnalyticalId>, Accumulator> =
-        selected.iter().cloned().map(|thread| (Some(thread), Accumulator::default())).collect();
+    let mut by_thread: BTreeMap<Option<AnalyticalId>, SessionAccumulator> = selected
+        .iter()
+        .cloned()
+        .map(|thread| (Some(thread), SessionAccumulator::default()))
+        .collect();
     for selected_request in requests {
         let thread = match &selected_request.request.ownership {
             Ownership::Owned { thread } => Some(thread.clone()),
             Ownership::Ambiguous { .. } | Ownership::Unknown => None,
         };
-        by_thread.entry(thread).or_default().add(
+        let row = by_thread.entry(thread).or_default();
+        row.totals.add(
             ownership_class(&selected_request.request.ownership),
             selected_request.measures(),
         )?;
+        match request_date(selected_request.request, timezone) {
+            Some(date) => row.last_date = row.last_date.max(Some(date)),
+            None => {
+                row.undated_requests = checked_count(row.undated_requests, 1, "undated requests")?;
+            }
+        }
     }
     let rows = by_thread
         .into_iter()
@@ -145,8 +162,10 @@ pub fn sessions(
                 session: indexed.and_then(IndexedSession::native_id),
                 agent: indexed.map_or("unknown", |session| session.agent.token()).to_owned(),
                 project: indexed.and_then(|session| session.thread.project.value()).cloned(),
-                requests: row.requests,
-                tokens: TokenCounts::from_measures(row.tokens)?,
+                requests: row.totals.requests,
+                tokens: TokenCounts::from_measures(row.totals.tokens)?,
+                last_date: row.last_date.map(|date| date.to_string()),
+                undated_requests: row.undated_requests,
             })
         })
         .collect::<Result<_, QueryError>>()?;
@@ -320,6 +339,15 @@ fn selected_requests<'a>(
         .filter(|request| all || request_is_inside(request, selected))
         .map(|request| SelectedRequest { request })
         .collect()
+}
+
+/// The calendar date `daily` buckets a request under: its last, else its first, timestamp
+/// in the report timezone.
+fn request_date(request: &Request, timezone: &ResolvedTimeZone) -> Option<Date> {
+    request
+        .last_seen
+        .or(request.first_seen)
+        .map(|timestamp| timezone.zone.to_datetime(timestamp.get()).date())
 }
 
 fn request_is_inside(request: &Request, selected: &BTreeSet<AnalyticalId>) -> bool {
@@ -516,11 +544,9 @@ mod tests {
         observation
     }
 
-    fn coverage_report(
+    fn reconciled(
         mut input: crate::ledger::reconcile::ReconcileInput,
-        selected: &BTreeSet<crate::ledger::identity::AnalyticalId>,
-        all: bool,
-    ) -> crate::query::ReportDocument {
+    ) -> crate::adapters::Ingested {
         use crate::adapters::Ingested;
         use crate::ledger::identity::{IdPrefix, IdentityKey, KeyComponent};
         use crate::ledger::reconcile::{LatestRevision, reconcile};
@@ -530,8 +556,15 @@ mod tests {
                 .derive_id()
                 .unwrap(),
         ]);
-        let ingested =
-            Ingested { ledger: reconcile(input, &LatestRevision).unwrap(), ..Ingested::default() };
+        Ingested { ledger: reconcile(input, &LatestRevision).unwrap(), ..Ingested::default() }
+    }
+
+    fn coverage_report(
+        input: crate::ledger::reconcile::ReconcileInput,
+        selected: &BTreeSet<crate::ledger::identity::AnalyticalId>,
+        all: bool,
+    ) -> crate::query::ReportDocument {
+        let ingested = reconciled(input);
         let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
         report(
             &[QuerySource { agent: Agent::Claude, ingested: &ingested }],
@@ -662,6 +695,7 @@ mod tests {
             &selected,
             true,
             QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            &timezone,
         )
         .expect("sessions build");
 
@@ -698,6 +732,7 @@ mod tests {
                 selected,
                 all,
                 QueryMetadata::new("sessions", "test", Scope::SelfOnly, &timezone),
+                &timezone,
             )
             .expect("sessions build")
             .diagnostics
@@ -737,5 +772,106 @@ mod tests {
                 ("thread-orphan".to_owned(), 1)
             ]
         );
+    }
+
+    #[test]
+    fn session_rows_date_their_latest_request_and_count_undated_ones() {
+        use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput, RequestObservation};
+        let dated = |offset, owner, instant: &str| {
+            let mut observation = observation(offset, owner, true);
+            observation.timestamp = Some(instant.parse::<jiff::Timestamp>().unwrap().into());
+            observation
+        };
+        let thread = |observation: &RequestObservation| {
+            let OwnerEvidence::Proven(id) = &observation.owner else { unreachable!() };
+            id.to_string()
+        };
+        let requests = vec![
+            dated(0, "one", "2026-09-14T12:00:00Z"),
+            // 05:00 UTC on the 16th is still the 15th in Los Angeles.
+            dated(1, "one", "2026-09-16T05:00:00Z"),
+            dated(2, "two", "2026-09-13T12:00:00Z"),
+            observation(3, "two", true),
+            observation(4, "three", true),
+        ];
+        let threads = [thread(&requests[0]), thread(&requests[2]), thread(&requests[4])];
+        let ingested = reconciled(ReconcileInput { requests, ..ReconcileInput::default() });
+        let source = [QuerySource { agent: Agent::Claude, ingested: &ingested }];
+        let calendar = |zone| {
+            let timezone = ResolvedTimeZone::resolve(Some(zone)).unwrap();
+            let rows = sessions(
+                &source,
+                &SessionIndex::default(),
+                &BTreeSet::new(),
+                true,
+                QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+                &timezone,
+            )
+            .unwrap()
+            .rows;
+            threads
+                .iter()
+                .map(|id| {
+                    let row = rows.iter().find(|row| row.thread.as_ref() == Some(id)).unwrap();
+                    (row.last_date.clone(), row.undated_requests)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            calendar("America/Los_Angeles"),
+            [(Some("2026-09-15".to_owned()), 0), (Some("2026-09-13".to_owned()), 1), (None, 1)]
+        );
+        assert_eq!(calendar("UTC")[0], (Some("2026-09-16".to_owned()), 0));
+    }
+
+    #[test]
+    fn session_dates_match_a_daily_query_over_each_thread() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/codex-rollout/archived-rename");
+        let ingested = codex_rollout::ingest_root(&root).expect("fixture ingests");
+        let mut index = SessionIndex::default();
+        index.add(Agent::Codex, &ingested).expect("fixture indexes");
+        let selected = index
+            .select(&SelectionQuery { all: true, ..SelectionQuery::default() })
+            .expect("all sessions select");
+        let timezone = ResolvedTimeZone::resolve(Some("America/Los_Angeles")).expect("zone");
+        let source = [QuerySource { agent: Agent::Codex, ingested: &ingested }];
+        let rows = sessions(
+            &source,
+            &index,
+            &selected,
+            true,
+            QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            &timezone,
+        )
+        .expect("sessions build")
+        .rows;
+
+        let mut dated = 0;
+        for thread in &selected {
+            let days = daily(
+                &source,
+                &BTreeSet::from([thread.clone()]),
+                false,
+                QueryMetadata::new("daily", "session", Scope::SelfOnly, &timezone),
+                &timezone,
+            )
+            .expect("daily builds")
+            .rows;
+            let row = rows
+                .iter()
+                .find(|row| row.thread.as_deref() == Some(thread.to_string().as_str()))
+                .expect("every selected thread has a session row");
+            let last = days.iter().filter_map(|day| day.date.clone()).max();
+            let undated: u64 = days
+                .iter()
+                .filter(|day| day.date.is_none())
+                .map(|day| day.requests.total().expect("counts fit"))
+                .sum();
+            assert_eq!((row.last_date.clone(), row.undated_requests), (last, undated));
+            dated += usize::from(row.last_date.is_some());
+        }
+        assert!(dated >= 2, "the fixture has several dated sessions");
     }
 }

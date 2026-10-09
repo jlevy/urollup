@@ -304,7 +304,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 1070,
         "reasoning": 310,
         "total": 25070
-      }
+      },
+      "last_date": "2026-09-15",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []
@@ -355,7 +357,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 1070,
         "reasoning": 310,
         "total": 25070
-      }
+      },
+      "last_date": "2026-09-15",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []

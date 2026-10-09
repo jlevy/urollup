@@ -287,7 +287,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 2400,
         "reasoning": 700,
         "total": 46400
-      }
+      },
+      "last_date": "2026-09-04",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-54qrcx86p7v7y23pp4bzf8c9wv",
@@ -307,7 +309,9 @@ $ urollup sessions --all --format json --timezone UTC
         "output": 800,
         "reasoning": 250,
         "total": 26800
-      }
+      },
+      "last_date": "2026-09-04",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []
@@ -359,7 +363,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 2400,
         "reasoning": 700,
         "total": 46400
-      }
+      },
+      "last_date": "2026-09-04",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-54qrcx86p7v7y23pp4bzf8c9wv",
@@ -379,7 +385,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "output": 800,
         "reasoning": 250,
         "total": 26800
-      }
+      },
+      "last_date": "2026-09-04",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []

@@ -1056,7 +1056,7 @@ fn execute(command: &Command, color: bool, stats: &mut Stats) -> Result<String, 
             }
         }
         Command::Sessions(_) => {
-            let document = sessions(&sources, &corpus.index, &selected, all, metadata)
+            let document = sessions(&sources, &corpus.index, &selected, all, metadata, &timezone)
                 .map_err(|error| Failure::runtime(error.to_string()))?;
             match args.format {
                 OutputFormat::Table => crate::render::sessions(&document, color),

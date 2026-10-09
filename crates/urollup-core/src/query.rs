@@ -314,6 +314,13 @@ pub struct SessionRow {
     pub requests: RequestCounts,
     /// Counted tokens.
     pub tokens: TokenCounts,
+    /// Calendar date, in the report timezone, of the row's latest dated counted request:
+    /// the last date `daily` would show for these requests. `None` when none is dated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_date: Option<String>,
+    /// Counted requests in the row without a timestamp, which `daily` puts in its
+    /// unknown-date bucket.
+    pub undated_requests: u64,
 }
 
 /// Complete `daily` command result.
