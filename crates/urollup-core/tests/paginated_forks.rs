@@ -831,15 +831,53 @@ fn a_first_step_below_the_inherited_total_counts_only_as_its_own_whole_usage() {
         Completeness::Complete
     );
 
-    for lowered in [counter(3, 60, 8, 5, 1), counter(3, 60, 8, 0, 0)] {
-        let root = fork_root(
-            Some(std::slice::from_ref(&inherited)),
-            &[inherited.clone(), lowered, counter(4, 70, 10, 10, 2)],
-        );
-        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
-        let mut totals = counted_totals(&ingested);
-        totals.sort_unstable();
-        assert_eq!(totals, [12, 100], "the next step counts from the excluded total");
-        assert_excluded_as_gap(&ingested, CHILD);
-    }
+    let root = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 60, 8, 5, 1), counter(4, 70, 10, 10, 2)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+    let mut totals = counted_totals(&ingested);
+    totals.sort_unstable();
+    assert_eq!(totals, [12, 100], "the next step counts from the excluded total");
+    assert_excluded_as_gap(&ingested, CHILD);
+
+    // A lowered first step with no usage of its own reports nothing to check: it opens a new
+    // epoch, and the next step that reports usage is checked from it (review D1 on PR #16).
+    let root = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 60, 8, 0, 0), counter(4, 70, 10, 10, 2)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+    let mut totals = counted_totals(&ingested);
+    totals.sort_unstable();
+    assert_eq!(totals, [12, 100], "only the next step's own usage is counted");
+    assert_eq!(reset_diagnostics(&ingested, CHILD), 1);
+    assert!(boundary_diagnostics(&ingested).is_empty(), "no usage was left unverified");
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+}
+
+#[test]
+fn a_first_step_that_zeroes_the_inherited_total_adds_no_request() {
+    // Codex's context-window fill lowers every measured category to zero; as a child's first
+    // own step it reports no usage, so it must not become a zero-usage request (review D2).
+    let inherited = counter(1, 90, 10, 90, 10);
+    let root = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 0, 0, 0, 0), counter(4, 12, 3, 12, 3)],
+    );
+    let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+    let child = select(&ingested, &[CHILD]);
+    assert_eq!(
+        (child.counted.requests, child.counted.tokens.total().expect("valid sum")),
+        (1, Some(15)),
+        "only the next step's 15 tokens are the child's own"
+    );
+    assert!(boundary_diagnostics(&ingested).is_empty());
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
 }

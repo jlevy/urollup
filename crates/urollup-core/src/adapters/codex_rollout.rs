@@ -1016,6 +1016,9 @@ enum FirstStep {
     Repeated,
     /// The total is the step's own usage alone, so the inherited baseline does not apply.
     Unseeded,
+    /// The total fell below the baseline and its own usage is zero: it reports no usage,
+    /// so the next step is checked, from this total.
+    Lowered,
     /// Neither the baseline nor a zero start accounts for the total.
     Unverified,
 }
@@ -1035,6 +1038,11 @@ fn first_step(
     let step = tracker.clone().observe(total, None)?;
     let proven = match step.event {
         CounterEvent::Repeated => return Ok(FirstStep::Repeated),
+        CounterEvent::Reset
+            if !same_usage(total, last) && same_usage(last, &TokenMeasures::default()) =>
+        {
+            return Ok(FirstStep::Lowered);
+        }
         CounterEvent::Reset => same_usage(total, last),
         CounterEvent::Advanced | CounterEvent::Gap { .. } => same_usage(&step.delta, last),
     };
@@ -1301,6 +1309,16 @@ fn observe_parsed_source(
                                     UNSEEDED_COUNTER_DETAIL,
                                 ));
                                 counter = Some(RunningTotal::new());
+                            }
+                            FirstStep::Lowered => {
+                                diagnostics.push(Diagnostic::new(
+                                    DiagnosticCode::CodexCounterEpochReset,
+                                    thread_ids.get(file_thread_text).cloned(),
+                                    [view.evidence],
+                                    "Codex cumulative usage decreased and opened a new counter epoch",
+                                ));
+                                inherited_total = Some(total_usage);
+                                continue;
                             }
                             FirstStep::Unverified => {
                                 unverified.add(view.evidence);
