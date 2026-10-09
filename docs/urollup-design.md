@@ -905,6 +905,9 @@ set these source-specific rules:
   A first step that matches neither is excluded, including the first step of an
   explicit-boundary child with no copied counter whose total differs from its
   `last_token_usage`; later steps count from its total.
+  A first step below the inherited total has no delta, so it counts only when its whole
+  total is its `last_token_usage`; the rule for a total lowered at compaction applies
+  from the next step, within the child’s own counter epoch.
   A step that only repeats the inherited total reports no usage, so the step after it is
   the one checked. A child with neither an explicit boundary nor copied counters starts
   from zero unchecked.

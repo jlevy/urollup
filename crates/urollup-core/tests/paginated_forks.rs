@@ -760,3 +760,86 @@ fn a_repeated_inherited_total_does_not_use_up_the_first_step_check() {
     assert_eq!(counted_totals(&ingested), [100], "the inconsistent step stays excluded");
     assert_excluded_as_gap(&ingested, CHILD);
 }
+
+fn reset_diagnostics(ingested: &Ingested, native: &str) -> usize {
+    let thread = thread(native);
+    ingested
+        .ledger
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == DiagnosticCode::CodexCounterEpochReset
+                && diagnostic.subject.as_ref() == Some(&thread)
+        })
+        .count()
+}
+
+#[test]
+fn a_lowered_total_after_the_childs_first_step_counts_only_its_own_last_usage() {
+    // Once the first step proves the child's baseline, a lowered total is an ordinary
+    // decrease within the child's own epoch: it counts its own last usage, or adds no
+    // request when that has no input or output, and never charges the lowered total.
+    let inherited = counter(1, 90, 10, 90, 10);
+    for (lowered, expected) in
+        [(counter(4, 60, 13, 4, 1), (3, Some(37))), (counter(4, 60, 13, 0, 0), (2, Some(32)))]
+    {
+        let root = fork_root(
+            Some(std::slice::from_ref(&inherited)),
+            &[inherited.clone(), counter(3, 108, 12, 18, 2), lowered, counter(5, 70, 15, 10, 2)],
+        );
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        let child = select(&ingested, &[CHILD]);
+        assert_eq!(
+            (child.counted.requests, child.counted.tokens.total().expect("valid sum")),
+            expected,
+            "20 at the first step, the lowered step's own usage, then 12"
+        );
+        assert_eq!(
+            select(&ingested, &[PARENT]).counted.tokens.total().expect("valid sum"),
+            Some(100)
+        );
+        assert_eq!(reset_diagnostics(&ingested, CHILD), 1);
+        assert!(boundary_diagnostics(&ingested).is_empty());
+        assert_eq!(
+            ledger_totals(&ingested.ledger).expect("totals").completeness,
+            Completeness::Complete
+        );
+    }
+}
+
+#[test]
+fn a_first_step_below_the_inherited_total_counts_only_as_its_own_whole_usage() {
+    // The first-step check, not the rule for a total lowered at compaction, decides a
+    // first own step that falls below the inherited total: it has no delta, so its whole
+    // total must be its own last usage.
+    let inherited = counter(1, 90, 10, 90, 10);
+    let restarted = fork_root(
+        Some(std::slice::from_ref(&inherited)),
+        &[inherited.clone(), counter(3, 18, 2, 18, 2), counter(4, 30, 5, 12, 3)],
+    );
+    let ingested = codex_rollout::ingest_root(restarted.path()).expect("ingest synthetic fork");
+    let child = select(&ingested, &[CHILD]);
+    assert_eq!(
+        (child.counted.requests, child.counted.tokens.total().expect("valid sum")),
+        (2, Some(35)),
+        "a counter that restarted from zero counts 20 once, then 15"
+    );
+    assert_eq!(reset_diagnostics(&ingested, CHILD), 1, "one decrease, one diagnostic");
+    assert!(boundary_diagnostics(&ingested).is_empty());
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+
+    for lowered in [counter(3, 60, 8, 5, 1), counter(3, 60, 8, 0, 0)] {
+        let root = fork_root(
+            Some(std::slice::from_ref(&inherited)),
+            &[inherited.clone(), lowered, counter(4, 70, 10, 10, 2)],
+        );
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        let mut totals = counted_totals(&ingested);
+        totals.sort_unstable();
+        assert_eq!(totals, [12, 100], "the next step counts from the excluded total");
+        assert_excluded_as_gap(&ingested, CHILD);
+    }
+}
