@@ -147,9 +147,11 @@ test("a case nested inside another case is refused", (t) => {
 
 test("results are read out of the fixture record: totals, and the lists whose length is a count", () => {
   const claude = expectedFor("claude-project/block-records");
-  assert.deepEqual(Object.keys(claude.reconciled).sort(), ["copies_excluded", "diagnostics", "limit_observations", "ownership", "requests", "tokens", "unresolved"]);
+  assert.deepEqual(Object.keys(claude.reconciled).sort(), ["copies_excluded", "diagnostics", "efforts", "limit_observations", "models", "ownership", "requests", "tokens", "unresolved"]);
   assert.equal(claude.reconciled.requests, 1, "the count is totals.requests.unique, not the request rows themselves");
   assert.deepEqual(claude.reconciled.ownership, { owned: 1, ambiguous: 0, unknown: 0 });
+  assert.deepEqual(claude.reconciled.models, { "example-model": 1 }, "models count the request rows per model");
+  assert.deepEqual(claude.reconciled.efforts, { unknown: 1 }, "a row without an effort counts as unknown, as the report labels it");
   assert.equal(claude.reconciled.copies_excluded, 3, "three copies are listed");
   assert.equal(claude.reconciled.limit_observations, 0);
   assert.deepEqual(claude.reconciled.diagnostics, [{ code: "sample.block_usage_differs", count: 1 }], "a diagnostic's count is how many refs it fired at");
@@ -181,7 +183,7 @@ test("an expected.json in another shape, or one that would check nothing, is ref
 test("reconciled output matches its expected results exactly", () => {
   const expected = expectedFor("claude-project/block-records").reconciled;
   const { compared, differences } = compareResults(expected, EXTRACTORS.report(outputFor("claude-project/block-records", "report")));
-  assert.equal(compared.length, 7);
+  assert.equal(compared.length, 9);
   assert.deepEqual(differences, []);
 });
 
@@ -191,6 +193,8 @@ test("a naive-sum report fails with a field-by-field diff", () => {
   assert.deepEqual(differences, [
     { field: "requests", expected: 1, actual: 4 },
     { field: "ownership.owned", expected: 1, actual: 4 },
+    { field: "models.example-model", expected: 1, actual: 4 },
+    { field: "efforts.unknown", expected: 1, actual: 4 },
     { field: "tokens.uncached_input", expected: 3, actual: 12 },
     { field: "tokens.cache_read", expected: 40000, actual: 160000 },
     { field: "tokens.output", expected: 600, actual: 1224 },
@@ -221,6 +225,52 @@ test("absent fields and count mismatches in diagnostics are differences, never s
     { field: "tokens", expected: "an object", actual: "absent" },
     { field: "diagnostics a", expected: 2, actual: 1 },
   ]);
+});
+
+test("models and efforts count request rows per value, as the report's breakdowns do", () => {
+  // A row with model_usage counts once in each component's model, and a missing model or
+  // effort counts as unknown, which is how the report's breakdowns label them.
+  const rows = [
+    { model: "m-main", effort: "high", model_usage: [{ model: "m-main" }, { model: "m-advisor" }] },
+    { model: null, effort: "high" },
+    { model: "m-main" },
+    { model: "m-main", effort: "low", model_usage: [] },
+  ];
+  const { reconciled } = normalizeExpected(JSON.parse(record({ requests: rows })));
+  assert.deepEqual(reconciled.models, { "m-advisor": 1, "m-main": 3, unknown: 1 });
+  assert.deepEqual(reconciled.efforts, { high: 2, low: 1, unknown: 1 });
+  assert.equal(normalizeExpected(JSON.parse(record({ requests: [] }))).reconciled.models, undefined, "no request rows, nothing to compare");
+  assert.throws(() => normalizeExpected(JSON.parse(record({ requests: [{ model: 5 }] }))), /requests\[0\]\.model must be a string or null/);
+
+  // The report side sums every ownership status of a breakdown row.
+  const breakdown = (values) => values.map(([value, owned, ambiguous = 0]) => ({ value, requests: { owned, ambiguous, unknown: 0 }, tokens: {} }));
+  const report = (model, effort) => ({ breakdowns: { model: breakdown(model), effort: breakdown(effort) } });
+  const actual = EXTRACTORS.report(report([["m-main", 2, 1], ["m-advisor", 1], ["unknown", 1]], [["high", 2], ["low", 1], ["unknown", 1]]));
+  assert.deepEqual(compareResults(reconciled, actual, ["models", "efforts"]).differences, []);
+});
+
+test("a wrong, missing or unexpected model or effort bucket is a difference", () => {
+  const expected = expectedFor("codex-rollout/cumulative-repeat").reconciled;
+  assert.deepEqual([expected.models, expected.efforts], [{ "example-model-b": 2 }, { medium: 2 }]);
+  const output = outputFor("codex-rollout/cumulative-repeat", "report");
+  assert.deepEqual(compareResults(expected, EXTRACTORS.report(output), ["models", "efforts"]).differences, []);
+
+  // A lost turn context: the totals still match, but one request's model and effort are unknown.
+  const lost = structuredClone(output);
+  const [row] = lost.breakdowns.model;
+  lost.breakdowns.model = [{ ...row, requests: { owned: 1, ambiguous: 0, unknown: 0 } }, { ...row, value: "unknown", requests: { owned: 1, ambiguous: 0, unknown: 0 } }];
+  lost.breakdowns.effort = [{ ...lost.breakdowns.effort[0], value: "unknown" }];
+  assert.deepEqual(compareResults(expected, EXTRACTORS.report(lost)).differences, [
+    { field: "models.example-model-b", expected: 2, actual: 1 },
+    { field: "models.unknown", expected: 0, actual: 1 },
+    { field: "efforts.medium", expected: 2, actual: "absent" },
+    { field: "efforts.unknown", expected: 0, actual: 2 },
+  ]);
+
+  // A breakdown the report leaves out is a failure, never a skip.
+  const { model, ...withoutModel } = output.breakdowns;
+  assert.deepEqual(compareResults(expected, EXTRACTORS.report({ ...output, breakdowns: withoutModel }), ["models", "efforts"]).differences, [{ field: "models", expected: "an object", actual: "absent" }]);
+  assert.deepEqual(compareResults(expected, EXTRACTORS.report({ ...output, breakdowns: { ...output.breakdowns, model: [] } }), ["models"]).differences, [{ field: "models.example-model-b", expected: 2, actual: "absent" }]);
 });
 
 test("daily and sessions rows sum to the same reconciled truth as the report", () => {

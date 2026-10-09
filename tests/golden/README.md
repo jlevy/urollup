@@ -8,7 +8,7 @@ urollup’s command-line behavior is tested in two complementary layers, followi
 | Layer | What it holds | What it catches |
 | --- | --- | --- |
 | **Transcript goldens** (`*.tryscript.md`) | Complete stdout, stderr and exit status of each command, as a reviewable session | Any change in what a user sees, including changes nobody wrote a test for |
-| **Result checks** (`scripts/check-e2e-results.mjs`) | Reconciled truth per fixture case, from that case’s `expected.json` | Wrong totals, ownership, excluded copies, limit observations or diagnostics, with a field diff and the naive-sum overcount |
+| **Result checks** (`scripts/check-e2e-results.mjs`) | Reconciled truth per fixture case, from that case’s `expected.json` | Wrong totals, ownership, per-request models or efforts, excluded copies, limit observations or diagnostics, with a field diff and the naive-sum overcount |
 
 The transcript layer is transparent-box: it shows whole outputs, never a `grep` or `jq`
 slice of one value. The result layer is the domain assertion beside it, so a diff and a
@@ -151,6 +151,8 @@ every field; this section names the ones the results check reads.
 | --- | --- | --- |
 | `requests` | `totals.requests.unique` | the report’s total request count |
 | `ownership` | `totals.requests.owned`, `.ambiguous`, `.unknown` | the same counts in the report |
+| `models` | each `requests` row’s `model`, or each of its `model_usage` components’ models, counted per model | the report’s `breakdowns.model` rows, each row’s request statuses summed |
+| `efforts` | each `requests` row’s `effort`, counted per effort | the report’s `breakdowns.effort` rows, summed the same way |
 | `tokens` | `totals.tokens` | the report’s token totals, category by category |
 | `unresolved` | `totals.unresolved` | the report’s unresolved counts |
 | `possible` | `totals.possible` | the report’s possible-usage counts |
@@ -168,14 +170,21 @@ every field; this section names the ones the results check reads.
   and the count compares as how many places the case says the diagnostic fired.
   Both sides sum occurrences per code before comparing, because reports print one row
   per code while a case lists each place separately.
+- Models and efforts compare as exact buckets, so a request whose turn context was lost
+  fails as a missing count and an unexpected `unknown`, even while every total matches.
+  A row without a model or effort counts as `unknown`, the report’s label; a row with
+  `model_usage` counts once in each component’s model, as the model breakdown splits it.
+  A case without request rows does not state these results.
+  Only `report` compares them: `daily` and `sessions` compare requests, ownership and
+  tokens.
 - `naive` is context, never an assertion.
   Every case prints the naive-sum rule that goes furthest wrong beside the reconciled
   truth, which is the double counting urollup exists to avoid.
-- Everything else in the record — the request rows, thread totals, decode references,
-  copies and notes — is checked by `make fixtures-check`, which proves the rows and the
-  thread totals add up to the `totals` this check compares.
-  The two checks therefore cannot drift: a unit test runs the fixtures checker’s own
-  validator over the harness samples as well.
+- Everything else in the record — the request rows’ keys, tokens and evidence, thread
+  totals, decode references, copies and notes — is checked by `make fixtures-check`,
+  which proves the rows and the thread totals add up to the `totals` this check
+  compares. The two checks therefore cannot drift: a unit test runs the fixtures
+  checker’s own validator over the harness samples as well.
 
 Each command runs twice and must print identical bytes, so nondeterministic ordering
 fails on the first case rather than on a later machine.
