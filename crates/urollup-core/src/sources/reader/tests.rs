@@ -513,6 +513,14 @@ fn a_source_compressed_after_discovery_is_read_from_its_new_file() {
         let (entry, records) = scan_with(&plain(&discovered), &options(), &mut hooks);
         assert_eq!(records.len(), 3, "{suffix}");
         assert_eq!(entry.file.path, replacement);
+        assert_eq!(
+            entry.changes,
+            vec![SourceChange::ReadFromOtherRepresentation {
+                primary: discovered,
+                representation: entry.representation,
+            }],
+            "{suffix}: the manifest says the discovered file was not read"
+        );
         assert!(entry.is_complete(), "{suffix}: {:?} {:?}", entry.failures, entry.changes);
     }
 }
@@ -523,15 +531,61 @@ fn a_discovered_twin_is_read_when_the_primary_is_gone() {
     let plain_path = root.path().join("session.jsonl");
     let gzip_path = root.path().join("session.jsonl.gz");
     write(&gzip_path, &gzip(THREE_RECORDS));
-    let files =
-        LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(gzip_path.clone()) };
+    let files = LogicalSource {
+        plain: Some(plain_path.clone()),
+        zstd: None,
+        gzip: Some(gzip_path.clone()),
+    };
 
     let (entry, records) = scan(&files);
     assert_eq!(records.len(), 3);
     assert_eq!(entry.representation, Representation::Gzip);
     assert_eq!(entry.file.path, gzip_path);
     assert!(entry.twins.is_empty());
+    assert_eq!(
+        entry.changes,
+        vec![SourceChange::ReadFromOtherRepresentation {
+            primary: plain_path,
+            representation: Representation::Gzip,
+        }]
+    );
     assert!(entry.is_complete());
+}
+
+/// Discovery records only regular files and links that stay inside the declared roots, so
+/// a file it never saw is opened only when it is a regular file.
+#[cfg(unix)]
+#[test]
+fn an_undiscovered_file_that_is_not_a_regular_file_is_never_read() {
+    let outside = TempDir::new().unwrap();
+    let outside_source = outside.path().join("elsewhere.jsonl.gz");
+    write(&outside_source, &gzip(THREE_RECORDS));
+    let root = TempDir::new().unwrap();
+    let other_source = root.path().join("b/other.jsonl.gz");
+    write(&other_source, &gzip(THREE_RECORDS));
+
+    for (name, target) in [("outside", &outside_source), ("other-source", &other_source)] {
+        let discovered = root.path().join(format!("a/{name}.jsonl"));
+        fs::create_dir_all(discovered.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, root.path().join(format!("a/{name}.jsonl.gz"))).unwrap();
+        let (entry, records) = scan(&plain(&discovered));
+        assert!(records.is_empty(), "{name}: a link discovery did not follow is not read");
+        assert_eq!(entry.changes, vec![SourceChange::Vanished], "{name}");
+        assert!(!entry.is_complete(), "{name}");
+    }
+
+    // Opening a FIFO blocks until a writer appears, which would hang the worker.
+    let discovered = root.path().join("fifo.jsonl");
+    let fifo = root.path().join("fifo.jsonl.gz");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success(), "mkfifo creates the FIFO");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(scan(&plain(&discovered))).unwrap());
+    let (entry, records) = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a FIFO beside a vanished source does not block the read");
+    assert!(records.is_empty());
+    assert_eq!(entry.changes, vec![SourceChange::Vanished]);
 }
 
 #[test]

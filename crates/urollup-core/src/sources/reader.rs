@@ -19,8 +19,11 @@
 //! - **Files that disappear after discovery.** A compressor such as `zstd --rm` or
 //!   `gzip` replaces a `.jsonl` file with its compressed form, and agents delete expired
 //!   transcripts. When the discovered file is gone, the next representation of the same
-//!   source is read instead, including one written after discovery; when none remains,
-//!   the source is an empty snapshot with [`SourceChange::Vanished`], not an error.
+//!   source is read instead and recorded as [`SourceChange::ReadFromOtherRepresentation`].
+//!   One written after discovery is read only when it is a regular file, the rule
+//!   discovery applies, so a link or FIFO beside the source is never opened. When none
+//!   remains, the source is an empty snapshot with [`SourceChange::Vanished`], not an
+//!   error.
 //! - **Oversized records.** A record over [`ReadOptions::max_record_bytes`] is never
 //!   silently skipped: it is counted and recorded as [`CoverageFailure::Oversized`], and
 //!   the scan continues at the next record without buffering it.
@@ -395,9 +398,9 @@ where
     Ok(None)
 }
 
-/// Opens the file to read: the primary with retries, then, when it is gone, each other
-/// representation of the source in preference order, whether discovered or written
-/// since. `None` when no file of the source exists.
+/// Opens the file to read: the primary with retries, then, when it is gone, its
+/// [`fallbacks`] in order, recording which one was read instead. `None` when no file of
+/// the source can be opened.
 fn open_source(
     files: &LogicalSource,
     primary: (&Path, Representation),
@@ -409,22 +412,73 @@ fn open_source(
     if let Some(file) = open_with_retry(primary, options, hooks, changes)? {
         return Ok(Some((primary.to_owned(), primary_representation, file)));
     }
-    for representation in Representation::ALL {
-        let discovered = files
-            .files()
-            .find(|(_, held)| *held == representation)
-            .map(|(path, _)| path.to_owned());
-        let Some(candidate) = discovered.or_else(|| sibling(primary, representation)) else {
-            continue;
-        };
-        if candidate == primary {
-            continue;
-        }
-        if let Some(file) = open_once(&candidate)? {
-            return Ok(Some((candidate, representation, file)));
+    for fallback in fallbacks(files, primary) {
+        if let Some(file) = fallback.open()? {
+            changes.push(SourceChange::ReadFromOtherRepresentation {
+                primary: primary.to_owned(),
+                representation: fallback.representation,
+            });
+            return Ok(Some((fallback.path, fallback.representation, file)));
         }
     }
     Ok(None)
+}
+
+/// A file the reader may open in place of a source's primary.
+struct Fallback {
+    path: PathBuf,
+    representation: Representation,
+    /// Whether discovery recorded, and so vetted, this file.
+    discovered: bool,
+}
+
+impl Fallback {
+    /// Opens the file; `None` when it is absent or, for a file discovery never saw, not a
+    /// regular file.
+    fn open(&self) -> Result<Option<File>, SourceReadError> {
+        if self.discovered { open_once(&self.path) } else { open_regular_file(&self.path) }
+    }
+}
+
+/// The files to try, in preference order, when a source's primary is gone: each other
+/// representation's discovered file or, when discovery found none, the primary's sibling
+/// in that representation, such as the `.jsonl.gz` that `gzip` wrote after discovery.
+fn fallbacks(files: &LogicalSource, primary: &Path) -> Vec<Fallback> {
+    Representation::ALL
+        .into_iter()
+        .filter_map(|representation| {
+            let discovered = files.files().find(|(_, held)| *held == representation);
+            let (path, discovered) = match discovered {
+                Some((path, _)) => (path.to_owned(), true),
+                None => (sibling(primary, representation)?, false),
+            };
+            (path != primary).then_some(Fallback { path, representation, discovered })
+        })
+        .collect()
+}
+
+/// Opens a file discovery never saw, only when it is a regular file, as discovery requires.
+/// A symbolic link could leave the declared roots or reach a source already read under
+/// another name, and opening a FIFO would block the worker. `None` when the path is absent,
+/// is not a regular file, or names a different file once open.
+///
+/// A regular file replaced by a FIFO between the check and the open would still block;
+/// that needs a writer to the root acting in that window.
+fn open_regular_file(path: &Path) -> Result<Option<File>, SourceReadError> {
+    let checked = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(SourceReadError::Open { path: path.to_owned(), source }),
+    };
+    let Some(file) = open_once(path)? else { return Ok(None) };
+    let opened = file
+        .metadata()
+        .map_err(|source| SourceReadError::Open { path: path.to_owned(), source })?;
+    let same = opened.is_file()
+        && device_of(&opened) == device_of(&checked)
+        && inode_of(&opened) == inode_of(&checked);
+    Ok(same.then_some(file))
 }
 
 /// The file of the same source in `representation`, such as `a/b.jsonl.zst` for

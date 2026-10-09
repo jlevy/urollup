@@ -450,7 +450,9 @@ rather than silently skipping data.
   of the source has one, that file is read instead.
 - A file that disappears between discovery and reading, as when a compressor replaces it
   or an agent expires an old transcript, is read from its newer representation when one
-  exists; otherwise the source is recorded as vanished.
+  exists, and the manifest records which file was read instead; otherwise the source is
+  recorded as vanished. A representation discovery did not see is read only when it is a
+  regular file, so a link or FIFO beside the source is never followed or opened.
 - Every source whose snapshot lost data, through damaged or truncated compressed data,
   an oversized record, a read error, a mismatched twin, a change that affects the
   snapshot or a disappearance, raises a `source-incomplete` diagnostic and makes
