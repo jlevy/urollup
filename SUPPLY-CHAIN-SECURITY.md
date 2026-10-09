@@ -165,6 +165,19 @@ test inputs. Every crate below builds on the 1.85 MSRV.
 
 `cfg-if` stays at its locked 1.0.4; 1.0.5 (2026-09-16) is newer than the cutoff.
 
+`crc32fast` is the only new crate with a build script.
+Its `build.rs` reads the compiler version from `$RUSTC --version` and, by the minor
+version, emits the `stable_arm_crc32_intrinsics` and `stable_vpclmulqdq` cfgs; it does
+nothing else (read at 1.5.2).
+
+The `urollup` executable used to declare `zstd` as a normal dependency with its default
+features (`legacy`, `arrays` and `zdict_builder`). It is now a dev-dependency without
+them, so the shipped binary’s zstd, reached through `urollup-core`, has only `std`
+(`cargo tree -p urollup -e normal,build -e features -i zstd-sys`). Without `legacy`, the
+decoders for zstd frames older than format v0.8 are gone, which narrows the decoder
+surface; such a `.jsonl.zst` no longer decodes and is reported as corrupt compressed
+data.
+
 ## Reviewed Versions (tryscript Audit Fix)
 
 Checked on 2026-10-08 for bead `uro-t4l1`. `npm audit` failed on GHSA-vfj7-8cjw-p6xm, a
