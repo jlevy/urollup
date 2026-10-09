@@ -312,7 +312,9 @@ pub struct SessionRow {
     /// Agent token of the logs that reported the row's requests; an unowned group names
     /// its source agent. `unknown` only for a thread no index entry or source names.
     pub agent: String,
-    /// Project name from the thread, when known.
+    /// Project name from the thread, when known. Always `None` for an unowned group,
+    /// which is not a session; the table prints `-` there and `unknown` for a thread
+    /// whose project was not recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     /// Counted requests by ownership.

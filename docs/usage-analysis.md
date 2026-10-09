@@ -67,6 +67,14 @@ project × model rows.
 Only `report` takes `--group-by`; `daily` and `sessions` reject it as a usage error
 (exit 2) until joint grouping is implemented.
 
+`sessions` prints one row per session, plus one `unowned` row per agent for requests no
+single session owns, such as a response two sessions both record.
+An unowned row is not a session: in JSON its `thread` and `session` are `null` and it
+has no `project`, and the table prints `unowned` and a `-` project.
+Count sessions from rows with a non-null `thread`. Exact `--session` selection does not
+yet see another session’s claim on a shared response, so it counts that response as
+owned rather than as possible usage (`uro-s71z`).
+
 JSON is useful for inspection and scripts, but a report is a view, not a reusable
 request dataset or merge input.
 Do not join independent daily and model totals to invent a day × model breakdown.

@@ -269,7 +269,7 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-unowned | codex | unknown | 1 | 12,000 | 600 | 12,600
+unowned | codex | - | 1 | 12,000 | 600 | 12,600
 thr-v1-262jyyetjxsmg2wc05d3txhh68 | codex | project | 1 | 8,000 | 400 | 8,400
 thr-v1-4bs081r5c7z8t920qtmrps06f0 | codex | project | 1 | 5,000 | 300 | 5,300
 
@@ -376,7 +376,7 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-unowned | codex | unknown | 1 | 12,000 | 600 | 12,600
+unowned | codex | - | 1 | 12,000 | 600 | 12,600
 thr-v1-262jyyetjxsmg2wc05d3txhh68 | codex | project | 1 | 8,000 | 400 | 8,400
 thr-v1-4bs081r5c7z8t920qtmrps06f0 | codex | project | 1 | 5,000 | 300 | 5,300
 

@@ -270,7 +270,7 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-unowned | claude | unknown | 1 | 2,230 | 80 | 2,310
+unowned | claude | - | 1 | 2,230 | 80 | 2,310
 thr-v1-1ctftnp1tgm3qwb85vbdshjahb | claude | project | 1 | 515 | 40 | 555
 thr-v1-552thqtbre5b2fbhx3xrwcvz1e | claude | project | 1 | 1,120 | 50 | 1,170
 
@@ -377,7 +377,7 @@ urollup sessions
 Selection all  Scope self  Timezone UTC
 
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
-unowned | claude | unknown | 1 | 2,230 | 80 | 2,310
+unowned | claude | - | 1 | 2,230 | 80 | 2,310
 thr-v1-1ctftnp1tgm3qwb85vbdshjahb | claude | project | 1 | 515 | 40 | 555
 thr-v1-552thqtbre5b2fbhx3xrwcvz1e | claude | project | 1 | 1,120 | 50 | 1,170
 

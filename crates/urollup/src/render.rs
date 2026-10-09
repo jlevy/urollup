@@ -111,12 +111,18 @@ pub(crate) fn sessions(document: &SessionsDocument, color: bool) -> String {
     let _ = writeln!(output);
     let _ = writeln!(output, "THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL");
     for row in &document.rows {
+        // An unowned row is not a session, so it has no project to be unknown: `-`, as its
+        // JSON row has no `project`. A thread whose project was not recorded is `unknown`.
+        let project = match row.thread {
+            None => "-",
+            Some(_) => row.project.as_deref().unwrap_or("unknown"),
+        };
         let _ = writeln!(
             output,
             "{} | {} | {} | {} | {} | {} | {}",
             row.thread.as_deref().unwrap_or("unowned"),
             row.agent,
-            row.project.as_deref().unwrap_or("unknown"),
+            project,
             number(request_total(row.requests)),
             input(&row.tokens),
             optional_number(row.tokens.output),
@@ -202,7 +208,12 @@ fn paint(text: &str, style: AnsiStyle, color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::number;
+    use urollup_core::query::{
+        QueryMetadata, RequestCounts, ResolvedTimeZone, SessionRow, SessionsDocument, TokenCounts,
+    };
+    use urollup_core::selection::Scope;
+
+    use super::{number, sessions};
 
     #[test]
     fn formats_counts_without_locale_state() {
@@ -210,5 +221,40 @@ mod tests {
         assert_eq!(number(999), "999");
         assert_eq!(number(1_000), "1,000");
         assert_eq!(number(12_345_678), "12,345,678");
+    }
+
+    #[test]
+    fn unowned_session_rows_have_no_project() {
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
+        let row = |thread: Option<&str>, project: Option<&str>| SessionRow {
+            thread: thread.map(str::to_owned),
+            session: None,
+            agent: "claude".to_owned(),
+            project: project.map(str::to_owned),
+            requests: RequestCounts { owned: 1, ..RequestCounts::default() },
+            tokens: TokenCounts { total: Some(5), ..TokenCounts::default() },
+            last_date: Some("2026-09-05".to_owned()),
+            undated_requests: 0,
+        };
+        let document = SessionsDocument {
+            schema_version: 1,
+            query: QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            rows: vec![
+                row(None, None),
+                row(Some("thr-v1-unrecorded"), None),
+                row(Some("thr-v1-recorded"), Some("project")),
+            ],
+            diagnostics: Vec::new(),
+        };
+        let table = sessions(&document, false);
+        let lines: Vec<_> = table.lines().filter(|line| line.contains(" | claude | ")).collect();
+        assert_eq!(
+            lines,
+            [
+                "unowned | claude | - | 1 | - | - | 5",
+                "thr-v1-unrecorded | claude | unknown | 1 | - | - | 5",
+                "thr-v1-recorded | claude | project | 1 | - | - | 5",
+            ]
+        );
     }
 }
