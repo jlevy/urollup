@@ -198,6 +198,16 @@ pub enum CoverageFailure {
         /// The locator both files claim.
         locator: String,
     },
+    /// A twin whose first record cannot be read, because the file cannot be opened, its
+    /// data does not decode, or no record fits the size bound, so nothing shows that it
+    /// holds no records the file read lacks. A twin whose stream only ends early, as a
+    /// compressor's unfinished output does, is not one.
+    UnreadableTwin {
+        /// The twin's path.
+        path: PathBuf,
+        /// The locator both files claim.
+        locator: String,
+    },
     /// An I/O error ended the scan early.
     ReadError {
         /// Decoded bytes read before the error.
@@ -259,6 +269,7 @@ impl CoverageFailure {
             Self::CorruptCompressedData { .. } => "corrupt-compressed-data",
             Self::IncompleteCompressedFrame { .. } => "incomplete-compressed-frame",
             Self::TwinFingerprintMismatch { .. } => "twin-fingerprint-mismatch",
+            Self::UnreadableTwin { .. } => "unreadable-twin",
             Self::ReadError { .. } => "read-error",
         }
     }
@@ -313,8 +324,8 @@ pub struct ManifestEntry {
     /// How it is stored.
     pub representation: Representation,
     /// The other files of this logical source whose first record matches the file read,
-    /// in preference order. One whose first record differs is a coverage failure instead,
-    /// and one with no complete first record is neither.
+    /// in preference order. One whose first record differs or cannot be read is a coverage
+    /// failure instead, and one whose stream ends before its first record is neither.
     pub twins: Vec<FileIdentity>,
     /// On-disk length when opened.
     pub file_len: u64,

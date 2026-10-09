@@ -32,12 +32,16 @@
 //! - **Compression.** `.jsonl`, `.jsonl.zst` and `.jsonl.gz` decode to the same bytes, so
 //!   evidence offsets are decoded offsets and a `.jsonl` file and its compressed twins are
 //!   one logical source with one `src-` ID. Each other file of the source is a verified
-//!   twin when its first record matches the file read and a different, unread source when
-//!   it differs; a file with no complete first record yet, such as a compressor's
-//!   unfinished output, is neither. When the file read has no complete record but another
-//!   file of the source has one, that file is read instead. [`decode`] is the one place a
-//!   representation maps to a decoder. A compressed stream that ends inside a frame or
-//!   member is [`CoverageFailure::IncompleteCompressedFrame`], distinct from
+//!   twin when its first record matches the file read, a different, unread source when it
+//!   differs, and [`CoverageFailure::UnreadableTwin`] when it cannot be decoded or holds
+//!   only an oversized record. Only a file whose stream ends before its first record, as
+//!   every prefix of a valid stream and so a compressor's unfinished output does, is
+//!   neither. When the file read has no complete record but another file of the source
+//!   has one, that file is read instead, and the file read keeps any failure other than
+//!   an early end. First records are found as the scan finds them, passing over blank and
+//!   oversized lines. [`decode`] is the one place a representation maps to a decoder. A
+//!   compressed stream that ends inside a frame or member is
+//!   [`CoverageFailure::IncompleteCompressedFrame`], distinct from
 //!   [`CoverageFailure::CorruptCompressedData`]. Only structural damage fails a zstd
 //!   decoder: a zstd frame carries a content checksum only when its writer asked for one,
 //!   so a flipped byte inside a frame usually decodes to damaged text and is counted as
@@ -278,21 +282,42 @@ where
         return Ok(vanished_entry(spec, primary, primary_representation));
     };
     let mut read = scan_file(spec, path, representation, opened, options, &mut visit, hooks)?;
+    let mut skipped = None;
     if read.scan.fingerprint.is_none() {
-        if let Some(substitute) =
+        if let Some(mut substitute) =
             read_twin_with_record(spec, files, &read.file.path, options, &mut visit, hooks)?
         {
-            changes = vec![SourceChange::ReadFromOtherRepresentation {
+            changes.retain(|change| {
+                !matches!(change, SourceChange::ReadFromOtherRepresentation { .. })
+            });
+            changes.push(SourceChange::ReadFromOtherRepresentation {
                 primary: primary.to_owned(),
                 representation: substitute.representation,
-            }];
+            });
+            // A file that ended before its first record is unfinished, but one whose data
+            // is damaged or oversized lost what it held, whatever its twin holds.
+            let mut failures = std::mem::take(&mut read.scan.failures);
+            failures.retain(|failure| {
+                !matches!(failure, CoverageFailure::IncompleteCompressedFrame { .. })
+            });
+            failures.append(&mut substitute.scan.failures);
+            substitute.scan.failures = failures;
+            skipped = Some(read.file.path);
             read = substitute;
         }
     }
     let Scanned { file, representation, opened, snapshot_len, modified, captured_at, mut scan } =
         read;
 
-    let twins = twin_identities(files, &file.path, scan.fingerprint, spec, &mut scan.failures);
+    let twins = twin_identities(
+        files,
+        &file.path,
+        skipped.as_deref(),
+        scan.fingerprint,
+        spec,
+        options,
+        &mut scan.failures,
+    );
     detect_changes(
         &file.path,
         representation,
@@ -382,9 +407,9 @@ where
 /// Reads, in place of a file that held no complete record, the first other discovered
 /// file of the source that holds one; `None` when none does.
 ///
-/// The file read holds nothing that file lacks, as while a decompressor or a Codex resume
-/// has created the plain file and not yet written its first line. Without this, every
-/// such twin would be accepted unread. Nothing was visited yet, since a record is visited
+/// The file read yields no record that file lacks, as while a decompressor or a Codex
+/// resume has created the plain file and not yet written its first line. Without this,
+/// every such twin would go unread. Nothing was visited yet, since a record is visited
 /// only after the first complete one fixes the source ID.
 fn read_twin_with_record<F>(
     spec: &SourceSpec<'_>,
@@ -398,7 +423,8 @@ where
     F: FnMut(&RawRecord<'_>) -> RecordDisposition,
 {
     for (twin, representation) in files.files().filter(|(path, _)| *path != read) {
-        if first_record_fingerprint(twin, representation).is_none() {
+        let first = first_record_fingerprint(twin, representation, options.max_record_bytes);
+        if !matches!(first, FirstRecord::Record(_)) {
             continue;
         }
         let Some(opened) = open_once(twin)? else { continue };
@@ -884,7 +910,8 @@ fn detect_changes(
             .metadata()
             .map_err(|source| SourceReadError::Open { path: path.to_owned(), source })?;
         compare_extent(&held, snapshot_len, snapshot_modified, changes);
-        if fingerprint.is_some_and(|ours| first_record_of(opened, representation) != Some(ours)) {
+        let first = first_record_of(opened, representation, options.max_record_bytes);
+        if fingerprint.is_some_and(|ours| first != FirstRecord::Record(ours)) {
             changes.push(SourceChange::FirstRecordChanged);
         }
         changes.push(SourceChange::RemovedAfterScan);
@@ -900,8 +927,8 @@ fn detect_changes(
         return Ok(());
     }
     compare_extent(&metadata, snapshot_len, snapshot_modified, changes);
-    if fingerprint.is_some_and(|ours| first_record_fingerprint(path, representation) != Some(ours))
-    {
+    let first = first_record_fingerprint(path, representation, options.max_record_bytes);
+    if fingerprint.is_some_and(|ours| first != FirstRecord::Record(ours)) {
         changes.push(SourceChange::FirstRecordChanged);
     }
     Ok(())
@@ -924,60 +951,112 @@ fn compare_extent(
     }
 }
 
-/// Re-reads a file's first complete record to check that the bytes the source ID covers
-/// did not change; `None` when the file cannot be read or holds no complete record.
-fn first_record_fingerprint(path: &Path, representation: Representation) -> Option<Fingerprint> {
-    first_record_of(&File::open(path).ok()?, representation)
+/// What re-reading a file's first record found.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FirstRecord {
+    /// The first complete record within the size bound, found as the scan finds it:
+    /// blank and oversized lines before it are passed over.
+    Record(Fingerprint),
+    /// No complete record yet: the file is absent, or its stream ends before any record
+    /// or oversized line, cleanly, with a pending line, or inside a compressed frame or
+    /// member. Every proper prefix of a valid gzip or zstd stream ends this way, as a
+    /// compressor's unfinished output does.
+    NotYet,
+    /// The file cannot be opened, its data does not decode, or it holds an oversized record
+    /// and no record within the bound, so its first record cannot be compared.
+    Unreadable,
 }
 
-/// The fingerprint of an open file's first complete record, read from its start.
-fn first_record_of(mut file: &File, representation: Representation) -> Option<Fingerprint> {
-    file.seek(SeekFrom::Start(0)).ok()?;
-    let mut reader = decode(file, representation).ok()?;
+/// Re-reads a file's first record by path, to check that the bytes the source ID covers
+/// did not change or to compare a twin with the file read.
+fn first_record_fingerprint(
+    path: &Path,
+    representation: Representation,
+    max_record_bytes: usize,
+) -> FirstRecord {
+    match File::open(path) {
+        Ok(file) => first_record_of(&file, representation, max_record_bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => FirstRecord::NotYet,
+        Err(_) => FirstRecord::Unreadable,
+    }
+}
+
+/// The first record of an open file, read from its start.
+fn first_record_of(
+    mut file: &File,
+    representation: Representation,
+    max_record_bytes: usize,
+) -> FirstRecord {
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return FirstRecord::Unreadable;
+    }
+    let Ok(mut reader) = decode(file, representation) else { return FirstRecord::Unreadable };
     let mut buffer = Vec::new();
+    let mut passed_oversized = false;
+    // An oversized record is a record that cannot be compared, unlike an early end.
+    let ended = |passed_oversized: bool| {
+        if passed_oversized { FirstRecord::Unreadable } else { FirstRecord::NotYet }
+    };
     loop {
         buffer.clear();
-        match read_line(&mut reader, &mut buffer, ReadOptions::DEFAULT_MAX_RECORD_BYTES).ok()? {
-            Line::Complete { .. } => {
+        match read_line(&mut reader, &mut buffer, max_record_bytes) {
+            Ok(Line::Complete { .. }) => {
                 if !buffer.iter().all(u8::is_ascii_whitespace) {
-                    return Some(Fingerprint::of(&buffer));
+                    return FirstRecord::Record(Fingerprint::of(&buffer));
                 }
             }
-            Line::Eof | Line::Pending { .. } | Line::Oversized { .. } => return None,
+            Ok(Line::Oversized { .. }) => passed_oversized = true,
+            Ok(Line::Pending { oversized, .. }) => return ended(passed_oversized || oversized),
+            Ok(Line::Eof) => return ended(passed_oversized),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                return ended(passed_oversized);
+            }
+            Err(_) => return FirstRecord::Unreadable,
         }
     }
 }
 
-/// Checks each other discovered file of the source against the file read: a twin whose
-/// first record matches is recorded as verified, and one whose first record differs is a
-/// different logical source that this scan did not read.
+/// Checks each other discovered file of the source against the file read, except a
+/// primary read in place of which `skipped` names, whose own failures were kept.
 ///
-/// A twin with no complete first record is neither. It may be gone with the primary,
-/// empty, or still being written by a compressor, which writes under the final name; it
-/// holds no record that the file read lacks.
+/// A twin whose first record matches is recorded as verified, one whose first record
+/// differs is a different logical source this scan did not read, and one whose first
+/// record cannot be read is unreadable; both are coverage failures. A twin with no
+/// complete record yet is neither: it is gone with the primary, empty, or a compressor's
+/// unfinished output, which ends early rather than failing to decode.
 fn twin_identities(
     files: &LogicalSource,
     read: &Path,
+    skipped: Option<&Path>,
     fingerprint: Option<Fingerprint>,
     spec: &SourceSpec<'_>,
+    options: &ReadOptions,
     failures: &mut Vec<CoverageFailure>,
 ) -> Vec<FileIdentity> {
     let mut identities = Vec::new();
-    for (twin, representation) in files.files().filter(|(path, _)| *path != read) {
-        let Some(theirs) = first_record_fingerprint(twin, representation) else { continue };
-        if fingerprint != Some(theirs) {
-            failures.push(CoverageFailure::TwinFingerprintMismatch {
-                path: twin.to_owned(),
-                locator: spec.locator.to_owned(),
-            });
-            continue;
+    for (twin, representation) in
+        files.files().filter(|(path, _)| *path != read && Some(*path) != skipped)
+    {
+        let theirs = first_record_fingerprint(twin, representation, options.max_record_bytes);
+        let path = twin.to_owned();
+        let locator = spec.locator.to_owned();
+        match theirs {
+            FirstRecord::NotYet => {}
+            FirstRecord::Unreadable => {
+                failures.push(CoverageFailure::UnreadableTwin { path, locator });
+            }
+            FirstRecord::Record(theirs) if fingerprint != Some(theirs) => {
+                failures.push(CoverageFailure::TwinFingerprintMismatch { path, locator });
+            }
+            FirstRecord::Record(_) => {
+                let metadata = std::fs::metadata(twin).ok();
+                identities.push(FileIdentity {
+                    path,
+                    device: metadata.as_ref().and_then(device_of_opt),
+                    inode: metadata.as_ref().and_then(inode_of_opt),
+                });
+            }
         }
-        let metadata = std::fs::metadata(twin).ok();
-        identities.push(FileIdentity {
-            path: twin.to_owned(),
-            device: metadata.as_ref().and_then(device_of_opt),
-            inode: metadata.as_ref().and_then(inode_of_opt),
-        });
     }
     identities
 }

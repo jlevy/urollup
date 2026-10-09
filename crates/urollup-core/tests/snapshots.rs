@@ -115,6 +115,12 @@ fn coverage_failure(failure: &CoverageFailure) -> Value {
                 "locator": locator,
             },
         }),
+        CoverageFailure::UnreadableTwin { path, locator } => json!({
+            "unreadable_twin": {
+                "file": path.file_name().map(|name| name.to_string_lossy()),
+                "locator": locator,
+            },
+        }),
         CoverageFailure::ReadError { decoded_offset, kind } => json!({
             "read_error": { "decoded_offset": decoded_offset, "kind": format!("{kind:?}") },
         }),

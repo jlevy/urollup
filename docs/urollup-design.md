@@ -448,10 +448,14 @@ rather than silently skipping data.
   whose representation changed, not two sources; for a Codex rollout they share a thread
   and rollout ID. The plain file is read first, then zstd, then gzip.
   Each other file whose first record differs is reported as a different, unread source,
-  and one with no complete first record yet, such as a compressor’s unfinished output,
-  is neither a verified twin nor a loss.
-  When the file read has no complete record but another file of the source has one, that
-  file is read instead.
+  and one whose first record cannot be read, because its data does not decode or it
+  holds only an oversized record, is reported as unreadable.
+  Only a file whose stream ends before its first record, as every prefix of a valid
+  stream and so a compressor’s unfinished output does, is neither a verified twin nor a
+  loss. When the file read has no complete record but another file of the source has one,
+  that file is read instead, and the file read keeps any failure other than an early
+  end. First records are found as the scan finds them, passing over blank and oversized
+  lines.
 - A file that disappears between discovery and reading, as when a compressor replaces it
   or an agent expires an old transcript, is read from its newer representation when one
   exists, and the manifest records which file was read instead; otherwise the source is
@@ -459,9 +463,9 @@ rather than silently skipping data.
   A representation discovery did not see is read only when it is a regular file, so a
   link or FIFO beside the source is never followed or opened.
 - Every source whose snapshot lost data, through damaged or truncated compressed data,
-  an oversized record, a read error, a mismatched twin, a change that affects the
-  snapshot or a disappearance before it was read, raises a `source-incomplete`
-  diagnostic and makes coverage partial.
+  an oversized record, a read error, a mismatched or unreadable twin, a change that
+  affects the snapshot or a disappearance before it was read, raises a
+  `source-incomplete` diagnostic and makes coverage partial.
 - Files are not snapshotted atomically together, so reports state each source’s cutoff
   and the skew across files.
 - An oversized record is streamed where the adapter supports it; otherwise it is a
@@ -2376,8 +2380,11 @@ records how the engine reached this shape, with dated whole-history measurements
   [§2.2](#22-snapshot-boundary), and exact session selectors narrow the discovered
   sources to the selected session families before any source is decoded.
   A Codex family is read from each rollout’s first record, from any file of the source
-  under the reader’s rules; a rollout with no readable first record stays in every
-  narrowed selection, so ingest reads it or reports it as incomplete.
+  under the reader’s rules.
+  A rollout none of whose files has a newline-terminated first line stays in every
+  narrowed selection, so ingest reads it or reports it as incomplete; a complete first
+  line that is not valid JSON or not a `session_meta` record links nothing, and its
+  rollout is narrowed by its own thread.
   Identifying the dialect of a `--source` directory likewise skips files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
