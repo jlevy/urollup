@@ -185,6 +185,38 @@ fn cgroup_directory(root: &Path, mount: &CgroupMount, path: &str) -> Option<(Pat
     Some((point, directory))
 }
 
+/// The lookup of the process's cgroup v2 directory under `root`, for the host test that
+/// checks what fixture trees cannot: that the real `/proc` files locate an existing cgroup.
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct UnifiedLookup {
+    /// The `0::` path in `proc/self/cgroup`.
+    pub(super) path: String,
+    /// Whether some `cgroup2` mount shows the whole hierarchy, from its root `/`.
+    pub(super) mounted_from_root: bool,
+    /// The cgroup's directory under each `cgroup2` mount that shows it.
+    pub(super) directories: Vec<PathBuf>,
+}
+
+/// [`UnifiedLookup`] below `root`, or `None` without a `0::` membership or mountinfo.
+#[cfg(test)]
+pub(super) fn unified_lookup(root: &Path) -> Option<UnifiedLookup> {
+    let memberships = Memberships::parse(&read_lines(&root.join("proc/self/cgroup"))?);
+    let mounts = parse_mounts(&read_lines(&root.join("proc/self/mountinfo"))?);
+    let path = memberships.unified?;
+    let unified: Vec<&CgroupMount> =
+        mounts.iter().filter(|mount| mount.kind == MountKind::Unified).collect();
+    Some(UnifiedLookup {
+        mounted_from_root: unified.iter().any(|mount| mount.root == "/"),
+        directories: unified
+            .iter()
+            .filter_map(|mount| cgroup_directory(root, mount, &path))
+            .map(|(_, directory)| directory)
+            .collect(),
+        path,
+    })
+}
+
 /// `memory.max` and `memory.high` of the process's cgroup and every ancestor up to the
 /// mount point, under every `cgroup2` mount that shows the cgroup.
 ///

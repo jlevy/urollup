@@ -724,6 +724,13 @@ mod tests {
         let memory = effective(&root, Some(32 * GIB)).unwrap();
         assert_eq!(memory, EffectiveMemory { bytes: 4 * GIB, source: MemorySource::CgroupMax });
         assert_eq!(memory.describe(), "the 4 GiB cgroup limit");
+        let lookup = linux::unified_lookup(root.path()).unwrap();
+        assert_eq!(lookup.path, "/user.slice/user-1000.slice/session-3.scope");
+        assert!(lookup.mounted_from_root);
+        assert_eq!(
+            lookup.directories,
+            [root.path().join("sys/fs/cgroup/user.slice/user-1000.slice/session-3.scope")]
+        );
         assert_eq!(
             MemoryBudget::default_for(Some(memory)).label(),
             "25% of the 4 GiB cgroup limit (1 GiB)"
@@ -943,12 +950,28 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn effective_memory_reads_this_host_within_physical_ram() {
-        // CI hosts may set cgroup limits, so the value is bounded rather than pinned.
+    fn effective_memory_on_this_host_is_physical_ram_unless_an_allowance_is_found() {
         let physical = physical_memory_bytes().expect("Linux publishes MemTotal");
+        let root = Path::new("/");
+        let allowances = linux::allowances(root, Some(physical));
+        assert!(allowances.iter().all(|(bytes, _)| *bytes > 0), "{allowances:?}");
         let memory = effective_memory().expect("physical RAM is known");
-        assert!(memory.bytes > 0, "{memory:?}");
-        assert!(memory.bytes <= physical, "{memory:?} exceeds {physical} bytes of RAM");
+        if allowances.is_empty() {
+            assert_eq!(
+                memory,
+                EffectiveMemory { bytes: physical, source: MemorySource::PhysicalRam }
+            );
+        } else {
+            assert_eq!(Some(memory), EffectiveMemory::smallest(Some(physical), allowances));
+        }
+        // The lookup fixture trees cannot exercise: where the whole cgroup2 hierarchy is
+        // mounted, the real /proc files locate the process's own cgroup directory.
+        let lookup = linux::unified_lookup(root);
+        if let Some(lookup) = lookup.filter(|lookup| {
+            lookup.mounted_from_root && !lookup.path.split('/').any(|part| part == "..")
+        }) {
+            assert!(lookup.directories.iter().any(|directory| directory.is_dir()), "{lookup:?}");
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
