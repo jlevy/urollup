@@ -87,6 +87,21 @@ fn stamped(timestamp: &str, line: &str) -> String {
     value.to_string()
 }
 
+/// A context-window-full fill: Codex's `fill_to_context_window`, whose total and last
+/// usage carry only `total_tokens`.
+fn fill(window: u64, delta: u64) -> String {
+    let only_total = |total: u64| {
+        json!({
+            "input_tokens": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 0,
+            "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": total
+        })
+    };
+    json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+        "total_token_usage": only_total(window), "last_token_usage": only_total(delta)
+    }}})
+    .to_string()
+}
+
 /// A compaction estimate: the running total unchanged, and a `last_token_usage` with zero
 /// input and output and nonzero `total_tokens`.
 fn estimate(total: Usage) -> String {
@@ -1134,5 +1149,53 @@ fn a_resumed_subagent_of_a_non_root_parent_keeps_its_records_owner() {
     let selected =
         selection_totals(&ingested.ledger, &BTreeSet::from([thread])).expect("selection totals");
     assert_eq!(selected.completeness, Completeness::Complete, "no request is ambiguous");
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+}
+
+/// Review D2 (review C's c7): a 0.154 full-history subagent whose first own `token_count`
+/// is a context-window fill, before its first own usage record. It keeps `main`'s
+/// accounting: no diagnostic, and its copied counter stays an unkeyed copy.
+#[test]
+fn a_modern_subagent_whose_first_own_counter_is_a_fill_counts_its_usage_records() {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    let parent_tail = [
+        settings(PARENT),
+        turn("p1"),
+        direct(PARENT, Some("p1"), "rp1", [900, 0, 100, 0]),
+        counter([900, 0, 100, 0], [900, 0, 100, 0]),
+    ];
+    write_rollout(
+        home.path(),
+        PARENT,
+        0,
+        &[[meta(PARENT, None)].as_slice(), &parent_tail].concat(),
+    );
+    let copied: Vec<String> = [meta(PARENT, None)]
+        .into_iter()
+        .chain(parent_tail.iter().cloned())
+        .filter(|line| !line.contains("token_usage_record"))
+        .collect();
+    let child = [
+        vec![meta(CHILD, Some(PARENT))],
+        copied,
+        vec![
+            settings(CHILD),
+            turn("g1"),
+            fill(272_000, 271_000),
+            direct(CHILD, Some("g1"), "rg1-compact", [180, 0, 20, 0]),
+            counter([180, 0, 20, 0], [180, 0, 20, 0]),
+            direct(CHILD, Some("g1"), "rg1", [270, 0, 30, 0]),
+            counter([450, 0, 50, 0], [270, 0, 30, 0]),
+        ],
+    ]
+    .concat();
+    write_rollout(home.path(), CHILD, 1, &child);
+    let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+    assert_eq!(thread_total(&ingested, PARENT), (1, Some(1_000)));
+    assert_eq!(thread_total(&ingested, CHILD), (2, Some(200 + 300)));
+    assert_eq!(summary(&ingested), (3, Some(1_500), Completeness::Complete));
+    assert_eq!(ledger_totals(&ingested.ledger).expect("totals").copy_only.requests, 1);
+    assert_eq!(ingested.ledger.coverage.copies, 1);
     assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
 }
