@@ -306,7 +306,9 @@ $ urollup sessions --all --format json --timezone UTC
         "uncached_input": 4,
         "output": 1,
         "total": 5
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-24r2damwd05hvchfcymd1vhqd2",
@@ -321,7 +323,9 @@ $ urollup sessions --all --format json --timezone UTC
         "uncached_input": 6,
         "output": 2,
         "total": 8
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-7vj0507xz9tr2svfst47rxmdf8",
@@ -336,7 +340,9 @@ $ urollup sessions --all --format json --timezone UTC
         "uncached_input": 3,
         "output": 1,
         "total": 4
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []
@@ -384,7 +390,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "uncached_input": 4,
         "output": 1,
         "total": 5
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-24r2damwd05hvchfcymd1vhqd2",
@@ -399,7 +407,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "uncached_input": 6,
         "output": 2,
         "total": 8
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     },
     {
       "thread": "thr-v1-7vj0507xz9tr2svfst47rxmdf8",
@@ -414,7 +424,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "uncached_input": 3,
         "output": 1,
         "total": 4
-      }
+      },
+      "last_date": "2024-09-19",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []

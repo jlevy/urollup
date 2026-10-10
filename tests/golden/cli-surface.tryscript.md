@@ -112,7 +112,8 @@ Options:
       --scope <SCOPE>         Include only selected threads or also their spawned subagent descendants [possible values: self, descendants]
       --format <FORMAT>       Output as a terminal table or JSON document [default: table] [possible values: table, json]
       --timezone <ZONE>       IANA timezone for calendar grouping; defaults to the system timezone
-      --group-by <DIMENSION>  One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension [possible values: project, account, model, effort]
+      --agent <AGENT>         Restrict selection to one or more agents; repeatable and comma-delimited [possible values: claude, codex, cursor, pi]
+      --group-by <DIMENSION>  One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: project, account, model and effort [possible values: project, account, model, effort, agent, provider, purpose]
       --source <PATH>         Add a source root or JSONL artifact; repeatable
       --no-default-sources    Read only paths named by --source
       --max-ram <SIZE>        Ingest budget as a byte size (512M, 8G, 8GiB) or a percent of physical RAM (25%). Default: 25% of RAM, or 2 GiB if RAM cannot be read. `UROLLUP_MAX_RAM` sets the same value when this flag is omitted
