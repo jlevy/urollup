@@ -757,9 +757,12 @@ mod tests {
         MemoryAdmission::new(MemoryBudget::exact(limit, format!("--max-ram {limit}")), model)
     }
 
-    /// A 1 MiB budget, below the default 16 MiB baseline.
+    /// The default baseline `F`, which calibration may change.
+    const BASELINE: u64 = ProcessModel::DEFAULT.baseline;
+
+    /// A budget one byte below the default baseline.
     fn below_baseline() -> MemoryAdmission {
-        MemoryAdmission::new(MemoryBudget::exact(MIB, "--max-ram 1M"), ProcessModel::DEFAULT)
+        MemoryAdmission::new(MemoryBudget::exact(BASELINE - 1, "below F"), ProcessModel::DEFAULT)
     }
 
     const ADVICE_TEXT: &str = "; raise --max-ram, select fewer sessions with --session, or pass narrower --source roots with --no-default-sources";
@@ -1201,18 +1204,18 @@ mod tests {
         assert_eq!(
             below_baseline().ensure_floor(0),
             Err(CapacityError::BelowFloor {
-                floor: 16 * MIB,
-                budget: MIB,
-                label: "--max-ram 1M".into(),
+                floor: BASELINE,
+                budget: BASELINE - 1,
+                label: "below F".into(),
             })
         );
         assert_eq!(
             below_baseline().checkpoint(Phase::Query, 0, &[]),
             Err(CapacityError::Memory {
                 phase: Phase::Query,
-                estimate: Some(16 * MIB),
-                budget: MIB,
-                label: "--max-ram 1M".into(),
+                estimate: Some(BASELINE),
+                budget: BASELINE - 1,
+                label: "below F".into(),
             })
         );
         assert!(below_baseline().hold(&[]).is_err());
@@ -1220,10 +1223,8 @@ mod tests {
         assert!(!admission.charge(Component::Records, 0));
         assert!(admission.stopped());
         // A budget of exactly `F` admits an empty heap and nothing more.
-        let at_baseline = MemoryAdmission::new(
-            MemoryBudget::exact(16 * MIB, "--max-ram 16M"),
-            ProcessModel::DEFAULT,
-        );
+        let at_baseline =
+            MemoryAdmission::new(MemoryBudget::exact(BASELINE, "F"), ProcessModel::DEFAULT);
         assert_eq!(at_baseline.ensure_floor(0), Ok(()));
         at_baseline.checkpoint(Phase::Query, 0, &[]).unwrap();
         assert!(!at_baseline.charge(Component::Records, 1));
