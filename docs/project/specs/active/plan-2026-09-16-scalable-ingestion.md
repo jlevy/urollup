@@ -975,51 +975,86 @@ user-visible behavior.
 Choices made while implementing, where this design left room:
 
 - **Budget source (slice 1).** `ledger::capacity::effective_memory_under` takes the
-  filesystem root, so fixture trees test it on every platform.
-  A cgroup is located through the `cgroup2`, or v1 `memory`, mount whose root contains
-  the path in `/proc/self/cgroup`; a path outside every mount root, as in some cgroup
-  namespaces, is not located and contributes nothing.
+  filesystem root, so fixture trees test it on every platform, and `effective_memory`
+  itself runs in a test on every CI platform: on Linux it is positive and at most
+  physical RAM, and elsewhere it is physical RAM. A cgroup is located through every
+  `cgroup2`, or v1 `memory`, mount whose root contains the path in `/proc/self/cgroup`,
+  and the smallest readable limit under any of them counts, so a duplicate, overmounted
+  or bind mount listed first hides nothing; a path outside every mount root, as in some
+  cgroup namespaces, is not located and contributes nothing.
   The v2 walk reads `memory.max` and `memory.high` from the process cgroup up to and
-  including the mount point.
+  including each mount point.
+  `/proc/self/cgroup`, `mountinfo`, `limits` and `memory.stat` are read as bytes and
+  decoded line by line: a line that is not UTF-8 is dropped alone, rather than decoded
+  with replacement characters that could name a different cgroup.
   A v1 `hierarchical_memory_limit` at or above 2^62 is the kernel sentinel and counts as
   no limit even when physical RAM is unknown.
   Physical RAM wins a tie, then the first smallest allowance, so the label is stable.
   Labels add `the 3 GiB cgroup memory.high limit`, `the 8 GiB address-space limit` and
   `the 8 GiB data-size limit` to the forms under
   [Budget Source](#budget-source-and-flag-semantics), and sizes that are not whole units
-  print one decimal (`15.6 GiB`). `format_memory` rounds that decimal to nearest; the
-  design now requires budgets and allowances to round down and estimates to round up,
-  applied in slice 7, when labels and refusals reach the CLI. A percent without a known
-  size is the new `RamBudgetError::UnknownEffectiveMemory`, whose text no longer
-  suggests `--max-rows`; the row-ceiling error text is unchanged until slice 7.
+  print one decimal. `format_memory` takes the rounding direction: budgets and allowances
+  round down (`25% of 15.5 GiB physical RAM (3.8 GiB)` for 15.57 GiB), and estimates and
+  floors round up, so an estimate one byte over its budget prints above it; a size that
+  rounds up to 1024 of a unit prints as `1.0` of the next.
+  `MemoryBudget` keeps the `EffectiveMemory` a percent or the default was taken from
+  (none for an explicit size or the fallback), from which slice 7 computes the refusal
+  hint. A percent without a known size is the new
+  `RamBudgetError::UnknownEffectiveMemory`, whose text no longer suggests `--max-rows`;
+  the row-ceiling error text is unchanged until slice 7.
 - **Ledger (slice 2).** `ledger::admission::MemoryAdmission` keeps `E` in one atomic
   counter whose limit is `⌊(B − F) / H⌋`, with `H` an exact ratio (3/2), so the check
   needs no floating point.
   Three lifetimes share the counter: holds (`Hold::Discovery`, `Hold::Ledger` per agent
-  and `Hold::SessionIndex`), set only at checkpoints; charges until exit, for process
-  interns; and the current phase’s charges, which each `checkpoint` replaces with its
-  exact estimate. `commit` releases the agent’s phase charges and discovery hold and
-  holds its ledger. A checkpoint also resets the large-record permit’s high-water charge,
-  which is how the permit and worker slots are released when decode ends.
+  and `Hold::SessionIndex`); charges until exit, for process interns; and the current
+  phase’s charges. Three transitions change it, each in one read-modify-write that moves
+  `E` to `E − released + held` and refuses only when that final total passes the limit,
+  whatever the order of the holds it raises and lowers; a refused transition changes
+  nothing. `checkpoint(phase, estimate, holds)` replaces the phase’s charges with its
+  exact estimate and sets holds in the same move, as the session-index and query
+  checkpoints need; `hold(changes)` sets holds and keeps the phase’s charges, including
+  charges made meanwhile; and `commit(agent, retained)` releases the agent’s phase
+  charges and discovery hold and holds its ledger.
+  `checkpoint` and `commit` run on the coordinating thread after workers join, since a
+  charge made meanwhile belongs to no defined phase; a debug assertion checks that `E`
+  still covers every hold and charge until exit.
+  A checkpoint also resets the large-record permit’s high-water charge, which is how the
+  permit and worker slots are released when decode ends.
   `charge_large_record` keeps only that high-water charge; holding the permit,
   re-entrance for its holder, release once a need is gone, and waiting that watches the
-  stop flag are slice 4’s. Checkpoint refusals print `F + H × E`, the whole-process
-  estimate compared with `B`; phases read `cataloging discovered sources`,
-  `reading Codex rollouts`, `building Codex
-  observations`, `reconciling Codex requests`, `finalizing the Codex ledger`, `indexing
-  Codex sessions` and `querying and rendering the output`; `cataloging discovered
-  sources` is the design’s discovery checkpoint.
-  Decode and checkpoint refusals advise `raise --max-ram (for example --max-ram 50%)`;
-  the design now requires the smallest whole percent of `M` that covers a checkpoint
-  estimate, and no value for a decode refusal or when the estimate exceeds `M`, applied
-  in slice 7. A budget below `F + H × b` refuses with `the memory budget of
-  … is below the … that one decoding worker needs; raise --max-ram`; `ensure_floor`
-  checks one slot size, so slice 7 calls it before discovery with the plain slot and
-  again when discovery finds a compressed source.
-  The adapters’ row admission now runs on a `MemoryAdmission` with an unlimited byte
-  budget and the row ceiling, one per ingest call; public ingest signatures and the CLI
-  are unchanged, and a row refusal still converts to `ReconcileError::CapacityExceeded`,
-  so its message is the same.
+  stop flag are slice 4’s. `Phase` carries its agent (`Phase::Decode(Agent::Codex)`), so
+  a refusal cannot pair a phase with a missing or meaningless agent.
+  The design’s discovery checkpoint, before each agent’s decode, is
+  `checkpoint(Phase::Decode(agent), slots, …)`, so its refusal and every refused worker
+  charge in that decode read `reading Codex rollouts`; `Phase::Discovery` is the initial
+  phase, for the charges and holds made while cataloging, and reads `cataloging
+  discovered sources`. A refused charge names the phase of the last checkpoint, and
+  after a commit, `finalizing the Codex ledger`. A refused transition prints `F + H × E`
+  for the total it refused.
+  Every refusal advises `raise --max-ram, select fewer sessions with --session, or pass
+  narrower --source roots with --no-default-sources`, naming no value; slice 7 adds the
+  smallest whole percent of `M` that covers a checkpoint estimate, from the budget’s
+  `EffectiveMemory`. A budget below `F + H × b` refuses with
+  `the memory budget of … is below the … minimum for the process baseline and one
+  decoding worker; raise --max-ram`; `ensure_floor` checks one slot size, so slice 7
+  calls it before discovery with the plain slot and again when discovery finds a
+  compressed source. A budget below `F` admits nothing: `ensure_floor` refuses it for any
+  slot size, and every charge and transition refuses it with the memory refusal.
+  An unlimited ledger never refuses bytes; `E` saturates instead.
+  Each `charge` names a `Component` (records, κ, payloads, limits, interns, sources,
+  reserves or slots, the stats line’s components), so slices 4 to 6 add no call-site
+  change for statistics; the ledger keeps a running total per component (`charged_by`),
+  and slice 7’s stats line takes each phase’s difference and adds the checkpoint
+  estimate’s components, which the caller computes from the cost model.
+  `charge_until_exit` counts as interns and the permit as slots.
+  The largest `E` is recorded at transitions, since only charges move `E` between them
+  and charges only add, so `charge` is one compare-and-swap loop plus one per-component
+  add; it no longer updates a shared maximum.
+  The charge, reservation and permit methods are `#[must_use]`. The adapters’ row
+  admission now runs on a `MemoryAdmission` with an unlimited byte budget and the row
+  ceiling, one per ingest call; public ingest signatures and the CLI are unchanged, and
+  a row refusal still converts to `ReconcileError::CapacityExceeded`, so its message is
+  the same, which a test pins.
   Memory refusals reach callers as the new `AdapterError::Capacity`.
 
 ### Parallelism and Determinism
