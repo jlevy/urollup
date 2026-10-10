@@ -222,7 +222,7 @@ struct ReportArgs {
     #[command(flatten)]
     selection: SelectionArgs,
 
-    /// One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: every dimension
+    /// One separate breakdown per dimension; dimensions are never combined. Repeatable and comma-delimited. Default: project, account, model and effort
     // Help lists options by display order, then by long name. Clap numbers the flattened
     // selection from 0, so 7 is `--source`'s slot: `--group-by` follows `--timezone` and
     // `--agent` and precedes `--source`. The CLI-surface golden pins the order.
