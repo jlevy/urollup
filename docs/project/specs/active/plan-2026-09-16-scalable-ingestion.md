@@ -1068,43 +1068,52 @@ Choices made while implementing, where this design left room:
   `ReconcileError::CapacityExceeded`, so its message is the same, which a test pins.
   Memory refusals reach callers as the new `AdapterError::Capacity`.
 - **Cost model (slice 3).** `ledger::admission::model` implements the costing rule with
-  three refinements, each an upper bound the unit tests check.
-  The 3 × vector rule applies to at least the standard minimum capacity (eight one-byte
-  or four small elements) and adds both buffers’ allocation costs.
-  A hash table costs its hashbrown bucket count at 7/8 load plus the half-size table
-  live while it resizes; the per-entry 3.5 × (entry + 1) bounds it only with a per-map
-  base of 12 × (entry + 1) + 96 bytes, because small tables are less than 7/8 full.
-  A B-tree costs one node per five entries plus the root, since every non-root node of
-  the standard B-tree holds at least five; its per-entry charge is the larger of the
-  design’s 2.5 × entry and a fifth of a node, because 2.5 × alone undercounts entries
-  under about 110 bytes, such as an ID-to-ID map.
-  At current row sizes (224 B observation, 216 B request, 30 B key node and 16 B of
-  slots), κ is 672 bytes for Codex, where construction (3 × 224) dominates grouping
-  (654) and finalize (656), and 1,058 for Claude, construction plus 386 bytes of owner
-  and ambiguity state, with grouping at 980. The key bound is 1 for Codex, whose
-  observations carry one key and no invariant, and 3 for Claude, two keys plus a split
-  part’s artifact-local key; unit tests on each adapter’s observation builders assert
-  both. Grouping charges the request vector as presized, 33/32 of a request, and per
+  its minimum-capacity, hash-table and B-tree terms.
+  The B-tree per-entry charge is the larger of 2.5 × entry and a fifth of a node,
+  because 2.5 × alone undercounts entries under about 110 bytes, such as an ID-to-ID
+  map. Its unit tests check each push-site charge against the model’s own table and node
+  formulas; the design now requires each term to be checked against a counting
+  allocator, and a stable-sort scratch term at every stable sort a phase runs (the
+  Claude eligibility vector and diagnostics), which slice 3 lacks; both are applied in
+  the next revision of slice 3. At current row sizes (224 B observation, 216 B request,
+  30 B key node and 16 B of slots), κ is 672 bytes for Codex, where construction, the
+  observation at 3 ×, dominates grouping (654) and finalize (656), and 1,058 for Claude,
+  construction plus 386 bytes of owner and ambiguity state, with grouping at 980. Slice
+  3’s κ has no retained-and-query phase; that phase is smaller than finalize for both
+  dialects, so κ does not change, but the design lists it, and the next revision of
+  slice 3 adds it. The key bound is 1 for Codex, whose observations carry one key and no
+  invariant, and 3 for Claude, two keys plus a split part’s artifact-local key; unit
+  tests on each adapter’s observation builders assert both.
+  Grouping charges the request vector as presized, 33/32 of a request, and per
   observation one evidence slot and one alias per key; parts that conflicting keys split
   past the presized capacity are charged where they are pushed (`split_growth`), and a
   group’s scratch by its size (`group_scratch`). Decoded records cost 3 × 176 bytes for
   Claude and 3 × 80 for Codex, a limit row 320 bytes.
-  The query has a per-request part the reservation table omits: `selected_requests` and
-  `size_summary` each hold an 8-byte item per counted request, so the model charges 48
-  bytes per request beside 1 KiB per row, 64 KiB fixed and 3 × the rendered bytes.
+  The query model charges 48 bytes per counted request, the design’s query reserve
+  (`selected_requests` and `size_summary` each hold an 8-byte item per counted request),
+  beside 1 KiB per row, 64 KiB fixed and 3 × the rendered bytes.
+  `model::query` takes the rendered size as an input, which the harness knows after
+  rendering; slice 7 charges rendering as its buffer grows.
+  `worker_slot` and `large_record` predate three design terms: the 640 KiB `quotaLimits`
+  document allowance and its permit need, `ZSTD_estimateDStreamSize` for a wide window
+  rather than the window alone, and the line need `C + 2 × C′`, which equals their 2.5 ×
+  capacity only when growth doubles, as it does up to the default 64 MiB limit.
+  The next revision of slice 3 applies them, before slice 4 uses these functions.
   `DeepSize` gives the retained heap of `Ingested`, `Ledger`, `SessionIndex`,
   `Discovery`, `ReconcileInput` and their parts, counting exact capacities for vectors,
   strings and boxes and the model’s bound for maps.
   Interned names and overflow patterns are left out of deep size and counted by
-  `names::interned_bytes` and `tokens::overflow_interned_bytes`, the charge slice 5
-  makes at each new insert.
-  `construction_estimate` exists for slices 5 and 6 but is not yet verified, since
-  construction cannot be measured from outside the adapters.
+  `names::interned_bytes` and `tokens::overflow_interned_bytes`; slice 5 charges each
+  new insert inside `intern` and `intern_overflow`, under the table lock and before
+  allocating. `construction_estimate` exists for slices 5 and 6 but is not yet verified,
+  since construction cannot be measured from outside the adapters.
 - **Harness and measured constants (slice 3).**
   `crates/urollup-core/tests/memory_model.rs` runs without libtest and counts live heap
-  by the costing rule, holding both buffers through a moving reallocation; its `unsafe`
-  is the allocator, under a scoped `#[expect(unsafe_code)]`, and the lint policy is
-  unchanged. It fails when measured heap exceeds what the model can estimate from outside
+  by the costing rule, holding both buffers through a moving reallocation; the design
+  now requires every `realloc`, moved or not, to count as a new block made before the
+  old one is freed, applied in the next revision of slice 3. Its `unsafe` is the
+  allocator, under a scoped `#[expect(unsafe_code)]`, and the lint policy is unchanged.
+  It fails when measured heap exceeds what the model can estimate from outside
   ingestion: the retained ledger is 92–99% of its deep size on every fixture and
   generated corpus at one and eight workers; reconciliation of 1,000 and 8,000 synthetic
   observations peaks at 69–70% (Codex) and 44% (Claude) of the larger of the grouping
@@ -1117,17 +1126,26 @@ Choices made while implementing, where this design left room:
   one, with 2 KiB-padded twins within 0.5 KB of the unpadded peaks.
   On the small fixtures the peak (up to 0.41 MB at eight workers) is the 128 KiB read
   buffers, which the worker slots cover and the forward estimate leaves out.
+  The design now requires that decode bound to fail rather than report, with one worker
+  and against `E` plus the Rust-heap part of the slots in use, on corpora where `E` is
+  at least 10 × that slot term; the 800-record corpora are smaller than that.
+  The larger corpora are applied in the next revision of slice 3, and the failing bound
+  once slices 5 and 6 charge decode.
   Measured constants: `F` is 5 MiB, 1.25 × the 3,375,104-byte maximum RSS of a release
   `report` over the smallest fixture on the reference macOS laptop, rounded up (its peak
   physical footprint was 1,409,336 bytes); Linux maximum RSS is not measured, so the
-  macOS RSS stands in for it until calibration.
-  zstd 1.5.7 reports a 95,968-byte decoder context (`ZSTD_CONTEXT` is 96 KiB) and
-  8,877,856 bytes once an 8 MiB-window frame starts, plus the zstd crate’s 131,075-byte
-  Rust input buffer: about 8.6 MiB, as designed.
-  `flate2`’s gzip decoder holds 76,368 bytes beside the read buffer, so `GZIP_DECODER`
-  is 80 KiB rather than the guessed 64 KiB, and the boxed reader adds up to 512 bytes.
+  macOS RSS stands in for it until per-allocator calibration (slice 8). zstd 1.5.7
+  reports a 95,968-byte decoder context (`ZSTD_CONTEXT` is 96 KiB) and 8,877,856 bytes
+  once an 8 MiB-window frame starts, plus the zstd crate’s 131,075-byte Rust input
+  buffer: about 8.6 MiB, as designed.
+  `flate2`’s gzip decoder holds 76,368 bytes beside the read buffer, inside the design’s
+  80 KiB (`GZIP_DECODER`), and the boxed reader adds up to 512 bytes.
   A scan of a 3.5 MiB line peaked at 6,422,848 bytes, 1.5 × the 4 MiB slot line capacity
   plus the read buffer, inside the slot’s 10 MiB line allowance.
+  That line is not the worst case: today’s `read_line` doubles capacity from its first
+  chunk, so a line just under 4 MiB can reach about 7 MiB of capacity and 10.6 MiB while
+  it grows. Slice 4’s doubling from 256 KiB, with the permit past 4 MiB, restores the
+  bound, and its 3.9 MiB and 63 MiB `read_line` tests pin it.
   A sessions document costs about 112 bytes per row beyond its per-request and rendering
   terms, well inside the 1 KiB row charge.
 
