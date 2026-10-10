@@ -12,13 +12,15 @@
 //!   limit. That happens if and only if the phase's charges sum past it, whatever the
 //!   worker count or scheduling. The first refusal sets the stop flag, and workers stop at
 //!   their next record. Each charge names its [`Component`], for statistics.
-//! - **Transitions** change the same counter in one read-modify-write, so a charge made
-//!   meanwhile is never overwritten, and a transition is refused only when its final
-//!   total passes the limit, whatever the order of the holds it raises and lowers.
-//!   [`MemoryAdmission::checkpoint`] runs on the coordinating thread after workers join
-//!   and replaces the phase's charges with an estimate from exact counts;
-//!   [`MemoryAdmission::commit`] replaces an agent's phase charges with its retained
-//!   ledger; [`MemoryAdmission::hold`] changes holds and keeps the phase's charges.
+//! - **Transitions** run only on the coordinating thread after workers join, so holds and
+//!   phases never change while a parallel phase charges, which would make refusal depend
+//!   on the schedule. [`MemoryAdmission::checkpoint`] replaces the phase's charges with an
+//!   estimate from exact counts; [`MemoryAdmission::commit`] replaces an agent's phase
+//!   charges with its retained ledger; [`MemoryAdmission::hold`] changes holds and keeps
+//!   the phase's charges. Each changes the counter in one read-modify-write and is refused
+//!   only when its final total passes the limit, whatever the order of the holds it raises
+//!   and lowers. As defense in depth, a transition that breaks the contract still never
+//!   overwrites a charge made meanwhile.
 //! - **Holds** ([`Hold`]) are state that outlives a phase, such as discovery metadata or a
 //!   committed ledger; charges made with [`MemoryAdmission::charge_until_exit`], such as
 //!   new process interns, survive every checkpoint.
@@ -327,6 +329,13 @@ enum Limit {
 }
 
 impl Limit {
+    const fn is_unlimited(&self) -> bool {
+        match self {
+            Self::Unlimited => true,
+            Self::Budget { .. } => false,
+        }
+    }
+
     /// `total` as the next value of `E`, or the budget that refuses it.
     fn admit(&self, total: u128) -> Result<u64, &MemoryBudget> {
         match self {
@@ -382,7 +391,8 @@ impl MemoryAdmission {
         Self::with_limit(Limit::Budget { budget, heap }, model)
     }
 
-    /// A ledger that never refuses bytes: `E` saturates instead of overflowing. Rows
+    /// A ledger that never refuses bytes: `E` saturates instead of overflowing, and stays
+    /// saturated through hold changes until a checkpoint or commit recomputes it. Rows
     /// still count against a row ceiling.
     pub fn unlimited() -> Self {
         Self::with_limit(Limit::Unlimited, ProcessModel::DEFAULT)
@@ -569,8 +579,12 @@ impl MemoryAdmission {
     }
 
     /// Sets each hold in `changes` (zero releases one), keeping the current phase's
-    /// charges, which may continue meanwhile.
+    /// charges.
     ///
+    /// Like [`Self::checkpoint`], call it on the coordinating thread after workers join.
+    /// A hold that changes while workers charge makes refusal depend on whether a charge
+    /// lands before or after it, which admission's determinism forbids; the change is
+    /// still one read-modify-write that loses no charge, but callers must not rely on it.
     /// The changes apply together, so raising one hold while lowering another refuses
     /// only when the final total passes the budget, in either order. A refusal names the
     /// current phase, changes nothing, and is final.
@@ -651,17 +665,26 @@ impl MemoryAdmission {
             }
         }
         let (held_before, held_after) = (sum(&holds), sum(&next_holds));
+        let unlimited = self.limit.is_unlimited();
         let moved = self.update(|current| {
-            let current = u128::from(current);
-            let until_exit = u128::from(self.until_exit.load(Ordering::Relaxed));
-            // `E` includes every hold and every charge until exit (saturated without a
-            // budget).
-            debug_assert!(current >= (held_before + until_exit).min(u128::from(u64::MAX)));
+            let until_exit = || u128::from(self.until_exit.load(Ordering::Relaxed));
             match estimate {
-                // The phase's charges are what `E` holds beyond the holds and the charges
-                // until exit; the estimate replaces them.
-                Some(estimate) => until_exit + held_after + u128::from(estimate),
-                None => current.saturating_sub(held_before) + held_after,
+                Some(estimate) => {
+                    // After workers join, a budget's `E` is exactly every hold, every charge
+                    // until exit and the phase's charges, which the estimate replaces.
+                    // Without a budget `E` may have saturated, and a `hold` overlapping an
+                    // intern charge can see it in `E` before `until_exit`, so only this
+                    // case is checked.
+                    debug_assert!(
+                        unlimited || u128::from(current) >= held_before + until_exit(),
+                        "`E` must cover every hold and charge until exit once workers join"
+                    );
+                    until_exit() + held_after + u128::from(estimate)
+                }
+                // Once `E` saturates without a budget its true value is unknown, so a hold
+                // change keeps it saturated until a checkpoint recomputes it.
+                None if unlimited && current == u64::MAX => u128::from(u64::MAX),
+                None => u128::from(current).saturating_sub(held_before) + held_after,
             }
         });
         match moved {
@@ -890,23 +913,114 @@ mod tests {
         assert_eq!(admission.charged(), 600 + 90 + 50);
     }
 
+    /// Holds change only after workers join. As defense in depth, a hold changed while
+    /// workers charge and intern still loses no charge, and no debug check fires.
     #[test]
-    fn a_hold_change_keeps_charges_made_meanwhile() {
-        let admission = ledger(u64::MAX / 4);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                for _ in 0..500_000 {
-                    assert!(admission.charge(Component::Records, 1));
+    fn a_hold_change_against_the_contract_keeps_charges_made_meanwhile() {
+        for _ in 0..4 {
+            let admission = ledger(u64::MAX / 4);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for _ in 0..200_000 {
+                        assert!(admission.charge(Component::Records, 1));
+                    }
+                });
+                for _ in 0..3 {
+                    scope.spawn(|| {
+                        for _ in 0..100_000 {
+                            assert!(admission.charge_until_exit(1));
+                        }
+                    });
+                }
+                scope.spawn(|| {
+                    for _ in 0..20_000 {
+                        admission.hold(&[(Hold::SessionIndex, 5)]).unwrap();
+                        admission.hold(&[(Hold::SessionIndex, 0)]).unwrap();
+                    }
+                });
+            });
+            assert_eq!(admission.charged(), 500_000);
+            // The charges until exit survive a checkpoint.
+            admission.checkpoint(Phase::Query, 0, &[]).unwrap();
+            assert_eq!(admission.charged(), 300_000);
+        }
+    }
+
+    /// Runs a two-agent invocation on `workers` threads: every transition kind, parallel
+    /// decode charges with permit needs and interns, and a session-index checkpoint that
+    /// lowers a hold. Returns whether it completed.
+    fn run_invocation(admission: &MemoryAdmission, workers: usize, seed: u64) -> bool {
+        let discovery =
+            [(Hold::Discovery(Agent::Codex), 4000), (Hold::Discovery(Agent::Claude), 3000)];
+        if admission.hold(&discovery).is_err() {
+            return false;
+        }
+        for agent in [Agent::Codex, Agent::Claude] {
+            if admission.checkpoint(Phase::Decode(agent), 2000, &[]).is_err() {
+                return false;
+            }
+            let charges: Vec<Vec<u64>> = (0..8)
+                .map(|worker| {
+                    (0..400).map(|index| 1 + (worker * 31 + index * 17 + seed) % 23).collect()
+                })
+                .collect();
+            let permit_needs: Vec<u64> = (0..8).map(|worker| 100 + worker * 97).collect();
+            let shares = charges.chunks(8 / workers).zip(permit_needs.chunks(8 / workers));
+            std::thread::scope(|scope| {
+                for (worker_charges, worker_needs) in shares {
+                    scope.spawn(move || {
+                        for (amounts, need) in worker_charges.iter().zip(worker_needs) {
+                            for bytes in amounts {
+                                if !admission.charge(Component::Records, *bytes) {
+                                    return;
+                                }
+                            }
+                            if !admission.charge_large_record(*need)
+                                || !admission.charge_until_exit(3)
+                            {
+                                return;
+                            }
+                        }
+                    });
                 }
             });
-            scope.spawn(|| {
-                for _ in 0..50_000 {
-                    admission.hold(&[(Hold::SessionIndex, 5)]).unwrap();
-                    admission.hold(&[(Hold::SessionIndex, 0)]).unwrap();
+            if admission.stopped()
+                || admission.checkpoint(Phase::Construction(agent), 9000, &[]).is_err()
+                || admission.checkpoint(Phase::Grouping(agent), 7000, &[]).is_err()
+                || admission.commit(agent, 2500).is_err()
+                || admission
+                    .checkpoint(Phase::SessionIndex(agent), 600, &[(Hold::Ledger(agent), 2400)])
+                    .is_err()
+                || admission.hold(&[(Hold::SessionIndex, 500)]).is_err()
+            {
+                return false;
+            }
+        }
+        admission.checkpoint(Phase::Query, 1200, &[(Hold::SessionIndex, 0)]).is_ok()
+    }
+
+    #[test]
+    fn the_largest_heap_of_a_successful_run_is_its_exact_threshold() {
+        for workers in [1, 2, 4, 8] {
+            for seed in 0..10 {
+                let probe = ledger(u64::MAX / 4);
+                assert!(run_invocation(&probe, workers, seed));
+                let threshold = probe.largest();
+                for _ in 0..5 {
+                    assert!(run_invocation(&ledger(threshold), workers, seed), "{threshold}");
+                    let below = ledger(threshold - 1);
+                    assert!(!run_invocation(&below, workers, seed), "{threshold} − 1");
+                    assert!(below.charged() < threshold);
                 }
-            });
-        });
-        assert_eq!(admission.charged(), 500_000);
+                // The same threshold as a whole-process budget `F + H × largest`.
+                let model = ProcessModel::DEFAULT;
+                let budget = model.whole_process(threshold);
+                let at = MemoryAdmission::new(MemoryBudget::exact(budget, "T"), model);
+                assert!(run_invocation(&at, workers, seed));
+                let under = MemoryAdmission::new(MemoryBudget::exact(budget - 1, "T − 1"), model);
+                assert!(!run_invocation(&under, workers, seed));
+            }
+        }
     }
 
     #[test]
@@ -1161,6 +1275,23 @@ mod tests {
         assert_eq!(admission.refusal(), None);
         assert_eq!(admission.budget(), None);
         assert_eq!(admission.worker_slots(u64::MAX, None).get(), 8);
+    }
+
+    #[test]
+    fn a_saturated_unlimited_ledger_stays_saturated_until_a_checkpoint() {
+        let admission = MemoryAdmission::unlimited();
+        assert!(admission.charge_until_exit(1));
+        admission.hold(&[(Hold::SessionIndex, u64::MAX)]).unwrap();
+        assert_eq!(admission.charged(), u64::MAX);
+        // The true total is unknown once `E` saturates, so releasing the hold keeps it
+        // saturated rather than dropping below the charge until exit.
+        admission.hold(&[(Hold::SessionIndex, 0)]).unwrap();
+        assert_eq!(admission.charged(), u64::MAX);
+        admission.hold(&[]).unwrap();
+        // A checkpoint recomputes `E` from the holds, the charges until exit and its estimate.
+        admission.checkpoint(Phase::Query, 10, &[]).unwrap();
+        assert_eq!(admission.charged(), 11);
+        assert!(!admission.stopped());
     }
 
     #[test]
