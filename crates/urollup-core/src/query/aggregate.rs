@@ -61,7 +61,8 @@ pub fn report(
     groups: &BTreeSet<GroupBy>,
 ) -> Result<ReportDocument, QueryError> {
     let aggregate = aggregate_totals(sources, selected, all)?;
-    let requests = selected_requests(sources, selected, all);
+    // The report reads the selected requests three times, so it collects them once.
+    let requests: Vec<_> = selected_requests(sources, selected, all).collect();
     Ok(ReportDocument {
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
@@ -81,9 +82,8 @@ pub fn daily(
     metadata: QueryMetadata,
     timezone: &ResolvedTimeZone,
 ) -> Result<DailyDocument, QueryError> {
-    let requests = selected_requests(sources, selected, all);
     let mut dated: BTreeMap<Option<String>, Accumulator> = BTreeMap::new();
-    for selected_request in requests {
+    for selected_request in selected_requests(sources, selected, all) {
         let date = request_date(selected_request.request, timezone).map(|date| date.to_string());
         dated.entry(date).or_default().add(
             ownership_class(&selected_request.request.ownership),
@@ -357,12 +357,13 @@ impl SelectedRequest<'_> {
     }
 }
 
+/// Every source's counted requests inside the selection, in source then ledger order.
 fn selected_requests<'a>(
     sources: &[QuerySource<'a>],
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
-) -> Vec<SelectedRequest<'a>> {
-    sources.iter().flat_map(|source| source_requests(source.ingested, selected, all)).collect()
+) -> impl Iterator<Item = SelectedRequest<'a>> {
+    sources.iter().flat_map(move |source| source_requests(source.ingested, selected, all))
 }
 
 /// One source's counted requests inside the selection, in ledger order.
@@ -909,8 +910,8 @@ mod tests {
 
     #[test]
     fn selected_requests_stay_one_pointer_wide() {
-        // Every command collects one per selected request. Only `sessions` needs the
-        // source agent, and it reads that from the source instead.
+        // `report` collects one per selected request; `daily` and `sessions` stream them.
+        // Only `sessions` needs the source agent, and it reads that from the source.
         assert_eq!(
             std::mem::size_of::<super::SelectedRequest<'_>>(),
             std::mem::size_of::<&crate::ledger::entities::Request>()
