@@ -32,9 +32,9 @@ latest counted request with a timestamp, and `undated_requests`, its counted req
 without one. `daily` buckets requests by the same rule.
 A row with no dated request omits `last_date`. A session with a `last_date` before today
 and no undated requests had no counted owned usage today.
-A request that two sessions both prove they own is ambiguous: it is counted on the
-unowned row (`thread: null`) and dates neither session, so a whole-history row can
-differ from a `--session` run, which reads only the selected session’s file family.
+A request that two sessions both prove they own is ambiguous: it is counted on its
+agent’s unowned row (`thread: null`) and dates neither session, so a whole-history row
+can differ from a `--session` run, which reads only the selected session’s file family.
 
 Default discovery includes the configured Claude roots and Codex’s active and archived
 sessions. Source overrides affect which history is included.

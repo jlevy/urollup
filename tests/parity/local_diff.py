@@ -279,7 +279,7 @@ def join_sessions(
         if not isinstance(row, dict):
             raise LocalDiffError("urollup returned an invalid session row")
         if not isinstance(row.get("thread"), str):
-            continue  # The unowned group is no session.
+            continue  # An agent's unowned row is no session.
         agent = row.get("agent")
         native = row.get("session")
         sessions = ccusage_by_agent.get(agent, {}) if isinstance(agent, str) else {}
