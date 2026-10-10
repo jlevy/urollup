@@ -13,6 +13,7 @@ use urollup_core::ledger::coverage::UnobservedReason;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use urollup_core::ledger::entities::{Counting, Ownership, RelationshipKind};
 use urollup_core::ledger::identity::AnalyticalId;
+use urollup_core::ledger::scope::IdentityBasis;
 use urollup_core::ledger::tokens::TokenMeasures;
 use urollup_core::selection::{Agent, Scope, SelectionQuery, SessionIndex, agent_thread_identity};
 use urollup_core::sources::roots::discover;
@@ -646,7 +647,8 @@ fn an_unkeyed_copied_token_count_with_its_parent_present_keeps_coverage_complete
             unpositioned(&counter(0, 108, 12, 18, 2)),
         ],
     );
-    for root in [paginated, legacy] {
+    // The paginated destination's declared boundary also counts its copied region.
+    for (root, copies) in [(paginated, 2), (legacy, 1)] {
         let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
         let mut totals = counted_totals(&ingested);
         totals.sort_unstable();
@@ -655,6 +657,15 @@ fn an_unkeyed_copied_token_count_with_its_parent_present_keeps_coverage_complete
         assert_eq!(totals.copy_only.requests, 1, "the unkeyed copy is excluded");
         assert_eq!(totals.completeness, Completeness::Complete);
         assert_eq!(select(&ingested, &[PARENT]).completeness, Completeness::Complete);
+        let copy = ingested
+            .ledger
+            .requests
+            .values()
+            .find(|request| request.counting == Counting::CopyOnly)
+            .expect("the copy-only request");
+        assert_eq!(copy.basis, IdentityBasis::Ambiguous, "the copy has no key");
+        assert_eq!(ingested.ledger.coverage.copies, copies);
+        assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
     }
 }
 

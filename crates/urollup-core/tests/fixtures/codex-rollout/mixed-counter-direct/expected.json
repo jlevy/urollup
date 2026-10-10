@@ -1,0 +1,325 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "mixed-counter-direct",
+  "dialect": "codex-rollout",
+  "summary": "A session that Codex 0.150.0 started with cumulative token_count events only and 0.154.0 resumed with token_usage_record lines counts its counter-only turns and its usage records once each, and each token_count written just after the usage record of the same response, with exactly its usage, adds nothing.",
+  "rules": [
+    "design §3.4 Codex counters beside usage records (in a root rollout, a token_count adjacent to a token_usage_record with exactly its usage is its twin; every other token_count that reports usage goes through the counter rules)",
+    "design §3.4 Codex counters",
+    "design §3.4 Codex requests (token_usage_record)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.150.0 rollout resumed by 0.154.0, and a session 0.154.0 started; token_usage_record first shipped in rust-v0.153.0"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl",
+      "lines": 17,
+      "thread": "019f0000-0000-7000-8000-001700000001"
+    },
+    {
+      "path": "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl",
+      "lines": 10,
+      "thread": "019f0000-0000-7000-8000-001700000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001700000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 5,
+        "tokens": {
+          "uncached_input": 21000,
+          "cache_read": 90000,
+          "cache_write": 0,
+          "output": 4500,
+          "reasoning": 1450
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001700000002",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 15000,
+          "cache_read": 8000,
+          "cache_write": 0,
+          "output": 1200,
+          "reasoning": 300
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001700000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.1-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-18T16:00:20.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 600,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:5"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001700000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:6"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.1-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-18T16:00:50.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 12000,
+        "cache_write": 0,
+        "output": 900,
+        "reasoning": 300
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:6"
+      ]
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-001700000001",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:9"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.1-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-18T16:10:30.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 16000,
+        "cache_write": 0,
+        "output": 1200,
+        "reasoning": 400
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:9"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:9"
+      ]
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_m3a"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-18T19:00:30.010Z",
+      "tokens": {
+        "uncached_input": 6000,
+        "cache_read": 24000,
+        "cache_write": 0,
+        "output": 800,
+        "reasoning": 250
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:13"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:13"
+      ],
+      "turn_id": "turn-c17-m3"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_m3b"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-18T19:01:10.010Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 30000,
+        "cache_write": 0,
+        "output": 1000,
+        "reasoning": 300
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:15"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T09-00-00-019f0000-0000-7000-8000-001700000001.jsonl:15"
+      ],
+      "turn_id": "turn-c17-m3"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_f1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-18T17:00:20.010Z",
+      "tokens": {
+        "uncached_input": 9000,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 500,
+        "reasoning": 100
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:6"
+      ],
+      "turn_id": "turn-c17-f1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c17_f2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001700000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-18T17:00:50.010Z",
+      "tokens": {
+        "uncached_input": 6000,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 700,
+        "reasoning": 200
+      },
+      "selected": [
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/18/rollout-2026-09-18T10-00-00-019f0000-0000-7000-8000-001700000002.jsonl:8"
+      ],
+      "turn_id": "turn-c17-f1"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 7,
+      "owned": 7,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 36000,
+      "cache_read": 98000,
+      "cache_write": 0,
+      "output": 5700,
+      "reasoning": 1750
+    },
+    "total_tokens": 139700
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Decide token_count or token_usage_record for the whole file, ignoring every token_count in a rollout with any token_usage_record (urollup before uro-h2sf)",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 25000,
+        "cache_read": 62000,
+        "cache_write": 0,
+        "output": 3000,
+        "reasoning": 850,
+        "total_tokens": 90000
+      }
+    },
+    {
+      "rule": "Count every token_count and every token_usage_record, so each response 0.154.0 wrote counts twice",
+      "requests": 11,
+      "tokens": {
+        "uncached_input": 61000,
+        "cache_read": 160000,
+        "cache_write": 0,
+        "output": 8700,
+        "reasoning": 2600,
+        "total_tokens": 229700
+      }
+    },
+    {
+      "rule": "Sum last_token_usage of every token_count event (agrees here: each response has exactly one token_count and no snapshot repeats)",
+      "requests": 7,
+      "tokens": {
+        "uncached_input": 36000,
+        "cache_read": 98000,
+        "cache_write": 0,
+        "output": 5700,
+        "reasoning": 1750,
+        "total_tokens": 139700
+      }
+    }
+  ],
+  "notes": [
+    "In the resumed session, lines 5, 6 and 9 are counter-only responses: no usage record is next to them, so the counter rules count them. Lines 14 and 16 are twins: each follows the usage record of its response (lines 13 and 15) with exactly its usage, so it adds nothing but the running total.",
+    "In the session 0.154.0 started, lines 7 and 9 are the twins of the usage records on lines 6 and 8, so the rollout is accounted from its usage records alone, as before uro-h2sf.",
+    "Each usage record precedes its token_count, the order Codex 0.153 and 0.154 write. The resumed records' thread_token_usage starts from the first resumed response, since 0.154.0 seeds it from the rollout's last usage record and this rollout had none; urollup does not read thread_token_usage or turn_token_usage.",
+    "The resumed session keeps the cli_version 0.150.0 session_meta it started with; whether a resumed rollout repeats session_meta or writes thread_settings_applied when resumed is unverified and does not change the accounting."
+  ]
+}

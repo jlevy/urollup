@@ -873,6 +873,44 @@ set these source-specific rules:
   observation, and compaction estimates and context-window-full fills (a
   `last_token_usage` with zero input and output and nonzero `total_tokens`) are estimate
   diagnostics, not requests.
+- **Codex counters beside usage records:** a root rollout, one whose every
+  `session_meta` names its own thread with neither a parent nor a fork origin nor a
+  `subagent_history_start_ordinal`, and whose settings events and usage records name no
+  other thread, cannot hold another thread’s history.
+  It can still hold counter-only usage beside its `token_usage_record` lines: a session
+  that a release before 0.153 started and a later release resumed, or one that an older
+  release resumed after a newer one wrote it, since such a release skips the records it
+  cannot read and appends counter-only turns.
+  In a root rollout, the usage events are its usage records and every `token_count`
+  whose total differs from the previous counter’s and whose `last_token_usage` reports
+  input or output; `compacted.latest_token_usage_record` is copy evidence, not an event.
+  Read in order, a usage-event counter is the twin of the usage record just before it
+  or, failing that, of the one just after it, when that record has exactly its usage,
+  every native usage field equal, no earlier counter took it, and no `turn_context` lies
+  between them. Codex writes a turn’s `turn_context` before its responses and never
+  between a record and its counter, and a resume always starts a new turn, so a legacy
+  response with exactly the usage of the next resumed record keeps its own day and
+  model, and still counts when that record’s `token_count` was never written.
+  Codex 0.153 and 0.154 write each response’s usage record before its `token_count` on
+  every path, and real rollouts show no other order; urollup also accepts the reverse,
+  and in it two consecutive responses with equal usage still count once each.
+  Turn IDs never decide twins: a compaction can write its record and counter before the
+  new turn’s `turn_context`. A twin adds no request but still moves the running total,
+  so a later counted counter’s delta excludes it.
+  Every other usage-event counter goes through the counter rules wherever it sits in the
+  file, with epochs and lowered totals.
+  A `token_count` that reports no new usage, such as a repeat or an estimate, follows
+  the nearest usage event before it, or the first one when none precedes it: after a
+  counted counter it goes through the counter rules, so a legacy estimate is still an
+  estimate diagnostic, and after a record or a twin it adds nothing.
+  A root rollout whose usage-event counters are all twins, and every rollout that is not
+  a root and has usage records, is accounted from its usage records alone, its
+  `token_count` events adding no usage: in a fork or subagent, a counter is a copy or is
+  ignored, as the copied-history rules below say.
+  Two gaps remain (`uro-r8si`): counter-only turns in a fork or subagent that also has
+  usage records are not counted, and in an all-legacy fork or subagent of a legacy fork
+  or subagent, the copy ends at the intermediate thread’s first own turn, so its usage
+  counts again.
 - **Codex decoding:** a line that contains none of the quoted relevant type tokens
   (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
   `thread_settings_applied`) is validated without building a document and counted as
@@ -881,8 +919,6 @@ set these source-specific rules:
   document except a `rate_limits` object, with the same malformed-line, repeated-key and
   null-field rules as Claude Code decoding.
   Consecutive identical `rate_limits` snapshots in a rollout share one value.
-  Whether a rollout uses `token_usage_record` lines or cumulative counters is decided
-  for the whole file.
 - **Codex copied history:** usage after a `session_meta` that names another thread
   belongs to that thread and is a copy.
   A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
