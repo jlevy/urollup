@@ -1001,14 +1001,18 @@ Choices made while implementing, where this design left room:
   exact estimate. `commit` releases the agent’s phase charges and discovery hold and
   holds its ledger. A checkpoint also resets the large-record permit’s high-water charge,
   which is how the permit and worker slots are released when decode ends.
-  Checkpoint refusals print `F + H × E`, the whole-process estimate compared with `B`;
-  phases read `cataloging discovered sources`, `reading Codex rollouts`, `building Codex
+  `charge_large_record` keeps only that high-water charge; holding the permit,
+  re-entrance for its holder, release once a need is gone, and waiting that watches the
+  stop flag are slice 4’s. Checkpoint refusals print `F + H × E`, the whole-process
+  estimate compared with `B`; phases read `cataloging discovered sources`,
+  `reading Codex rollouts`, `building Codex
   observations`, `reconciling Codex requests`, `finalizing the Codex ledger`, `indexing
-  Codex sessions` and `querying and rendering the output`. Decode and checkpoint
-  refusals advise `raise --max-ram (for example --max-ram 50%)`; the design now requires
-  the smallest whole percent of `M` that covers a checkpoint estimate, and no value for
-  a decode refusal or when the estimate exceeds `M`, applied in slice 7. A budget below
-  `F + H × b` refuses with `the memory budget of
+  Codex sessions` and `querying and rendering the output`; `cataloging discovered
+  sources` is the design’s discovery checkpoint.
+  Decode and checkpoint refusals advise `raise --max-ram (for example --max-ram 50%)`;
+  the design now requires the smallest whole percent of `M` that covers a checkpoint
+  estimate, and no value for a decode refusal or when the estimate exceeds `M`, applied
+  in slice 7. A budget below `F + H × b` refuses with `the memory budget of
   … is below the … that one decoding worker needs; raise --max-ram`; `ensure_floor`
   checks one slot size, so slice 7 calls it before discovery with the plain slot and
   again when discovery finds a compressed source.
