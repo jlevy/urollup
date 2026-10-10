@@ -143,12 +143,13 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    is still checked against the copied total.
    A counter that no turn places is a copy when the parent root, itself counter-only,
    reported its cumulative total, with a missing count read as 0. A parent root here is
-   a thread none of whose rollouts carries lineage: a top-level parent or fork link, a
-   `source.subagent.thread_spawn` parent, a boundary or another thread’s header.
+   a thread none of whose rollouts carries lineage (a top-level parent or fork link, a
+   boundary or another thread’s header) or a `source.subagent.thread_spawn` parent.
    Only such a rollout can be a complete record of what the child copied.
-   After a turn-inferred start, a later turn the parent recorded, or a counter total it
-   reported other than the copied total, contradicts the inference, and the region from
-   the start to the boundary becomes undecided.
+   After a turn-inferred start, a later turn the parent recorded, a counter total it
+   reported other than the copied total, or a line naming another thread contradicts the
+   inference, and the region from the start to the boundary becomes undecided.
+   The start stays open until a line at or past the boundary.
 5. Unnamed usage (counters and records without a `thread_id`) that rules 2 to 4 leave
    undecided is excluded with a `codex-history-boundary-unverified` diagnostic and a
    coverage gap, rather than counted or silently treated as a copy, when its region
@@ -175,9 +176,9 @@ usage under an invalid or unpositioned boundary.
   (absent at `rust-v0.130.0`, present at `rust-v0.150.0`), a spawned subagent named its
   parent only in `source.subagent.thread_spawn.parent_thread_id`, which Codex itself
   reads and the migration leaves in place.
-  urollup treats that link as lineage, so such a thread never decides a child’s turns,
-  but it does not yet read it as a parent, so a migrated child of one is undecided
-  (`uro-3b12`).
+  urollup keeps such a thread from deciding a child’s turns, without changing how its
+  own counters are read, but does not yet read the link as a parent, so a migrated child
+  of one is undecided (`uro-3b12`).
 
 - **Rolled-back spawn turns.** Codex’s migration replays a legacy root through a
   rollback plan that drops a rolled-back turn’s `turn_context` and counters, so the

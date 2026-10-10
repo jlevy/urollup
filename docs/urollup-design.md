@@ -956,11 +956,18 @@ set these source-specific rules:
   `parent_thread_id` or `forked_from_id`, no `source.subagent.thread_spawn` parent
   (where an old-format subagent, written before Codex had the top-level field, names its
   parent; reading that link as a parent is `uro-3b12`), no boundary and no other
-  thread’s header. A child’s own lines never precede a turn or a total its parent
-  recorded, so after a turn-inferred start, a later turn the parent recorded or a
-  counter total it reported (other than a repeat of the copied total) before the
-  boundary proves the inference wrong, and every step from that start to the boundary is
-  excluded as unverified instead of counted.
+  thread’s header. The nested link only keeps such a thread from deciding a child’s
+  turns: it is not lineage for the counter rules, since without a header or boundary its
+  rollout holds no copy.
+  A child’s own lines never precede a turn or a total its parent recorded, or a line
+  naming another thread, so after a turn-inferred start any of these before the boundary
+  proves the inference wrong: a later turn the parent recorded, a counter total it
+  reported (other than a repeat of the copied total), or a settings event, record or
+  compacted record naming another thread.
+  Every step from that start to the boundary is then excluded as unverified instead of
+  counted. The start stays voidable until a line at or past the boundary: a later
+  unrecorded turn, as after a settings event without a thread ID, never moves it, and a
+  line without an ordinal never closes it.
   One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
   dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
   spawned in that turn holds its copy, so the root’s next counter step and the child
@@ -979,7 +986,8 @@ set these source-specific rules:
   A legacy child seeded with its parent’s total reports it even when the migration
   dropped no other response.
   In a rollout without usage records, the counter of a response that such a compacted
-  record already counts adds no usage, though it still moves the running total.
+  record already counts, compared with a missing count read as 0, adds no usage, though
+  it still moves the running total.
   A prefix without a known parent remains unowned copy evidence, never child usage.
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
   an invalid `subagent_history_start_ordinal` places none of the rollout’s unnamed
