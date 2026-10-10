@@ -958,7 +958,8 @@ enum CounterScope {
 /// its `last_token_usage` reports input or output; a usage record is always one. Read in
 /// order, a usage-event counter is the twin of the usage record just before it (the order
 /// Codex writes) or, failing that, of the one just after it (the reverse order, accepted
-/// too), when that record has exactly the counter's usage and no earlier counter took it.
+/// too), when that record has exactly the counter's usage, no earlier counter took it, and
+/// no `turn_context` lies between them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CounterRole {
     /// The cumulative-counter rules account for it: every counter of a rollout without
@@ -1033,8 +1034,8 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) ->
     if !root {
         return CounterScope::Direct;
     }
-    // Twins, pairing each counter with an untaken record next to it, the one before it
-    // first. A counter that reports no new usage is provisionally `Covered`.
+    // Twins, pairing each counter with an untaken record next to it within its turn, the
+    // one before it first. A counter that reports no new usage is provisionally `Covered`.
     let mut reader = CountReader::new(counts);
     let mut previous_total = None;
     let mut previous = None;
@@ -1072,8 +1073,11 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) ->
                 }
                 previous = Some(UsageEvent::Counter { index, last, twin });
             }
+            // Codex writes a turn's `turn_context` before any of its responses, never
+            // between a response's record and its counter, so no pair spans one. A legacy
+            // response before a resumed turn then never pairs with that turn's record.
+            RecordKind::TurnContext { .. } => previous = None,
             RecordKind::SessionMeta { .. }
-            | RecordKind::TurnContext { .. }
             | RecordKind::Compacted(_)
             | RecordKind::ThreadSettingsApplied { .. } => {}
         }
@@ -2556,6 +2560,16 @@ mod tests {
                     counter_line(&usage_json(2_000, 200, 20, 0), &one),
                 ],
                 (CounterScope::Mixed, vec![Twin, Counted]),
+            ),
+            (
+                "no pair spans a turn_context",
+                vec![
+                    twin.clone(),
+                    r#"{"type":"turn_context","payload":{"turn_id":"t2"}}"#.to_owned(),
+                    record.clone(),
+                    counter_line(&usage_json(2_000, 200, 20, 0), &one),
+                ],
+                (CounterScope::Mixed, vec![Counted, Twin]),
             ),
             (
                 "equal consecutive responses in the reverse order",

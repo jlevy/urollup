@@ -886,7 +886,11 @@ set these source-specific rules:
   input or output; `compacted.latest_token_usage_record` is copy evidence, not an event.
   Read in order, a usage-event counter is the twin of the usage record just before it
   or, failing that, of the one just after it, when that record has exactly its usage,
-  every native usage field equal, and no earlier counter took it.
+  every native usage field equal, no earlier counter took it, and no `turn_context` lies
+  between them. Codex writes a turn’s `turn_context` before its responses and never
+  between a record and its counter, and a resume always starts a new turn, so a legacy
+  response with exactly the usage of the next resumed record keeps its own day and
+  model, and still counts when that record’s `token_count` was never written.
   Codex 0.153 and 0.154 write each response’s usage record before its `token_count` on
   every path, and real rollouts show no other order; urollup also accepts the reverse,
   and in it two consecutive responses with equal usage still count once each.

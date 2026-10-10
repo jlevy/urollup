@@ -75,6 +75,18 @@ fn counter(total: Usage, last: Usage) -> String {
     .to_string()
 }
 
+/// A `turn_context` that names its model.
+fn turn_model(turn_id: &str, model: &str) -> String {
+    json!({"type": "turn_context", "payload": {"turn_id": turn_id, "model": model}}).to_string()
+}
+
+/// The line with a record `timestamp`.
+fn stamped(timestamp: &str, line: &str) -> String {
+    let mut value: Value = serde_json::from_str(line).expect("synthetic line");
+    value["timestamp"] = json!(timestamp);
+    value.to_string()
+}
+
 /// A compaction estimate: the running total unchanged, and a `last_token_usage` with zero
 /// input and output and nonzero `total_tokens`.
 fn estimate(total: Usage) -> String {
@@ -494,6 +506,61 @@ fn a_counter_with_no_new_usage_follows_the_nearest_usage_event() {
     // 122,000 + 31,500 + 40,900.
     assert_tokens(&total, &tokens(190_000 - 141_000, 141_000, 4_400, 1_700));
     assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexEstimateCompaction, 1)]);
+}
+
+/// Each counted request's model, tokens and UTC day, sorted.
+fn attribution(ingested: &Ingested) -> Vec<(String, Option<u64>, String)> {
+    let mut rows: Vec<_> = ingested
+        .ledger
+        .requests
+        .values()
+        .filter(|request| request.counting == Counting::Counted)
+        .map(|request| {
+            let tokens = request.usage.as_ref().and_then(|usage| {
+                TokenMeasures::from(usage.revision.usage).total().expect("valid sum")
+            });
+            let model =
+                request.model.as_ref().map_or_else(String::new, |model| model.name.to_string());
+            let day = request.first_seen.map_or_else(String::new, |seen| {
+                jiff::Timestamp::from(seen).to_string().chars().take(10).collect()
+            });
+            (model, tokens, day)
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Review D1 (d6): a legacy counter-only response, then a resumed turn whose first
+/// response has exactly the same usage. No pair spans the resumed turn's `turn_context`,
+/// so the legacy response keeps its own day and model, and still counts when the resumed
+/// record's own `token_count` was never written.
+#[test]
+fn a_legacy_response_with_the_next_resumed_records_usage_keeps_its_day_and_model() {
+    let same = [1_000, 0, 100, 0];
+    let legacy = [
+        meta(SESSION, None),
+        stamped("2026-10-01T10:00:00Z", &turn_model("t1", "legacy-model")),
+        stamped("2026-10-01T10:00:05Z", &counter(same, same)),
+        stamped("2026-10-02T10:00:00Z", &turn_model("t2", "modern-model")),
+        stamped("2026-10-02T10:00:05Z", &direct(SESSION, Some("t2"), "r2", same)),
+    ];
+    let twin = stamped("2026-10-02T10:00:06Z", &counter([2_000, 0, 200, 0], same));
+    for (name, lines) in [
+        ("with the record's token_count", [legacy.as_slice(), &[twin]].concat()),
+        ("without it", legacy.to_vec()),
+    ] {
+        let ingested = ingest_session(&lines);
+        assert_eq!(summary(&ingested), (2, Some(2_200), Completeness::Complete), "{name}");
+        assert_eq!(
+            attribution(&ingested),
+            [
+                ("legacy-model".to_owned(), Some(1_100), "2026-10-01".to_owned()),
+                ("modern-model".to_owned(), Some(1_100), "2026-10-02".to_owned()),
+            ],
+            "{name}"
+        );
+    }
 }
 
 /// Review C5 (c3): consecutive responses with exactly equal usage. Each counter takes the
