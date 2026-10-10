@@ -10,7 +10,7 @@ use crate::ledger::entities::Basis;
 use crate::selection::Agent;
 
 /// Registry version of the catalog-family table. Bump when a mapping rule changes.
-pub const PROVIDER_MAP_VERSION: &str = "2026-09-20";
+pub const PROVIDER_MAP_VERSION: &str = "2026-10-10";
 
 /// Infers the usage vendor for one request from its agent and attributed model.
 ///
@@ -27,8 +27,9 @@ pub fn provider_for(agent: Agent, model: Option<&str>) -> Basis<&'static str> {
 
 /// Maps a catalog or picker model family to a vendor token.
 ///
-/// Auto (`default`) hides the served model, so its provider stays unknown. Fable stays
-/// unmapped until a `claude-fable-*` or `fable-*` value is locked.
+/// Auto (`default`) hides the served model, so its provider stays unknown. A
+/// `claude-fable-*` value maps to `anthropic` through the `claude` rule; a Fable spelling
+/// without that prefix stays unknown until a fixture shows it.
 pub fn infer_catalog_provider(model: Option<&str>) -> Basis<&'static str> {
     let Some(model) = model.filter(|model| !model.is_empty()) else {
         return Basis::Unknown;
@@ -37,14 +38,14 @@ pub fn infer_catalog_provider(model: Option<&str>) -> Basis<&'static str> {
     if normalized == "default" || normalized == "auto" {
         return Basis::Unknown;
     }
-    if normalized.contains("fable") {
-        return Basis::Unknown;
-    }
     if normalized.starts_with("grok") || normalized.starts_with("composer") {
         return Basis::Inferred("cursor");
     }
     if normalized.starts_with("claude") {
         return Basis::Inferred("anthropic");
+    }
+    if normalized.contains("fable") {
+        return Basis::Unknown;
     }
     if normalized.starts_with("gpt")
         || normalized.starts_with("o1")
@@ -97,7 +98,9 @@ mod tests {
         assert_eq!(infer_catalog_provider(Some("kimi-k2-instruct")), Basis::Inferred("moonshot"));
         assert_eq!(infer_catalog_provider(Some("glm-5.2")), Basis::Inferred("zai"));
         assert_eq!(infer_catalog_provider(Some("default")), Basis::Unknown);
-        assert_eq!(infer_catalog_provider(Some("claude-fable-max")), Basis::Unknown);
+        assert_eq!(infer_catalog_provider(Some("claude-fable-max")), Basis::Inferred("anthropic"));
+        assert_eq!(infer_catalog_provider(Some("fable-max")), Basis::Unknown);
+        assert_eq!(infer_catalog_provider(Some("cursor-fable-max")), Basis::Unknown);
         assert_eq!(infer_catalog_provider(None), Basis::Unknown);
     }
 
