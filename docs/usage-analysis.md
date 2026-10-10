@@ -54,9 +54,9 @@ If the archive also holds transcripts still under `~/.claude/projects`, add
 roots. Codex keeps archived sessions under `archived_sessions`, which default discovery
 reads.
 
-Codex totals stay provisional until the real-history comparison is rerun after the
-accounting fixes: PR #18 (merged 2026-10-09) and the paginated-fork double count
-(`uro-kpbp`) in PR #16. The
+Codex totals stay provisional until the open accounting fixes land and the real-history
+comparison is rerun.
+The
 [release readiness record](project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes)
 lists each open fix.
 

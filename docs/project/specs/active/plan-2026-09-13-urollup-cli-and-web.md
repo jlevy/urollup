@@ -170,14 +170,13 @@ The capture store lands only after the uncached engine is the correctness refere
 - [x] Add the opt-in, non-CI `make e2e-local` aggregate and `make parity-local` ccusage
   diff with privacy sentinels that reject log content, paths, identifiers, prompts,
   project names and custom model names.
-- [ ] Correct the current report interface and local acceptance tooling: reject ignored
-  grouping flags and fix help (`uro-oz6w`); replace per-session aggregate rescans and
-  retain cache-write lifetimes and metric availability (`uro-qg1a`). These are fixes to
-  the existing surface, not completion of G5.
+- [x] Correct the current report interface and local acceptance tooling: reject ignored
+  grouping flags and fix help (`uro-oz6w`, PR #25); replace per-session aggregate
+  rescans and retain cache-write lifetimes and per-day metric availability (`uro-qg1a`,
+  PR #24). These are fixes to the existing surface, not completion of G5.
 - [ ] Land the
   [open correctness fixes](plan-2026-09-16-first-release-publishing.md#open-correctness-fixes),
-  starting with the Codex paginated-fork double count (`uro-kpbp`), each with synthetic
-  regressions, then rerun the real-history comparison.
+  each with synthetic regressions, then rerun the real-history comparison.
 - [ ] Bound persistent-log memory before release.
   The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
   after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary

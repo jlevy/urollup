@@ -81,9 +81,8 @@ Redirected, piped and machine-readable workflows stay plain and noninteractive.
 
 Milestone 0.1’s report commands, fixture-backed ccusage reconciliation, terminal-aware
 color, interactive progress and privacy-tested local acceptance tools are implemented.
-The source-reading and Codex usage fixes of PR #18 merged on 2026-10-09, and the Codex
-paginated-fork double count (`uro-kpbp`) is fixed in PR #16, which lands with this
-status. Treat Codex totals as provisional until the real-history comparison is rerun.
+Treat Codex totals as provisional until the open correctness fixes land and the
+real-history comparison is rerun.
 The
 [release readiness record](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
 lists every open fix and gate.
