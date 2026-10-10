@@ -1,13 +1,13 @@
-//! Codex rollouts that hold cumulative `token_count` usage beside `token_usage_record`
+//! Codex root rollouts that hold cumulative `token_count` usage beside `token_usage_record`
 //! lines (`uro-h2sf`): a session that a release before 0.153 started and a later release
-//! resumed, a rollout that an earlier release appended turns to after a later one wrote
-//! it, and forks of either. Each response must count once, from whichever record reports
-//! it.
+//! resumed, or one that an earlier release appended turns to after a later one wrote it.
+//! Each response must count once, from whichever record reports it.
 //!
-//! A counter is the twin of a usage record when the two are adjacent usage events with
-//! exactly the same usage: Codex writes the record first, and urollup also accepts the
-//! reverse order. Twins move the running total and add nothing; every other counter that
-//! reports usage goes through the counter rules wherever it sits.
+//! In a root rollout, a counter is the twin of a usage record when the two are adjacent
+//! usage events with exactly the same usage: Codex writes the record first, and urollup
+//! also accepts the reverse order. Twins move the running total and add nothing; every
+//! other counter that reports usage goes through the counter rules wherever it sits.
+//! Forks and subagents keep the accounting they had before (`uro-r8si`).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -15,9 +15,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use urollup_core::accounting::totals::{
-    Completeness, PartialReason, ledger_totals, selection_totals,
-};
+use urollup_core::accounting::totals::{Completeness, ledger_totals, selection_totals};
 use urollup_core::adapters::{Ingested, codex_rollout};
 use urollup_core::ledger::diagnostics::DiagnosticCode;
 use urollup_core::ledger::entities::Counting;
@@ -28,6 +26,8 @@ use urollup_core::sources::roots::discover;
 const SESSION: &str = "019f0000-0000-7000-8000-00ee00000001";
 const PARENT: &str = "019f0000-0000-7000-8000-00ee00000002";
 const CHILD: &str = "019f0000-0000-7000-8000-00ee00000003";
+const GRANDCHILD: &str = "019f0000-0000-7000-8000-00ee00000004";
+const OTHER: &str = "019f0000-0000-7000-8000-00ee00000005";
 
 /// Usage as Codex writes it: input (cached input included), cached input, output and
 /// reasoning output.
@@ -318,17 +318,22 @@ fn a_counter_only_turn_after_the_first_usage_record_counts() {
 }
 
 #[test]
-fn counter_only_turns_between_usage_record_turns_count_once_in_either_order() {
-    // Counter-only turns before, between and after usage-record turns; each record turn's
-    // counter is written after its record, then before it.
-    for record_first in [true, false] {
+fn counter_only_turns_between_usage_record_turns_count_once_on_any_worker_count_and_order() {
+    // Two root sessions with counter-only turns before, between and after usage-record
+    // turns: one writes each record before its counter, the other after it. Neither waits
+    // for the other rollouts, and the ledger is the same on any worker count and order.
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    for (minute, thread, record_first) in [(0, SESSION, true), (1, OTHER, false)] {
         let recorded = |id: &str, response: &str, total: Usage, own: Usage| {
-            let (record, twin) = (direct(SESSION, Some(id), response, own), counter(total, own));
+            let (record, twin) = (
+                direct(thread, Some(id), &format!("{thread}-{response}"), own),
+                counter(total, own),
+            );
             let pair = if record_first { [record, twin] } else { [twin, record] };
             [vec![turn(id)], pair.to_vec()].concat()
         };
         let lines = [
-            vec![meta(SESSION, None), turn("a1")],
+            vec![meta(thread, None), turn("a1")],
             vec![counter([1_000, 0, 100, 0], [1_000, 0, 100, 0])],
             recorded("a2", "r2", [3_000, 500, 300, 0], [2_000, 500, 200, 0]),
             vec![turn("a3"), counter([4_500, 500, 400, 0], [1_500, 0, 100, 0])],
@@ -336,14 +341,18 @@ fn counter_only_turns_between_usage_record_turns_count_once_in_either_order() {
             vec![turn("a5"), counter([6_000, 1_300, 500, 0], [700, 0, 60, 0])],
         ]
         .concat();
-        let ingested = ingest_session(&lines);
-
-        let (requests, total) = counted(&ingested);
-        assert_eq!(requests, 5, "record_first={record_first}");
-        // 1,100 + 2,200 + 1,600 + 840 + 760: the final running total.
-        assert_tokens(&total, &tokens(6_000 - 1_300, 1_300, 500, 0));
-        assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+        write_rollout(home.path(), thread, minute, &lines);
     }
+    let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+    for thread in [SESSION, OTHER] {
+        // 1,100 + 2,200 + 1,600 + 840 + 760: the final running total.
+        assert_eq!(thread_total(&ingested, thread), (5, Some(6_500)), "{thread}");
+    }
+    let (requests, total) = counted(&ingested);
+    assert_eq!(requests, 10);
+    assert_tokens(&total, &tokens(2 * (6_000 - 1_300), 2 * 1_300, 2 * 500, 0));
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
 }
 
 /// Review B2 (P6), with its control P6b: a resumed legacy session whose first recorded
@@ -487,6 +496,65 @@ fn a_counter_with_no_new_usage_follows_the_nearest_usage_event() {
     assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexEstimateCompaction, 1)]);
 }
 
+/// Review C5 (c3): consecutive responses with exactly equal usage. Each counter takes the
+/// untaken record next to it, the one before it first, so neither order counts a response
+/// twice, nor does a legacy response with the same usage as the next record.
+#[test]
+fn consecutive_responses_with_equal_usage_count_once_in_either_order() {
+    let same = [1_000, 0, 100, 0];
+    let reverse = [
+        meta(SESSION, None),
+        turn("t1"),
+        counter([1_000, 0, 100, 0], same),
+        direct(SESSION, Some("t1"), "r1", same),
+        turn("t2"),
+        counter([2_000, 0, 200, 0], same),
+        direct(SESSION, Some("t2"), "r2", same),
+    ];
+    let codex = [
+        meta(SESSION, None),
+        turn("t1"),
+        direct(SESSION, Some("t1"), "r1", same),
+        counter([1_000, 0, 100, 0], same),
+        turn("t2"),
+        direct(SESSION, Some("t2"), "r2", same),
+        counter([2_000, 0, 200, 0], same),
+    ];
+    let legacy_then_reverse = [
+        meta(SESSION, None),
+        turn("t0"),
+        counter([1_000, 0, 100, 0], same),
+        turn("t1"),
+        counter([2_000, 0, 200, 0], same),
+        direct(SESSION, Some("t1"), "r1", same),
+    ];
+    for (name, lines) in
+        [("reverse", &reverse[..]), ("Codex", &codex[..]), ("legacy", &legacy_then_reverse[..])]
+    {
+        let ingested = ingest_session(lines);
+        assert_eq!(summary(&ingested), (2, Some(2_200), Completeness::Complete), "{name}");
+    }
+}
+
+#[test]
+fn a_rollout_whose_counters_are_all_twins_never_reads_their_totals() {
+    // As before counters were counted beside usage records, a twin's running total is
+    // not read when no counter of the rollout is counted, so a total that could not be
+    // normalized (cached input above input) still ingests.
+    let ingested = ingest_session(&[
+        meta(SESSION, None),
+        turn("t1"),
+        direct(SESSION, Some("t1"), "r1", [1_000, 0, 100, 0]),
+        counter([1_000, 2_000, 100, 0], [1_000, 0, 100, 0]),
+    ]);
+
+    assert_eq!(summary(&ingested), (1, Some(1_100), Completeness::Complete));
+}
+
+// Rollouts that are not roots: forks and subagents keep the accounting they had before
+// counters were counted beside usage records. Each test pins that accounting; the gaps
+// it shows are tracked as uro-r8si.
+
 /// A legacy parent with two counter-only turns, and its 0.154 fork, whose copied prefix
 /// keeps the parent's counters before the fork's first usage record.
 fn legacy_fork(home: &Path, parent_written: bool) {
@@ -500,11 +568,7 @@ fn legacy_fork(home: &Path, parent_written: bool) {
         write_rollout(home, PARENT, 0, &[[meta(PARENT, None)].as_slice(), &parent_lines].concat());
     }
     let child = [
-        vec![
-            json!({"type": "session_meta", "payload": {"id": CHILD, "forked_from_id": PARENT}})
-                .to_string(),
-            meta(PARENT, None),
-        ],
+        vec![fork_meta(CHILD, PARENT), meta(PARENT, None)],
         parent_lines.to_vec(),
         vec![
             // The fork's first response in the reverse order, its second in Codex's order.
@@ -520,9 +584,14 @@ fn legacy_fork(home: &Path, parent_written: bool) {
     write_rollout(home, CHILD, 1, &child);
 }
 
+fn fork_meta(thread: &str, from: &str) -> String {
+    json!({"type": "session_meta", "payload": {"id": thread, "forked_from_id": from}}).to_string()
+}
+
 /// Review B's P7 and P7b: a 0.154 fork of a legacy parent, with and without the parent.
+/// The fork's usage records account for its usage, and its copied counters stay copies.
 #[test]
-fn a_fork_whose_prefix_keeps_legacy_parent_counters_counts_its_own_usage_once() {
+fn a_fork_of_a_legacy_parent_counts_its_usage_records_once() {
     let home = tempfile::tempdir().expect("temporary Codex home");
     legacy_fork(home.path(), true);
     let ingested = ingest_on_any_worker_count_and_order(home.path());
@@ -530,8 +599,7 @@ fn a_fork_whose_prefix_keeps_legacy_parent_counters_counts_its_own_usage_once() 
     assert_eq!(thread_total(&ingested, PARENT), (2, Some(2_000)));
     assert_eq!(thread_total(&ingested, CHILD), (2, Some(300 + 200)));
     assert_eq!(summary(&ingested), (4, Some(2_500), Completeness::Complete));
-    // The parent's header, two turn contexts and two counters.
-    assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexCopiedHistoryInferred, 5)]);
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
 
     let home = tempfile::tempdir().expect("temporary Codex home");
     legacy_fork(home.path(), false);
@@ -540,10 +608,9 @@ fn a_fork_whose_prefix_keeps_legacy_parent_counters_counts_its_own_usage_once() 
 }
 
 #[test]
-fn a_counter_just_after_a_record_is_its_twin_before_a_counter_just_before_it() {
+fn a_forks_copied_counter_stays_a_copy_beside_the_forks_first_record() {
     // The fork's last copied counter reports exactly the usage of the fork's first usage
-    // record. The counter written after the record is that record's twin, so the copy
-    // stays a copy and the fork's own counter adds nothing.
+    // record: the copy stays a copy and the fork's own counter adds nothing.
     let home = tempfile::tempdir().expect("temporary Codex home");
     let parent_lines = [turn("turn-p1"), counter([900, 0, 100, 0], [900, 0, 100, 0])];
     write_rollout(
@@ -609,11 +676,11 @@ fn copy_lines(ingested: &Ingested, child: &[String]) -> Vec<(Option<u64>, Vec<us
     lines
 }
 
-/// Review A5 and B5 (P10): a declared-boundary child whose copied prefix holds the
-/// parent's usage records and counters. Each copied counter joins the request of its own
-/// twin's response in either order, never the previous response's.
+/// Review B's P10: a declared-boundary child whose copied prefix holds the parent's usage
+/// records and counters. A copied counter joins the copied thread's latest response, which
+/// in Codex's order is its own; totals are the same in either order.
 #[test]
-fn a_copied_counter_is_keyed_to_its_twin_records_response_in_either_order() {
+fn a_childs_copied_counter_joins_the_copied_threads_latest_response() {
     for counter_first in [true, false] {
         let home = tempfile::tempdir().expect("temporary Codex home");
         let responses = |base: u64| {
@@ -644,19 +711,21 @@ fn a_copied_counter_is_keyed_to_its_twin_records_response_in_either_order() {
         let ingested = ingest_on_any_worker_count_and_order(home.path());
 
         assert_eq!(summary(&ingested), (3, Some(1_700), Completeness::Complete));
-        assert_eq!(
-            copy_lines(&ingested, &child),
-            [(Some(200), vec![]), (Some(500), vec![5, 6]), (Some(1_000), vec![3, 4])],
-            "counter_first={counter_first}"
-        );
+        let expected = if counter_first {
+            // The reverse order, which Codex does not write: a copied counter joins the
+            // previous response, and the first one, with none before it, stays unkeyed.
+            vec![(Some(200), vec![]), (Some(500), vec![6]), (Some(1_000), vec![4, 5])]
+        } else {
+            vec![(Some(200), vec![]), (Some(500), vec![5, 6]), (Some(1_000), vec![3, 4])]
+        };
+        assert_eq!(copy_lines(&ingested, &child), expected, "counter_first={counter_first}");
     }
 }
 
 #[test]
 fn a_copied_rate_limit_refresh_joins_the_response_its_twin_reports() {
     // A 0.154 fork whose copied prefix keeps the parent's usage record, its twin and a
-    // refresh repeating the twin's total: every counter follows an equal record, so the
-    // copies join the parent's response as before counters were counted beside records.
+    // refresh repeating the twin's total: the copies join the parent's response.
     let home = tempfile::tempdir().expect("temporary Codex home");
     let parent_lines = [
         settings(PARENT),
@@ -672,11 +741,7 @@ fn a_copied_rate_limit_refresh_joins_the_response_its_twin_reports() {
         &[[meta(PARENT, None)].as_slice(), &parent_lines].concat(),
     );
     let child = [
-        vec![
-            json!({"type": "session_meta", "payload": {"id": CHILD, "forked_from_id": PARENT}})
-                .to_string(),
-            meta(PARENT, None),
-        ],
+        vec![fork_meta(CHILD, PARENT), meta(PARENT, None)],
         parent_lines.to_vec(),
         vec![
             settings(CHILD),
@@ -725,31 +790,28 @@ fn declared_boundary_fork(home: &Path, copied_ordinal: Option<u64>) {
     );
 }
 
-/// Review B4 (P11 and P12): the copied counter goes through the counter rules, so a
-/// declared boundary places it by its ordinal. Without one it could be the child's own
-/// counter-only usage, which PR #16's rule excludes as a coverage gap.
+/// Review B4 (P11 and P12): a declared-boundary fork's copied counter, with or without an
+/// ordinal, is a copy of the parent's usage, and coverage stays complete.
 #[test]
-fn a_declared_boundary_places_a_copied_counter_by_its_ordinal() {
-    let home = tempfile::tempdir().expect("temporary Codex home");
-    declared_boundary_fork(home.path(), Some(2));
-    let ingested = ingest_on_any_worker_count_and_order(home.path());
-    assert_eq!(summary(&ingested), (2, Some(1_200), Completeness::Complete));
-    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
-
-    let home = tempfile::tempdir().expect("temporary Codex home");
-    declared_boundary_fork(home.path(), None);
-    let ingested = ingest_on_any_worker_count_and_order(home.path());
-    assert_eq!(
-        summary(&ingested),
-        (2, Some(1_200), Completeness::Partial(BTreeSet::from([PartialReason::UnobservedGap])))
-    );
-    assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexHistoryBoundaryUnverified, 1)]);
+fn a_declared_boundary_forks_copied_counter_is_a_copy_with_or_without_an_ordinal() {
+    for copied_ordinal in [Some(2), None] {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        declared_boundary_fork(home.path(), copied_ordinal);
+        let ingested = ingest_on_any_worker_count_and_order(home.path());
+        assert_eq!(
+            summary(&ingested),
+            (2, Some(1_200), Completeness::Complete),
+            "copied_ordinal={copied_ordinal:?}"
+        );
+        assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+    }
 }
 
 /// Review B's P8: a declared-boundary child with a copied counter, an own counter-only
-/// turn, and a resumed turn written in Codex's order.
+/// turn, and a resumed turn written in Codex's order. Its usage records account for its
+/// usage, so the counter-only turn before them is not counted (uro-r8si).
 #[test]
-fn a_declared_boundary_child_resumed_after_the_upgrade_counts_its_own_turns() {
+fn a_resumed_declared_boundary_child_counts_its_usage_records() {
     let home = tempfile::tempdir().expect("temporary Codex home");
     write_rollout(
         home.path(),
@@ -782,52 +844,8 @@ fn a_declared_boundary_child_resumed_after_the_upgrade_counts_its_own_turns() {
     let ingested = ingest_on_any_worker_count_and_order(home.path());
 
     assert_eq!(thread_total(&ingested, PARENT), (1, Some(1_000)));
-    assert_eq!(thread_total(&ingested, CHILD), (2, Some(200 + 300)));
+    assert_eq!(thread_total(&ingested, CHILD), (1, Some(300)));
     assert_eq!(summary(&ingested).2, Completeness::Complete);
-}
-
-/// Review B's P9, in Codex's order: a child's twin starts its running total without the
-/// first-step check, so a counted turn after it counts only its own usage whether the
-/// twin's total continues the inherited total, restarts from zero, or does neither.
-#[test]
-fn a_twin_moves_the_childs_running_total_whatever_its_baseline() {
-    for (label, twin_total) in [("seeded", 1_100_u64), ("unseeded", 100), ("neither", 1_050)] {
-        let (twin_input, twin_output) = (twin_total / 10 * 9, twin_total / 10);
-        let home = tempfile::tempdir().expect("temporary Codex home");
-        write_rollout(
-            home.path(),
-            PARENT,
-            0,
-            &[child_meta(PARENT, json!({})), at(1, &counter([900, 0, 100, 0], [900, 0, 100, 0]))],
-        );
-        write_rollout(
-            home.path(),
-            CHILD,
-            1,
-            &[
-                child_meta(
-                    CHILD,
-                    json!({"parent_thread_id": PARENT, "forked_from_id": PARENT,
-                           "history_mode": "paginated", "subagent_history_start_ordinal": 2}),
-                ),
-                at(1, &counter([900, 0, 100, 0], [900, 0, 100, 0])),
-                at(2, &turn("turn-k1")),
-                at(3, &direct(CHILD, Some("turn-k1"), "resp-k1", [90, 0, 10, 0])),
-                at(4, &counter([twin_input, 0, twin_output, 0], [90, 0, 10, 0])),
-                at(5, &turn("turn-k2")),
-                at(6, &counter([twin_input + 180, 0, twin_output + 20, 0], [180, 0, 20, 0])),
-            ],
-        );
-        let ingested = ingest_on_any_worker_count_and_order(home.path());
-
-        assert_eq!(thread_total(&ingested, CHILD), (2, Some(100 + 200)), "{label}");
-        assert_eq!(summary(&ingested).2, Completeness::Complete, "{label}");
-        assert!(
-            ingested.ledger.diagnostics.is_empty(),
-            "{label}: {:?}",
-            ingested.ledger.diagnostics
-        );
-    }
 }
 
 /// A counter-only parent, and its legacy subagent resumed by a release that writes usage
@@ -863,44 +881,191 @@ fn legacy_subagent_resumed_after_the_upgrade(home: &Path) {
     );
 }
 
+/// A resumed legacy subagent: its usage record counts, and its counter-only turn before
+/// that record is not counted (uro-r8si), on any worker count and discovery order.
 #[test]
-fn a_resumed_legacy_subagent_counts_its_own_turns_on_any_worker_count_and_source_order() {
+fn a_resumed_legacy_subagent_counts_its_usage_records_on_any_worker_count_and_order() {
     let home = tempfile::tempdir().expect("temporary Codex home");
     legacy_subagent_resumed_after_the_upgrade(home.path());
     let ingested = ingest_on_any_worker_count_and_order(home.path());
 
     assert_eq!(thread_total(&ingested, PARENT), (1, Some(1_000)));
-    assert_eq!(
-        thread_total(&ingested, CHILD),
-        (2, Some(200 + 300)),
-        "the copied prefix is the parent's; both of the child's own turns count"
-    );
-    let (requests, _) = counted(&ingested);
-    assert_eq!(requests, 3);
-    // Review A7 and B7: the copied header, the skipped line after it, and the copied
-    // turn_context and token_count; the skipped line after the copy ends is the child's.
-    let copied = ingested
-        .ledger
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == DiagnosticCode::CodexCopiedHistoryInferred)
-        .expect("the copy boundary was inferred from the copied thread's turns");
-    assert_eq!(copied.occurrences, 4);
-    assert_eq!(copied.evidence.len(), 3, "only relevant copied records retain evidence");
-    assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexCopiedHistoryInferred, 4)]);
+    assert_eq!(thread_total(&ingested, CHILD), (1, Some(300)));
+    assert_eq!(summary(&ingested), (2, Some(1_300), Completeness::Complete));
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
 }
 
-#[test]
-fn a_rollout_whose_counters_are_all_twins_never_reads_their_totals() {
-    // As before counters were counted beside usage records, a twin's running total is
-    // not read when no counter of the rollout is counted, so a total that could not be
-    // normalized (cached input above input) still ingests.
-    let ingested = ingest_session(&[
-        meta(SESSION, None),
-        turn("t1"),
-        direct(SESSION, Some("t1"), "r1", [1_000, 0, 100, 0]),
-        counter([1_000, 2_000, 100, 0], [1_000, 0, 100, 0]),
-    ]);
+/// The legacy root `PARENT`, and its legacy fork `CHILD` with one own counter-only
+/// response (500 tokens); returns the child's lines.
+fn legacy_fork_of_a_legacy_root(home: &Path) -> Vec<String> {
+    let root = [meta(PARENT, None), turn("p1"), counter([900, 0, 100, 0], [900, 0, 100, 0])];
+    write_rollout(home, PARENT, 0, &root);
+    let child = vec![
+        fork_meta(CHILD, PARENT),
+        meta(PARENT, None),
+        turn("p1"),
+        counter([900, 0, 100, 0], [900, 0, 100, 0]),
+        turn("c1"),
+        counter([1_350, 0, 150, 0], [450, 0, 50, 0]),
+    ];
+    write_rollout(home, CHILD, 1, &child);
+    child
+}
 
-    assert_eq!(summary(&ingested), (1, Some(1_100), Completeness::Complete));
+/// The three threads' counted requests and tokens, and the ledger's.
+fn chain_totals(ingested: &Ingested) -> [(u64, Option<u64>); 4] {
+    let (requests, tokens, completeness) = summary(ingested);
+    assert_eq!(completeness, Completeness::Complete);
+    [
+        thread_total(ingested, PARENT),
+        thread_total(ingested, CHILD),
+        thread_total(ingested, GRANDCHILD),
+        (requests, tokens),
+    ]
+}
+
+/// Review C1 (c2 and c2c): a 0.154 fork, and a 0.154 full-history subagent, of a legacy
+/// fork or subagent. The nested copied prefix stays a copy, so the intermediate thread's
+/// usage counts once.
+#[test]
+fn a_modern_fork_or_subagent_of_a_legacy_child_counts_the_childs_usage_once() {
+    for subagent in [false, true] {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        let mut child = legacy_fork_of_a_legacy_root(home.path());
+        if subagent {
+            child[0] = meta(CHILD, Some(PARENT));
+            write_rollout(home.path(), CHILD, 1, &child);
+        }
+        let header =
+            if subagent { meta(GRANDCHILD, Some(CHILD)) } else { fork_meta(GRANDCHILD, CHILD) };
+        let grandchild = [
+            vec![header],
+            child,
+            vec![
+                settings(GRANDCHILD),
+                turn("g1"),
+                direct(GRANDCHILD, Some("g1"), "rg1", [180, 0, 20, 0]),
+                counter([1_530, 0, 170, 0], [180, 0, 20, 0]),
+            ],
+        ]
+        .concat();
+        write_rollout(home.path(), GRANDCHILD, 2, &grandchild);
+        let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+        assert_eq!(
+            chain_totals(&ingested),
+            [(1, Some(1_000)), (1, Some(500)), (1, Some(200)), (3, Some(1_700))],
+            "subagent={subagent}"
+        );
+        // The legacy child's own inferred copy of the root; none for the grandchild.
+        assert_eq!(diagnostics(&ingested), [(DiagnosticCode::CodexCopiedHistoryInferred, 3)]);
+    }
+}
+
+/// Review C1 (c2b), on `main` as here: in an all-legacy chain the grandchild's copy of the
+/// legacy child's own turn ends at that turn, which the root never recorded, so the
+/// child's 500 tokens count again as the grandchild's (uro-r8si).
+#[test]
+fn a_legacy_fork_of_a_legacy_fork_counts_the_intermediate_usage_again() {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    let child = legacy_fork_of_a_legacy_root(home.path());
+    let grandchild = [
+        vec![fork_meta(GRANDCHILD, CHILD)],
+        child,
+        vec![turn("g1"), counter([1_530, 0, 170, 0], [180, 0, 20, 0])],
+    ]
+    .concat();
+    write_rollout(home.path(), GRANDCHILD, 2, &grandchild);
+    let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+    assert_eq!(
+        chain_totals(&ingested),
+        [(1, Some(1_000)), (1, Some(500)), (2, Some(700)), (4, Some(2_200))]
+    );
+}
+
+/// Review C1 (c6): a legacy subagent resumed by 0.154, which then spawns a full-history
+/// subagent whose copied prefix keeps the resumed subagent's counters but not its usage
+/// record. The resumed subagent counts its usage record only (uro-r8si), and the new
+/// subagent's copy stays a copy.
+#[test]
+fn a_modern_subagent_of_a_resumed_legacy_subagent_counts_each_usage_record_once() {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    write_rollout(
+        home.path(),
+        PARENT,
+        0,
+        &[meta(PARENT, None), turn("p1"), counter([900, 0, 100, 0], [900, 0, 100, 0])],
+    );
+    let child = vec![
+        meta(CHILD, Some(PARENT)),
+        meta(PARENT, None),
+        turn("p1"),
+        counter([900, 0, 100, 0], [900, 0, 100, 0]),
+        turn("c1"),
+        counter([1_350, 0, 150, 0], [450, 0, 50, 0]),
+        turn("c2"),
+        direct(CHILD, Some("c2"), "rc2", [270, 0, 30, 0]),
+        counter([1_620, 0, 180, 0], [270, 0, 30, 0]),
+    ];
+    write_rollout(home.path(), CHILD, 1, &child);
+    let grandchild = [
+        vec![meta(GRANDCHILD, Some(CHILD))],
+        child.iter().filter(|line| !line.contains("token_usage_record")).cloned().collect(),
+        vec![
+            settings(GRANDCHILD),
+            turn("g1"),
+            direct(GRANDCHILD, Some("g1"), "rg1", [180, 0, 20, 0]),
+            counter([1_800, 0, 200, 0], [180, 0, 20, 0]),
+        ],
+    ]
+    .concat();
+    write_rollout(home.path(), GRANDCHILD, 2, &grandchild);
+    let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+    assert_eq!(
+        chain_totals(&ingested),
+        [(1, Some(1_000)), (1, Some(300)), (1, Some(200)), (3, Some(1_500))]
+    );
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+}
+
+/// Review C2 (c1c): a resumed legacy full-history subagent of a subagent that copied
+/// nothing. Its usage record keeps its own owner; the counter-only turn before it is not
+/// counted, since no turn ends a copy of a non-root thread (uro-r8si).
+#[test]
+fn a_resumed_subagent_of_a_non_root_parent_keeps_its_records_owner() {
+    let home = tempfile::tempdir().expect("temporary Codex home");
+    write_rollout(
+        home.path(),
+        PARENT,
+        0,
+        &[meta(PARENT, None), turn("p1"), counter([900, 0, 100, 0], [900, 0, 100, 0])],
+    );
+    let child = [meta(CHILD, Some(PARENT)), turn("c1"), counter([450, 0, 50, 0], [450, 0, 50, 0])];
+    write_rollout(home.path(), CHILD, 1, &child);
+    let grandchild = [
+        vec![meta(GRANDCHILD, Some(CHILD))],
+        child.to_vec(),
+        vec![
+            turn("g1"),
+            counter([630, 0, 70, 0], [180, 0, 20, 0]),
+            turn("g2"),
+            direct(GRANDCHILD, Some("g2"), "rg2", [270, 0, 30, 0]),
+            counter([900, 0, 100, 0], [270, 0, 30, 0]),
+        ],
+    ]
+    .concat();
+    write_rollout(home.path(), GRANDCHILD, 2, &grandchild);
+    let ingested = ingest_on_any_worker_count_and_order(home.path());
+
+    assert_eq!(
+        chain_totals(&ingested),
+        [(1, Some(1_000)), (1, Some(500)), (1, Some(300)), (3, Some(1_800))]
+    );
+    let thread = agent_thread_identity(Agent::Codex, GRANDCHILD).expect("thread identity").id;
+    let selected =
+        selection_totals(&ingested.ledger, &BTreeSet::from([thread])).expect("selection totals");
+    assert_eq!(selected.completeness, Completeness::Complete, "no request is ambiguous");
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
 }

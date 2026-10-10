@@ -873,30 +873,6 @@ set these source-specific rules:
   observation, and compaction estimates and context-window-full fills (a
   `last_token_usage` with zero input and output and nonzero `total_tokens`) are estimate
   diagnostics, not requests.
-- **Codex counters beside usage records:** a rollout can hold counter-only usage beside
-  its `token_usage_record` lines: a session that a release before 0.153 started and a
-  later release resumed, or one that an older release resumed after a newer one wrote
-  it, since such a release skips the records it cannot read and appends counter-only
-  turns. A rollout’s usage events are its usage records and every `token_count` whose
-  total differs from the previous counter’s and whose `last_token_usage` reports input
-  or output; `compacted.latest_token_usage_record` is copy evidence, not an event.
-  A usage-event counter is the twin of a usage record when the nearest usage event
-  before it is that record with exactly its usage, every native usage field equal, or
-  else the nearest one after it is.
-  Codex 0.153 and 0.154 write each response’s usage record before its `token_count` on
-  every path, and real rollouts show no other order; urollup also accepts the reverse.
-  Each record is the twin of at most one counter, the one after it first.
-  Turn IDs never decide twins: a compaction can write its record and counter before the
-  new turn’s `turn_context`. A twin adds no request but still moves the running total,
-  or in copied history the inherited total, so a later counted counter’s delta excludes
-  it. Every other usage-event counter goes through the counter rules wherever it sits in
-  the file, with copies, fork boundaries, first-step checks, epochs and lowered totals.
-  A `token_count` that reports no new usage, such as a repeat or an estimate, follows
-  the nearest usage event before it, or the first one when none precedes it: after a
-  counted counter it goes through the counter rules, so a legacy estimate is still an
-  estimate diagnostic, and after a record or a twin it adds nothing.
-  A rollout whose usage-event counters are all twins is accounted from its usage records
-  alone, exactly as before counters were counted beside them.
 - **Codex decoding:** a line that contains none of the quoted relevant type tokens
   (`session_meta`, `turn_context`, `token_usage_record`, `compacted`, `token_count` and
   `thread_settings_applied`) is validated without building a document and counted as
@@ -905,6 +881,8 @@ set these source-specific rules:
   document except a `rate_limits` object, with the same malformed-line, repeated-key and
   null-field rules as Claude Code decoding.
   Consecutive identical `rate_limits` snapshots in a rollout share one value.
+  Whether a rollout uses `token_usage_record` lines or cumulative counters is decided
+  for the whole file.
 - **Codex copied history:** usage after a `session_meta` that names another thread
   belongs to that thread and is a copy.
   A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
@@ -937,26 +915,18 @@ set these source-specific rules:
   Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
   diagnostic and a coverage gap for its thread, so that thread and the whole history
   report partial coverage while every other session still reports; the anomaly never
-  stops the run. Where the counter rules count any of a rollout’s counters (every one in
-  a rollout without `token_usage_record` lines, or at least one that is not a twin), the
-  copy also ends at the first `turn_context` whose turn ID the copied thread’s root
-  rollout never recorded; turn IDs are matched across rollouts by 128-bit digest.
+  stops the run. In a rollout without `token_usage_record` lines, the copy also ends at
+  the first `turn_context` whose turn ID the copied thread’s root rollout never
+  recorded; turn IDs are matched across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.
-  A rollout without usage records is observed once every rollout has decoded, since this
-  inference reads other rollouts’ turn IDs.
-  A rollout with them is observed on its decode worker unless the counter rules count
-  one of its counters and it names another thread and records a turn ID. A copied twin
-  is a copy keyed to its twin record’s response ID, and a copied counter that repeats a
-  twin’s total takes the same key; any other copied counter that adds no usage is an
-  unkeyed copy, excluded from totals.
-  A copied counter that reports usage and is not a twin goes through the counter rules,
-  as in a 0.153+ fork whose prefix keeps the parent’s `token_count` events but drops
-  their usage records: it is a counter copy that seeds the child’s inherited total, and
-  a declared boundary places it by its `ordinal`, so one without an ordinal is excluded
-  as unplaced usage. A fork or subagent continues the parent’s running total, so the
-  child’s counters start from the inherited total.
+  In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
+  is a copy keyed to the copied thread’s last response ID when the prefix holds that
+  thread’s usage record; from 0.153 forked prefixes drop those records, so such a copy
+  stays an unkeyed copy-only request, excluded from totals.
+  A fork or subagent continues the parent’s running total, so the child’s counters start
+  from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events
   (and, for user forks, `token_usage_record` lines), with new write-time timestamps, so
   copied lines contribute neither usage nor times to the child.

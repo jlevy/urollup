@@ -262,6 +262,10 @@ struct SourceMetas {
     own: Option<Box<(SessionMeta, EvidenceRef)>>,
     /// Whether any session meta names another thread.
     foreign: bool,
+    /// Whether any session meta is not the rollout's own, names a parent or fork origin,
+    /// or declares `subagent_history_start_ordinal`: the rollout can hold another
+    /// thread's history.
+    lineage: bool,
 }
 
 /// Native Codex usage counters, each `None` when missing, null or not a count.
@@ -701,7 +705,8 @@ impl SourceDecoder {
         // records wait for the other rollouts.
         counts.shrink_to_fit();
         records.shrink_to_fit();
-        let counter_scope = classify_counters(&mut records, &counts);
+        let root = is_root_rollout(&metas, &records, file_thread);
+        let counter_scope = classify_counters(&mut records, &counts, root);
         let strings = interner.finish();
         let root_turns = root_turn_digests(&records, &strings, metas.root == Some(true));
         ParsedSource {
@@ -842,6 +847,10 @@ impl SourceDecoder {
             metas.cli_version = payload.cli_version.map(Cow::into_owned);
         }
         let own = id == Some(self.file_thread);
+        metas.lineage |= !own
+            || payload.parent_thread_id.is_some()
+            || payload.forked_from_id.is_some()
+            || !matches!(payload.subagent_history_start_ordinal, HistoryBoundary::Missing);
         if metas.root.is_none() {
             metas.root =
                 Some(own && payload.parent_thread_id.is_none() && payload.forked_from_id.is_none());
@@ -925,52 +934,41 @@ fn thread_ids_from_locators<'a>(
 ///
 /// From `rust-v0.153.0` Codex writes a `token_usage_record` for each response that
 /// reports usage, beside the `token_count` it still writes for that response: the record
-/// first, then the counter. A rollout can also hold counter-only usage beside its usage
-/// records: a session that a release before 0.153 started and a later one resumed, or a
-/// rollout that an earlier release appended turns to after a later one wrote it.
-/// [`classify_counters`] decides each counter's [`CounterRole`] once, when the rollout
-/// decodes.
+/// first, then the counter. A root rollout ([`is_root_rollout`]) can also hold
+/// counter-only usage beside its usage records: a session that a release before 0.153
+/// started and a later one resumed, or one that an earlier release appended turns to after
+/// a later one wrote it. [`classify_counters`] decides the [`CounterRole`] of each of its
+/// counters once, when it decodes. In any other rollout with usage records, the usage
+/// records account for its usage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CounterScope {
     /// Every one: the rollout has no `token_usage_record`.
     All,
-    /// Those whose role is [`CounterRole::Counted`]; the rollout has usage records, and at
-    /// least one counter reports usage that no usage record reports.
+    /// None: the rollout has usage records, and is not a root rollout or reports through
+    /// its counters no response that its usage records do not.
+    Direct,
+    /// Those whose role is [`CounterRole::Counted`]: a root rollout with usage records,
+    /// at least one of whose counters reports usage that no usage record reports.
     Mixed,
-    /// None: the rollout has usage records, and they report every response its counters
-    /// report.
-    Empty,
 }
 
-impl CounterScope {
-    /// Whether the counter rules count any counter, so ownership follows the rules of a
-    /// rollout without usage records: the end of a legacy copied prefix is inferred from
-    /// the copied thread's turn IDs, and such a prefix is a copied region.
-    fn counts_any(self) -> bool {
-        self != Self::Empty
-    }
-}
-
-/// How the accounting treats one `token_count`.
+/// How the accounting treats one `token_count` of a root rollout with usage records.
 ///
 /// A counter is a *usage event* when its total differs from the previous counter's and
-/// its `last_token_usage` reports input or output; a usage record is always one. A
-/// usage-event counter is a twin when the nearest usage event before it is a usage record
-/// with exactly its usage (the order Codex writes), or else the nearest one after it is
-/// (the reverse order, accepted too). Each record is the twin of at most one counter, and
-/// a counter just after the record takes precedence over one just before it.
+/// its `last_token_usage` reports input or output; a usage record is always one. Read in
+/// order, a usage-event counter is the twin of the usage record just before it (the order
+/// Codex writes) or, failing that, of the one just after it (the reverse order, accepted
+/// too), when that record has exactly the counter's usage and no earlier counter took it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CounterRole {
     /// The cumulative-counter rules account for it: every counter of a rollout without
-    /// usage records; in a rollout with them, a usage-event counter that is not a twin,
-    /// and a counter that reports no new usage after one (or before the first usage
+    /// usage records; in a root rollout with them, a usage-event counter that is not a
+    /// twin, and a counter that reports no new usage after one (or before the first usage
     /// event, when that is one).
     #[default]
     Counted,
-    /// The twin of the usage record just before it.
-    TwinOfPrevious,
-    /// The twin of the usage record just after it.
-    TwinOfNext,
+    /// The twin of an adjacent usage record, which accounts for its response.
+    Twin,
     /// A counter that reports no new usage after a usage record or a twin, or before the
     /// first usage event when that is one.
     Covered,
@@ -979,8 +977,8 @@ enum CounterRole {
 /// The previous usage event while [`classify_counters`] reads a rollout.
 #[derive(Clone, Copy)]
 enum UsageEvent {
-    /// A usage record with its usage.
-    Record(Option<CodexUsage>),
+    /// A usage record with its usage, and whether a counter already took it as its twin.
+    Record { usage: Option<CodexUsage>, taken: bool },
     /// A usage-event counter, its last usage, and whether it is a twin.
     Counter { index: usize, last: CodexUsage, twin: bool },
 }
@@ -997,6 +995,26 @@ fn is_usage_event(
         && last.is_some_and(|last| last.input.unwrap_or(0) > 0 || last.output.unwrap_or(0) > 0)
 }
 
+/// Whether a rollout cannot hold another thread's history, so every counter and usage
+/// record in it is its own thread's: every `session_meta` names its own thread, with
+/// neither a parent nor a fork origin and no `subagent_history_start_ordinal`, and no
+/// `thread_settings_applied` or usage record names another thread.
+fn is_root_rollout(metas: &SourceMetas, records: &[ParsedRecord], file_thread: Sym) -> bool {
+    !metas.lineage
+        && records.iter().all(|record| match record.kind {
+            RecordKind::ThreadSettingsApplied { thread_id } => {
+                thread_id.is_none_or(|thread| thread == file_thread)
+            }
+            RecordKind::UsageRecord(usage) => {
+                usage.thread_id.is_none_or(|thread| thread == file_thread)
+            }
+            RecordKind::SessionMeta { .. }
+            | RecordKind::TurnContext { .. }
+            | RecordKind::Compacted(_)
+            | RecordKind::TokenCount { .. } => true,
+        })
+}
+
 /// Sets the role of the `token_count` at `index`.
 fn set_role(records: &mut [ParsedRecord], index: usize, role: CounterRole) {
     if let Some(ParsedRecord { kind: RecordKind::TokenCount { role: slot, .. }, .. }) =
@@ -1006,29 +1024,34 @@ fn set_role(records: &mut [ParsedRecord], index: usize, role: CounterRole) {
     }
 }
 
-/// Decides each `token_count`'s [`CounterRole`] from the rollout's usage events, and which
-/// counters the counter rules count.
-fn classify_counters(records: &mut [ParsedRecord], counts: &[u8]) -> CounterScope {
+/// Decides which counters the counter rules account for, and, in a root rollout with
+/// usage records, each counter's [`CounterRole`].
+fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) -> CounterScope {
     if !records.iter().any(|record| matches!(record.kind, RecordKind::UsageRecord(_))) {
         return CounterScope::All;
     }
-    // Twins. A counter just before a record with its usage is held until the next usage
-    // event shows whether a counter just after the record takes the record instead.
+    if !root {
+        return CounterScope::Direct;
+    }
+    // Twins, pairing each counter with an untaken record next to it, the one before it
+    // first. A counter that reports no new usage is provisionally `Covered`.
     let mut reader = CountReader::new(counts);
     let mut previous_total = None;
     let mut previous = None;
-    let mut held = None;
     for index in 0..records.len() {
         let [first, second] = reader.record(&records[index].kind);
         match records[index].kind {
             RecordKind::UsageRecord(_) => {
-                if let Some(counter) = held.take() {
-                    set_role(records, counter, CounterRole::TwinOfNext);
-                }
-                if let Some(UsageEvent::Counter { index: counter, last, twin: false }) = previous {
-                    held = (first == Some(last)).then_some(counter);
-                }
-                previous = Some(UsageEvent::Record(first));
+                let taken = match previous {
+                    Some(UsageEvent::Counter { index: counter, last, twin: false })
+                        if first == Some(last) =>
+                    {
+                        set_role(records, counter, CounterRole::Twin);
+                        true
+                    }
+                    Some(UsageEvent::Record { .. } | UsageEvent::Counter { .. }) | None => false,
+                };
+                previous = Some(UsageEvent::Record { usage: first, taken });
             }
             RecordKind::TokenCount { .. } => {
                 let event =
@@ -1040,14 +1063,12 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8]) -> CounterScop
                     set_role(records, index, CounterRole::Covered);
                     continue;
                 };
-                let twin =
-                    matches!(previous, Some(UsageEvent::Record(Some(usage))) if usage == last);
+                let twin = matches!(
+                    previous,
+                    Some(UsageEvent::Record { usage: Some(usage), taken: false }) if usage == last
+                );
                 if twin {
-                    // The counter before the record stays counted.
-                    held = None;
-                    set_role(records, index, CounterRole::TwinOfPrevious);
-                } else if let Some(counter) = held.take() {
-                    set_role(records, counter, CounterRole::TwinOfNext);
+                    set_role(records, index, CounterRole::Twin);
                 }
                 previous = Some(UsageEvent::Counter { index, last, twin });
             }
@@ -1057,18 +1078,13 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8]) -> CounterScop
             | RecordKind::ThreadSettingsApplied { .. } => {}
         }
     }
-    if let Some(counter) = held {
-        set_role(records, counter, CounterRole::TwinOfNext);
-    }
-    // A counter that reports no new usage, provisionally `Covered`, follows the nearest
-    // usage event before it, or the first one when none precedes it.
+    // A counter that reports no new usage follows the nearest usage event before it, or
+    // the first one when none precedes it.
     let event_role = |kind: &RecordKind| match kind {
         RecordKind::TokenCount { role: CounterRole::Counted, .. } => Some(CounterRole::Counted),
-        RecordKind::UsageRecord(_)
-        | RecordKind::TokenCount {
-            role: CounterRole::TwinOfPrevious | CounterRole::TwinOfNext,
-            ..
-        } => Some(CounterRole::Covered),
+        RecordKind::UsageRecord(_) | RecordKind::TokenCount { role: CounterRole::Twin, .. } => {
+            Some(CounterRole::Covered)
+        }
         RecordKind::TokenCount { role: CounterRole::Covered, .. }
         | RecordKind::SessionMeta { .. }
         | RecordKind::TurnContext { .. }
@@ -1086,41 +1102,7 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8]) -> CounterScop
             *role = current;
         }
     }
-    if counted { CounterScope::Mixed } else { CounterScope::Empty }
-}
-
-/// The response ID of the first usage record after `index`.
-fn next_response(records: &[ParsedRecord], index: usize) -> Option<Sym> {
-    records.iter().skip(index.saturating_add(1)).find_map(|record| match record.kind {
-        RecordKind::UsageRecord(usage) => Some(usage.response_id),
-        RecordKind::SessionMeta { .. }
-        | RecordKind::TurnContext { .. }
-        | RecordKind::Compacted(_)
-        | RecordKind::TokenCount { .. }
-        | RecordKind::ThreadSettingsApplied { .. } => None,
-    })?
-}
-
-/// Whether a rollout is observed only once every rollout has decoded, rather than on its
-/// decode worker. A rollout without usage records always waits, as it always has. One
-/// with them waits only when its observation may read other rollouts' turn IDs: the
-/// counter rules count one of its counters, and it names another thread and records a
-/// turn ID, so a legacy copied prefix may end at a turn the copied thread never recorded.
-fn waits_for_other_rollouts(source: &ParsedSource) -> bool {
-    if source.counter_scope == CounterScope::All {
-        return true;
-    }
-    let names_other_thread = source.metas.foreign
-        || source.records.iter().any(|record| {
-            matches!(record.kind, RecordKind::ThreadSettingsApplied { thread_id: Some(thread) }
-                if thread != source.file_thread)
-        });
-    source.counter_scope.counts_any()
-        && names_other_thread
-        && source
-            .records
-            .iter()
-            .any(|record| matches!(record.kind, RecordKind::TurnContext { turn_id: Some(_), .. }))
+    if counted { CounterScope::Mixed } else { CounterScope::Direct }
 }
 
 fn decode_rollout(
@@ -1129,7 +1111,9 @@ fn decode_rollout(
     admission: &Admission,
 ) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
     let (entry, parsed) = decode_source(source, admission)?;
-    if waits_for_other_rollouts(&parsed) {
+    // Only a rollout without usage records may infer where a legacy copied prefix ends
+    // from other rollouts' turn IDs, so only it waits for every rollout to decode.
+    if parsed.counter_scope == CounterScope::All {
         Ok((entry, DecodedRollout::Pending(parsed)))
     } else {
         Ok((
@@ -1320,10 +1304,10 @@ fn observe_parsed_source(
     };
     if parent_thread.is_some()
         && (has_foreign_meta || has_native_prefix)
-        && (scope.counts_any() || native_boundary.is_declared())
+        && (scope == CounterScope::All || native_boundary.is_declared())
     {
         copied_regions = copied_regions.saturating_add(1);
-        if scope.counts_any() && !native_boundary.is_declared() {
+        if scope == CounterScope::All && !native_boundary.is_declared() {
             let copied = legacy_copied_evidence(source, known_turns);
             diagnostics.push(
                 Diagnostic::new(
@@ -1339,22 +1323,22 @@ fn observe_parsed_source(
     let mut active_thread = file_thread;
     let mut turns = Turns::new();
     let mut current_turn: Option<Sym> = None;
-    // The response ID of the latest usage record, which a twin just after it reports.
-    let mut previous_response = None;
-    // The latest counter with a total: that total, and the response ID its copy is keyed
-    // to, which a covered counter repeating the total takes.
-    let mut previous_counter: Option<(CodexUsage, Option<Sym>)> = None;
+    let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
     let mut inherited_total = None;
     let mut counter = None;
     let mut unverified = UnverifiedUsage::default();
     let mut previous_limits = BTreeMap::new();
     let mut counts = CountReader::new(&source.counts);
-    for (index, record) in source.records.iter().enumerate() {
+    for record in &source.records {
         let [first_usage, second_usage] = counts.record(&record.kind);
         let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
-        // Whether this is a token_count whose usage the counter rules count.
-        let cumulative =
-            matches!(record.kind, RecordKind::TokenCount { role: CounterRole::Counted, .. });
+        // Whether the counter rules count this record: any `token_count` of a rollout without
+        // usage records, and a counted one of a root rollout with them.
+        let cumulative = matches!(
+            record.kind,
+            RecordKind::TokenCount { role, .. } if scope == CounterScope::All
+                || (scope == CounterScope::Mixed && role == CounterRole::Counted)
+        );
         if let NativeBoundary::At(boundary) = native_boundary {
             if record.ordinal.is_some_and(|ordinal| ordinal >= boundary) {
                 active_thread = file_thread;
@@ -1404,7 +1388,7 @@ fn observe_parsed_source(
                 }
             }
             RecordKind::TurnContext { turn_id, model, effort } => {
-                if scope.counts_any()
+                if scope == CounterScope::All
                     && active_thread != file_thread
                     && turn_id.is_some_and(|turn| {
                         is_unknown_turn(known_turns, strings, active_thread, turn)
@@ -1428,15 +1412,14 @@ fn observe_parsed_source(
                 } else {
                     ObservationRole::Original
                 };
-                observations.push(usage_observation(
-                    &view,
-                    &payload,
-                    role,
-                    file_thread_text,
-                    thread_ids,
-                    &turns,
-                )?);
-                previous_response = usage_record.response_id;
+                let observation =
+                    usage_observation(&view, &payload, role, file_thread_text, thread_ids, &turns)?;
+                if let (Some(response_id), Some(owner)) =
+                    (usage_record.response_id, payload.thread_id)
+                {
+                    last_response_by_thread.insert(owner, response_id);
+                }
+                observations.push(observation);
             }
             RecordKind::Compacted(latest) => {
                 if let Some(latest) = latest {
@@ -1452,7 +1435,7 @@ fn observe_parsed_source(
                     )?);
                 }
             }
-            RecordKind::TokenCount { limits, role, .. } => {
+            RecordKind::TokenCount { limits, .. } => {
                 let (total, last) = (first_usage, second_usage);
                 if let Some(limits) = limits {
                     append_limits(
@@ -1464,20 +1447,34 @@ fn observe_parsed_source(
                         &mut limit_observations,
                     );
                 }
-                // The response a covered counter's copy is keyed to: its twin's, or, for one
-                // that repeats the previous counter's total, that counter's.
-                let response = match role {
-                    CounterRole::Counted => None,
-                    CounterRole::TwinOfPrevious => previous_response,
-                    CounterRole::TwinOfNext => next_response(&source.records, index),
-                    CounterRole::Covered => previous_counter
-                        .filter(|(previous, _)| total.as_ref() == Some(previous))
-                        .and_then(|(_, response)| response),
-                };
-                if let Some(total) = total {
-                    previous_counter = Some((total, response));
-                }
-                if cumulative {
+                if !cumulative && owner != Some(file_thread_text) {
+                    if let Some(usage) = &last {
+                        let mut observation = RequestObservation::new(view.evidence);
+                        observation.role = ObservationRole::Copy;
+                        observation.owner = owner
+                            .and_then(|owner| thread_ids.get(owner))
+                            .cloned()
+                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+                        observation.usage = Some(codex_usage(usage)?.into());
+                        if let Some(response_id) =
+                            owner.and_then(|owner| last_response_by_thread.get(owner))
+                        {
+                            observation.keys.push(
+                                RESPONSE_KEY
+                                    .key(vec![
+                                        KeyComponent::text(PROVIDER_NAMESPACE),
+                                        KeyComponent::text(strings.resolve(*response_id)),
+                                    ])?
+                                    .derive()?,
+                            );
+                        }
+                        observation.timestamp = view.timestamp;
+                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
+                            apply_context(&mut observation, context);
+                        }
+                        observations.push(observation);
+                    }
+                } else if cumulative {
                     let Some(total) = &total else { continue };
                     let total_usage = codex_usage(total)?;
                     let last = last.as_ref();
@@ -1598,52 +1595,17 @@ fn observe_parsed_source(
                             },
                         )?);
                     }
-                } else {
-                    // Usage records account for this counter's response, so it adds no
-                    // usage; in another thread's copied history it is that thread's copy.
-                    // It still moves the running total a later counted counter continues, as
-                    // a counted step or copy would; otherwise that counter's delta would
-                    // include it. A rollout whose counters are all covered has none.
-                    if let Some(total) = total.as_ref().filter(|_| scope.counts_any()) {
-                        let total = codex_usage(total)?;
-                        if owner == Some(file_thread_text) {
-                            counter
-                                .get_or_insert_with(|| {
-                                    inherited_total
-                                        .map_or_else(RunningTotal::new, RunningTotal::inheriting)
-                                })
-                                .observe(&total, None)?;
-                        } else {
-                            inherited_total = Some(total);
-                        }
-                    }
-                    if owner == Some(file_thread_text) {
-                        continue;
-                    }
-                    if let Some(usage) = &last {
-                        let mut observation = RequestObservation::new(view.evidence);
-                        observation.role = ObservationRole::Copy;
-                        observation.owner = owner
-                            .and_then(|owner| thread_ids.get(owner))
-                            .cloned()
-                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                        observation.usage = Some(codex_usage(usage)?.into());
-                        if let Some(response_id) = response {
-                            observation.keys.push(
-                                RESPONSE_KEY
-                                    .key(vec![
-                                        KeyComponent::text(PROVIDER_NAMESPACE),
-                                        KeyComponent::text(strings.resolve(response_id)),
-                                    ])?
-                                    .derive()?,
-                            );
-                        }
-                        observation.timestamp = view.timestamp;
-                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
-                            apply_context(&mut observation, context);
-                        }
-                        observations.push(observation);
-                    }
+                } else if let Some(total) = total.as_ref().filter(|_| scope == CounterScope::Mixed)
+                {
+                    // In a root rollout, usage records account for this counter's response, so
+                    // it adds no usage; it still moves the running total a later counted
+                    // counter continues, as a counted step would, or that counter's delta
+                    // would include it.
+                    counter
+                        .get_or_insert_with(|| {
+                            inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
+                        })
+                        .observe(&codex_usage(total)?, None)?;
                 }
             }
         }
@@ -2562,13 +2524,14 @@ mod tests {
 
     #[test]
     fn counter_roles_follow_adjacent_usage_events_with_exactly_equal_usage() {
-        use CounterRole::{Counted, Covered, TwinOfNext, TwinOfPrevious};
+        use CounterRole::{Counted, Covered, Twin};
         let one = usage_json(1_000, 100, 10, 0);
         let two = usage_json(3_000, 300, 30, 0);
         let both = usage_json(4_000, 400, 40, 0);
         let estimate = usage_json(0, 0, 0, 3_200);
         let record = record_line(&one);
         let twin = counter_line(&one, &one);
+        let fork = r#"{"type":"session_meta","payload":{"id":"thread","forked_from_id":"parent"}}"#;
         let cases = [
             (
                 "no usage record",
@@ -2578,21 +2541,31 @@ mod tests {
             (
                 "Codex's order",
                 vec![record.clone(), twin.clone()],
-                (CounterScope::Empty, vec![TwinOfPrevious]),
+                (CounterScope::Direct, vec![Twin]),
             ),
             (
                 "the reverse order",
                 vec![twin.clone(), record.clone()],
-                (CounterScope::Empty, vec![TwinOfNext]),
+                (CounterScope::Direct, vec![Twin]),
             ),
             (
-                "a record is one counter's twin, the one after it first",
+                "a record is the twin of the first counter to reach it",
                 vec![
                     twin.clone(),
                     record.clone(),
                     counter_line(&usage_json(2_000, 200, 20, 0), &one),
                 ],
-                (CounterScope::Mixed, vec![Counted, TwinOfPrevious]),
+                (CounterScope::Mixed, vec![Twin, Counted]),
+            ),
+            (
+                "equal consecutive responses in the reverse order",
+                vec![
+                    twin.clone(),
+                    record.clone(),
+                    counter_line(&usage_json(2_000, 200, 20, 0), &one),
+                    record.clone(),
+                ],
+                (CounterScope::Direct, vec![Twin, Twin]),
             ),
             (
                 "another reasoning count",
@@ -2607,7 +2580,7 @@ mod tests {
             (
                 "a refresh and a limits-only counter after a twin",
                 vec![record.clone(), twin.clone(), twin.clone(), LIMITS_ONLY.to_owned()],
-                (CounterScope::Empty, vec![TwinOfPrevious, Covered, Covered]),
+                (CounterScope::Direct, vec![Twin, Covered, Covered]),
             ),
             (
                 "estimates follow the usage event before them",
@@ -2618,12 +2591,17 @@ mod tests {
                     counter_line(&both, &two),
                     counter_line(&both, &estimate),
                 ],
-                (CounterScope::Mixed, vec![Counted, Counted, TwinOfPrevious, Covered]),
+                (CounterScope::Mixed, vec![Counted, Counted, Twin, Covered]),
             ),
             (
                 "a leading counter follows the first usage event",
-                vec![LIMITS_ONLY.to_owned(), record, twin],
-                (CounterScope::Empty, vec![Covered, TwinOfPrevious]),
+                vec![LIMITS_ONLY.to_owned(), record.clone(), twin.clone()],
+                (CounterScope::Direct, vec![Covered, Twin]),
+            ),
+            (
+                "a rollout that is not a root leaves its counters to its usage records",
+                vec![fork.to_owned(), counter_line(&two, &two), record, twin],
+                (CounterScope::Direct, vec![Counted, Counted]),
             ),
         ];
         for (name, lines, expected) in cases {
@@ -2632,7 +2610,62 @@ mod tests {
     }
 
     #[test]
-    fn only_a_rollout_that_may_read_other_rollouts_turns_waits_for_normalization() {
+    fn a_root_rollout_names_no_other_thread_parent_fork_or_history_boundary() {
+        let meta = |fields: &str| format!(r#"{{"type":"session_meta","payload":{{{fields}}}}}"#);
+        let settings = |thread: &str| {
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"thread_settings_applied","thread_id":"{thread}"}}}}"#
+            )
+        };
+        let record = |thread: &str| {
+            format!(
+                r#"{{"type":"token_usage_record","payload":{{"thread_id":"{thread}","usage":{{"input_tokens":1}}}}}}"#
+            )
+        };
+        let cases = [
+            ("no session_meta", vec![record("thread")], true),
+            (
+                "its own session_meta and settings",
+                vec![meta(r#""id":"thread""#), settings("thread")],
+                true,
+            ),
+            (
+                "a session_meta of another thread",
+                vec![meta(r#""id":"thread""#), meta(r#""id":"other""#)],
+                false,
+            ),
+            ("a session_meta without an ID", vec![meta(r#""cwd":"/work""#)], false),
+            ("a parent", vec![meta(r#""id":"thread","parent_thread_id":"other""#)], false),
+            ("a fork origin", vec![meta(r#""id":"thread","forked_from_id":"other""#)], false),
+            (
+                "a history boundary on a later session_meta",
+                vec![
+                    meta(r#""id":"thread""#),
+                    meta(r#""id":"thread","subagent_history_start_ordinal":0"#),
+                ],
+                false,
+            ),
+            (
+                "settings naming another thread",
+                vec![meta(r#""id":"thread""#), settings("other")],
+                false,
+            ),
+            ("a usage record of another thread", vec![record("other")], false),
+        ];
+        for (name, lines, root) in cases {
+            let parsed = parse(&lines);
+            assert_eq!(
+                super::is_root_rollout(&parsed.metas, &parsed.records, parsed.file_thread),
+                root,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_rollout_without_usage_records_waits_for_normalization() {
+        // A rollout waits for every rollout to decode exactly when its counter scope is
+        // `All` (`decode_rollout`), so a root rollout with usage records never waits.
         let one = usage_json(1_000, 100, 0, 0);
         let two = usage_json(3_000, 300, 0, 0);
         let own_meta =
@@ -2648,34 +2681,24 @@ mod tests {
             prefix.iter().map(|line| (*line).to_owned()).chain(counters.iter().cloned()).collect()
         };
         let cases = [
-            ("counter-only, as on main", lines(&[], std::slice::from_ref(&legacy)), true),
-            ("every counter a twin", lines(&[], &recorded), false),
+            ("counter-only", lines(&[], std::slice::from_ref(&legacy)), CounterScope::All),
+            ("every counter a twin", lines(&[], &recorded), CounterScope::Direct),
             (
                 "a resumed root session",
                 lines(&[], &[[legacy.clone()].as_slice(), &recorded].concat()),
-                false,
+                CounterScope::Mixed,
             ),
             (
                 "a resumed legacy subagent",
                 lines(
                     &[own_meta, parent_meta, parent_turn],
-                    &[[legacy.clone()].as_slice(), &recorded].concat(),
+                    &[[legacy].as_slice(), &recorded].concat(),
                 ),
-                true,
-            ),
-            (
-                "a fork whose counters are all twins",
-                lines(&[own_meta, parent_meta, parent_turn], &recorded),
-                false,
-            ),
-            (
-                "a fork without turn IDs",
-                lines(&[own_meta, parent_meta], &[[legacy].as_slice(), &recorded].concat()),
-                false,
+                CounterScope::Direct,
             ),
         ];
-        for (name, lines, waits) in cases {
-            assert_eq!(super::waits_for_other_rollouts(&parse(&lines)), waits, "{name}");
+        for (name, lines, scope) in cases {
+            assert_eq!(parse(&lines).counter_scope, scope, "{name}");
         }
     }
 
