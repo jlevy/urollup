@@ -11,7 +11,6 @@
 //!   order-preserving multi-file read; [`roots`] walks declared roots, following symlinks
 //!   only inside them (§2.1).
 
-pub(crate) mod admission;
 pub mod decode;
 pub mod evidence;
 pub mod manifest;
