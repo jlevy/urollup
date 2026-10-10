@@ -15,7 +15,7 @@ compacted line’s record, and drops earlier ones entirely.
   Only a `compacted` line keeping `h1`’s record and one turn with record `h2` survive,
   every line stamped with the `session_meta` time.
   Its boundary is 6 and its last ordinal 5. Its running total also includes an earlier
-  response, `h0` (3,140 tokens), whose lines the migration dropped.
+  response, `h0` (3,100 tokens), whose lines the migration dropped.
 - **Reconciled:** 5 requests and 21,190 tokens: `p1`, `g1`, `g2`, `h1` and `h2`, each
   owned by the thread its record names.
   `h1` counts from the compacted line, the only record of it left, and has no turn

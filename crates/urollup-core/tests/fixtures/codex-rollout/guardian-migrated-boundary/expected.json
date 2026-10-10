@@ -258,7 +258,7 @@
       "refs": [
         "sessions/2026/09/19/rollout-2026-09-19T10-01-00-019f0000-0000-7000-8000-001800000003.jsonl:6"
       ],
-      "note": "The second review's running total reports 3,140 tokens more than the two responses its lines keep: the bounded migration dropped an earlier response, so the review's coverage is a gap."
+      "note": "The second review's running total reports 3,100 tokens more than the two responses its lines keep: the bounded migration dropped an earlier response, so the review's coverage is a gap."
     }
   ],
   "limit_observations": [],

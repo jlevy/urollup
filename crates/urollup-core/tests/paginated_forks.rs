@@ -1524,3 +1524,215 @@ fn a_compacted_record_never_doubles_an_original_of_its_response() {
         assert_parent_and_complete(&ingested, true);
     }
 }
+
+#[test]
+fn a_parent_with_lineage_never_decides_a_childs_turns() {
+    // Review C's r1. Before Codex wrote a top-level parent_thread_id, a spawned subagent
+    // named its parent only in source.subagent.thread_spawn, so PARENT below looks like a
+    // root. Its bounded migration kept only the suffix from its own compaction, so it no
+    // longer records the grandparent turns (g1, g2) or its own earlier turn (p1) that
+    // CHILD's copy holds. GRANDCHILD plays the grandparent root here. In the second shape
+    // PARENT declares no boundary and records only a turn after CHILD's spawn, so nothing
+    // in CHILD contradicts an inference from it: the nested link alone must be lineage.
+    // Reading the link as PARENT's parent is uro-3b12.
+    let spawned = json!({"source": {"subagent": {"thread_spawn": {
+        "parent_thread_id": GRANDCHILD, "depth": 1}}}});
+    let mut migrated = spawned.clone();
+    migrated["history_mode"] = json!("paginated");
+    migrated["subagent_history_start_ordinal"] = json!(4);
+    let bounded = vec![
+        json!({"ordinal": 1, "type": "compacted", "payload": {"message": ""}}).to_string(),
+        turn(2, Some("p2")),
+        counter(3, 270, 30, 45, 5),
+    ];
+    let later_turn_only = vec![turn(1, Some("p3")), counter(2, 45, 5, 45, 5)];
+    for (parent_meta, parent_lines) in [(migrated, bounded), (spawned, later_turn_only)] {
+        let root = tempfile::tempdir().expect("temporary log root");
+        fs::create_dir(root.path().join("sessions")).expect("sessions directory");
+        write_rollout(
+            &root,
+            GRANDCHILD,
+            1,
+            json!({}),
+            &[
+                turn(1, Some("g1")),
+                counter(2, 90, 10, 90, 10),
+                turn(3, Some("g2")),
+                counter(4, 180, 20, 90, 10),
+            ],
+        );
+        write_rollout(&root, PARENT, 2, parent_meta, &parent_lines);
+        write_rollout(
+            &root,
+            CHILD,
+            3,
+            migrated_meta(11),
+            &[
+                turn(1, Some("g1")),
+                counter(2, 90, 10, 90, 10),
+                turn(3, Some("g2")),
+                counter(4, 180, 20, 90, 10),
+                turn(5, Some("p1")),
+                counter(6, 225, 25, 45, 5),
+                turn(7, Some("p2")),
+                counter(8, 270, 30, 45, 5),
+                turn(9, Some("c1")),
+                counter(10, 297, 33, 27, 3),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, GRANDCHILD).1, Some(200), "the grandparent counts its own");
+        // Real usage is 330 (200 + PARENT's 100 + CHILD's 30); G's 200 must never count twice.
+        let counted: u64 = counted_totals(&ingested).iter().sum();
+        assert!(counted <= 330, "counted {counted}");
+        assert_eq!(own_usage(&ingested, CHILD).0, 0, "nothing proves CHILD's own lines");
+        assert_eq!(own_usage(&ingested, CHILD).2, partial());
+    }
+}
+
+/// Partial coverage from an unverified-boundary gap.
+fn partial() -> Completeness {
+    Completeness::Partial(BTreeSet::from([PartialReason::UnobservedGap]))
+}
+
+#[test]
+fn evidence_against_an_inferred_own_start_turns_its_region_into_a_gap() {
+    // Review C3: a child's own lines never precede a turn or a total its parent recorded.
+    // Here the parent root lost turn p1 (as a rollback or bounded migration can), so the
+    // child's copy of p1 looks like its own start, but the parent's turn p2 after it, or
+    // the parent's total 200, proves it copied. Everything from p1 to the boundary is then
+    // undecided, never counted: the parent's 200 tokens already include p1's 50.
+    let parent = [
+        turn(1, Some("p0")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("p2")),
+        counter(4, 180, 20, 45, 5),
+    ];
+    let later_turn = vec![
+        turn(1, Some("p0")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("p1")),
+        counter(4, 135, 15, 45, 5),
+        turn(5, Some("p2")),
+        counter(6, 180, 20, 45, 5),
+        turn(7, Some("c1")),
+        counter(8, 207, 23, 27, 3),
+    ];
+    let later_total = vec![
+        turn(1, Some("p0")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("p1")),
+        counter(4, 135, 15, 45, 5),
+        counter(5, 180, 20, 45, 5),
+        counter(6, 207, 23, 27, 3),
+    ];
+    for (records, boundary) in [(later_turn, 9), (later_total, 7)] {
+        let root = fork_root(Some(&parent), &[]);
+        write_child(&root, migrated_meta(boundary), &records);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 0, "the contradicted region never counts");
+        assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 200);
+        assert_excluded_as_gap(&ingested, CHILD);
+        // The p1 step counted before the contradiction, and the own-looking c1 step after
+        // it; the parent's 200 is a copy.
+        assert_eq!(undecided_steps(&ingested), 2);
+    }
+}
+
+#[test]
+fn a_rolled_back_spawn_turn_is_still_counted_twice_until_uro_eh0d() {
+    // Review C's r2n. Codex's migration of a root drops a rolled-back turn's turn_context
+    // and counters, so the root's next counter step carries that turn's usage in its
+    // delta, while a subagent spawned in that turn still holds its copy and infers its own
+    // start there. Real usage is 330; this pins today's 380 and complete coverage, which
+    // uro-eh0d tracks (main also double counts this for an unmigrated child).
+    let parent = [
+        turn(1, Some("t1")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("t2")),
+        counter(4, 180, 20, 90, 10),
+        turn(6, Some("t4")),
+        counter(7, 270, 30, 45, 5),
+    ];
+    let root = fork_root(Some(&parent), &[]);
+    write_child(
+        &root,
+        migrated_meta(9),
+        &[
+            turn(1, Some("t1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("t2")),
+            counter(4, 180, 20, 90, 10),
+            turn(5, Some("t3")),
+            counter(6, 225, 25, 45, 5),
+            turn(7, Some("c1")),
+            counter(8, 252, 28, 27, 3),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (2, Some(80), Completeness::Complete));
+    assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 380);
+}
+
+#[test]
+fn a_copied_total_matches_its_parents_whether_or_not_a_count_is_written() {
+    // Review C4's r8: Codex's migration re-serializes a legacy counter with
+    // cache_write_input_tokens: 0, which the unmigrated parent's original omits. A missing
+    // count reads as 0, so the copy still matches its parent's total.
+    let mut migrated_copy: serde_json::Value =
+        serde_json::from_str(&counter(1, 90, 10, 90, 10)).expect("synthetic counter");
+    for usage in ["total_token_usage", "last_token_usage"] {
+        migrated_copy["payload"]["info"][usage]["cache_write_input_tokens"] = json!(0);
+    }
+    let root = fork_root(Some(&[counter(1, 90, 10, 90, 10)]), &[]);
+    write_child(&root, migrated_meta(3), &[migrated_copy.to_string()]);
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).0, 0);
+    assert_parent_and_complete(&ingested, true);
+}
+
+#[test]
+fn a_seeded_bounded_child_with_records_reports_its_seed_as_a_gap() {
+    // Review C5's r3: a child seeded with its parent's 100-token total, migrated from its
+    // own compaction, dropped nothing, yet its first running total exceeds what its own
+    // records report by the seed. Its usage counts, and the check conservatively reports a
+    // gap; discounting a seed needs the parent's totals, which a root with usage records
+    // does not keep.
+    let root = fork_root(Some(&parent_records()), &[]);
+    write_child(
+        &root,
+        json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+               "thread_source": "subagent", "subagent_history_start_ordinal": 5}),
+        &[
+            compacted(1, CHILD, "child-r1", 18, 2),
+            turn(2, Some("c2")),
+            direct(3, CHILD, "child-r2", 9, 1),
+            counter(4, 117, 13, 9, 1),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).1, Some(30));
+    assert_excluded_as_gap(&ingested, CHILD);
+    assert_eq!(undecided_steps(&ingested), 1);
+}
+
+#[test]
+fn a_counter_after_a_compacted_original_in_a_counter_only_rollout_is_its_twin() {
+    // Review C6's r7: no Codex writer is known for it, but a counter that reports the
+    // response a self-naming compacted original already counts must not count it again.
+    for parent_present in [false, true] {
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(
+            &root,
+            guardian_meta(4),
+            &[
+                compacted(1, CHILD, "guardian-r1", 18, 2),
+                turn(2, Some("g-turn-2")),
+                counter(3, 18, 2, 18, 2),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+    }
+}
