@@ -987,9 +987,11 @@ Choices made while implementing, where this design left room:
   Labels add `the 3 GiB cgroup memory.high limit`, `the 8 GiB address-space limit` and
   `the 8 GiB data-size limit` to the forms under
   [Budget Source](#budget-source-and-flag-semantics), and sizes that are not whole units
-  print one decimal (`15.6 GiB`). A percent without a known size is the new
-  `RamBudgetError::UnknownEffectiveMemory`, whose text no longer suggests `--max-rows`;
-  the row-ceiling error text is unchanged until slice 7.
+  print one decimal (`15.6 GiB`). `format_memory` rounds that decimal to nearest; the
+  design now requires budgets and allowances to round down and estimates to round up,
+  applied in slice 7, when labels and refusals reach the CLI. A percent without a known
+  size is the new `RamBudgetError::UnknownEffectiveMemory`, whose text no longer
+  suggests `--max-rows`; the row-ceiling error text is unchanged until slice 7.
 - **Ledger (slice 2).** `ledger::admission::MemoryAdmission` keeps `E` in one atomic
   counter whose limit is `⌊(B − F) / H⌋`, with `H` an exact ratio (3/2), so the check
   needs no floating point.
@@ -1002,12 +1004,18 @@ Choices made while implementing, where this design left room:
   Checkpoint refusals print `F + H × E`, the whole-process estimate compared with `B`;
   phases read `cataloging discovered sources`, `reading Codex rollouts`, `building Codex
   observations`, `reconciling Codex requests`, `finalizing the Codex ledger`, `indexing
-  Codex sessions` and `querying and rendering the output`. A budget below `F + H × b`
-  refuses with `the memory budget of … is below the … that one
-  decoding worker needs; raise --max-ram`. The adapters’ row admission now runs on a
-  `MemoryAdmission` with an unlimited byte budget and the row ceiling, one per ingest
-  call; public ingest signatures and the CLI are unchanged, and a row refusal still
-  converts to `ReconcileError::CapacityExceeded`, so its message is the same.
+  Codex sessions` and `querying and rendering the output`. Decode and checkpoint
+  refusals advise `raise --max-ram (for example --max-ram 50%)`; the design now requires
+  the smallest whole percent of `M` that covers a checkpoint estimate, and no value for
+  a decode refusal or when the estimate exceeds `M`, applied in slice 7. A budget below
+  `F + H × b` refuses with `the memory budget of
+  … is below the … that one decoding worker needs; raise --max-ram`; `ensure_floor`
+  checks one slot size, so slice 7 calls it before discovery with the plain slot and
+  again when discovery finds a compressed source.
+  The adapters’ row admission now runs on a `MemoryAdmission` with an unlimited byte
+  budget and the row ceiling, one per ingest call; public ingest signatures and the CLI
+  are unchanged, and a row refusal still converts to `ReconcileError::CapacityExceeded`,
+  so its message is the same.
   Memory refusals reach callers as the new `AdapterError::Capacity`.
 
 ### Parallelism and Determinism
