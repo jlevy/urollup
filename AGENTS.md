@@ -63,8 +63,8 @@ over-budget histories.
 Raw input larger than RAM must stream successfully within the validated retained-state
 envelope. Process-wide admission (`uro-6pi8`), scale proofs (`uro-z1h1`) and
 representative evidence (`uro-erqo`) remain required before G1, as does a real-history
-rerun after the Codex accounting fixes (`uro-kpbp` in PR #16, and PR #18). The current
-row-shell budget is not that process-wide safety mechanism.
+rerun after the open Codex accounting fixes.
+The current row-shell budget is not that process-wide safety mechanism.
 Hybrid spill (`uro-924y`) and decode throughput optimization (`uro-lsaz`) are
 follow-ups, not 0.1 blockers.
 Keep the existing small synthetic regression limits.
@@ -83,8 +83,8 @@ reverted. Do not retry those.
 Do not start `uro-nzo1` as the next cut: it is the same number-without-`Value::from`
 pattern. The historical `uro-lsaz` profile found Codex worker decode dominant.
 A larger read window did not cut WH wall.
-Next: revalidate the correctness fixes on real history (PR #18, merged 2026-10-09, and
-the Codex paginated-fork fix `uro-kpbp` in PR #16), then process-wide safety and scale
+Next: land the Codex accounting fixes that the 2026-10-10 real-history rerun found
+(listed in the release readiness record), rerun, then process-wide safety and scale
 validation under `uro-zrr0`. The `uro-a3fo` typed-sidecar refactor is complete;
 representative evidence (`uro-erqo`) remains open.
 Historical 653/586 MiB results recorded here are not measurements of the stabilized
@@ -118,9 +118,9 @@ gate is owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by link
 The complete usage-analysis workflow is `uro-6kwn`, accepted by G5 (`uro-i6xb`): joint
 calendar/agent/provider/model grouping, reusable snapshots, cache metrics, tools/time
 and list-price estimates.
-Current CLI honesty and local aggregate fixes are `uro-oz6w` and `uro-qg1a`. Reuse the
-existing artifact and pricing beads; do not create another accounting engine or treat
-independent report marginals as a reusable dataset.
+The CLI honesty and local aggregate fixes (`uro-oz6w`, `uro-qg1a`) merged.
+Reuse the existing artifact and pricing beads; do not create another accounting engine
+or treat independent report marginals as a reusable dataset.
 [docs/usage-analysis.md](docs/usage-analysis.md) documents implemented versus planned
 capabilities. Keep private run payloads local; approval to read logs is not approval to
 sync their contents or aggregate values to a remote tracker or repository.

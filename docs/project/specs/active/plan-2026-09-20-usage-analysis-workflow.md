@@ -252,9 +252,11 @@ Existing artifact, pricing and report owners retain their scopes.
 `uro-gtu4` owns this planning/documentation pass, not completion of the unchecked
 implementation work below.
 
-- [ ] Correct misleading CLI options and report help in 0.1 (`uro-oz6w`).
-- [ ] Replace the local aggregate helper’s per-session scans and preserve cache detail
-  and unknowns in its versioned output; retain consent and privacy tests (`uro-qg1a`).
+- [x] Correct misleading CLI options and report help in 0.1 (`uro-oz6w`; PR #25).
+- [x] Replace the local aggregate helper’s per-session scans and preserve cache detail
+  and unknowns in its versioned output; retain consent and privacy tests (`uro-qg1a`; PR
+  #24). Token availability is labeled per day row; request-level availability is
+  `uro-r67m`.
 - [ ] Add joint calendar/agent/provider/model grouping and unknown groups (`uro-qvp1`).
 - [ ] Retain pricing context and add cache-request metrics with per-metric coverage
   (`uro-381f`).

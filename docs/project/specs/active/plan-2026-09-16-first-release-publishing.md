@@ -45,13 +45,13 @@ This section is the project’s single record of release readiness.
 The README, `AGENTS.md`, the product plan and the governing review link here rather than
 restating blockers, so a status change is one edit.
 
-As of 2026-10-09 UTC, readiness is divided into four gates so a locally testable alpha
+As of 2026-10-10 UTC, readiness is divided into four gates so a locally testable alpha
 is not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). `main` still has the [open correctness fixes](#open-correctness-fixes) below. Current CLI and local-QA corrections are tracked as `uro-oz6w` and `uro-qg1a` |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on the Codex fork fix (`uro-kpbp`), the aggregate helper’s per-session rescans (`uro-qg1a`) and process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). `main` still has the [open correctness fixes](#open-correctness-fixes) below. The CLI and local-QA corrections `uro-oz6w` and `uro-qg1a` merged in PRs #25 and #24 on 2026-10-10 |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on the remaining [open correctness fixes](#open-correctness-fixes), a real-history rerun after them, and process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
@@ -72,8 +72,9 @@ valuation must not be advertised as completed 0.1 features.
 ### Open Correctness Fixes
 
 These defects were present on `main` as of the date above.
-PR #18 merged on 2026-10-09, and PR #16 lands with this record.
-Codex totals stay provisional until the real-history comparison is rerun.
+PRs #16 and #18 merged on 2026-10-09. A real-history rerun on 2026-10-10 found further
+Codex undercounts, each tracked below with its fix; Codex totals stay provisional until
+those fixes land and the comparison is rerun.
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
