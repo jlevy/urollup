@@ -857,8 +857,10 @@ set these source-specific rules:
   so their requests merge by response ID.
 - **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
   keyed by `response_id` and owned by its `thread_id`; responses without usage write
-  none. A record whose `thread_id` differs from the file’s thread is a copy, and
-  `compacted.latest_token_usage_record` is never an observation.
+  none. Codex writes the thread that made the request into its record, and a copy keeps
+  it, so a record that names the file’s thread is that thread’s own wherever it sits,
+  before a declared history boundary included, and one that names another thread is a
+  copy. `compacted.latest_token_usage_record` is never an observation.
 - **Codex request context:** a usage record takes its model and effort from the
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
@@ -919,20 +921,32 @@ set these source-specific rules:
   document except a `rate_limits` object, with the same malformed-line, repeated-key and
   null-field rules as Claude Code decoding.
   Consecutive identical `rate_limits` snapshots in a rollout share one value.
-- **Codex copied history:** usage after a `session_meta` that names another thread
-  belongs to that thread and is a copy.
-  A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
-  `thread_settings_applied` event (0.152 and later), which assigns later records to the
-  thread it names. An explicit ordinal boundary also identifies an inherited prefix
-  without an embedded parent session header; direct records, compacted usage copies and
-  cumulative counters use that ownership consistently.
+- **Codex copied history:** a usage record that names a thread belongs to it (Codex
+  requests, above); these rules place the lines that name none: `token_count` events,
+  and records without a `thread_id`. Such a line follows the latest earlier line that
+  names a thread: another thread’s `session_meta`, a `thread_settings_applied` event
+  (0.152 and later), a usage record, or the record a `compacted` line keeps.
+  A counter therefore follows the record whose response it reports, which Codex writes
+  just before it. A child rollout’s own lines start at `subagent_history_start_ordinal`:
+  before it, a line that no earlier line assigns is inherited history even without an
+  embedded parent session header, and the child’s own header assigns nothing.
+  A natively created paginated child persists its inherited items at ordinals 1 through
+  the boundary minus 1 and writes its own settings event at the boundary, so nothing in
+  its prefix names it.
+  Codex’s legacy-to-paginated migration instead puts the boundary one past the last line
+  it rewrote and drops every later `session_meta`, so a migrated child’s own settings
+  events and records sit before the boundary and assign its lines to it
+  ([research](project/research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
+  When no line reaches the boundary and none names the rollout’s thread, counter usage
+  before the boundary may be the child’s migrated usage or a copied prefix, so it is
+  excluded as unverified, as below.
   A prefix without a known parent remains unowned copy evidence, never child usage.
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
-  an invalid `subagent_history_start_ordinal` places none of the rollout’s usage, and a
-  usage record or cumulative total without an `ordinal` is not placed.
-  A `token_count` that carries no usage needs no ordinal: one that reports only rate
-  limits (`info: null`), or one whose total repeats the running total, which Codex sends
-  with every rate-limit refresh.
+  an invalid `subagent_history_start_ordinal` places none of the rollout’s unnamed
+  usage, and a cumulative total or unnamed usage record without an `ordinal` is not
+  placed. A `token_count` that carries no usage needs no ordinal: one that reports only
+  rate limits (`info: null`), or one whose total repeats the running total, which Codex
+  sends with every rate-limit refresh.
   In a child with an explicit boundary, including a boundary of 0, or in any child after
   copied counters, the first own counter step that reports usage must match its
   `last_token_usage`, either as its delta from the inherited total (a seeded child) or
@@ -959,8 +973,9 @@ set these source-specific rules:
   every copied line, skipped lines included.
   In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
   is a copy keyed to the copied thread’s last response ID when the prefix holds that
-  thread’s usage record; from 0.153 forked prefixes drop those records, so such a copy
-  stays an unkeyed copy-only request, excluded from totals.
+  thread’s usage record, or a `compacted` line that keeps it, as a Guardian checkpoint
+  does; from 0.153 forked prefixes drop those records, so such a copy stays an unkeyed
+  copy-only request, excluded from totals.
   A fork or subagent continues the parent’s running total, so the child’s counters start
   from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events

@@ -1128,11 +1128,17 @@ fn decode_rollout(
 }
 
 /// Where a rollout's own records start, from its own `subagent_history_start_ordinal`.
+///
+/// The boundary places only lines that name no thread: a usage record names the thread
+/// that made its request, and that decides its owner wherever it sits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeBoundary {
     /// None is declared; ownership follows session headers and settings events.
     Absent,
-    /// Records before this ordinal are inherited history.
+    /// Lines before this ordinal are inherited history, unless an earlier line names their
+    /// owner. A natively created child's inherited prefix never names the child, while
+    /// Codex's legacy-to-paginated migration puts the boundary after every line it
+    /// migrated, the child's own included.
     At(u64),
     /// The declared value is not an ordinal, so it cannot place any record.
     Invalid,
@@ -1166,6 +1172,22 @@ impl NativeBoundary {
             Self::At(_) => ordinal.is_none(),
             Self::Invalid => true,
         }
+    }
+}
+
+/// Whether a settings event, a usage record or a compacted line's record names `thread`,
+/// which gives `thread` the lines after it. A session header does not, because a child's
+/// own header precedes its inherited prefix.
+fn names_thread(kind: &RecordKind, thread: Sym) -> bool {
+    match kind {
+        RecordKind::ThreadSettingsApplied { thread_id } => *thread_id == Some(thread),
+        RecordKind::UsageRecord(usage) | RecordKind::Compacted(Some(usage)) => {
+            usage.thread_id == Some(thread)
+        }
+        RecordKind::SessionMeta { .. }
+        | RecordKind::TurnContext { .. }
+        | RecordKind::Compacted(None)
+        | RecordKind::TokenCount { .. } => false,
     }
 }
 
@@ -1296,18 +1318,19 @@ fn observe_parsed_source(
     let parent_thread = own_meta.and_then(SessionMeta::parent);
     let native_boundary = NativeBoundary::of(own_meta);
     let has_foreign_meta = source.metas.foreign;
-    let has_native_prefix = match native_boundary {
-        NativeBoundary::Absent => false,
-        NativeBoundary::At(boundary) => source.records.iter().any(|record| {
-            record.ordinal.is_some_and(|ordinal| ordinal < boundary)
-                && can_emit_observation(&record.kind)
+    // Codex's migration puts the boundary one past the last line it migrated, so no line of
+    // a migrated rollout that was never resumed reaches it. There, unless some line names
+    // the rollout's own thread, counter usage before the boundary may be the child's own or
+    // copied, and no rule can place it.
+    let unverifiable_prefix = match native_boundary {
+        NativeBoundary::At(boundary) => !source.records.iter().any(|record| {
+            record.ordinal.is_some_and(|ordinal| ordinal >= boundary)
+                || names_thread(&record.kind, file_thread)
         }),
-        NativeBoundary::Invalid => {
-            source.records.iter().any(|record| can_emit_observation(&record.kind))
-        }
+        NativeBoundary::Absent | NativeBoundary::Invalid => false,
     };
     if parent_thread.is_some()
-        && (has_foreign_meta || has_native_prefix)
+        && has_foreign_meta
         && (scope == CounterScope::All || native_boundary.is_declared())
     {
         copied_regions = copied_regions.saturating_add(1);
@@ -1325,6 +1348,12 @@ fn observe_parsed_source(
         }
     }
     let mut active_thread = file_thread;
+    // Whether the latest line that named a thread (see `names_thread`) named this
+    // rollout's: before a declared boundary, only such a line gives the rollout the unnamed
+    // lines after it.
+    let mut named_own = false;
+    // Whether the declared boundary leaves usage-bearing lines to another thread or to none.
+    let mut copied_prefix = false;
     let mut turns = Turns::new();
     let mut current_turn: Option<Sym> = None;
     let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
@@ -1349,23 +1378,24 @@ fn observe_parsed_source(
             }
         }
         // A paginated prefix need not contain a foreign session header: an explicit
-        // ordinal boundary alone assigns the records before it to the parent. It
-        // establishes ownership of the inherited prefix, not a counter baseline.
+        // ordinal boundary alone assigns the unnamed lines before it to the parent, unless
+        // an earlier line names this rollout's thread, as the child's own lines do in a
+        // migrated rollout. It establishes ownership of the inherited prefix, not a counter
+        // baseline.
         let before_boundary = native_boundary.precedes(record.ordinal);
-        let owner = if before_boundary && active_thread == file_thread {
-            parent_thread
-        } else {
-            Some(strings.resolve(active_thread))
-        };
+        let inherited = before_boundary && active_thread == file_thread && !named_own;
+        let owner = if inherited { parent_thread } else { Some(strings.resolve(active_thread)) };
         // Usage that would count as this rollout's own, but that a declared boundary
         // cannot place, is copied history of no proven owner: never the child's usage.
+        // A record that names a thread needs no placing.
         // A cumulative total that only repeats the running total carries no usage; Codex
         // re-sends the current totals with every rate-limit refresh.
-        let unplaced = native_boundary.cannot_place(record.ordinal)
+        let unplaced = (native_boundary.cannot_place(record.ordinal)
+            || unverifiable_prefix && inherited)
             && match &record.kind {
-                RecordKind::UsageRecord(usage) => usage
-                    .thread_id
-                    .map_or(active_thread == file_thread, |thread| thread == file_thread),
+                RecordKind::UsageRecord(usage) => {
+                    usage.thread_id.is_none() && active_thread == file_thread
+                }
                 RecordKind::TokenCount { .. } => match &first_usage {
                     Some(total) if cumulative && active_thread == file_thread => {
                         changes_running_total(
@@ -1385,10 +1415,29 @@ fn observe_parsed_source(
             unverified.add(view.evidence);
         }
         let usage_owner = if unplaced { None } else { owner };
+        // A usage-bearing line the boundary leaves to another thread, or to none, is part of
+        // a copied prefix; a line this rollout owns is not, wherever it sits.
+        copied_prefix |= can_emit_observation(&record.kind)
+            && match native_boundary {
+                NativeBoundary::Absent => false,
+                NativeBoundary::At(_) => before_boundary,
+                NativeBoundary::Invalid => true,
+            }
+            && match &record.kind {
+                RecordKind::UsageRecord(usage) | RecordKind::Compacted(Some(usage)) => usage
+                    .thread_id
+                    .map_or(usage_owner != Some(file_thread_text), |thread| thread != file_thread),
+                RecordKind::TokenCount { .. } => usage_owner != Some(file_thread_text),
+                RecordKind::Compacted(None)
+                | RecordKind::SessionMeta { .. }
+                | RecordKind::TurnContext { .. }
+                | RecordKind::ThreadSettingsApplied { .. } => true,
+            };
         match &record.kind {
             RecordKind::SessionMeta { id } => {
                 if let Some(thread_id) = *id {
                     active_thread = thread_id;
+                    named_own = false;
                 }
             }
             RecordKind::TurnContext { turn_id, model, effort } => {
@@ -1407,15 +1456,16 @@ fn observe_parsed_source(
             }
             RecordKind::ThreadSettingsApplied { thread_id } => {
                 active_thread = thread_id.unwrap_or(file_thread);
+                named_own = *thread_id == Some(file_thread);
             }
             RecordKind::UsageRecord(usage_record) => {
+                // Codex writes the thread that made the request into its record, and a copy
+                // keeps its original's, so a record naming this rollout's thread is its own
+                // original and one naming another thread is a copy, wherever either sits.
+                // An unnamed record takes the owner its position gives it.
                 let mut payload = usage_record.payload(strings, first_usage);
                 payload.thread_id = payload.thread_id.or(usage_owner);
-                let role = if before_boundary || unplaced {
-                    ObservationRole::Copy
-                } else {
-                    ObservationRole::Original
-                };
+                let role = if unplaced { ObservationRole::Copy } else { ObservationRole::Original };
                 let observation =
                     usage_observation(&view, &payload, role, file_thread_text, thread_ids, &turns)?;
                 if let (Some(response_id), Some(owner)) =
@@ -1424,6 +1474,12 @@ fn observe_parsed_source(
                     last_response_by_thread.insert(owner, response_id);
                 }
                 observations.push(observation);
+                // The counter Codex writes after a record reports the same response, so the
+                // lines after a record follow its thread.
+                if let Some(thread) = usage_record.thread_id {
+                    active_thread = thread;
+                    named_own = thread == file_thread;
+                }
             }
             RecordKind::Compacted(latest) => {
                 if let Some(latest) = latest {
@@ -1437,6 +1493,17 @@ fn observe_parsed_source(
                         thread_ids,
                         &turns,
                     )?);
+                    // A Guardian checkpoint writes the counter of the record it keeps right
+                    // after it, so the lines after it follow the record's thread too.
+                    if let Some(thread) = latest.thread_id {
+                        active_thread = thread;
+                        named_own = thread == file_thread;
+                        if let (Some(response_id), Some(owner)) =
+                            (latest.response_id, payload.thread_id)
+                        {
+                            last_response_by_thread.insert(owner, response_id);
+                        }
+                    }
                 }
             }
             RecordKind::TokenCount { limits, .. } => {
@@ -1613,6 +1680,9 @@ fn observe_parsed_source(
                 }
             }
         }
+    }
+    if parent_thread.is_some() && !has_foreign_meta && copied_prefix {
+        copied_regions = copied_regions.saturating_add(1);
     }
     if unverified.occurrences > 0 {
         let subject = thread_ids.get(file_thread_text).cloned();

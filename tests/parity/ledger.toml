@@ -791,3 +791,31 @@ variant = "since"
 metric = "uncached_input"
 expected_delta = 3500
 expected_matches = 2
+
+[[entry]]
+id = "codex-guardian-checkpoint-counter"
+case = "codex-rollout/guardian-native-boundary"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-10-10-codex-paginated-subagent-boundary.md#native-paginated-children"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove when ccusage stops counting the running total that a Guardian checkpoint copies into a new review's inherited prefix (the earlier review's last response, 2,690 tokens) as the new review's usage."
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -90
+expected_matches = 10
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = -30
+expected_matches = 8
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -2690
+expected_matches = 10
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -2600
+expected_matches = 10

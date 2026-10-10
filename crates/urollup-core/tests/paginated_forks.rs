@@ -228,12 +228,34 @@ fn assert_excluded_as_gap(ingested: &Ingested, native: &str) {
 
 #[test]
 fn unpositioned_usage_under_an_explicit_boundary_is_excluded_as_a_coverage_gap() {
-    for record in [counter(3, 18, 2, 18, 2), direct(3, CHILD, "child-response", 18, 2)] {
-        let root = fork_root(None, &[unpositioned(&record)]);
-        let ingested =
-            codex_rollout::ingest_root(root.path()).expect("one rollout's anomaly is reportable");
-        assert_eq!(counted_totals(&ingested), [] as [u64; 0], "unplaced usage never counts");
-        assert_excluded_as_gap(&ingested, CHILD);
+    let root = fork_root(None, &[unpositioned(&counter(3, 18, 2, 18, 2))]);
+    let ingested =
+        codex_rollout::ingest_root(root.path()).expect("one rollout's anomaly is reportable");
+    assert_eq!(counted_totals(&ingested), [] as [u64; 0], "unplaced usage never counts");
+    assert_excluded_as_gap(&ingested, CHILD);
+}
+
+#[test]
+fn a_record_naming_its_own_thread_counts_without_a_placeable_position() {
+    // Codex writes the recording thread into every token_usage_record, and a copy keeps its
+    // original's thread, so a record that names the rollout's own thread is that thread's
+    // request whether or not the declared boundary can place it.
+    let unpositioned = fork_root(None, &[unpositioned(&direct(3, CHILD, "child-response", 18, 2))]);
+    let invalid = fork_root(None, &[]);
+    write_child(
+        &invalid,
+        json!({"parent_thread_id": PARENT, "subagent_history_start_ordinal": "3"}),
+        &[direct(1, CHILD, "child-response", 18, 2)],
+    );
+    for root in [unpositioned, invalid] {
+        let ingested = codex_rollout::ingest_root(root.path()).expect("ingest synthetic fork");
+        assert_eq!(counted_totals(&ingested), [20]);
+        assert!(boundary_diagnostics(&ingested).is_empty());
+        assert!(ingested.ledger.gaps.is_empty());
+        assert_eq!(
+            ledger_totals(&ingested.ledger).expect("totals").completeness,
+            Completeness::Complete
+        );
     }
 }
 
@@ -891,4 +913,276 @@ fn a_first_step_that_zeroes_the_inherited_total_adds_no_request() {
         ledger_totals(&ingested.ledger).expect("totals").completeness,
         Completeness::Complete
     );
+}
+
+/// A `thread_settings_applied` event naming `thread`.
+fn settings(ordinal: u64, thread: &str) -> String {
+    json!({"ordinal": ordinal, "timestamp": "2026-01-01T00:00:01Z", "type": "event_msg",
+           "payload": {"type": "thread_settings_applied", "thread_id": thread}})
+    .to_string()
+}
+
+/// A `response_item` that urollup reads no usage from, such as the compaction a Guardian
+/// review starts from.
+fn compaction_item(ordinal: u64) -> String {
+    json!({"ordinal": ordinal, "type": "response_item",
+           "payload": {"type": "compaction", "encrypted_content": "synthetic"}})
+    .to_string()
+}
+
+/// A `compacted` line whose `latest_token_usage_record` names `thread`.
+fn compacted(ordinal: u64, thread: &str, response: &str, input: u64, output: u64) -> String {
+    let record: serde_json::Value =
+        serde_json::from_str(&direct(ordinal, thread, response, input, output))
+            .expect("synthetic direct record");
+    json!({"ordinal": ordinal, "type": "compacted", "payload": {
+        "message": "", "latest_token_usage_record": record["payload"]
+    }})
+    .to_string()
+}
+
+/// The `session_meta` fields of a paginated Guardian review subagent of `PARENT`.
+fn guardian_meta(boundary: u64) -> serde_json::Value {
+    json!({"session_id": PARENT, "parent_thread_id": PARENT, "history_mode": "paginated",
+           "thread_source": "guardian_review", "source": {"subagent": {"other": "guardian"}},
+           "multi_agent_version": 2, "subagent_history_start_ordinal": boundary})
+}
+
+/// The parent rollout: one 100-token request, recorded and counted.
+fn parent_records() -> [String; 2] {
+    [direct(1, PARENT, "parent-response", 90, 10), counter(2, 90, 10, 90, 10)]
+}
+
+/// Ingests `root` with 1 and 8 workers, in discovery and reversed order, and returns the
+/// first result after checking that every run built the same ledger.
+fn ingest_every_way(root: &tempfile::TempDir) -> Ingested {
+    let roots = codex_rollout::rollout_roots(&[root.path().to_owned()]);
+    let mut baseline: Option<Ingested> = None;
+    for workers in [1, 8] {
+        for reversed in [false, true] {
+            let mut discovery = discover(&roots);
+            if reversed {
+                discovery.sources.reverse();
+            }
+            let ingested = codex_rollout::ingest_discovery_with_workers(
+                discovery,
+                true,
+                NonZeroUsize::new(workers).expect("positive workers"),
+            )
+            .expect("ingest synthetic fork");
+            match &baseline {
+                Some(expected) => assert_eq!(
+                    ingested.ledger, expected.ledger,
+                    "workers={workers}, reversed={reversed}"
+                ),
+                None => baseline = Some(ingested),
+            }
+        }
+    }
+    baseline.expect("at least one run")
+}
+
+/// The counted requests and tokens of one thread, and its coverage.
+fn own_usage(ingested: &Ingested, native: &str) -> (u64, Option<u64>, Completeness) {
+    let totals = select(ingested, &[native]);
+    (
+        totals.counted.requests,
+        totals.counted.tokens.total().expect("valid sum"),
+        totals.completeness,
+    )
+}
+
+/// Checks the parent's usage and the history-wide accounting shared by every fork case: the
+/// parent counts 100 tokens once when its rollout is present, every counted request has
+/// one owner, and coverage is complete.
+fn assert_parent_and_complete(ingested: &Ingested, parent_present: bool) {
+    let parent = if parent_present { (1, Some(100)) } else { (0, None) };
+    let (requests, tokens, _) = own_usage(ingested, PARENT);
+    assert_eq!((requests, tokens), parent, "parent_present={parent_present}");
+    assert!(
+        ingested
+            .ledger
+            .requests
+            .values()
+            .filter(|request| request.counting == Counting::Counted)
+            .all(|request| matches!(request.ownership, Ownership::Owned { .. })),
+        "copies must not introduce conflicting owners"
+    );
+    assert!(boundary_diagnostics(ingested).is_empty());
+    assert!(ingested.ledger.gaps.is_empty());
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+}
+
+#[test]
+fn a_migrated_guardians_own_records_before_a_past_end_boundary_are_its_own() {
+    // Codex's legacy-to-paginated migration rewrites a subagent rollout in place and sets
+    // subagent_history_start_ordinal one past the last line it migrated, so the Guardian's
+    // own earlier turns all sit before the boundary. Their records name the Guardian.
+    for parent_present in [false, true] {
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(
+            &root,
+            guardian_meta(10),
+            &[
+                compaction_item(1),
+                settings(2, CHILD),
+                direct(4, CHILD, "guardian-r1", 18, 2),
+                counter(5, 18, 2, 18, 2),
+                direct(7, CHILD, "guardian-r2", 10, 2),
+                counter(8, 28, 4, 10, 2),
+                counter(9, 28, 4, 10, 2),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(32), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+        let totals = ledger_totals(&ingested.ledger).expect("totals");
+        assert_eq!(totals.copy_only.requests, 0, "a counter follows its own record's thread");
+        assert_eq!(ingested.ledger.coverage.copies, 0, "nothing in the rollout is copied");
+    }
+}
+
+#[test]
+fn a_native_guardians_inherited_checkpoint_stays_copied_inside_its_boundary() {
+    // A Guardian forked from an earlier reviewer's checkpoint persists that checkpoint
+    // (a compacted line naming the earlier reviewer and its running total) before the
+    // boundary, then writes its own settings event at the boundary.
+    for parent_present in [false, true] {
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(
+            &root,
+            guardian_meta(3),
+            &[
+                compacted(1, OTHER, "reviewer-response", 40, 4),
+                counter(2, 40, 4, 40, 4),
+                settings(3, CHILD),
+                direct(4, CHILD, "guardian-r1", 18, 2),
+                counter(5, 58, 6, 18, 2),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+        // The checkpoint's counter reports the response of the record the compacted line
+        // keeps, so both copy one request of the earlier reviewer, whose rollout is absent.
+        let totals = ledger_totals(&ingested.ledger).expect("totals");
+        assert_eq!(totals.copy_only.requests, 1, "one copied request of the earlier reviewer");
+    }
+}
+
+#[test]
+fn a_migrated_subagents_copied_prefix_before_a_past_end_boundary_stays_copied() {
+    // A legacy subagent copied its parent's settings events and counters (and, for a user
+    // fork, its records); migration then dropped the parent's session header. The copied
+    // lines still name or follow the parent, and the child's own start at its settings.
+    for copied_record in [false, true] {
+        for parent_present in [false, true] {
+            let mut records = vec![settings(1, PARENT)];
+            if copied_record {
+                records.push(direct(2, PARENT, "parent-response", 90, 10));
+            }
+            records.extend([
+                counter(3, 90, 10, 90, 10),
+                settings(4, CHILD),
+                direct(5, CHILD, "child-response", 18, 2),
+                counter(6, 108, 12, 18, 2),
+                counter(7, 108, 12, 18, 2),
+            ]);
+            let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+            write_child(
+                &root,
+                json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+                       "thread_source": "subagent", "subagent_history_start_ordinal": 8}),
+                &records,
+            );
+            let ingested = ingest_every_way(&root);
+            assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+            assert_parent_and_complete(&ingested, parent_present);
+            let copy_only = ledger_totals(&ingested.ledger).expect("totals").copy_only.requests;
+            // A copied record keys its counter to the parent's response, which the parent's
+            // rollout owns when present; a counter without one stays an unkeyed copy.
+            let expected = match (copied_record, parent_present) {
+                (true, true) => 0,
+                (true, false) | (false, _) => 1,
+            };
+            assert_eq!(copy_only, expected, "record={copied_record}, parent={parent_present}");
+        }
+    }
+}
+
+#[test]
+fn a_migrated_counter_only_child_counts_from_its_own_settings_before_the_boundary() {
+    // A counter-only legacy child names itself in its settings event (0.152 and later), so
+    // its own counters follow that event even before a migration's past-end boundary, and
+    // its first step is still checked against the copied total.
+    for parent_present in [false, true] {
+        let parent = [counter(1, 90, 10, 90, 10)];
+        let root = fork_root(parent_present.then_some(&parent[..]), &[]);
+        write_child(
+            &root,
+            json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+                   "thread_source": "subagent", "subagent_history_start_ordinal": 5}),
+            &[
+                counter(1, 90, 10, 90, 10),
+                settings(2, CHILD),
+                counter(3, 108, 12, 18, 2),
+                counter(4, 113, 13, 5, 1),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(26), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+    }
+}
+
+#[test]
+fn counter_usage_before_a_boundary_no_line_reaches_without_an_own_marker_is_a_gap() {
+    // Without a settings event or record naming the child, counters before a boundary that
+    // lies past every line may be the child's migrated usage or a copied prefix, so they are
+    // excluded as a coverage gap rather than silently treated as the parent's copies.
+    for parent_present in [false, true] {
+        let parent = [counter(1, 90, 10, 90, 10)];
+        let root = fork_root(parent_present.then_some(&parent[..]), &[]);
+        write_child(
+            &root,
+            json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+                   "thread_source": "subagent", "subagent_history_start_ordinal": 3}),
+            &[counter(1, 90, 10, 90, 10), counter(2, 108, 12, 18, 2)],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 0, "unplaced usage never counts");
+        assert_eq!(
+            counted_totals(&ingested).iter().sum::<u64>(),
+            if parent_present { 100 } else { 0 }
+        );
+        assert_excluded_as_gap(&ingested, CHILD);
+    }
+}
+
+#[test]
+fn own_records_on_both_sides_of_a_resumed_migration_boundary_all_count() {
+    // A migrated child resumed later appends its new records after the boundary.
+    for parent_present in [false, true] {
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(
+            &root,
+            json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+                   "thread_source": "subagent", "subagent_history_start_ordinal": 4}),
+            &[
+                settings(1, CHILD),
+                direct(2, CHILD, "child-r1", 18, 2),
+                counter(3, 18, 2, 18, 2),
+                settings(4, CHILD),
+                direct(5, CHILD, "child-r2", 10, 2),
+                counter(6, 28, 4, 10, 2),
+            ],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(32), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+        assert_eq!(ledger_totals(&ingested.ledger).expect("totals").copy_only.requests, 0);
+    }
 }
