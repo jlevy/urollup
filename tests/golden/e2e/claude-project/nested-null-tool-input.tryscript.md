@@ -287,7 +287,9 @@ $ urollup sessions --all --format json --timezone UTC
         "cache_write_1h": 0,
         "output": 220,
         "total": 10338
-      }
+      },
+      "last_date": "2026-09-01",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []
@@ -338,7 +340,9 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
         "cache_write_1h": 0,
         "output": 220,
         "total": 10338
-      }
+      },
+      "last_date": "2026-09-01",
+      "undated_requests": 0
     }
   ],
   "diagnostics": []

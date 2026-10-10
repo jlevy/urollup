@@ -27,6 +27,15 @@ target/release/urollup daily --all --format json --timezone America/Los_Angeles
 target/release/urollup sessions --all --format json --timezone America/Los_Angeles
 ```
 
+Each `sessions` JSON row also has `last_date`, the date in the chosen timezone of its
+latest counted request with a timestamp, and `undated_requests`, its counted requests
+without one. `daily` buckets requests by the same rule.
+A row with no dated request omits `last_date`. A session with a `last_date` before today
+and no undated requests had no counted owned usage today.
+A request that two sessions both prove they own is ambiguous: it is counted on the
+unowned row (`thread: null`) and dates neither session, so a whole-history row can
+differ from a `--session` run, which reads only the selected session’s file family.
+
 Default discovery includes the configured Claude roots and Codex’s active and archived
 sessions. Source overrides affect which history is included.
 Use repeated `--source` options with `--no-default-sources` to restrict input
@@ -189,8 +198,9 @@ limit. Session span, API duration sums, busy interval unions and tool call-to-re
 intervals remain distinct; they must not be collapsed into one “wallclock” total.
 
 The [full-history QA playbook](../tests/qa/full-history-rollup.qa.md) owns current
-manual checks. Its maintained-runner follow-up must eliminate per-session rescans, keep
-private payloads local and separate exploratory live runs from reproducible acceptance.
+manual checks. Its maintained-runner follow-up must avoid per-session rescans, as the
+`make e2e-local` aggregate now does, keep private payloads local and separate
+exploratory live runs from reproducible acceptance.
 Runtime, RSS, physical footprint and usage durations are different metrics.
 
 <!-- This document follows common-doc-guidelines.md.

@@ -8,9 +8,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -73,6 +74,140 @@ def ccusage_row(session: str, total: int, last_activity: str | None) -> dict[str
     }
 
 
+def aggregate_session(
+    agent: str | None,
+    last_date: str | None,
+    *,
+    requests: int = 1,
+    undated: int = 0,
+    thread: str | None = "",
+) -> dict[str, object]:
+    """Build one whole-history urollup `sessions` row with its calendar fields."""
+
+    row: dict[str, object] = {
+        "thread": f"thr-{PRIVATE_MARKERS[2]}-{agent}-{last_date}" if thread == "" else thread,
+        "session": PRIVATE_MARKERS[2],
+        "agent": agent,
+        "project": PRIVATE_MARKERS[1],
+        "requests": {"owned": requests, "ambiguous": 0, "unknown": 0},
+        "tokens": tokens(requests),
+        "undated_requests": undated,
+    }
+    if last_date is not None:
+        row["last_date"] = last_date
+    return row
+
+
+def coverage_report() -> dict[str, object]:
+    """Build a whole-history `report` document whose free-form fields carry markers."""
+
+    return {
+        "coverage": {
+            "complete": False,
+            "copies_excluded": 2,
+            "limit_observations": 3,
+            "requests_without_usage": 4,
+            "path": PRIVATE_MARKERS[0],
+        },
+        "totals": {
+            "unresolved": {"requests": 5, "request_id": PRIVATE_MARKERS[3]},
+            "possible": {"requests": 6},
+        },
+        "diagnostics": [
+            {"code": "source.parse", "count": 2, "detail": " ".join(PRIVATE_MARKERS)}
+        ],
+        "breakdowns": {"model": [{"value": PRIVATE_MARKERS[5]}]},
+    }
+
+
+class FakeUrollup:
+    """Stand in for the urollup process boundary, recording every launch.
+
+    Patched over `subprocess.run`, it answers `--version` and each whole-history view
+    from synthetic documents, so `main` runs end to end without reading any log.
+    """
+
+    def __init__(
+        self,
+        documents: dict[str, dict[str, object]],
+        *,
+        failures: dict[str, tuple[int, str, str]] | None = None,
+    ) -> None:
+        self.documents = documents
+        self.failures = failures or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        command = [str(part) for part in args]
+        self.calls.append(command)
+        view = command[1]
+        if view in self.failures:
+            status, stdout, stderr = self.failures[view]
+            return subprocess.CompletedProcess(command, status, stdout, stderr)
+        if view == "--version":
+            return subprocess.CompletedProcess(command, 0, "urollup 0.1.0\n", "")
+        return subprocess.CompletedProcess(command, 0, json.dumps(self.documents[view]), "")
+
+
+def whole_history(session_count: int) -> dict[str, dict[str, object]]:
+    """Synthetic whole-history documents with `session_count` sessions on a past day."""
+
+    return {
+        "daily": {
+            "rows": [
+                {
+                    "date": "2001-01-01",
+                    "requests": {"owned": session_count, "ambiguous": 0, "unknown": 0},
+                    "tokens": tokens(session_count),
+                }
+            ]
+        },
+        "report": coverage_report(),
+        "sessions": {
+            "rows": [
+                aggregate_session("claude", "2001-01-01", thread=f"thr-{index}")
+                for index in range(session_count)
+            ]
+        },
+    }
+
+
+def run_aggregate(fake: FakeUrollup, output: Path) -> None:
+    """Run the aggregate entry point against the fake process boundary."""
+
+    binary = output.with_name("urollup")
+    binary.write_bytes(b"")
+    with (
+        patch.object(local_aggregate.subprocess, "run", side_effect=fake),
+        redirect_stdout(StringIO()),
+    ):
+        local_aggregate.main(
+            [
+                "--urollup", str(binary), "--timezone", "UTC",
+                "--output", str(output), "--consent-local-logs",
+            ]
+        )
+
+
+def build(
+    daily: dict[str, object], sessions: dict[str, object] | None = None
+) -> dict[str, Any]:
+    """Build an aggregate from synthetic documents at a 2026-09-16 cutoff."""
+
+    cutoff = "2026-09-16"
+    return local_aggregate.build_aggregate(
+        daily=daily,
+        report=coverage_report(),
+        session_summary=local_aggregate.stable_session_summary(
+            sessions or {"rows": []}, cutoff=cutoff
+        ),
+        version="urollup 0.1.0",
+        timezone="UTC",
+        cutoff=cutoff,
+        platform_name="test-platform",
+    )
+
+
 class LocalAggregateTests(unittest.TestCase):
     def test_private_markers_cannot_reach_the_aggregate(self) -> None:
         daily = {
@@ -91,81 +226,193 @@ class LocalAggregateTests(unittest.TestCase):
                 },
             ]
         }
-        report = {
-            "coverage": {
-                "complete": False,
-                "copies_excluded": 2,
-                "limit_observations": 3,
-                "requests_without_usage": 4,
-                "path": PRIVATE_MARKERS[0],
-            },
-            "totals": {
-                "unresolved": {"requests": 5, "request_id": PRIVATE_MARKERS[3]},
-                "possible": {"requests": 6},
-            },
-            "diagnostics": [
-                {
-                    "code": "source.parse",
-                    "count": 2,
-                    "detail": " ".join(PRIVATE_MARKERS),
-                }
-            ],
-            "breakdowns": {"model": [{"value": PRIVATE_MARKERS[5]}]},
-        }
-        sessions = {
-            "rows": [
-                {
-                    "thread": PRIVATE_MARKERS[2],
-                    "project": PRIVATE_MARKERS[1],
-                    "tokens": tokens(7),
-                }
-            ]
-        }
-        aggregate = local_aggregate.build_aggregate(
-            daily=daily,
-            report=report,
-            sessions=sessions,
-            version="urollup 0.1.0",
-            timezone="UTC",
-            cutoff="2026-09-16",
-            platform_name="test-platform",
-            session_summary={
-                "stable": 1,
-                "active_or_unknown_excluded": 0,
-                "stable_by_agent": {"claude": 1, "codex": 0, "unknown": 0},
-            },
-        )
+        aggregate = build(daily, {"rows": [aggregate_session("claude", "2026-09-14")]})
         rendered = json.dumps(aggregate, sort_keys=True)
         for marker in PRIVATE_MARKERS:
             self.assertNotIn(marker, rendered)
+        self.assertEqual(aggregate["format"], "urollup.local-aggregate/v2")
         self.assertEqual(aggregate["totals"]["tokens"]["total"], 7)
         self.assertEqual(aggregate["per_day"][0]["date"], "2026-09-14")
         self.assertEqual(aggregate["diagnostics"]["by_code"], {"source.parse": 2})
+        self.assertEqual(aggregate["sessions"]["stable"], 1)
 
-    def test_session_identifiers_remain_inside_the_runner(self) -> None:
-        calls: list[list[str]] = []
-
-        def run(args: list[str]) -> dict[str, object]:
-            calls.append(args)
-            return {"rows": [{"date": "2026-09-14"}]}
-
+    def test_stable_sessions_end_on_a_complete_day_before_the_cutoff(self) -> None:
+        cutoff = "2026-09-16"
         summary = local_aggregate.stable_session_summary(
             {
                 "rows": [
-                    {
-                        "thread": PRIVATE_MARKERS[2],
-                        "agent": "claude",
-                        "project": PRIVATE_MARKERS[1],
-                    }
+                    aggregate_session("claude", "2026-09-15"),
+                    aggregate_session("codex", "2026-09-01"),
+                    # A thread without a recorded agent is still a session.
+                    aggregate_session("unknown", "2026-09-10"),
+                    # Active on the cutoff day, or later.
+                    aggregate_session("claude", cutoff),
+                    aggregate_session("codex", "2026-09-17"),
+                    # An undated request could belong to the current day.
+                    aggregate_session("claude", "2026-09-15", undated=1),
+                    aggregate_session("codex", None, requests=2, undated=2),
+                    # A session that owns no counted request has no complete day, even
+                    # one whose requests the whole-history ledger finds ambiguous.
+                    aggregate_session("claude", None, requests=0),
+                    aggregate_session("codex", "2026-09-01", requests=0),
+                    # The unowned group and an unexpected agent are no stable sessions.
+                    aggregate_session("unknown", "2026-09-01", thread=None),
+                    aggregate_session("other", "2026-09-01"),
                 ]
             },
-            cutoff="2026-09-16",
-            timezone="UTC",
-            run_urollup=run,
+            cutoff=cutoff,
         )
-        self.assertIn(PRIVATE_MARKERS[2], calls[0])
+        self.assertEqual(
+            summary,
+            {
+                "stable": 3,
+                "stable_by_agent": {"claude": 1, "codex": 1, "unknown": 1},
+                "excluded": {
+                    "active_or_undated": 4,
+                    "without_owned_requests": 2,
+                    "unowned_or_unrecognized_agent": 2,
+                },
+            },
+        )
         self.assertNotIn(PRIVATE_MARKERS[2], json.dumps(summary))
-        self.assertEqual(summary["stable"], 1)
+
+    def test_session_count_does_not_change_the_number_of_urollup_processes(self) -> None:
+        launches = {}
+        for session_count in (1, 60):
+            fake = FakeUrollup(whole_history(session_count))
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "aggregate.json"
+                run_aggregate(fake, output)
+                rendered = output.read_text(encoding="utf-8")
+            for marker in PRIVATE_MARKERS:
+                self.assertNotIn(marker, rendered)
+            self.assertEqual(json.loads(rendered)["sessions"]["stable"], session_count)
+            launches[session_count] = fake.calls
+        self.assertEqual(len(launches[1]), len(launches[60]))
+        # The version and the sessions contract are checked before the other two ingests.
+        views = [call[1] for call in launches[60]]
+        self.assertEqual(views, ["--version", "sessions", "daily", "report"])
+        for call in launches[60]:
+            self.assertNotIn("--session", call)
+            if call[1] != "--version":
+                self.assertEqual(call[2:4], ["--all", "--scope"])
+                self.assertIn("UTC", call)
+
+    def test_absent_token_fields_stay_null_and_zero_stays_zero(self) -> None:
+        requests = {"owned": 1, "ambiguous": 0, "unknown": 0}
+        daily = {
+            "rows": [
+                {
+                    "date": "2026-09-14",
+                    "requests": requests,
+                    "tokens": {
+                        "uncached_input": 4,
+                        "cache_write": 0,
+                        "cache_write_5m": 0,
+                        "provider_only": 0,
+                        "reasoning": None,
+                        "total": 4,
+                    },
+                },
+                {
+                    "date": "2026-09-15",
+                    "requests": requests,
+                    "tokens": {
+                        "uncached_input": 1,
+                        "cache_write": 5,
+                        "cache_write_1h": 5,
+                        "provider_only": 0,
+                        "total": 6,
+                    },
+                },
+            ]
+        }
+        aggregate = build(daily)
+        totals = aggregate["totals"]
+        self.assertEqual(
+            totals["tokens"],
+            {
+                "uncached_input": 5,
+                "cache_read": None,
+                "cache_write": 5,
+                "cache_write_5m": 0,
+                "cache_write_1h": 5,
+                "cache_write_unspecified": None,
+                "output": None,
+                "reasoning": None,
+                "provider_only": 0,
+                "total": 10,
+            },
+        )
+        # Coverage counts day rows: a row carries a field when any of its requests did.
+        self.assertEqual(
+            totals["token_day_coverage"],
+            {
+                "uncached_input": "all_days",
+                "cache_read": "no_days",
+                "cache_write": "all_days",
+                "cache_write_5m": "some_days",
+                "cache_write_1h": "some_days",
+                "cache_write_unspecified": "no_days",
+                "output": "no_days",
+                "reasoning": "no_days",
+                "provider_only": "all_days",
+                "total": "all_days",
+            },
+        )
+        first_day = aggregate["per_day"][0]["tokens"]
+        self.assertEqual(first_day["cache_write_5m"], 0)
+        self.assertIsNone(first_day["cache_write_1h"])
+        self.assertIsNone(first_day["reasoning"])
+
+    def test_no_complete_day_leaves_every_token_metric_null(self) -> None:
+        aggregate = build({"rows": []})
+        self.assertEqual(set(aggregate["totals"]["tokens"].values()), {None})
+        self.assertEqual(set(aggregate["totals"]["token_day_coverage"].values()), {"no_days"})
+        self.assertEqual(
+            aggregate["totals"]["requests"], {"owned": 0, "ambiguous": 0, "unknown": 0}
+        )
+
+    def test_command_failures_stop_without_forwarding_tool_output(self) -> None:
+        private = " ".join(PRIVATE_MARKERS)
+        documents = whole_history(2)
+        undated_missing = whole_history(2)
+        for row in undated_missing["sessions"]["rows"]:
+            del row["undated_requests"]
+        invalid_token = whole_history(2)
+        invalid_token["daily"]["rows"][0]["tokens"]["output"] = PRIVATE_MARKERS[4]
+        missing_requests = whole_history(2)
+        del missing_requests["daily"]["rows"][0]["requests"]["unknown"]
+        # Dates are copied into the record, so a malformed one must not pass as a day.
+        invalid_day = whole_history(2)
+        invalid_day["daily"]["rows"][0]["date"] = f"1999-{PRIVATE_MARKERS[0]}"
+        invalid_last_date = whole_history(2)
+        invalid_last_date["sessions"]["rows"][0]["last_date"] = PRIVATE_MARKERS[0]
+        cases = {
+            "nonzero exit": FakeUrollup(documents, failures={"sessions": (1, private, private)}),
+            "invalid JSON": FakeUrollup(documents, failures={"daily": (0, private, "")}),
+            "failed version": FakeUrollup(documents, failures={"--version": (2, "", private)}),
+            "sessions without calendar fields": FakeUrollup(undated_missing),
+            "invalid token count": FakeUrollup(invalid_token),
+            "missing request count": FakeUrollup(missing_requests),
+            "invalid day": FakeUrollup(invalid_day),
+            "invalid last date": FakeUrollup(invalid_last_date),
+        }
+        messages = {}
+        for name, fake in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "aggregate.json"
+                with self.assertRaises(local_aggregate.LocalAggregateError) as raised:
+                    run_aggregate(fake, output)
+                self.assertFalse(output.exists())
+                messages[name] = str(raised.exception)
+                for marker in PRIVATE_MARKERS:
+                    self.assertNotIn(marker, messages[name])
+        self.assertIn("rebuild", messages.get("sessions without calendar fields", ""))
+        # A failed version check stops before any ingest, and an old sessions contract
+        # before the other two.
+        self.assertEqual(len(cases["failed version"].calls), 1)
+        self.assertEqual(len(cases["sessions without calendar fields"].calls), 2)
 
     def test_consent_flag_is_required(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):

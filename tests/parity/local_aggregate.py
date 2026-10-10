@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Produce a privacy-safe aggregate report over consented local agent logs."""
+"""Produce a privacy-safe aggregate report over consented local agent logs.
+
+The report comes from `--version` and three whole-history urollup runs (`sessions`,
+`daily` and `report`), however many sessions the history holds. Every count it carries
+is urollup's own. This script filters complete days, sums day rows, labels how many
+summed days reported each token field, classifies sessions as stable from urollup's
+per-session dates, and copies a fixed allowlist of fields.
+"""
 
 from __future__ import annotations
 
@@ -10,56 +17,95 @@ import platform
 import re
 import subprocess
 import sys
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-METRICS = (
+FORMAT = "urollup.local-aggregate/v2"
+# urollup's JSON token fields. `cache_write` sums the three lifetime buckets and
+# `reasoning` is a subset of `output`; both are copied as urollup reports them.
+TOKEN_METRICS = (
     "uncached_input",
     "cache_read",
     "cache_write",
+    "cache_write_5m",
+    "cache_write_1h",
+    "cache_write_unspecified",
     "output",
     "reasoning",
     "provider_only",
     "total",
 )
+REQUEST_CLASSES = ("owned", "ambiguous", "unknown")
 AGENTS = {"claude", "codex", "unknown"}
 VERSION_PATTERN = re.compile(r"^urollup [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 class LocalAggregateError(RuntimeError):
     """A local aggregate could not be produced without risking private output."""
 
 
-Runner = Callable[[list[str]], dict[str, Any]]
+def required_count(record: dict[str, Any], key: str) -> int:
+    """Read a counter urollup always emits; a missing or null one means a changed contract."""
+
+    value = record.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LocalAggregateError(f"invalid or missing aggregate field {key}")
+    return value
 
 
-def integer(record: dict[str, Any], key: str) -> int:
-    """Read a non-negative count, treating an absent or null count as zero."""
+def token_count(tokens: dict[str, Any], key: str) -> int | None:
+    """Read one token counter, keeping an absent or null counter unknown, not zero.
 
-    value = record.get(key, 0)
+    urollup omits a token field that no counted request in the row reported, so absence
+    is the only signal that the value was never observed.
+    """
+
+    value = tokens.get(key)
     if value is None:
-        return 0
+        return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise LocalAggregateError(f"invalid aggregate field {key}")
     return value
 
 
-def token_counts(row: dict[str, Any]) -> dict[str, int]:
+def token_counts(row: dict[str, Any]) -> dict[str, int | None]:
     """Copy only the fixed token metric allowlist from one tool row."""
 
     tokens = row.get("tokens")
     if not isinstance(tokens, dict):
         raise LocalAggregateError("tool output lacks token aggregates")
-    return {metric: integer(tokens, metric) for metric in METRICS}
+    return {metric: token_count(tokens, metric) for metric in TOKEN_METRICS}
 
 
-def add_counts(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
-    """Add two fixed metric records."""
+def token_totals(
+    days: list[dict[str, int | None]],
+) -> tuple[dict[str, int | None], dict[str, str]]:
+    """Sum day rows per metric and label how many of them carried it.
 
-    return {metric: left.get(metric, 0) + right.get(metric, 0) for metric in METRICS}
+    The label is `all_days` when every summed day row carried the metric, even as zero;
+    `some_days` when only some did, so the sum covers those days; and `no_days`, with a
+    null sum, when none did. A urollup day row carries a field when any one of its
+    counted requests reported it, so a day mixing Claude and Codex requests counts as
+    carrying an agent-specific field such as `reasoning` although some requests lacked
+    it. Request-level availability needs per-metric request counts that urollup
+    does not report yet.
+    """
+
+    totals: dict[str, int | None] = {}
+    coverage: dict[str, str] = {}
+    for metric in TOKEN_METRICS:
+        reported = [day[metric] for day in days if day[metric] is not None]
+        totals[metric] = sum(reported) if reported else None
+        if not reported:
+            coverage[metric] = "no_days"
+        elif len(reported) == len(days):
+            coverage[metric] = "all_days"
+        else:
+            coverage[metric] = "some_days"
+    return totals, coverage
 
 
 def stable_daily_rows(payload: dict[str, Any], cutoff: str) -> list[dict[str, Any]]:
@@ -73,7 +119,11 @@ def stable_daily_rows(payload: dict[str, Any], cutoff: str) -> list[dict[str, An
         if not isinstance(row, dict):
             raise LocalAggregateError("daily output contains an invalid row")
         day = row.get("date")
-        if isinstance(day, str) and day < cutoff:
+        if day is None:
+            continue  # Undated requests cannot be placed before the cutoff.
+        if not isinstance(day, str) or DATE_PATTERN.fullmatch(day) is None:
+            raise LocalAggregateError("daily output contains an invalid date")
+        if day < cutoff:
             stable.append(row)
     return stable
 
@@ -84,7 +134,7 @@ def request_counts(row: dict[str, Any]) -> dict[str, int]:
     requests = row.get("requests")
     if not isinstance(requests, dict):
         raise LocalAggregateError("tool output lacks request aggregates")
-    return {name: integer(requests, name) for name in ("owned", "ambiguous", "unknown")}
+    return {name: required_count(requests, name) for name in REQUEST_CLASSES}
 
 
 def add_requests(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
@@ -106,7 +156,7 @@ def safe_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
         code = diagnostic.get("code")
         if not isinstance(code, str) or re.fullmatch(r"[a-z0-9_.-]+", code) is None:
             raise LocalAggregateError("tool output has an unsafe diagnostic code")
-        by_code[code] = by_code.get(code, 0) + integer(diagnostic, "count")
+        by_code[code] = by_code.get(code, 0) + required_count(diagnostic, "count")
     return {"count": sum(by_code.values()), "by_code": dict(sorted(by_code.items()))}
 
 
@@ -121,99 +171,100 @@ def safe_coverage(report: dict[str, Any]) -> dict[str, Any]:
     possible = totals.get("possible")
     if not isinstance(unresolved, dict) or not isinstance(possible, dict):
         raise LocalAggregateError("report output lacks side aggregates")
+    complete = coverage.get("complete")
+    if not isinstance(complete, bool):
+        raise LocalAggregateError("invalid or missing aggregate field complete")
     return {
-        "complete": coverage.get("complete") is True,
-        "copies_excluded": integer(coverage, "copies_excluded"),
-        "limit_observations": integer(coverage, "limit_observations"),
-        "requests_without_usage": integer(coverage, "requests_without_usage"),
-        "unresolved_requests": integer(unresolved, "requests"),
-        "possible_requests": integer(possible, "requests"),
+        "complete": complete,
+        "copies_excluded": required_count(coverage, "copies_excluded"),
+        "limit_observations": required_count(coverage, "limit_observations"),
+        "requests_without_usage": required_count(coverage, "requests_without_usage"),
+        "unresolved_requests": required_count(unresolved, "requests"),
+        "possible_requests": required_count(possible, "requests"),
     }
 
 
-def stable_session_summary(
-    sessions: dict[str, Any], *, cutoff: str, timezone: str, run_urollup: Runner
-) -> dict[str, Any]:
-    """Count complete sessions while keeping their identifiers in memory only."""
+def stable_session_summary(sessions: dict[str, Any], *, cutoff: str) -> dict[str, Any]:
+    """Count sessions whose owned requests all fall on complete days before `cutoff`.
+
+    urollup dates each whole-history `sessions` row by the rule `daily` uses:
+    `last_date` is the latest dated counted request the session owns and
+    `undated_requests` counts those without a timestamp. A session is stable when it
+    owns a counted request, none undated, and its last date is before the cutoff.
+
+    Classification uses the whole-history ledger, as the record's totals do. A request
+    that two sessions both prove they own is ambiguous there and belongs to neither, so
+    a finished session whose requests are all ambiguous counts as
+    `without_owned_requests`, not stable. A per-session `daily --session` run narrows
+    discovery and may own such requests. Identifiers stay in memory; only counts return.
+    """
 
     rows = sessions.get("rows")
     if not isinstance(rows, list):
         raise LocalAggregateError("sessions output has no rows")
     stable = 0
-    active_or_unknown = 0
+    excluded = {
+        "active_or_undated": 0,
+        "without_owned_requests": 0,
+        "unowned_or_unrecognized_agent": 0,
+    }
     by_agent = {agent: 0 for agent in sorted(AGENTS)}
     for row in rows:
         if not isinstance(row, dict):
             raise LocalAggregateError("sessions output contains an invalid row")
+        if "undated_requests" not in row:
+            raise LocalAggregateError(
+                "sessions output lacks undated_requests; rebuild urollup from this revision"
+            )
+        undated = required_count(row, "undated_requests")
+        requests = sum(request_counts(row).values())
+        last_date = row.get("last_date")
+        if last_date is not None and (
+            not isinstance(last_date, str) or DATE_PATTERN.fullmatch(last_date) is None
+        ):
+            raise LocalAggregateError("sessions output contains an invalid last date")
         thread = row.get("thread")
         agent = row.get("agent")
-        if not isinstance(thread, str) or agent not in AGENTS:
-            active_or_unknown += 1
-            continue
-        daily = run_urollup(
-            [
-                "daily",
-                "--session",
-                thread,
-                "--scope",
-                "self",
-                "--format",
-                "json",
-                "--timezone",
-                timezone,
-                "--color",
-                "never",
-                "--no-progress",
-            ]
-        )
-        days = daily.get("rows")
-        if not isinstance(days, list):
-            raise LocalAggregateError("per-session daily output has no rows")
-        dated = [item.get("date") for item in days if isinstance(item, dict)]
-        if dated and all(isinstance(day, str) and day < cutoff for day in dated):
+        if not isinstance(thread, str) or not isinstance(agent, str) or agent not in AGENTS:
+            excluded["unowned_or_unrecognized_agent"] += 1
+        elif requests == 0:
+            excluded["without_owned_requests"] += 1
+        elif undated > 0 or last_date is None or last_date >= cutoff:
+            excluded["active_or_undated"] += 1
+        else:
             stable += 1
             by_agent[agent] += 1
-        else:
-            active_or_unknown += 1
-    return {
-        "stable": stable,
-        "active_or_unknown_excluded": active_or_unknown,
-        "stable_by_agent": by_agent,
-    }
+    return {"stable": stable, "stable_by_agent": by_agent, "excluded": excluded}
 
 
 def build_aggregate(
     *,
     daily: dict[str, Any],
     report: dict[str, Any],
-    sessions: dict[str, Any],
+    session_summary: dict[str, Any],
     version: str,
     timezone: str,
     cutoff: str,
     platform_name: str,
-    session_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the complete allowlisted output record."""
+    """Build the complete allowlisted output record around a `stable_session_summary`."""
 
     if VERSION_PATTERN.fullmatch(version) is None:
         raise LocalAggregateError("urollup returned an invalid version")
-    rows = stable_daily_rows(daily, cutoff)
-    totals = {metric: 0 for metric in METRICS}
-    requests = {name: 0 for name in ("owned", "ambiguous", "unknown")}
+    requests = {name: 0 for name in REQUEST_CLASSES}
     per_day = []
-    for row in rows:
-        tokens = token_counts(row)
+    for row in stable_daily_rows(daily, cutoff):
         owned = request_counts(row)
-        totals = add_counts(totals, tokens)
         requests = add_requests(requests, owned)
-        per_day.append({"date": row["date"], "requests": owned, "tokens": tokens})
+        per_day.append({"date": row["date"], "requests": owned, "tokens": token_counts(row)})
+    tokens, day_coverage = token_totals([day["tokens"] for day in per_day])
     return {
-        "format": "urollup.local-aggregate/v1",
+        "format": FORMAT,
         "tool": version,
         "platform": platform_name,
         "timezone": timezone,
         "interval": {"start": None, "until_exclusive": cutoff},
-        "totals": {"requests": requests, "tokens": totals},
+        "totals": {"requests": requests, "tokens": tokens, "token_day_coverage": day_coverage},
         "per_day": per_day,
         "sessions": session_summary,
         "coverage": safe_coverage(report),
@@ -306,7 +357,6 @@ def main(argv: list[str] | None = None) -> int:
     binary = options.urollup.resolve()
     if not binary.is_file():
         raise LocalAggregateError("urollup binary is missing")
-    run_urollup: Runner = lambda args: execute_json(binary, args)
     common = [
         "--all",
         "--scope",
@@ -319,20 +369,20 @@ def main(argv: list[str] | None = None) -> int:
         "never",
         "--no-progress",
     ]
-    daily = run_urollup(["daily", *common])
-    report = run_urollup(["report", *common])
-    sessions = run_urollup(["sessions", *common])
+    # A binary that cannot report its version fails before any ingest, and one whose
+    # `sessions` rows lack the calendar fields fails before the other two ingests.
+    tool = version(binary)
+    session_summary = stable_session_summary(
+        execute_json(binary, ["sessions", *common]), cutoff=cutoff
+    )
     safe = build_aggregate(
-        daily=daily,
-        report=report,
-        sessions=sessions,
-        version=version(binary),
+        daily=execute_json(binary, ["daily", *common]),
+        report=execute_json(binary, ["report", *common]),
+        session_summary=session_summary,
+        version=tool,
         timezone=timezone,
         cutoff=cutoff,
         platform_name=f"{platform.system().lower()}-{platform.machine().lower()}",
-        session_summary=stable_session_summary(
-            sessions, cutoff=cutoff, timezone=timezone, run_urollup=run_urollup
-        ),
     )
     rendered = json.dumps(safe, indent=2, sort_keys=True) + "\n"
     if options.output is None:
