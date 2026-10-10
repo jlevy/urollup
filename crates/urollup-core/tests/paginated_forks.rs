@@ -1533,7 +1533,7 @@ fn a_parent_with_lineage_never_decides_a_childs_turns() {
     // longer records the grandparent turns (g1, g2) or its own earlier turn (p1) that
     // CHILD's copy holds. GRANDCHILD plays the grandparent root here. In the second shape
     // PARENT declares no boundary and records only a turn after CHILD's spawn, so nothing
-    // in CHILD contradicts an inference from it: the nested link alone must be lineage.
+    // in CHILD contradicts an inference from it: the nested link alone must exclude it.
     // Reading the link as PARENT's parent is uro-3b12.
     let spawned = json!({"source": {"subagent": {"thread_spawn": {
         "parent_thread_id": GRANDCHILD, "depth": 1}}}});
@@ -1735,4 +1735,123 @@ fn a_counter_after_a_compacted_original_in_a_counter_only_rollout_is_its_twin() 
         assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
         assert_parent_and_complete(&ingested, parent_present);
     }
+}
+
+#[test]
+fn an_inferred_own_start_stays_voidable_until_the_boundary() {
+    // Review D1. The parent root lost turns x and y, so the child's copy of x looks like its
+    // own start, and the parent's recorded t2 later proves it copied. A copied line naming
+    // the parent, a thread-less settings event before another lost turn, or a line without
+    // an ordinal must not close or move that start first. Real usage is 280: the parent's
+    // 250 includes x and y, plus the child's 30.
+    let parent = [
+        turn(1, Some("t1")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("t2")),
+        counter(4, 225, 25, 45, 5),
+    ];
+    let thread_less = json!({"ordinal": 5, "type": "event_msg",
+        "payload": {"type": "thread_settings_applied"}})
+    .to_string();
+    let mut no_ordinal: serde_json::Value =
+        serde_json::from_str(&turn(0, Some("z"))).expect("synthetic turn");
+    no_ordinal.as_object_mut().expect("line").remove("ordinal");
+    let shapes = [
+        // d2: a copied settings event naming the parent
+        vec![
+            turn(1, Some("t1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("x")),
+            counter(4, 135, 15, 45, 5),
+            counter(5, 180, 20, 45, 5),
+            settings(6, PARENT),
+            turn(8, Some("t2")),
+            counter(9, 225, 25, 45, 5),
+            turn(10, Some("c1")),
+            counter(11, 252, 28, 27, 3),
+        ],
+        // d1: a thread-less settings event, then another lost turn
+        vec![
+            turn(1, Some("t1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("x")),
+            counter(4, 135, 15, 45, 5),
+            thread_less,
+            turn(6, Some("y")),
+            counter(7, 180, 20, 45, 5),
+            turn(8, Some("t2")),
+            counter(9, 225, 25, 45, 5),
+            turn(10, Some("c1")),
+            counter(11, 252, 28, 27, 3),
+        ],
+        // d4: a turn_context without an ordinal
+        vec![
+            turn(1, Some("t1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("x")),
+            counter(4, 135, 15, 45, 5),
+            counter(5, 180, 20, 45, 5),
+            no_ordinal.to_string(),
+            turn(8, Some("t2")),
+            counter(9, 225, 25, 45, 5),
+            turn(10, Some("c1")),
+            counter(11, 252, 28, 27, 3),
+        ],
+    ];
+    for records in shapes {
+        let root = fork_root(Some(&parent), &[]);
+        write_child(&root, migrated_meta(13), &records);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 250);
+        assert_eq!(own_usage(&ingested, CHILD).0, 0, "the contradicted region never counts");
+        assert_excluded_as_gap(&ingested, CHILD);
+    }
+}
+
+#[test]
+fn a_nested_spawn_link_alone_leaves_a_rollouts_counters_to_the_root_rules() {
+    // Review D2. An unmigrated old-format subagent names its parent only in
+    // source.subagent.thread_spawn and holds no copy: no boundary and no foreign header.
+    // A 0.153 or 0.154 resume added a usage record beside its legacy counter-only response,
+    // and both responses are its own: 100 + 30. The link keeps it from deciding a child's
+    // turns, but its own counters keep the root rules, as on main.
+    let root = tempfile::tempdir().expect("temporary log root");
+    fs::create_dir(root.path().join("sessions")).expect("sessions directory");
+    write_rollout(&root, PARENT, 1, json!({}), &[turn(1, Some("p1")), counter(2, 45, 5, 45, 5)]);
+    write_rollout(
+        &root,
+        CHILD,
+        2,
+        json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT, "depth": 1}}}}),
+        &[
+            turn(1, Some("c1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("c2")),
+            direct(4, CHILD, "child-r2", 27, 3),
+            counter(5, 117, 13, 27, 3),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (2, Some(130), Completeness::Complete));
+    assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 180);
+}
+
+#[test]
+fn a_compacted_twin_matches_whether_or_not_a_count_is_written() {
+    // Review D3's d5: the counter writes cache_write_input_tokens: 0, which the compacted
+    // record omits; a missing count reads as 0, so the counter is still the record's twin.
+    let mut twin: serde_json::Value =
+        serde_json::from_str(&counter(3, 18, 2, 18, 2)).expect("synthetic counter");
+    for usage in ["total_token_usage", "last_token_usage"] {
+        twin["payload"]["info"][usage]["cache_write_input_tokens"] = json!(0);
+    }
+    let root = fork_root(Some(&parent_records()), &[]);
+    write_child(
+        &root,
+        guardian_meta(4),
+        &[compacted(1, CHILD, "guardian-r1", 18, 2), turn(2, Some("g-turn-2")), twin.to_string()],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+    assert_parent_and_complete(&ingested, true);
 }
