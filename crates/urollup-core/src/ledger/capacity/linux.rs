@@ -2,7 +2,9 @@
 //! rlimits, read from `/proc` and the cgroup filesystems below a configurable root.
 //!
 //! Every file is optional. A missing, unreadable or malformed file contributes nothing,
-//! so a host without cgroups or with an unusual layout keeps its physical RAM.
+//! so a host without cgroups or with an unusual layout keeps its physical RAM. Files are
+//! read as bytes and decoded line by line, so a line that is not UTF-8, such as a mount of
+//! a volume with a Latin-1 name, drops only itself.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,20 +22,22 @@ const V1_UNLIMITED_FLOOR: u64 = 1 << 62;
 /// is how v1 reports an unlimited group that sits below the root.
 pub(super) fn allowances(root: &Path, physical_ram: Option<u64>) -> Vec<(u64, MemorySource)> {
     let mut found = Vec::new();
-    let memberships = read(root, "proc/self/cgroup").map(|text| Memberships::parse(&text));
-    let mounts = read(root, "proc/self/mountinfo").map(|text| parse_mounts(&text));
+    let memberships =
+        read_lines(&root.join("proc/self/cgroup")).map(|text| Memberships::parse(&text));
+    let mounts = read_lines(&root.join("proc/self/mountinfo")).map(|text| parse_mounts(&text));
     if let (Some(memberships), Some(mounts)) = (memberships, mounts) {
         if let Some(path) = memberships.unified.as_deref() {
             found.extend(unified_limits(root, &mounts, path));
         }
         if let Some(path) = memberships.memory.as_deref() {
             found.extend(
-                v1_limit(root, &mounts, path, physical_ram)
+                v1_limits(root, &mounts, path, physical_ram)
+                    .into_iter()
                     .map(|bytes| (bytes, MemorySource::CgroupV1Limit)),
             );
         }
     }
-    if let Some(text) = read(root, "proc/self/limits") {
+    if let Some(text) = read_lines(&root.join("proc/self/limits")) {
         for (name, source) in [
             ("Max address space", MemorySource::AddressSpaceLimit),
             ("Max data size", MemorySource::DataSizeLimit),
@@ -44,8 +48,19 @@ pub(super) fn allowances(root: &Path, physical_ram: Option<u64>) -> Vec<(u64, Me
     found
 }
 
-fn read(root: &Path, relative: &str) -> Option<String> {
-    fs::read_to_string(root.join(relative)).ok()
+/// The lines of `path` that are valid UTF-8, each ending in a newline. A line that is not
+/// is dropped rather than decoded with replacement characters, since a replaced path
+/// could name a different cgroup.
+fn read_lines(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let mut text = String::with_capacity(bytes.len());
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if let Ok(line) = std::str::from_utf8(line) {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    Some(text)
 }
 
 /// The process's cgroup paths from `/proc/self/cgroup`.
@@ -171,25 +186,29 @@ fn cgroup_directory(root: &Path, mount: &CgroupMount, path: &str) -> Option<(Pat
 }
 
 /// `memory.max` and `memory.high` of the process's cgroup and every ancestor up to the
-/// mount point.
+/// mount point, under every `cgroup2` mount that shows the cgroup.
+///
+/// A mount whose directories are missing contributes nothing, and the smallest limit
+/// across mounts counts, so a duplicate, overmounted or bind mount listed first hides no
+/// other mount's limits.
 fn unified_limits(root: &Path, mounts: &[CgroupMount], path: &str) -> Vec<(u64, MemorySource)> {
-    let Some((point, directory)) = mounts
+    let mut limits = Vec::new();
+    let located = mounts
         .iter()
         .filter(|mount| mount.kind == MountKind::Unified)
-        .find_map(|mount| cgroup_directory(root, mount, path))
-    else {
-        return Vec::new();
-    };
-    let mut limits = Vec::new();
-    let mut current = Some(directory.as_path());
-    while let Some(directory) = current {
-        for (file, source) in
-            [("memory.max", MemorySource::CgroupMax), ("memory.high", MemorySource::CgroupHigh)]
-        {
-            let value = fs::read_to_string(directory.join(file)).ok();
-            limits.extend(value.as_deref().and_then(unified_value).map(|bytes| (bytes, source)));
+        .filter_map(|mount| cgroup_directory(root, mount, path));
+    for (point, directory) in located {
+        let mut current = Some(directory.as_path());
+        while let Some(directory) = current {
+            for (file, source) in
+                [("memory.max", MemorySource::CgroupMax), ("memory.high", MemorySource::CgroupHigh)]
+            {
+                let value = fs::read_to_string(directory.join(file)).ok();
+                limits
+                    .extend(value.as_deref().and_then(unified_value).map(|bytes| (bytes, source)));
+            }
+            current = (directory != point.as_path()).then(|| directory.parent()).flatten();
         }
-        current = (directory != point.as_path()).then(|| directory.parent()).flatten();
     }
     limits
 }
@@ -204,26 +223,32 @@ fn unified_value(text: &str) -> Option<u64> {
 }
 
 /// The v1 `hierarchical_memory_limit` of the process's memory cgroup, which already
-/// includes every ancestor's limit; the unlimited sentinel and values at or above
-/// physical RAM are no limit.
-fn v1_limit(
+/// includes every ancestor's limit, under every v1 `memory` mount that shows the cgroup;
+/// the unlimited sentinel and values at or above physical RAM are no limit.
+fn v1_limits(
     root: &Path,
     mounts: &[CgroupMount],
     path: &str,
     physical_ram: Option<u64>,
-) -> Option<u64> {
-    let (_, directory) = mounts
+) -> Vec<u64> {
+    mounts
         .iter()
         .filter(|mount| mount.kind == MountKind::MemoryV1)
-        .find_map(|mount| cgroup_directory(root, mount, path))?;
-    let stat = fs::read_to_string(directory.join("memory.stat")).ok()?;
-    let value = stat.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        (fields.next() == Some("hierarchical_memory_limit")).then(|| fields.next()).flatten()
-    })?;
-    let bytes = whole_number(value)?;
-    let unlimited = bytes >= V1_UNLIMITED_FLOOR || physical_ram.is_some_and(|ram| bytes >= ram);
-    (!unlimited).then_some(bytes)
+        .filter_map(|mount| cgroup_directory(root, mount, path))
+        .filter_map(|(_, directory)| {
+            let stat = read_lines(&directory.join("memory.stat"))?;
+            let value = stat.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                (fields.next() == Some("hierarchical_memory_limit"))
+                    .then(|| fields.next())
+                    .flatten()
+            })?;
+            let bytes = whole_number(value)?;
+            let unlimited =
+                bytes >= V1_UNLIMITED_FLOOR || physical_ram.is_some_and(|ram| bytes >= ram);
+            (!unlimited).then_some(bytes)
+        })
+        .collect()
 }
 
 /// The soft limit of the `/proc/self/limits` row named `name`, or `None` when it is

@@ -652,6 +652,13 @@ mod tests {
 
     /// A fake `/` with the given files, relative to it.
     fn tree(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let files: Vec<(&str, &[u8])> =
+            files.iter().map(|(path, text)| (*path, text.as_bytes())).collect();
+        byte_tree(&files)
+    }
+
+    /// [`tree`] with file contents that need not be UTF-8.
+    fn byte_tree(files: &[(&str, &[u8])]) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         for (path, text) in files {
             let path = root.path().join(path);
@@ -802,6 +809,119 @@ mod tests {
         let empty = tree(&[]);
         assert_eq!(effective(&empty, None), None);
         assert_eq!(effective(&empty, Some(GIB)).unwrap().source, MemorySource::PhysicalRam);
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_drops_only_itself() {
+        let limited = EffectiveMemory { bytes: GIB, source: MemorySource::CgroupMax };
+        // An unrelated mount whose point is a Latin-1 name.
+        let mountinfo = byte_tree(&[
+            ("proc/self/cgroup", b"0::/app\n"),
+            (
+                "proc/self/mountinfo",
+                b"30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n\
+                  41 25 8:1 / /media/caf\xe9 rw - vfat /dev/sdb1 rw\n",
+            ),
+            ("sys/fs/cgroup/app/memory.max", b"1073741824\n"),
+        ]);
+        assert_eq!(effective(&mountinfo, Some(32 * GIB)), Some(limited));
+        // A v1 named hierarchy with a Latin-1 cgroup name.
+        let cgroup = byte_tree(&[
+            ("proc/self/cgroup", b"1:name=systemd:/caf\xe9\n0::/app\n"),
+            ("proc/self/mountinfo", b"30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"),
+            ("sys/fs/cgroup/app/memory.max", b"1073741824\n"),
+        ]);
+        assert_eq!(effective(&cgroup, Some(32 * GIB)), Some(limited));
+        let limits = byte_tree(&[(
+            "proc/self/limits",
+            b"Max stack size            \xff                    unlimited            bytes\n\
+              Max address space         1073741824           unlimited            bytes\n",
+        )]);
+        assert_eq!(
+            effective(&limits, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: GIB, source: MemorySource::AddressSpaceLimit })
+        );
+    }
+
+    #[test]
+    fn every_cgroup2_mount_that_shows_the_cgroup_is_read() {
+        // A bind mount of a subtree listed first must not hide the ancestors' limits.
+        let bind = tree(&[
+            ("proc/self/cgroup", "0::/user.slice/u.slice/s.scope\n"),
+            (
+                "proc/self/mountinfo",
+                "50 25 0:26 /user.slice/u.slice /mnt/sub rw - cgroup2 cgroup2 rw\n\
+                 30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+            ),
+            ("sys/fs/cgroup/user.slice/memory.max", "2147483648\n"),
+            ("mnt/sub/s.scope/memory.max", "max\n"),
+        ]);
+        assert_eq!(
+            effective(&bind, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 2 * GIB, source: MemorySource::CgroupMax })
+        );
+        // A first mount with no readable directory contributes nothing.
+        let unreadable = tree(&[
+            ("proc/self/cgroup", "0::/app\n"),
+            (
+                "proc/self/mountinfo",
+                "29 25 0:30 / /run/other rw - cgroup2 cgroup2 rw\n\
+                 30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+            ),
+            ("sys/fs/cgroup/app/memory.max", "1073741824\n"),
+        ]);
+        assert_eq!(
+            effective(&unreadable, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: GIB, source: MemorySource::CgroupMax })
+        );
+        // The smallest limit across mounts wins.
+        let both = tree(&[
+            ("proc/self/cgroup", "0::/app\n"),
+            (
+                "proc/self/mountinfo",
+                "29 25 0:26 / /run/first rw - cgroup2 cgroup2 rw\n\
+                 30 25 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+            ),
+            ("run/first/app/memory.high", "3221225472\n"),
+            ("sys/fs/cgroup/app/memory.max", "2147483648\n"),
+        ]);
+        assert_eq!(
+            effective(&both, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 2 * GIB, source: MemorySource::CgroupMax })
+        );
+    }
+
+    #[test]
+    fn every_memory_v1_mount_that_shows_the_cgroup_is_read() {
+        let root = tree(&[
+            ("proc/self/cgroup", "5:memory:/job\n"),
+            (
+                "proc/self/mountinfo",
+                "29 25 0:30 / /run/memory rw - cgroup cgroup rw,memory\n\
+                 31 25 0:27 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n",
+            ),
+            ("sys/fs/cgroup/memory/job/memory.stat", "hierarchical_memory_limit 6442450944\n"),
+        ]);
+        assert_eq!(
+            effective(&root, Some(32 * GIB)),
+            Some(EffectiveMemory { bytes: 6 * GIB, source: MemorySource::CgroupV1Limit })
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn effective_memory_reads_this_host_within_physical_ram() {
+        // CI hosts may set cgroup limits, so the value is bounded rather than pinned.
+        let physical = physical_memory_bytes().expect("Linux publishes MemTotal");
+        let memory = effective_memory().expect("physical RAM is known");
+        assert!(memory.bytes > 0, "{memory:?}");
+        assert!(memory.bytes <= physical, "{memory:?} exceeds {physical} bytes of RAM");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn effective_memory_is_physical_ram_off_linux() {
+        assert_eq!(effective_memory(), EffectiveMemory::smallest(physical_memory_bytes(), []));
     }
 
     #[test]
