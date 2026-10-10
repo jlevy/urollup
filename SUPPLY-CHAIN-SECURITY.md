@@ -187,6 +187,40 @@ from the cool-off) replaces `fast-glob` with `tinyglobby`, which removes 17 pack
 including `braces`. The new transitive packages, `tinyglobby` 0.2.17, `fdir` 6.5.0 and
 `picomatch` 4.0.7, pass the 14-day gate.
 
+## Reviewed Versions (Cursor State Reader)
+
+Checked on 2026-10-10 against the crates.io API, when the cool-off cutoff was
+2026-09-26, for bead `uro-kddq`. The draft Cursor `cursor-state` reader opens Cursor’s
+`state.vscdb`, a SQLite database, read-only with `query_only`. `urollup-core` takes
+`rusqlite` with default features off and only `bundled`, so it builds its own SQLite
+instead of linking the system library.
+
+| Crate | Version | Published | Why, and what was held back |
+| --- | --- | --- | --- |
+| rusqlite (`bundled` only) | 0.40.2 | 2026-08-08 | SQLite access; rusqlite/rusqlite, owners thomcc and gwenn; MIT; newest release |
+| libsqlite3-sys | 0.38.2 | 2026-08-08 | Vendored SQLite 3.53.2 C source and prebuilt bindings; same repository and owners; MIT, SQLite itself public domain; newest release |
+| fallible-iterator | 0.3.0 | 2023-05-22 | rusqlite row iteration; MIT or Apache-2.0 |
+| fallible-streaming-iterator | 0.1.9 | 2018-05-02 | rusqlite row iteration; MIT or Apache-2.0 |
+| smallvec | 1.16.0 | 2026-09-01 | rusqlite dependency; servo/rust-smallvec. 1.16.1 (2026-09-11) and 1.16.2 (2026-09-25) have since cleared the cool-off and are not taken; 1.16.3 (2026-10-10) has not |
+| vcpkg | 0.2.15 | 2021-06-19 | Build dependency of libsqlite3-sys’s default `min_sqlite_version_3_34_1` feature; unused by the bundled build |
+
+That default feature also reuses the already-locked `pkg-config`, which the bundled
+build does not call.
+`cc` and `bitflags` were already locked.
+
+`libsqlite3-sys` is the only new crate with a build script (read at 0.38.2). With
+`bundled`, it compiles the vendored `sqlite3/sqlite3.c` through `cc`, as `zstd-sys`
+compiles libzstd, and copies prebuilt bindings; `bindgen` stays off.
+Setting `LIBSQLITE3_SYS_USE_PKG_CONFIG` would link a system SQLite instead.
+The bundled build defines `SQLITE_ENABLE_LOAD_EXTENSION=1`, but rusqlite’s
+`load_extension` feature is off and the reader never enables extension loading on its
+connection.
+
+This record does not settle `uro-kddq`. The Decision 20 exception for the reader
+(`uro-2hck`) is not confirmed, the choice is not yet reconciled with the product’s Phase
+3 storage decision, and every `urollup-core` build carries SQLite rather than keeping it
+behind an optional feature until Cursor ships.
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->

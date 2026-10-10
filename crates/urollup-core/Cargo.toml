@@ -30,11 +30,11 @@ jiff = { version = "0.2.35", default-features = false, features = [
   "tzdb-zoneinfo",
 ] }
 memchr = "2.8.3"
+# Bundled SQLite, compiled from C with `cc`, for the read-only Cursor `state.vscdb` reader
+# (SUPPLY-CHAIN-SECURITY.md, Cursor State Reader).
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",
 ] }
-# Lock smallvec at 1.16.0 (`cargo update -p smallvec --precise 1.16.0`).
-# 1.16.1 (2026-09-11) has not cleared the 14-day cool-off.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
