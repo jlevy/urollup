@@ -5,7 +5,7 @@ title: "Scalable ingestion phase 2: practical memory safety and scale acceptance
 kind: task
 status: open
 priority: 1
-version: 27
+version: 28
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -36,8 +36,9 @@ child_order_hints:
   - is-01m2y4zp4nvy4ggpg0y94dzrbe
   - is-01m3gvh6vhs5keehwyxd6r88vs
   - is-01m3gvh76jh7rrwtbnjs4zfy1n
+  - is-01m4jjnykczqny4qw0sxzjjkw9
 created_at: 2026-09-17T02:35:51.219Z
-updated_at: 2026-09-27T07:16:39.031Z
+updated_at: 2026-10-10T09:35:36.027Z
 ---
 Own the 2026-09-27 maintainer-approved release policy in the scalable-ingestion plan. The historical representative 512 MiB and 10-second thresholds are retired, not claimed as met. Require successful reference-corpus sessions/daily/report with normal memory pressure and footprint within 25% of physical RAM; a conservative density-based 100 GiB projection within that envelope; raw-byte independence and streaming beyond the memory allowance; exact accounting and worker parity; and process-wide early admission refusal before over-budget dense histories can exhaust memory. Existing small synthetic regression limits remain. Block on uro-6pi8 (process-wide budget), uro-z1h1 (scale proofs) and uro-erqo (representative evidence). G1 still depends on this gate. Hybrid spill uro-924y and profile-led speed improvements are follow-ups, not 0.1 blockers.
 

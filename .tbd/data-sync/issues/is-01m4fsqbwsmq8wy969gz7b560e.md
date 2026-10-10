@@ -3,15 +3,19 @@ type: is
 id: is-01m4fsqbwsmq8wy969gz7b560e
 title: Codex rollouts with any token_usage_record drop token_count-only usage
 kind: bug
-status: in_progress
+status: closed
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels: []
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-10-09T07:40:59.160Z
-updated_at: 2026-10-09T21:31:14.032Z
+updated_at: 2026-10-10T17:13:42.915Z
+closed_at: 2026-10-10T17:13:42.914Z
+close_reason: "Merged in PR #26 (a4bad34): root rollouts count counter-only turns beside usage records by an adjacency twin rule; forks and subagents keep the gap (uro-r8si)."
+resolution: null
+duplicate_of: null
 ---
 Found by PR #16 correctness review B (B5), outside that layer's diff and present at main: in codex_rollout.rs the presence of any token_usage_record in a rollout switches the whole file to the direct path (has_direct), and token_count counter records are then ignored. A session started before Codex 0.153 (counter-only) and resumed after it (direct records) would silently lose its pre-upgrade usage while coverage reports complete. Synthetic reproduction in the review counted 22 of 77 tokens. The shape is inferred from the research brief and not yet seen in a real log. Decide per region (counter records before the first direct record, or per turn) and add a fixture; if ownership cannot be established, report partial coverage with a diagnostic rather than dropping usage. Review: https://github.com/jlevy/urollup/pull/16#pullrequestreview-5467217389
 

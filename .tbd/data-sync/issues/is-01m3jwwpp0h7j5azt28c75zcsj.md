@@ -3,9 +3,9 @@ type: is
 id: is-01m3jwwpp0h7j5azt28c75zcsj
 title: Preserve source-agent attribution for unowned session rows
 kind: bug
-status: in_progress
+status: closed
 priority: 2
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 labels: []
 dependencies:
@@ -13,7 +13,11 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2yrezrf530kbz15erhh7hw6
 created_at: 2026-09-28T02:18:21.245Z
-updated_at: 2026-10-09T19:15:14.518Z
+updated_at: 2026-10-10T09:25:07.911Z
+closed_at: 2026-10-10T09:25:07.910Z
+close_reason: "Merged in PR #25 (990e7b3): unowned sessions rows keep their source agent, one row per agent."
+resolution: null
+duplicate_of: null
 ---
 Code review during real-history QA found query::aggregate::sessions groups all Ownership::Ambiguous and Ownership::Unknown requests under one None thread key, then derives agent only from the missing SessionIndex entry and labels the row unknown. This discards known source-agent provenance and can conflate unowned requests from different agents. Keep ownership uncertainty distinct from agent uncertainty; preserve the known dialect when possible and emit separate unowned groups per agent without guessing session or project ownership. Add a synthetic mixed-agent fixture with ambiguous owners and prove per-agent totals reconcile to the combined total. Coordinate with uro-qvp1 joint grouping. No private source content or aggregate values belong in this bead.
 
