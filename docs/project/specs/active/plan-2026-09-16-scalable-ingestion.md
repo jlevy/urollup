@@ -1113,6 +1113,11 @@ Choices made while implementing, where this design left room:
   new insert inside `intern` and `intern_overflow`, under the table lock and before
   allocating. `construction_estimate` exists for slices 5 and 6 but is not yet verified,
   since construction cannot be measured from outside the adapters.
+  Each push-site charge names the ledger’s `Component` for its term: `Records` for
+  `decoded_record`, `Kappa` for `kappa`, `Limits` for `limit_row`, `Payloads` for
+  `diagnostic` and the other payload terms, `Interns` for `name_intern` and
+  `overflow_intern`, `Sources` for the source-result deep sizes, `Reserves` for the
+  query and index reserves, and `Slots` for `worker_slot` and `large_record`.
 - **Harness and measured constants (slice 3).**
   `crates/urollup-core/tests/memory_model.rs` runs without libtest and counts live heap
   by the costing rule, holding both buffers through a moving reallocation; the design
