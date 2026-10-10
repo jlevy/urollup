@@ -1078,26 +1078,32 @@ Choices made while implementing, where this design left room:
   the next revision of slice 3. At current row sizes (224 B observation, 216 B request,
   30 B key node and 16 B of slots), κ is 672 bytes for Codex, where construction, the
   observation at 3 ×, dominates grouping (654) and finalize (656), and 1,058 for Claude,
-  construction plus 386 bytes of owner and ambiguity state, with grouping at 980. Slice
-  3’s κ has no retained-and-query phase; that phase is smaller than finalize for both
-  dialects, so κ does not change, but the design lists it, and the next revision of
-  slice 3 adds it. The key bound is 1 for Codex, whose observations carry one key and no
-  invariant, and 3 for Claude, two keys plus a split part’s artifact-local key; unit
-  tests on each adapter’s observation builders assert both.
+  construction plus 386 bytes of owner and ambiguity state, with grouping at 980. The
+  design now adds two terms that slice 3’s κ lacks, both applied in its next revision:
+  the eligibility vector’s sort scratch in Claude’s construction phase (16 B per record,
+  so 1,074 B), and a retained-and-query phase, which is smaller than finalize for both
+  dialects. Grouping counts the observation once, which the design makes exact by having
+  slice 6 shrink Claude’s observation vector before grouping; until then the grouping
+  checkpoint, which counts `observation_capacity`, bounds it.
+  The key bound is 1 for Codex, whose observations carry one key and no invariant, and 3
+  for Claude, two keys plus a split part’s artifact-local key; unit tests on each
+  adapter’s observation builders assert both.
   Grouping charges the request vector as presized, 33/32 of a request, and per
   observation one evidence slot and one alias per key; parts that conflicting keys split
   past the presized capacity are charged where they are pushed (`split_growth`), and a
   group’s scratch by its size (`group_scratch`). Decoded records cost 3 × 176 bytes for
   Claude and 3 × 80 for Codex, a limit row 320 bytes.
-  The query model charges 48 bytes per counted request, the design’s query reserve
-  (`selected_requests` and `size_summary` each hold an 8-byte item per counted request),
-  beside 1 KiB per row, 64 KiB fixed and 3 × the rendered bytes.
+  The query model charges 48 bytes per counted request, the design’s query reserve, an
+  upper bound: `report` collects one 8-byte `SelectedRequest` and at most one 8-byte
+  size per counted request, and `daily` and `sessions` stream.
+  Beside it, the model charges 1 KiB per row, 64 KiB fixed and 3 × the rendered bytes.
   `model::query` takes the rendered size as an input, which the harness knows after
   rendering; slice 7 charges rendering as its buffer grows.
   `worker_slot` and `large_record` predate three design terms: the 640 KiB `quotaLimits`
-  document allowance and its permit need, `ZSTD_estimateDStreamSize` for a wide window
-  rather than the window alone, and the line need `C + 2 × C′`, which equals their 2.5 ×
-  capacity only when growth doubles, as it does up to the default 64 MiB limit.
+  document allowance and its permit need; the decoder for a wide window rather than the
+  window alone, which `ZSTD_DECODER`’s Rust formula already computes for 8 MiB; and the
+  line need `4 × C′`, 16 MiB in the slot and 256 MiB in the permit at the default limit,
+  where slice 3 charges 10 MiB and 2.5 × capacity.
   The next revision of slice 3 applies them, before slice 4 uses these functions.
   `DeepSize` gives the retained heap of `Ingested`, `Ledger`, `SessionIndex`,
   `Discovery`, `ReconcileInput` and their parts, counting exact capacities for vectors,
@@ -1126,26 +1132,31 @@ Choices made while implementing, where this design left room:
   one, with 2 KiB-padded twins within 0.5 KB of the unpadded peaks.
   On the small fixtures the peak (up to 0.41 MB at eight workers) is the 128 KiB read
   buffers, which the worker slots cover and the forward estimate leaves out.
-  The design now requires that decode bound to fail rather than report, with one worker
-  and against `E` plus the Rust-heap part of the slots in use, on corpora where `E` is
-  at least 10 × that slot term; the 800-record corpora are smaller than that.
-  The larger corpora are applied in the next revision of slice 3, and the failing bound
-  once slices 5 and 6 charge decode.
-  Measured constants: `F` is 5 MiB, 1.25 × the 3,375,104-byte maximum RSS of a release
-  `report` over the smallest fixture on the reference macOS laptop, rounded up (its peak
-  physical footprint was 1,409,336 bytes); Linux maximum RSS is not measured, so the
-  macOS RSS stands in for it until per-allocator calibration (slice 8). zstd 1.5.7
-  reports a 95,968-byte decoder context (`ZSTD_CONTEXT` is 96 KiB) and 8,877,856 bytes
-  once an 8 MiB-window frame starts, plus the zstd crate’s 131,075-byte Rust input
-  buffer: about 8.6 MiB, as designed.
+  The design now requires more of this harness, applied in the next revision of slice 3:
+  corpora where `E` is at least 10 × the slots’ Rust-heap term, which the 800-record
+  corpora are not; the largest value of live heap minus the current `E` at every
+  allocation, rather than each phase’s peak against an estimate computed afterwards; and
+  an eight-worker run, with the join’s per-worker `done` vectors at their minimum
+  capacity, beside the one-worker run.
+  The decode bound fails rather than reports once slices 5 and 6 charge decode, each for
+  its dialect. Measured constants: `F` is 5 MiB, 1.25 × the 3,375,104-byte maximum RSS of
+  a release `report` over the smallest fixture on the reference macOS laptop, rounded up
+  (its peak physical footprint was 1,409,336 bytes); Linux maximum RSS is not measured,
+  so the macOS RSS stands in for it until per-allocator calibration (slice 8). zstd
+  1.5.7 reports a 95,968-byte decoder context (`ZSTD_CONTEXT` is 96 KiB) and 8,877,856
+  bytes once an 8 MiB-window frame starts, plus the zstd crate’s 131,075-byte Rust input
+  buffer, the size of the frame loop’s own buffer: about 8.6 MiB, as designed.
   `flate2`’s gzip decoder holds 76,368 bytes beside the read buffer, inside the design’s
   80 KiB (`GZIP_DECODER`), and the boxed reader adds up to 512 bytes.
   A scan of a 3.5 MiB line peaked at 6,422,848 bytes, 1.5 × the 4 MiB slot line capacity
-  plus the read buffer, inside the slot’s 10 MiB line allowance.
-  That line is not the worst case: today’s `read_line` doubles capacity from its first
-  chunk, so a line just under 4 MiB can reach about 7 MiB of capacity and 10.6 MiB while
-  it grows. Slice 4’s doubling from 256 KiB, with the permit past 4 MiB, restores the
-  bound, and its 3.9 MiB and 63 MiB `read_line` tests pin it.
+  plus the read buffer, inside slice 3’s 10 MiB line allowance.
+  That line is not the worst case on either count.
+  Today’s `read_line` doubles capacity from its first chunk, so a line just under 4 MiB
+  can reach about 7 MiB of capacity and 10.6 MiB while it grows.
+  The scan also did not parse a long escaped string, whose serde_json scratch takes a
+  parsed line of capacity `C′` to as much as 3.48 × `C′`. Slice 4’s doubling from 256
+  KiB, the design’s `4 × C′` need with the permit past 4 MiB, and its 3.9 MiB and 63 MiB
+  tests that parse the lines restore and pin the bound.
   A sessions document costs about 112 bytes per row beyond its per-request and rendering
   terms, well inside the 1 KiB row charge.
 
