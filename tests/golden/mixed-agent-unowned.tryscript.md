@@ -340,6 +340,9 @@ gpt-5.2-codex | 2 | 17,000 | 900 | 17,900
 
 Selecting both sessions of one agent restores the ambiguity: the shared response returns
 to that agent’s unowned row, and the other agent’s sessions stay out.
+These runs print no DIAGNOSTICS section, although `sessions --all` reports
+`conflicting-owners` for the same response: exact selection still drops diagnostics
+whose subject is a request (`uro-1vg5`), so that fix will also appear here as a diff.
 
 ```console
 $ urollup sessions --session 00000000-0000-4000-8000-001700000001 --session 00000000-0000-4000-8000-001700000002 --timezone UTC
