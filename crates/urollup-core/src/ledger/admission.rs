@@ -11,11 +11,14 @@
 //!   ordered, and a charge is refused exactly when the running total would pass the
 //!   limit. That happens if and only if the phase's charges sum past it, whatever the
 //!   worker count or scheduling. The first refusal sets the stop flag, and workers stop at
-//!   their next record.
-//! - **Checkpoints** run on the coordinating thread after workers join.
-//!   [`MemoryAdmission::checkpoint`] replaces the phase's forward charges with an
-//!   estimate from exact counts, and [`MemoryAdmission::commit`] replaces an agent's
-//!   decode and construction charges with its retained ledger.
+//!   their next record. Each charge names its [`Component`], for statistics.
+//! - **Transitions** change the same counter in one read-modify-write, so a charge made
+//!   meanwhile is never overwritten, and a transition is refused only when its final
+//!   total passes the limit, whatever the order of the holds it raises and lowers.
+//!   [`MemoryAdmission::checkpoint`] runs on the coordinating thread after workers join
+//!   and replaces the phase's charges with an estimate from exact counts;
+//!   [`MemoryAdmission::commit`] replaces an agent's phase charges with its retained
+//!   ledger; [`MemoryAdmission::hold`] changes holds and keeps the phase's charges.
 //! - **Holds** ([`Hold`]) are state that outlives a phase, such as discovery metadata or a
 //!   committed ledger; charges made with [`MemoryAdmission::charge_until_exit`], such as
 //!   new process interns, survive every checkpoint.
@@ -31,7 +34,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use super::capacity::{MemoryBudget, ObservationCapacity, format_memory};
+use super::capacity::{MemoryBudget, ObservationCapacity, Rounding, format_memory};
 use crate::selection::Agent;
 
 /// The headroom `H`, as an exact ratio so admission never depends on floating point.
@@ -89,37 +92,55 @@ impl ProcessModel {
     }
 }
 
-/// The phases of an invocation, in order. Decode and construction through finalize run
-/// once per agent.
+/// The phases of an invocation, in order, each with the agent it works on, so a refusal
+/// can only name a phase and agent that go together. Decode through the session index
+/// run once per agent.
+///
+/// `Discovery` is the initial phase, for the charges and holds made while both agents'
+/// sources are discovered and cataloged. The checkpoint before an agent's decode, which
+/// charges that agent's worker slots, starts `Decode` of that agent, so its refusal and
+/// every refused worker charge read, for example, `reading Codex rollouts`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Phase {
     /// Discovery and cataloging of both agents' sources.
     Discovery,
     /// Parallel decode of one agent's sources.
-    Decode,
+    Decode(Agent),
     /// Building one agent's observations (`normalize`, `reconcile_input`).
-    Construction,
+    Construction(Agent),
     /// Grouping one agent's observations into requests.
-    Grouping,
-    /// Sorting requests, reconciling limits and compacting diagnostics.
-    Finalize,
+    Grouping(Agent),
+    /// Sorting one agent's requests, reconciling its limits and compacting its
+    /// diagnostics.
+    Finalize(Agent),
     /// Indexing one agent's sessions.
-    SessionIndex,
+    SessionIndex(Agent),
     /// Querying the ledgers and rendering the output.
     Query,
 }
 
 impl Phase {
+    /// The agent the phase works on; discovery and query cover both agents.
+    pub const fn agent(self) -> Option<Agent> {
+        match self {
+            Self::Discovery | Self::Query => None,
+            Self::Decode(agent)
+            | Self::Construction(agent)
+            | Self::Grouping(agent)
+            | Self::Finalize(agent)
+            | Self::SessionIndex(agent) => Some(agent),
+        }
+    }
+
     /// What the invocation was doing, as a refusal names it.
-    fn activity(self, agent: Option<Agent>) -> String {
-        let agent = agent.map_or("", agent_name);
+    fn activity(self) -> String {
         match self {
             Self::Discovery => "cataloging discovered sources".to_owned(),
-            Self::Decode => format!("reading {agent} {}", source_noun(agent)),
-            Self::Construction => format!("building {agent} observations"),
-            Self::Grouping => format!("reconciling {agent} requests"),
-            Self::Finalize => format!("finalizing the {agent} ledger"),
-            Self::SessionIndex => format!("indexing {agent} sessions"),
+            Self::Decode(agent) => format!("reading {} {}", agent_name(agent), source_noun(agent)),
+            Self::Construction(agent) => format!("building {} observations", agent_name(agent)),
+            Self::Grouping(agent) => format!("reconciling {} requests", agent_name(agent)),
+            Self::Finalize(agent) => format!("finalizing the {} ledger", agent_name(agent)),
+            Self::SessionIndex(agent) => format!("indexing {} sessions", agent_name(agent)),
             Self::Query => "querying and rendering the output".to_owned(),
         }
     }
@@ -128,11 +149,11 @@ impl Phase {
     pub const fn token(self) -> &'static str {
         match self {
             Self::Discovery => "discovery",
-            Self::Decode => "decode",
-            Self::Construction => "construction",
-            Self::Grouping => "grouping",
-            Self::Finalize => "finalize",
-            Self::SessionIndex => "session_index",
+            Self::Decode(_) => "decode",
+            Self::Construction(_) => "construction",
+            Self::Grouping(_) => "grouping",
+            Self::Finalize(_) => "finalize",
+            Self::SessionIndex(_) => "session_index",
             Self::Query => "query",
         }
     }
@@ -146,15 +167,82 @@ const fn agent_name(agent: Agent) -> &'static str {
     }
 }
 
-fn source_noun(agent: &str) -> &'static str {
+const fn source_noun(agent: Agent) -> &'static str {
     match agent {
-        "Codex" => "rollouts",
-        "Claude Code" => "transcripts",
-        _ => "sessions",
+        Agent::Claude => "transcripts",
+        Agent::Codex => "rollouts",
+        Agent::Pi => "sessions",
     }
 }
 
-const ADVICE: &str = "raise --max-ram (for example --max-ram 50%), select fewer sessions with --session, or pass narrower --source roots with --no-default-sources";
+/// The advice every memory refusal ends with. It names no `--max-ram` value, since an
+/// example could be at or below the budget it refused; slice 7 adds the smallest
+/// sufficient percent of the effective memory where one exists.
+const ADVICE: &str = "raise --max-ram, select fewer sessions with --session, or pass narrower --source roots with --no-default-sources";
+
+/// What a charge pays for. Every charge names one, and the ledger keeps a running total
+/// per component, from which the statistics line breaks down a phase's estimate.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Component {
+    /// Decoded records, request-bearing or not.
+    Records,
+    /// The request structure κ of a request-bearing record.
+    Kappa,
+    /// Record payloads: strings, extras, tool uses, counts, spilled keys and diagnostics.
+    Payloads,
+    /// Provider limit rows.
+    Limits,
+    /// New process interns, charged until exit by [`MemoryAdmission::charge_until_exit`].
+    Interns,
+    /// Source and thread rows.
+    Sources,
+    /// The query and session-index reserves.
+    Reserves,
+    /// Worker slots and the large-record permit, which
+    /// [`MemoryAdmission::charge_large_record`] charges.
+    Slots,
+}
+
+impl Component {
+    /// Every component, in the statistics line's order.
+    pub const ALL: [Self; 8] = [
+        Self::Records,
+        Self::Kappa,
+        Self::Payloads,
+        Self::Limits,
+        Self::Interns,
+        Self::Sources,
+        Self::Reserves,
+        Self::Slots,
+    ];
+
+    /// The stable token for statistics.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Records => "records",
+            Self::Kappa => "kappa",
+            Self::Payloads => "payloads",
+            Self::Limits => "limits",
+            Self::Interns => "interns",
+            Self::Sources => "sources",
+            Self::Reserves => "reserves",
+            Self::Slots => "slots",
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Records => 0,
+            Self::Kappa => 1,
+            Self::Payloads => 2,
+            Self::Limits => 3,
+            Self::Interns => 4,
+            Self::Sources => 5,
+            Self::Reserves => 6,
+            Self::Slots => 7,
+        }
+    }
+}
 
 /// Why admission refused an invocation.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -176,14 +264,12 @@ pub enum CapacityError {
         limit: String,
     },
     /// The estimated whole-process memory would exceed the budget.
-    #[error("{}", memory_refusal(*.phase, *.agent, *.estimate, .label))]
+    #[error("{}", memory_refusal(*.phase, *.estimate, .label))]
     Memory {
-        /// The phase that refused.
+        /// The phase that refused, with its agent.
         phase: Phase,
-        /// The agent it was working on, when it was working on one.
-        agent: Option<Agent>,
-        /// `F + H × E` at a checkpoint; a decode refusal stops at the first charge that
-        /// passes the limit and gives none.
+        /// `F + H × E` for a refused transition; a refused charge stops at the first
+        /// charge that passes the limit and gives none.
         estimate: Option<u64>,
         /// The budget in bytes.
         budget: u64,
@@ -192,8 +278,8 @@ pub enum CapacityError {
     },
     /// The budget cannot hold the baseline and one decoding worker.
     #[error(
-        "the memory budget of {label} is below the {} that one decoding worker needs; raise --max-ram",
-        format_memory(*.floor)
+        "the memory budget of {label} is below the {} minimum for the process baseline and one decoding worker; raise --max-ram",
+        format_memory(*.floor, Rounding::Up)
     )]
     BelowFloor {
         /// `F + H × b` for one worker slot `b`.
@@ -205,17 +291,12 @@ pub enum CapacityError {
     },
 }
 
-fn memory_refusal(
-    phase: Phase,
-    agent: Option<Agent>,
-    estimate: Option<u64>,
-    label: &str,
-) -> String {
-    let activity = phase.activity(agent);
+fn memory_refusal(phase: Phase, estimate: Option<u64>, label: &str) -> String {
+    let activity = phase.activity();
     match estimate {
         Some(estimate) => format!(
             "estimated memory for {activity} ({}) exceeds the budget of {label}; {ADVICE}",
-            format_memory(estimate)
+            format_memory(estimate, Rounding::Up)
         ),
         None => {
             format!("estimated memory exceeds the budget of {label} while {activity}; {ADVICE}")
@@ -235,28 +316,53 @@ pub enum Hold {
     SessionIndex,
 }
 
-/// The phase and agent that charges are attributed to.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Stage {
-    phase: Phase,
-    agent: Option<Agent>,
+/// What bounds `E`.
+#[derive(Debug)]
+enum Limit {
+    /// No byte budget: nothing is refused, and `E` saturates rather than overflows.
+    Unlimited,
+    /// A budget and the largest `E` it admits, `⌊(B − F) / H⌋`, or `None` when `B` is
+    /// below `F` and not even an empty heap fits.
+    Budget { budget: MemoryBudget, heap: Option<u64> },
+}
+
+impl Limit {
+    /// `total` as the next value of `E`, or the budget that refuses it.
+    fn admit(&self, total: u128) -> Result<u64, &MemoryBudget> {
+        match self {
+            Self::Unlimited => Ok(u64::try_from(total).unwrap_or(u64::MAX)),
+            Self::Budget { budget, heap } => heap
+                .and_then(|heap| u64::try_from(total).ok().filter(|total| *total <= heap))
+                .ok_or(budget),
+        }
+    }
+}
+
+/// A refused move of `E`: the budget that refused it and the total it would have reached.
+struct Refused<'a> {
+    budget: &'a MemoryBudget,
+    total: u128,
 }
 
 /// One invocation's memory and row admission; see the module documentation.
 #[derive(Debug)]
 pub struct MemoryAdmission {
-    budget: Option<MemoryBudget>,
+    limit: Limit,
     model: ProcessModel,
-    /// The largest heap term `E` within the budget, or `u64::MAX` without one.
-    heap_limit: u64,
     /// `E`: every hold, every charge until exit, and the current phase's charges.
     charged: AtomicU64,
     /// The part of `charged` made by [`Self::charge_until_exit`].
     until_exit: AtomicU64,
-    /// The largest `E` reached so far.
+    /// The largest `E` on either side of a transition. Only charges move `E` between
+    /// transitions, and they only add, so the largest `E` so far is the larger of this and
+    /// the current `E`.
     largest: AtomicU64,
+    /// The bytes each [`Component`] has been charged, over every phase.
+    components: [AtomicU64; Component::ALL.len()],
+    /// The holds; the lock also orders transitions.
     holds: Mutex<BTreeMap<Hold, u64>>,
-    stage: Mutex<Stage>,
+    /// The phase charges are attributed to.
+    phase: Mutex<Phase>,
     /// The large-record permit's charge: the largest need seen in the current decode.
     large_record: Mutex<u64>,
     stopped: AtomicBool,
@@ -267,27 +373,31 @@ pub struct MemoryAdmission {
 
 impl MemoryAdmission {
     /// A ledger for `budget` under `model`'s baseline and headroom, with no row ceiling.
+    /// A budget below the baseline admits nothing.
     pub fn new(budget: MemoryBudget, model: ProcessModel) -> Self {
-        let available = budget.bytes().saturating_sub(model.baseline);
-        let heap_limit = model.headroom.heap_within(available);
-        Self::with_limit(Some(budget), model, heap_limit)
+        let heap = budget
+            .bytes()
+            .checked_sub(model.baseline)
+            .map(|available| model.headroom.heap_within(available));
+        Self::with_limit(Limit::Budget { budget, heap }, model)
     }
 
-    /// A ledger that never refuses bytes. Rows still count against a row ceiling.
+    /// A ledger that never refuses bytes: `E` saturates instead of overflowing. Rows
+    /// still count against a row ceiling.
     pub fn unlimited() -> Self {
-        Self::with_limit(None, ProcessModel::DEFAULT, u64::MAX)
+        Self::with_limit(Limit::Unlimited, ProcessModel::DEFAULT)
     }
 
-    fn with_limit(budget: Option<MemoryBudget>, model: ProcessModel, heap_limit: u64) -> Self {
+    fn with_limit(limit: Limit, model: ProcessModel) -> Self {
         Self {
-            budget,
+            limit,
             model,
-            heap_limit,
             charged: AtomicU64::new(0),
             until_exit: AtomicU64::new(0),
             largest: AtomicU64::new(0),
+            components: std::array::from_fn(|_| AtomicU64::new(0)),
             holds: Mutex::new(BTreeMap::new()),
-            stage: Mutex::new(Stage { phase: Phase::Discovery, agent: None }),
+            phase: Mutex::new(Phase::Discovery),
             large_record: Mutex::new(0),
             stopped: AtomicBool::new(false),
             refusal: OnceLock::new(),
@@ -305,7 +415,10 @@ impl MemoryAdmission {
 
     /// The byte budget, or `None` for an unlimited ledger.
     pub fn budget(&self) -> Option<&MemoryBudget> {
-        self.budget.as_ref()
+        match &self.limit {
+            Limit::Unlimited => None,
+            Limit::Budget { budget, .. } => Some(budget),
+        }
     }
 
     /// The baseline and headroom the budget check uses.
@@ -313,10 +426,11 @@ impl MemoryAdmission {
         self.model
     }
 
-    /// Refuses a budget below `F + H × slot_bytes`, one decoding worker, before any work.
+    /// Refuses a budget below `F + H × slot_bytes`, the baseline and one decoding worker,
+    /// before any work. A budget below `F` alone refuses whatever the slot size.
     pub fn ensure_floor(&self, slot_bytes: u64) -> Result<(), CapacityError> {
-        let Some(budget) = &self.budget else { return Ok(()) };
-        if self.heap_limit >= slot_bytes {
+        let Limit::Budget { budget, heap } = &self.limit else { return Ok(()) };
+        if heap.is_some_and(|heap| heap >= slot_bytes) {
             return Ok(());
         }
         Err(self.refuse(CapacityError::BelowFloor {
@@ -333,7 +447,7 @@ impl MemoryAdmission {
     /// default worker count, so admission charges the same for one to eight workers.
     pub fn worker_slots(&self, slot_bytes: u64, jobs: Option<NonZeroUsize>) -> NonZeroUsize {
         let ceiling = jobs.map_or(8, NonZeroUsize::get).max(8);
-        let slots = match &self.budget {
+        let slots = match self.budget() {
             None => ceiling,
             Some(budget) => {
                 let per_slot = u128::from(slot_bytes)
@@ -359,44 +473,44 @@ impl MemoryAdmission {
         self.refusal.get().cloned()
     }
 
-    /// Charges `bytes` to the current phase before they are allocated; `false` refuses,
-    /// and every later charge and reservation is refused too.
-    pub fn charge(&self, bytes: u64) -> bool {
+    /// Charges `bytes` of `component` to the current phase before they are allocated;
+    /// `false` refuses, and every later charge and reservation is refused too.
+    #[must_use]
+    pub fn charge(&self, component: Component, bytes: u64) -> bool {
         if self.stopped() {
             return false;
         }
-        let limit = self.heap_limit;
-        let admitted = self.charged.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
-            total.checked_add(bytes).filter(|next| *next <= limit)
-        });
-        if let Ok(previous) = admitted {
-            self.largest.fetch_max(previous.saturating_add(bytes), Ordering::Relaxed);
-            return true;
+        if let Err(refused) = self.update(|total| u128::from(total) + u128::from(bytes)) {
+            let phase = *lock(&self.phase);
+            self.refuse(memory_error(refused.budget, phase, None));
+            return false;
         }
-        let stage = *lock(&self.stage);
-        self.refuse(self.memory_error(stage, None));
-        false
+        // Statistics only: no admitted total under a budget comes near 2^64.
+        self.components[component.index()].fetch_add(bytes, Ordering::Relaxed);
+        true
     }
 
-    /// Charges `bytes` that stay allocated until the process exits, such as a new
-    /// process intern; checkpoints and commits keep them.
+    /// Charges `bytes` of a new process intern, which stays allocated until the process
+    /// exits; checkpoints and commits keep it.
+    #[must_use]
     pub fn charge_until_exit(&self, bytes: u64) -> bool {
-        let charged = self.charge(bytes);
-        if charged {
-            self.until_exit.fetch_add(bytes, Ordering::Relaxed);
+        if !self.charge(Component::Interns, bytes) {
+            return false;
         }
-        charged
+        saturating_add(&self.until_exit, bytes);
+        true
     }
 
     /// Raises the large-record permit's charge to `need` when it is larger than any need
-    /// seen in this decode, charging only the increase, so the final charge is the
-    /// input's largest need in any order.
+    /// seen in this decode, charging only the increase to [`Component::Slots`], so the
+    /// final charge is the input's largest need in any order.
+    #[must_use]
     pub fn charge_large_record(&self, need: u64) -> bool {
         let mut level = lock(&self.large_record);
         if need <= *level {
             return !self.stopped();
         }
-        let charged = self.charge(need - *level);
+        let charged = self.charge(Component::Slots, need - *level);
         if charged {
             *level = need;
         }
@@ -407,6 +521,7 @@ impl MemoryAdmission {
     ///
     /// Completed workers keep their reservations until the agent's ingest ends. No more
     /// than the ceiling's maximum rows per agent are admitted.
+    #[must_use]
     pub fn reserve_row(&self, agent: Agent) -> bool {
         if self.stopped() {
             return false;
@@ -435,53 +550,44 @@ impl MemoryAdmission {
         self.rows[row_index(agent)].load(Ordering::Relaxed)
     }
 
-    /// Starts `phase` of `agent` with `estimate` as its modeled heap, replacing the
-    /// previous phase's charges and releasing the large-record permit's charge.
+    /// Starts `phase` with `estimate` as its modeled heap and sets each hold in `holds`
+    /// (zero releases one), replacing the previous phase's charges and releasing the
+    /// large-record permit's charge.
     ///
-    /// Holds and charges until exit stay. Call it on the coordinating thread, with no
-    /// worker charging. Refuses, with the exact whole-process estimate, when the total
-    /// would pass the budget; after any refusal, returns the first one.
+    /// Charges until exit and the other holds stay. Call it on the coordinating thread
+    /// after workers join: it replaces the phase's charges, so a charge made meanwhile
+    /// belongs to no defined phase. Refuses, with the exact whole-process estimate, only
+    /// when the final total would pass the budget, and then changes nothing; after any
+    /// refusal, returns the first one.
     pub fn checkpoint(
         &self,
         phase: Phase,
-        agent: Option<Agent>,
         estimate: u64,
+        holds: &[(Hold, u64)],
     ) -> Result<(), CapacityError> {
-        let holds = lock(&self.holds);
-        *lock(&self.stage) = Stage { phase, agent };
-        *lock(&self.large_record) = 0;
-        let total = self.settled(&holds).saturating_add(estimate);
-        self.settle(total, Stage { phase, agent })
+        self.transition(Some(phase), Some(estimate), holds)
     }
 
-    /// Sets `hold` to `bytes`, keeping the current phase's charges; zero releases it.
-    pub fn hold(&self, hold: Hold, bytes: u64) -> Result<(), CapacityError> {
-        let mut holds = lock(&self.holds);
-        let phase_charges = self.phase_charges(&holds);
-        if bytes == 0 {
-            holds.remove(&hold);
-        } else {
-            holds.insert(hold, bytes);
-        }
-        let total = self.settled(&holds).saturating_add(phase_charges);
-        let stage = *lock(&self.stage);
-        self.settle(total, stage)
+    /// Sets each hold in `changes` (zero releases one), keeping the current phase's
+    /// charges, which may continue meanwhile.
+    ///
+    /// The changes apply together, so raising one hold while lowering another refuses
+    /// only when the final total passes the budget, in either order. A refusal names the
+    /// current phase, changes nothing, and is final.
+    pub fn hold(&self, changes: &[(Hold, u64)]) -> Result<(), CapacityError> {
+        self.transition(None, None, changes)
     }
 
-    /// Ends `agent`'s ingest: its decode and construction charges and its discovery
-    /// metadata are released, and its retained ledger is held at `retained`, its deep
-    /// size after finalize.
+    /// Ends `agent`'s ingest in one transition: its phase charges and discovery metadata
+    /// are released, and its retained ledger is held at `retained`, its deep size after
+    /// finalize. Charges are then attributed to finalizing that agent's ledger until the
+    /// next checkpoint. Call it as [`Self::checkpoint`] is called.
     pub fn commit(&self, agent: Agent, retained: u64) -> Result<(), CapacityError> {
-        let mut holds = lock(&self.holds);
-        holds.remove(&Hold::Discovery(agent));
-        if retained == 0 {
-            holds.remove(&Hold::Ledger(agent));
-        } else {
-            holds.insert(Hold::Ledger(agent), retained);
-        }
-        *lock(&self.large_record) = 0;
-        let total = self.settled(&holds);
-        self.settle(total, Stage { phase: Phase::Finalize, agent: Some(agent) })
+        self.transition(
+            Some(Phase::Finalize(agent)),
+            Some(0),
+            &[(Hold::Discovery(agent), 0), (Hold::Ledger(agent), retained)],
+        )
     }
 
     /// The current modeled heap `E`.
@@ -489,45 +595,93 @@ impl MemoryAdmission {
         self.charged.load(Ordering::Relaxed)
     }
 
-    /// The largest modeled heap reached so far; a successful run's largest gives the
-    /// budget threshold `F + H × largest`.
+    /// The bytes charged to `component` so far, over every phase; statistics take the
+    /// difference across a phase. Checkpoint estimates and holds are not included: their
+    /// callers compute them from the cost model, component by component.
+    pub fn charged_by(&self, component: Component) -> u64 {
+        self.components[component.index()].load(Ordering::Relaxed)
+    }
+
+    /// The largest modeled heap reached so far.
+    ///
+    /// A successful run's largest gives the threshold budget `F + H × largest` only for
+    /// budgets that leave [`Self::worker_slots`] unchanged: the slot count depends on the
+    /// budget, and so do the slot charges.
     pub fn largest(&self) -> u64 {
-        self.largest.load(Ordering::Relaxed)
+        self.largest.load(Ordering::Relaxed).max(self.charged())
     }
 
-    fn settled(&self, holds: &BTreeMap<Hold, u64>) -> u64 {
-        holds.values().fold(self.until_exit.load(Ordering::Relaxed), |total, bytes| {
-            total.saturating_add(*bytes)
-        })
+    /// Moves `E` from its current value `e` to `next(e)` in one read-modify-write, when
+    /// the limit admits it, and returns the previous and new values.
+    fn update(&self, next: impl Fn(u64) -> u128) -> Result<(u64, u64), Refused<'_>> {
+        let mut current = self.charged.load(Ordering::Relaxed);
+        loop {
+            let total = next(current);
+            let admitted = self.limit.admit(total).map_err(|budget| Refused { budget, total })?;
+            match self.charged.compare_exchange_weak(
+                current,
+                admitted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(previous) => return Ok((previous, admitted)),
+                Err(actual) => current = actual,
+            }
+        }
     }
 
-    fn phase_charges(&self, holds: &BTreeMap<Hold, u64>) -> u64 {
-        self.charged().saturating_sub(self.settled(holds))
-    }
-
-    /// Makes `total` the modeled heap, or refuses at `stage` when it passes the limit.
-    fn settle(&self, total: u64, stage: Stage) -> Result<(), CapacityError> {
+    /// Sets the holds in `changes` and, with an `estimate`, replaces the phase's charges
+    /// with it and starts `phase`, all in one move of `E`: `E − released + held`.
+    fn transition(
+        &self,
+        phase: Option<Phase>,
+        estimate: Option<u64>,
+        changes: &[(Hold, u64)],
+    ) -> Result<(), CapacityError> {
+        let mut holds = lock(&self.holds);
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
-        if total > self.heap_limit {
-            let estimate = self.model.whole_process(total);
-            return Err(self.refuse(self.memory_error(stage, Some(estimate))));
+        let mut next_holds = holds.clone();
+        for (hold, bytes) in changes {
+            if *bytes == 0 {
+                next_holds.remove(hold);
+            } else {
+                next_holds.insert(*hold, *bytes);
+            }
         }
-        self.charged.store(total, Ordering::Relaxed);
-        self.largest.fetch_max(total, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn memory_error(&self, stage: Stage, estimate: Option<u64>) -> CapacityError {
-        let (budget, label) =
-            self.budget.as_ref().map_or((u64::MAX, ""), |budget| (budget.bytes(), budget.label()));
-        CapacityError::Memory {
-            phase: stage.phase,
-            agent: stage.agent,
-            estimate,
-            budget,
-            label: label.to_owned(),
+        let (held_before, held_after) = (sum(&holds), sum(&next_holds));
+        let moved = self.update(|current| {
+            let current = u128::from(current);
+            let until_exit = u128::from(self.until_exit.load(Ordering::Relaxed));
+            // `E` includes every hold and every charge until exit (saturated without a
+            // budget).
+            debug_assert!(current >= (held_before + until_exit).min(u128::from(u64::MAX)));
+            match estimate {
+                // The phase's charges are what `E` holds beyond the holds and the charges
+                // until exit; the estimate replaces them.
+                Some(estimate) => until_exit + held_after + u128::from(estimate),
+                None => current.saturating_sub(held_before) + held_after,
+            }
+        });
+        match moved {
+            Ok((previous, next)) => {
+                *holds = next_holds;
+                if let Some(phase) = phase {
+                    *lock(&self.phase) = phase;
+                }
+                if estimate.is_some() {
+                    *lock(&self.large_record) = 0;
+                }
+                self.largest.fetch_max(previous.max(next), Ordering::Relaxed);
+                Ok(())
+            }
+            Err(Refused { budget, total }) => {
+                let phase = phase.unwrap_or_else(|| *lock(&self.phase));
+                let heap = u64::try_from(total).unwrap_or(u64::MAX);
+                let estimate = self.model.whole_process(heap);
+                Err(self.refuse(memory_error(budget, phase, Some(estimate))))
+            }
         }
     }
 
@@ -537,6 +691,32 @@ impl MemoryAdmission {
         let first = self.refusal.get_or_init(|| error).clone();
         self.stopped.store(true, Ordering::Release);
         first
+    }
+}
+
+fn memory_error(budget: &MemoryBudget, phase: Phase, estimate: Option<u64>) -> CapacityError {
+    CapacityError::Memory {
+        phase,
+        estimate,
+        budget: budget.bytes(),
+        label: budget.label().to_owned(),
+    }
+}
+
+fn sum(holds: &BTreeMap<Hold, u64>) -> u128 {
+    holds.values().map(|bytes| u128::from(*bytes)).sum()
+}
+
+/// Adds `bytes` to `counter`, saturating rather than wrapping.
+fn saturating_add(counter: &AtomicU64, bytes: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    while let Err(actual) = counter.compare_exchange_weak(
+        current,
+        current.saturating_add(bytes),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    ) {
+        current = actual;
     }
 }
 
@@ -567,6 +747,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::reconcile::ReconcileError;
 
     const MIB: u64 = 1 << 20;
 
@@ -575,6 +756,13 @@ mod tests {
         let model = ProcessModel { baseline: 0, headroom: Headroom::ratio(1, 1).unwrap() };
         MemoryAdmission::new(MemoryBudget::exact(limit, format!("--max-ram {limit}")), model)
     }
+
+    /// A 1 MiB budget, below the default 16 MiB baseline.
+    fn below_baseline() -> MemoryAdmission {
+        MemoryAdmission::new(MemoryBudget::exact(MIB, "--max-ram 1M"), ProcessModel::DEFAULT)
+    }
+
+    const ADVICE_TEXT: &str = "; raise --max-ram, select fewer sessions with --session, or pass narrower --source roots with --no-default-sources";
 
     #[test]
     fn concurrent_charges_never_pass_the_budget() {
@@ -585,7 +773,7 @@ mod tests {
                     let admission = &admission;
                     scope.spawn(move || {
                         let mut amount = 1 + worker % 5;
-                        while admission.charge(amount) {
+                        while admission.charge(Component::Records, amount) {
                             amount = 1 + (amount * 7 + 3) % 13;
                         }
                     });
@@ -593,7 +781,7 @@ mod tests {
             });
             assert!(admission.charged() <= 10_007, "{workers} workers");
             assert!(admission.stopped());
-            assert!(!admission.charge(0));
+            assert!(!admission.charge(Component::Records, 0));
             assert!(matches!(
                 admission.refusal(),
                 Some(CapacityError::Memory { phase: Phase::Discovery, estimate: None, .. })
@@ -618,7 +806,7 @@ mod tests {
                             let admission = &admission;
                             scope.spawn(move || {
                                 for amount in chunk.iter().flatten() {
-                                    if !admission.charge(*amount) {
+                                    if !admission.charge(Component::Kappa, *amount) {
                                         return;
                                     }
                                 }
@@ -643,39 +831,136 @@ mod tests {
     #[test]
     fn a_charge_that_would_pass_the_budget_is_not_added() {
         let admission = ledger(100);
-        assert!(admission.charge(60));
-        assert!(!admission.charge(41));
+        assert!(admission.charge(Component::Records, 60));
+        assert!(!admission.charge(Component::Records, 41));
         assert_eq!(admission.charged(), 60);
         // Once stopped, even a charge that would fit is refused.
-        assert!(!admission.charge(1));
+        assert!(!admission.charge(Component::Records, 1));
         assert!(!admission.reserve_row(Agent::Codex));
     }
 
     #[test]
     fn checkpoints_replace_phase_charges_and_keep_holds_and_charges_until_exit() {
         let admission = ledger(1000);
-        admission.hold(Hold::Discovery(Agent::Codex), 100).unwrap();
-        admission.hold(Hold::Discovery(Agent::Claude), 50).unwrap();
-        admission.checkpoint(Phase::Decode, Some(Agent::Codex), 200).unwrap();
+        admission
+            .hold(&[(Hold::Discovery(Agent::Codex), 100), (Hold::Discovery(Agent::Claude), 50)])
+            .unwrap();
+        admission.checkpoint(Phase::Decode(Agent::Codex), 200, &[]).unwrap();
         assert_eq!(admission.charged(), 350);
-        assert!(admission.charge(300));
+        assert!(admission.charge(Component::Records, 300));
         assert!(admission.charge_until_exit(20));
         assert_eq!(admission.charged(), 670);
         // The checkpoint's exact estimate replaces the forward charges, not the intern.
-        admission.checkpoint(Phase::Construction, Some(Agent::Codex), 400).unwrap();
+        admission.checkpoint(Phase::Construction(Agent::Codex), 400, &[]).unwrap();
         assert_eq!(admission.charged(), 570);
-        admission.checkpoint(Phase::Grouping, Some(Agent::Codex), 600).unwrap();
+        admission.checkpoint(Phase::Grouping(Agent::Codex), 600, &[]).unwrap();
         assert_eq!(admission.charged(), 770);
         // Commit releases the agent's phase charges and discovery, and holds its ledger.
         admission.commit(Agent::Codex, 250).unwrap();
         assert_eq!(admission.charged(), 50 + 20 + 250);
         // Releasing discovery tables shrinks the held ledger; a hold keeps phase charges.
-        admission.checkpoint(Phase::SessionIndex, Some(Agent::Codex), 30).unwrap();
-        admission.hold(Hold::Ledger(Agent::Codex), 200).unwrap();
+        admission.checkpoint(Phase::SessionIndex(Agent::Codex), 30, &[]).unwrap();
+        admission.hold(&[(Hold::Ledger(Agent::Codex), 200)]).unwrap();
         assert_eq!(admission.charged(), 50 + 20 + 200 + 30);
-        admission.hold(Hold::Discovery(Agent::Claude), 0).unwrap();
+        admission.hold(&[(Hold::Discovery(Agent::Claude), 0)]).unwrap();
         assert_eq!(admission.charged(), 20 + 200 + 30);
         assert_eq!(admission.largest(), 770);
+    }
+
+    #[test]
+    fn a_checkpoint_sets_holds_together_with_its_estimate() {
+        let admission = ledger(1000);
+        admission.commit(Agent::Codex, 700).unwrap();
+        // The session-index checkpoint takes the index reserve out of the held ledger.
+        admission
+            .checkpoint(
+                Phase::SessionIndex(Agent::Codex),
+                100,
+                &[(Hold::Ledger(Agent::Codex), 600)],
+            )
+            .unwrap();
+        assert_eq!(admission.charged(), 700);
+        // The next checkpoint holds the built index and replaces the index estimate.
+        admission
+            .checkpoint(Phase::Decode(Agent::Claude), 50, &[(Hold::SessionIndex, 90)])
+            .unwrap();
+        assert_eq!(admission.charged(), 600 + 90 + 50);
+    }
+
+    #[test]
+    fn a_hold_change_keeps_charges_made_meanwhile() {
+        let admission = ledger(u64::MAX / 4);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..500_000 {
+                    assert!(admission.charge(Component::Records, 1));
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..50_000 {
+                    admission.hold(&[(Hold::SessionIndex, 5)]).unwrap();
+                    admission.hold(&[(Hold::SessionIndex, 0)]).unwrap();
+                }
+            });
+        });
+        assert_eq!(admission.charged(), 500_000);
+    }
+
+    #[test]
+    fn holds_raised_and_lowered_together_are_checked_on_their_final_total() {
+        let raise = (Hold::SessionIndex, 400);
+        let lower = (Hold::Ledger(Agent::Codex), 300);
+        for changes in [[raise, lower], [lower, raise]] {
+            let admission = ledger(1000);
+            admission.commit(Agent::Codex, 700).unwrap();
+            admission.hold(&changes).unwrap();
+            assert_eq!(admission.charged(), 700);
+            assert_eq!(admission.largest(), 700);
+        }
+    }
+
+    #[test]
+    fn a_refused_hold_names_the_current_phase_and_changes_nothing() {
+        let admission = ledger(1000);
+        admission.commit(Agent::Codex, 700).unwrap();
+        admission.checkpoint(Phase::SessionIndex(Agent::Codex), 100, &[]).unwrap();
+        let error = admission.hold(&[(Hold::SessionIndex, 201)]).unwrap_err();
+        assert_eq!(
+            error,
+            CapacityError::Memory {
+                phase: Phase::SessionIndex(Agent::Codex),
+                estimate: Some(1001),
+                budget: 1000,
+                label: "--max-ram 1000".into(),
+            }
+        );
+        assert_eq!(admission.charged(), 800);
+        assert!(admission.stopped());
+        assert_eq!(admission.hold(&[(Hold::SessionIndex, 0)]).unwrap_err(), error);
+        assert_eq!(admission.charged(), 800);
+    }
+
+    #[test]
+    fn a_refused_commit_names_the_agents_ledger_and_changes_nothing() {
+        let admission = ledger(1000);
+        admission.hold(&[(Hold::Ledger(Agent::Codex), 600)]).unwrap();
+        admission.checkpoint(Phase::Finalize(Agent::Claude), 300, &[]).unwrap();
+        let error = admission.commit(Agent::Claude, 401).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "estimated memory for finalizing the Claude Code ledger (1001 bytes) exceeds the budget of --max-ram 1000{ADVICE_TEXT}"
+            )
+        );
+        assert_eq!(admission.charged(), 900);
+        // A successful commit attributes later charges to that agent's finalize.
+        let admission = ledger(100);
+        admission.commit(Agent::Codex, 10).unwrap();
+        assert!(!admission.charge(Component::Payloads, 91));
+        assert!(matches!(
+            admission.refusal(),
+            Some(CapacityError::Memory { phase: Phase::Finalize(Agent::Codex), .. })
+        ));
     }
 
     #[test]
@@ -684,62 +969,70 @@ mod tests {
         let budget = MemoryBudget::exact(64 * MIB, "--max-ram 64M");
         let admission = MemoryAdmission::new(budget, model);
         // (64 − 16) MiB / 1.5 is a heap limit of exactly 32 MiB.
-        admission.checkpoint(Phase::Grouping, Some(Agent::Codex), 32 * MIB).unwrap();
+        admission.checkpoint(Phase::Grouping(Agent::Codex), 32 * MIB, &[]).unwrap();
         let error =
-            admission.checkpoint(Phase::Grouping, Some(Agent::Codex), 32 * MIB + 1).unwrap_err();
+            admission.checkpoint(Phase::Grouping(Agent::Codex), 32 * MIB + 1, &[]).unwrap_err();
         let CapacityError::Memory { estimate: Some(estimate), .. } = &error else {
             unreachable!("expected a memory refusal, got {error:?}");
         };
         assert_eq!(*estimate, 16 * MIB + (3 * (32 * MIB + 1)).div_ceil(2));
         assert!(admission.stopped());
+        assert_eq!(admission.charged(), 32 * MIB);
         // Later checkpoints report the first refusal.
-        assert_eq!(admission.checkpoint(Phase::Query, None, 0).unwrap_err(), error);
+        assert_eq!(admission.checkpoint(Phase::Query, 0, &[]).unwrap_err(), error);
         assert_eq!(admission.commit(Agent::Codex, 0).unwrap_err(), error);
     }
 
     #[test]
     fn refusal_text_is_fixed_per_phase() {
         let budget = MemoryBudget::exact(8 << 30, "25% of 32 GiB physical RAM (8 GiB)");
-        let refusal = |phase, agent, estimate| {
+        let refusal = |phase, estimate| {
             CapacityError::Memory {
                 phase,
-                agent,
                 estimate,
                 budget: budget.bytes(),
                 label: budget.label().to_owned(),
             }
             .to_string()
         };
-        let advice = "; raise --max-ram (for example --max-ram 50%), select fewer sessions with --session, or pass narrower --source roots with --no-default-sources";
-        let estimate = Some(10_093_173_555);
-        for (phase, agent, activity) in [
-            (Phase::Discovery, None, "cataloging discovered sources"),
-            (Phase::Decode, Some(Agent::Claude), "reading Claude Code transcripts"),
-            (Phase::Construction, Some(Agent::Codex), "building Codex observations"),
-            (Phase::Grouping, Some(Agent::Codex), "reconciling Codex requests"),
-            (Phase::Finalize, Some(Agent::Claude), "finalizing the Claude Code ledger"),
-            (Phase::SessionIndex, Some(Agent::Codex), "indexing Codex sessions"),
-            (Phase::Query, None, "querying and rendering the output"),
+        // 9.31 GiB, which an estimate prints rounded up.
+        let estimate = Some(10_000_000_000);
+        for (phase, activity) in [
+            (Phase::Discovery, "cataloging discovered sources"),
+            (Phase::Decode(Agent::Claude), "reading Claude Code transcripts"),
+            (Phase::Decode(Agent::Pi), "reading Pi sessions"),
+            (Phase::Construction(Agent::Codex), "building Codex observations"),
+            (Phase::Grouping(Agent::Codex), "reconciling Codex requests"),
+            (Phase::Finalize(Agent::Claude), "finalizing the Claude Code ledger"),
+            (Phase::SessionIndex(Agent::Codex), "indexing Codex sessions"),
+            (Phase::Query, "querying and rendering the output"),
         ] {
             assert_eq!(
-                refusal(phase, agent, estimate),
+                refusal(phase, estimate),
                 format!(
-                    "estimated memory for {activity} (9.4 GiB) exceeds the budget of 25% of 32 GiB physical RAM (8 GiB){advice}"
+                    "estimated memory for {activity} (9.4 GiB) exceeds the budget of 25% of 32 GiB physical RAM (8 GiB){ADVICE_TEXT}"
                 )
             );
         }
         assert_eq!(
-            refusal(Phase::Decode, Some(Agent::Codex), None),
+            refusal(Phase::Decode(Agent::Codex), None),
             format!(
-                "estimated memory exceeds the budget of 25% of 32 GiB physical RAM (8 GiB) while reading Codex rollouts{advice}"
+                "estimated memory exceeds the budget of 25% of 32 GiB physical RAM (8 GiB) while reading Codex rollouts{ADVICE_TEXT}"
             )
         );
+        // The row refusal keeps the row ceiling's message, which the adapters convert it to.
         let rows = CapacityError::Rows {
             agent: Agent::Codex,
             observations: 3,
             maximum: 2,
             limit: "2 rows".into(),
         };
+        let reconcile = ReconcileError::CapacityExceeded {
+            observations: 3,
+            maximum: 2,
+            limit: "2 rows".into(),
+        };
+        assert_eq!(rows.to_string(), reconcile.to_string());
         assert_eq!(
             rows.to_string(),
             "3 request observations exceed the reconciliation capacity of 2 compact rows (2 rows)"
@@ -747,20 +1040,26 @@ mod tests {
     }
 
     #[test]
-    fn a_decode_refusal_names_the_phase_of_the_last_checkpoint() {
+    fn a_charge_refused_in_decode_names_the_agent_of_the_decode_checkpoint() {
         let admission = ledger(100);
-        admission.checkpoint(Phase::Decode, Some(Agent::Claude), 10).unwrap();
-        assert!(!admission.charge(91));
+        // The checkpoint before Codex decode charges its worker slots.
+        admission.checkpoint(Phase::Decode(Agent::Codex), 40, &[]).unwrap();
+        assert!(!admission.charge(Component::Records, 61));
         let error = admission.refusal().unwrap();
         assert_eq!(
             error,
             CapacityError::Memory {
-                phase: Phase::Decode,
-                agent: Some(Agent::Claude),
+                phase: Phase::Decode(Agent::Codex),
                 estimate: None,
                 budget: 100,
                 label: "--max-ram 100".into(),
             }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "estimated memory exceeds the budget of --max-ram 100 while reading Codex rollouts{ADVICE_TEXT}"
+            )
         );
     }
 
@@ -773,10 +1072,32 @@ mod tests {
         assert_eq!(admission.charged(), 500);
         // A checkpoint ends the decode: the permit's charge is replaced, and the next
         // decode charges its own largest need again.
-        admission.checkpoint(Phase::Decode, Some(Agent::Claude), 0).unwrap();
+        admission.checkpoint(Phase::Decode(Agent::Claude), 0, &[]).unwrap();
         assert!(admission.charge_large_record(100));
         assert_eq!(admission.charged(), 100);
+        assert_eq!(admission.charged_by(Component::Slots), 600);
         assert!(!admission.charge_large_record(1001));
+    }
+
+    #[test]
+    fn charges_are_totaled_by_component_across_phases() {
+        let admission = ledger(1000);
+        assert!(admission.charge(Component::Records, 30));
+        assert!(admission.charge(Component::Kappa, 20));
+        admission.checkpoint(Phase::Construction(Agent::Codex), 10, &[]).unwrap();
+        assert!(admission.charge(Component::Records, 5));
+        assert!(admission.charge_until_exit(7));
+        assert!(admission.charge_large_record(11));
+        // A refused charge adds nothing.
+        assert!(!admission.charge(Component::Payloads, 1000));
+        assert_eq!(
+            Component::ALL.map(|component| admission.charged_by(component)),
+            [35, 20, 0, 0, 7, 0, 0, 11]
+        );
+        assert_eq!(
+            Component::ALL.map(Component::token),
+            ["records", "kappa", "payloads", "limits", "interns", "sources", "reserves", "slots"]
+        );
     }
 
     #[test]
@@ -820,10 +1141,22 @@ mod tests {
     #[test]
     fn an_unlimited_ledger_never_refuses_bytes() {
         let admission = MemoryAdmission::unlimited();
-        assert!(admission.charge(u64::MAX / 2));
-        assert!(admission.charge(u64::MAX / 2));
+        assert!(admission.charge(Component::Records, u64::MAX / 2));
+        assert!(admission.charge(Component::Records, u64::MAX / 2));
         assert!(admission.ensure_floor(u64::MAX).is_ok());
-        admission.checkpoint(Phase::Query, None, u64::MAX).unwrap();
+        admission.checkpoint(Phase::Decode(Agent::Codex), u64::MAX, &[]).unwrap();
+        // `E` saturates rather than overflowing into a refusal.
+        assert!(admission.charge(Component::Records, 1));
+        assert_eq!(admission.charged(), u64::MAX);
+        assert!(admission.charge_until_exit(u64::MAX));
+        assert!(admission.charge_large_record(u64::MAX));
+        admission.hold(&[(Hold::SessionIndex, u64::MAX)]).unwrap();
+        admission.commit(Agent::Codex, u64::MAX).unwrap();
+        admission.checkpoint(Phase::Query, u64::MAX, &[]).unwrap();
+        assert_eq!(admission.charged(), u64::MAX);
+        assert!(!admission.stopped());
+        assert_eq!(admission.refusal(), None);
+        assert_eq!(admission.budget(), None);
         assert_eq!(admission.worker_slots(u64::MAX, None).get(), 8);
     }
 
@@ -857,11 +1190,43 @@ mod tests {
         let error = below.ensure_floor(slot).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "the memory budget of --max-ram tiny is below the 34 MiB that one decoding worker needs; raise --max-ram"
+            "the memory budget of --max-ram tiny is below the 34 MiB minimum for the process baseline and one decoding worker; raise --max-ram"
         );
         assert!(below.stopped());
-        let under_baseline = MemoryAdmission::new(MemoryBudget::exact(MIB, "--max-ram 1M"), model);
-        assert!(under_baseline.ensure_floor(1).is_err());
+    }
+
+    #[test]
+    fn a_budget_below_the_baseline_admits_nothing() {
+        // Not even an empty slot or an empty heap fits below `F`.
+        assert_eq!(
+            below_baseline().ensure_floor(0),
+            Err(CapacityError::BelowFloor {
+                floor: 16 * MIB,
+                budget: MIB,
+                label: "--max-ram 1M".into(),
+            })
+        );
+        assert_eq!(
+            below_baseline().checkpoint(Phase::Query, 0, &[]),
+            Err(CapacityError::Memory {
+                phase: Phase::Query,
+                estimate: Some(16 * MIB),
+                budget: MIB,
+                label: "--max-ram 1M".into(),
+            })
+        );
+        assert!(below_baseline().hold(&[]).is_err());
+        let admission = below_baseline();
+        assert!(!admission.charge(Component::Records, 0));
+        assert!(admission.stopped());
+        // A budget of exactly `F` admits an empty heap and nothing more.
+        let at_baseline = MemoryAdmission::new(
+            MemoryBudget::exact(16 * MIB, "--max-ram 16M"),
+            ProcessModel::DEFAULT,
+        );
+        assert_eq!(at_baseline.ensure_floor(0), Ok(()));
+        at_baseline.checkpoint(Phase::Query, 0, &[]).unwrap();
+        assert!(!at_baseline.charge(Component::Records, 1));
     }
 
     #[test]

@@ -302,9 +302,9 @@ impl EffectiveMemory {
     }
 
     /// The allowance as a label names it, such as `32 GiB physical RAM` or
-    /// `the 4 GiB cgroup limit`.
+    /// `the 4 GiB cgroup limit`, rounded down.
     pub fn describe(&self) -> String {
-        let size = format_memory(self.bytes);
+        let size = format_memory(self.bytes, Rounding::Down);
         match self.source {
             MemorySource::PhysicalRam => format!("{size} physical RAM"),
             MemorySource::CgroupMax | MemorySource::CgroupV1Limit => {
@@ -343,11 +343,13 @@ pub fn effective_memory_under(root: &Path, physical_ram: Option<u64>) -> Option<
     EffectiveMemory::smallest(physical_ram, linux::allowances(root, physical_ram))
 }
 
-/// The whole-process memory budget `B` and the label that names its source.
+/// The whole-process memory budget `B`, the label that names its source, and the
+/// effective memory it was taken from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryBudget {
     bytes: u64,
     label: String,
+    memory: Option<EffectiveMemory>,
 }
 
 impl MemoryBudget {
@@ -355,28 +357,31 @@ impl MemoryBudget {
     pub fn default_for(memory: Option<EffectiveMemory>) -> Self {
         match memory {
             Some(memory) => Self::percent_of(DEFAULT_RAM_PERCENT, memory),
-            None => Self {
-                bytes: FALLBACK_BUDGET_BYTES,
-                label: format!(
+            None => Self::exact(
+                FALLBACK_BUDGET_BYTES,
+                format!(
                     "{} fallback (physical RAM unknown)",
-                    format_memory(FALLBACK_BUDGET_BYTES)
+                    format_memory(FALLBACK_BUDGET_BYTES, Rounding::Down)
                 ),
-            },
+            ),
         }
     }
 
     /// An exact budget, such as an explicit `--max-ram` size, labeled `label`.
     pub fn exact(bytes: u64, label: impl Into<String>) -> Self {
-        Self { bytes, label: label.into() }
+        Self { bytes, label: label.into(), memory: None }
     }
 
-    /// `percent` of `memory`, labeled like `25% of 32 GiB physical RAM (8 GiB)`.
+    /// `percent` of `memory`, labeled like `25% of 32 GiB physical RAM (8 GiB)`, with
+    /// both sizes rounded down.
     pub fn percent_of(percent: u8, memory: EffectiveMemory) -> Self {
         let bytes = memory.bytes.saturating_mul(u64::from(percent)) / 100;
-        Self {
-            bytes,
-            label: format!("{percent}% of {} ({})", memory.describe(), format_memory(bytes)),
-        }
+        let label = format!(
+            "{percent}% of {} ({})",
+            memory.describe(),
+            format_memory(bytes, Rounding::Down)
+        );
+        Self { bytes, label, memory: Some(memory) }
     }
 
     /// The budget a `--max-ram` or `UROLLUP_MAX_RAM` value requests.
@@ -407,21 +412,49 @@ impl MemoryBudget {
     pub fn label(&self) -> &str {
         &self.label
     }
+
+    /// The effective memory `M` that a percent or the default was taken from: `None` for
+    /// an explicit size, which never probes, and for the fallback, when `M` is unknown.
+    /// A refusal's smallest sufficient percent is a percent of it.
+    pub const fn memory(&self) -> Option<EffectiveMemory> {
+        self.memory
+    }
+}
+
+/// Which way [`format_memory`] rounds a size that is not a whole number of units.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Rounding {
+    /// Toward zero, for budgets and allowances, so a printed budget never exceeds the real
+    /// one.
+    Down,
+    /// Away from zero, for estimates and floors, so a printed estimate always exceeds a
+    /// printed budget that the estimate exceeds.
+    Up,
 }
 
 /// A byte count for people: whole binary units when exact, otherwise one decimal of the
-/// largest unit that fits, such as `8 GiB`, `9.4 GiB` or `512 bytes`.
-pub fn format_memory(bytes: u64) -> String {
+/// largest unit that fits, rounded as `rounding` says, such as `8 GiB`, `9.4 GiB` or
+/// `512 bytes`. A size that rounds up to 1024 of a unit prints as `1.0` of the next.
+pub fn format_memory(bytes: u64, rounding: Rounding) -> String {
     const UNITS: [(u64, &str); 4] =
         [(1 << 40, "TiB"), (1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    let mut larger = None;
     for (unit, name) in UNITS {
         if bytes < unit {
+            larger = Some(name);
             continue;
         }
         if bytes % unit == 0 {
             return format!("{} {name}", bytes / unit);
         }
-        let tenths = (u128::from(bytes) * 10 + u128::from(unit) / 2) / u128::from(unit);
+        let scaled = u128::from(bytes) * 10;
+        let tenths = match rounding {
+            Rounding::Down => scaled / u128::from(unit),
+            Rounding::Up => scaled.div_ceil(u128::from(unit)),
+        };
+        if let (10_240, Some(larger)) = (tenths, larger) {
+            return format!("1.0 {larger}");
+        }
         return format!("{}.{} {name}", tenths / 10, tenths % 10);
     }
     format!("{bytes} bytes")
@@ -948,25 +981,29 @@ mod tests {
     }
 
     #[test]
-    fn budgets_name_their_source() {
-        assert_eq!(
-            MemoryBudget::default_for(None),
-            MemoryBudget::exact(2 * GIB, "2 GiB fallback (physical RAM unknown)")
-        );
+    fn budgets_name_their_source_and_keep_its_memory() {
+        let fallback = MemoryBudget::default_for(None);
+        assert_eq!(fallback, MemoryBudget::exact(2 * GIB, "2 GiB fallback (physical RAM unknown)"));
+        assert_eq!(fallback.memory(), None);
         let ram = EffectiveMemory { bytes: 32 * GIB, source: MemorySource::PhysicalRam };
         let half =
             MemoryBudget::from_request(RamBudget::Percent(50), "--max-ram 50%", || Some(ram))
                 .unwrap();
-        assert_eq!(half, MemoryBudget::exact(16 * GIB, "50% of 32 GiB physical RAM (16 GiB)"));
+        assert_eq!(half.bytes(), 16 * GIB);
+        assert_eq!(half.label(), "50% of 32 GiB physical RAM (16 GiB)");
+        assert_eq!(half.memory(), Some(ram));
+        assert_eq!(MemoryBudget::default_for(Some(ram)).memory(), Some(ram));
         // Above the effective memory, an explicit size is still honored.
         let over =
             MemoryBudget::from_request(RamBudget::Bytes(64 * GIB), "--max-ram 64G", || Some(ram))
                 .unwrap();
         assert_eq!(over, MemoryBudget::exact(64 * GIB, "--max-ram 64G"));
+        assert_eq!(over.memory(), None);
+        // Sizes in a label round down: 15.57 GiB and 3.89 GiB.
         let odd = EffectiveMemory { bytes: 16_715_173_888, source: MemorySource::PhysicalRam };
         assert_eq!(
             MemoryBudget::default_for(Some(odd)).label(),
-            "25% of 15.6 GiB physical RAM (3.9 GiB)"
+            "25% of 15.5 GiB physical RAM (3.8 GiB)"
         );
     }
 
@@ -985,13 +1022,39 @@ mod tests {
     }
 
     #[test]
-    fn memory_sizes_print_exact_units_or_one_decimal() {
-        assert_eq!(format_memory(8 * GIB), "8 GiB");
-        assert_eq!(format_memory(512 << 20), "512 MiB");
-        assert_eq!(format_memory(10_093_173_555), "9.4 GiB");
-        assert_eq!(format_memory(1536), "1.5 KiB");
-        assert_eq!(format_memory(512), "512 bytes");
-        assert_eq!(format_memory(0), "0 bytes");
-        assert_eq!(format_memory(u64::MAX), "16777216.0 TiB");
+    fn memory_sizes_print_exact_units_or_one_rounded_decimal() {
+        for rounding in [Rounding::Down, Rounding::Up] {
+            assert_eq!(format_memory(8 * GIB, rounding), "8 GiB");
+            assert_eq!(format_memory(512 << 20, rounding), "512 MiB");
+            assert_eq!(format_memory(1536, rounding), "1.5 KiB");
+            assert_eq!(format_memory(512, rounding), "512 bytes");
+            assert_eq!(format_memory(0, rounding), "0 bytes");
+        }
+        // Budgets and allowances round down; estimates and floors round up.
+        assert_eq!(format_memory(10_093_173_555, Rounding::Down), "9.4 GiB");
+        assert_eq!(format_memory(10_093_173_555, Rounding::Up), "9.5 GiB");
+        assert_eq!(format_memory(1025, Rounding::Down), "1.0 KiB");
+        assert_eq!(format_memory(1025, Rounding::Up), "1.1 KiB");
+        assert_eq!(format_memory(u64::MAX, Rounding::Down), "16777215.9 TiB");
+        assert_eq!(format_memory(u64::MAX, Rounding::Up), "16777216.0 TiB");
+    }
+
+    #[test]
+    fn a_size_just_under_a_unit_never_prints_1024_of_the_smaller_one() {
+        assert_eq!(format_memory(GIB - 1, Rounding::Down), "1023.9 MiB");
+        assert_eq!(format_memory(GIB - 1, Rounding::Up), "1.0 GiB");
+        assert_eq!(format_memory((1 << 20) - 1, Rounding::Up), "1.0 MiB");
+        assert_eq!(format_memory((1 << 40) - 1, Rounding::Up), "1.0 TiB");
+        assert_eq!(format_memory(1023, Rounding::Up), "1023 bytes");
+    }
+
+    #[test]
+    fn an_estimate_one_byte_over_its_budget_prints_above_it() {
+        let budget = 8 * GIB + (100 << 20);
+        assert_eq!(format_memory(budget, Rounding::Down), "8.0 GiB");
+        assert_eq!(format_memory(budget + 1, Rounding::Up), "8.1 GiB");
+        // At a whole unit the budget prints exactly, and the estimate above it.
+        assert_eq!(format_memory(8 * GIB, Rounding::Down), "8 GiB");
+        assert_eq!(format_memory(8 * GIB + 1, Rounding::Up), "8.1 GiB");
     }
 }
