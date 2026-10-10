@@ -142,7 +142,13 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    and the first turn it never recorded starts the child’s own lines, whose first step
    is still checked against the copied total.
    A counter that no turn places is a copy when the parent root, itself counter-only,
-   reported its cumulative total.
+   reported its cumulative total, with a missing count read as 0. A parent root here is
+   a thread none of whose rollouts carries lineage: a top-level parent or fork link, a
+   `source.subagent.thread_spawn` parent, a boundary or another thread’s header.
+   Only such a rollout can be a complete record of what the child copied.
+   After a turn-inferred start, a later turn the parent recorded, or a counter total it
+   reported other than the copied total, contradicts the inference, and the region from
+   the start to the boundary becomes undecided.
 5. Unnamed usage (counters and records without a `thread_id`) that rules 2 to 4 leave
    undecided is excluded with a `codex-history-boundary-unverified` diagnostic and a
    coverage gap, rather than counted or silently treated as a copy, when its region
@@ -156,7 +162,8 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    bounded migration, so it is the original; any other original merges with it by
    response key. In a rollout with usage records, a first running total after it beyond
    what the child’s own records report shows responses the migration dropped, which is a
-   gap.
+   gap. In a counter-only rollout, a counter that reports the same response is its twin
+   and adds no usage.
 
 PR #16’s other protections are unchanged: a foreign `session_meta`, records naming the
 parent, the first-step check against the inherited total, and the exclusion of unnamed
@@ -164,20 +171,42 @@ usage under an invalid or unpositioned boundary.
 
 ## Residual Risks
 
+- **Old-format subagent parents.** Before Codex wrote a top-level `parent_thread_id`
+  (absent at `rust-v0.130.0`, present at `rust-v0.150.0`), a spawned subagent named its
+  parent only in `source.subagent.thread_spawn.parent_thread_id`, which Codex itself
+  reads and the migration leaves in place.
+  urollup treats that link as lineage, so such a thread never decides a child’s turns,
+  but it does not yet read it as a parent, so a migrated child of one is undecided
+  (`uro-3b12`).
+
+- **Rolled-back spawn turns.** Codex’s migration replays a legacy root through a
+  rollback plan that drops a rolled-back turn’s `turn_context` and counters, so the
+  root’s next counter step carries that turn’s usage.
+  A subagent spawned in that turn still holds its copy, so its inferred own start counts
+  that usage again (`uro-eh0d`). `main` does the same for an unmigrated child through
+  the legacy turn switch.
+
+- **Turn evidence beyond roots.** Turns are checked only against complete roots.
+  A turn index over every rollout would decide nested chains and siblings too
+  (`uro-r8si`).
+
 - **Undecidable migrated children.** A migrated counter-only child whose parent is not a
   discovered root, or whose turns have no IDs (before 0.100), or whose counters precede
   every turn and match no parent total, reports its undecided usage as a coverage gap
   instead of counting it.
   Only counter-only roots supply totals, so a child of a root with usage records gets no
   total match.
+
 - **Children with usage records and counter-only turns.** A migrated or resumed child
   with usage records is accounted from its records alone, so counter-only turns before
   them are not counted (`uro-r8si`).
+
 - **Migrated user forks.** A legacy user fork migrates as an ordinary rollout: it keeps
   no boundary and loses the foreign header of its copied prefix.
   Copied records still name the parent, but in a counter-only fork the copied counters
   count as the fork’s own (`uro-p9ua`). The turn and total evidence of rule 4 would
   decide them too, from the first line, but this is unchanged by `uro-jqc3`.
+
 - **Usage dropped by migration.** A bounded subagent migration drops the child’s lines
   before its newest compaction.
   Only that `compacted` line’s record survives, and the surviving lines carry the
@@ -185,6 +214,7 @@ usage under an invalid or unpositioned boundary.
   The dropped responses are a gap only where the running total shows them: a total that
   compaction lowered can hide them, and a legacy child seeded with its parent’s total
   reports a gap even when the migration dropped no other response.
+
 - **Native settings order.** Rule 2 lets a line that names the child before the boundary
   override it. Codex 0.152 through 0.162.1 writes a native child’s settings event at the
   boundary, after its inherited prefix; a writer that put it first would make the prefix

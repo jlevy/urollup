@@ -948,7 +948,23 @@ set these source-specific rules:
   the child’s own lines, whose first step is checked against the copied total as below.
   The migration keeps `turn_context` lines, and `turn_id` is present from
   `rust-v0.100.0`. A counter that no turn places is the parent’s copy when the parent
-  root, a rollout without usage records, reported its cumulative total.
+  root, a rollout without usage records, reported its cumulative total; totals compare
+  with a missing count read as 0, since the migration writes
+  `cache_write_input_tokens: 0` where a legacy original omits it.
+  This rests on the parent’s rollout recording every turn and counter the child copied,
+  so a parent root here is a thread none of whose rollouts carries lineage: no top-level
+  `parent_thread_id` or `forked_from_id`, no `source.subagent.thread_spawn` parent
+  (where an old-format subagent, written before Codex had the top-level field, names its
+  parent; reading that link as a parent is `uro-3b12`), no boundary and no other
+  thread’s header. A child’s own lines never precede a turn or a total its parent
+  recorded, so after a turn-inferred start, a later turn the parent recorded or a
+  counter total it reported (other than a repeat of the copied total) before the
+  boundary proves the inference wrong, and every step from that start to the boundary is
+  excluded as unverified instead of counted.
+  One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
+  dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
+  spawned in that turn holds its copy, so the root’s next counter step and the child
+  both count that turn; `main` already does this for an unmigrated child.
   Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
   is excluded as unverified, as below, when the region shows migrated content: a turn
   the parent’s turns cannot place, because it has no ID or the parent is not a
@@ -962,6 +978,8 @@ set these source-specific rules:
   usage records, the first-step check below does this).
   A legacy child seeded with its parent’s total reports it even when the migration
   dropped no other response.
+  In a rollout without usage records, the counter of a response that such a compacted
+  record already counts adds no usage, though it still moves the running total.
   A prefix without a known parent remains unowned copy evidence, never child usage.
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
   an invalid `subagent_history_start_ordinal` places none of the rollout’s unnamed

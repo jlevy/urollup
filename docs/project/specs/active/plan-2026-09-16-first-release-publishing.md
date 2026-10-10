@@ -113,10 +113,16 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   record by the thread it names, decides a migrated counter-only child’s unassigned
   lines by the turns its parent root recorded and by the parent’s counter totals, and
   counts a `compacted` record that is the only record of its response.
+  Only a root without lineage, including an old-format subagent’s nested `thread_spawn`
+  parent (`uro-3b12`), decides a child’s turns, and a later turn or total the parent
+  recorded voids an inferred start.
   What it still cannot place is a `codex-history-boundary-unverified` coverage gap, so
   on real history whole-history Codex coverage stays partial where a migrated child’s
   parent is not a discovered root, its turns have no IDs, a bounded migration dropped
   responses, or its first own step does not continue the copied total.
+  One shape still counts twice: a subagent spawned in a turn that a migrated root’s
+  rollback planning dropped (`uro-eh0d`, also on `main` for unmigrated children); a
+  local real-history check found none.
   It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
   (`uro-aakb`).
 - **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
