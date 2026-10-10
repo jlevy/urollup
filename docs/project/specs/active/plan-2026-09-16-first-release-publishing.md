@@ -71,18 +71,18 @@ valuation must not be advertised as completed 0.1 features.
 
 ### Open Correctness Fixes
 
-These defects were present on `main` as of the date above.
-PRs #16 and #18 merged on 2026-10-09. A real-history rerun on 2026-10-10 found further
-Codex undercounts, each tracked below with its fix; Codex totals stay provisional until
-those fixes land and the comparison is rerun.
+This list records the correctness defects found on `main` and their state as of the date
+above. PRs #16 and #18 merged on 2026-10-09 and PR #26 on 2026-10-10. A local
+real-history rerun on 2026-10-10 found the migrated Guardian and subagent defect
+(`uro-jqc3`), and review of its fix found the related migrated-fork defect (`uro-p9ua`).
+Codex totals stay provisional until the open fixes land and the comparison is rerun.
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
   again. In a synthetic case, a parent with 100 tokens and a child that copies that
   100-token prefix and adds 20 tokens reports 220 instead of 120, with
   `coverage.complete: true` and no diagnostic.
-  It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
-  (`uro-aakb`). The fix is in [PR #16](https://github.com/jlevy/urollup/pull/16).
+  Fixed in [PR #16](https://github.com/jlevy/urollup/pull/16), merged 2026-10-09.
 - **Codex counter-only usage beside usage records (`uro-h2sf`):** any
   `token_usage_record` in a Codex rollout made every cumulative `token_count` in it
   count nothing. A session that Codex before 0.153 started and a later release resumed
@@ -101,6 +101,19 @@ those fixes land and the comparison is rerun.
   totals while coverage stays complete (`uro-1h5s`); Codex subagent requests report an
   `unknown` model and effort (`uro-5nkv`); and a lowered Codex cumulative total is
   charged to one request (`uro-v1c9`).
+- **Codex Guardian and subagent usage excluded as copied history (`uro-jqc3`, open):**
+  Codex’s legacy-to-paginated rollout migration sets a child’s
+  `subagent_history_start_ordinal` past the file’s last line, so every line, including
+  the child’s own `token_usage_record` lines, falls before the boundary and is excluded
+  as the parent’s copied history, with `coverage.complete: true` and no diagnostic.
+  The rerun found this in many migrated Guardian-review and subagent rollouts.
+  The fix is in [PR #32](https://github.com/jlevy/urollup/pull/32). It blocks G1
+  (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice (`uro-aakb`).
+- **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
+  open):** the same migration drops a legacy fork’s copied `session_meta`, so a migrated
+  counter-only user fork counts its parent’s copied counters as its own.
+  In a synthetic case the fork reports 340 instead of 180, with
+  `coverage.complete: true`.
 
 ## Goals
 

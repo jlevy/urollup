@@ -176,8 +176,7 @@ The capture store lands only after the uncached engine is the correctness refere
   PR #24). These are fixes to the existing surface, not completion of G5.
 - [ ] Land the
   [open correctness fixes](plan-2026-09-16-first-release-publishing.md#open-correctness-fixes),
-  starting with the Codex paginated-fork double count (`uro-kpbp`), each with synthetic
-  regressions, then rerun the real-history comparison.
+  each with synthetic regressions, then rerun the real-history comparison.
 - [ ] Bound persistent-log memory before release.
   The [scalable-ingestion plan](plan-2026-09-16-scalable-ingestion.md) owns this work,
   after the milestone 0.1 engine grew past 20 GB on whole-history runs and a temporary

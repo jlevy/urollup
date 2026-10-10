@@ -118,7 +118,6 @@ gate is owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by link
 The complete usage-analysis workflow is `uro-6kwn`, accepted by G5 (`uro-i6xb`): joint
 calendar/agent/provider/model grouping, reusable snapshots, cache metrics, tools/time
 and list-price estimates.
-The CLI honesty and local aggregate fixes (`uro-oz6w`, `uro-qg1a`) merged.
 Reuse the existing artifact and pricing beads; do not create another accounting engine
 or treat independent report marginals as a reusable dataset.
 [docs/usage-analysis.md](docs/usage-analysis.md) documents implemented versus planned
