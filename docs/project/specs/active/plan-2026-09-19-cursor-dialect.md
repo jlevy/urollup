@@ -470,6 +470,9 @@ The `cursor-state` layer implements most of Phase 1 ahead of the decisions above
 items stay unchecked until those decisions are confirmed and the layer passes review.
 It answers the questions before implementation provisionally:
 
+- **Selection:** `--agent` (`claude`, `codex`, `cursor`, `pi`) restricts every command,
+  ahead of the milestone 0.5 flag plan
+  ([§10.4](../../../urollup-design.md#104-flag-index)).
 - **Facets:** `GroupBy::Agent`, `GroupBy::Provider` and `GroupBy::Purpose` are separate
   `report` breakdowns, and the catalog-family table is `ledger/provider.rs`, ahead of
   the generic facets in `uro-qvp1`. `--group-by purpose` slices Cursor `unifiedMode`
@@ -488,7 +491,8 @@ It answers the questions before implementation provisionally:
   and a bubble with neither keys on its `bubbleId`. Bubbles that share a key keep the
   last one in store order under the latest-revision rule rather than summing.
 - **SQLite reader (`uro-kddq`):** `rusqlite` with bundled SQLite, without default
-  features.
+  features, recorded in
+  [SUPPLY-CHAIN-SECURITY.md](../../../../SUPPLY-CHAIN-SECURITY.md#reviewed-versions-cursor-state-reader).
 - **Opt-in roots (`uro-tvc0`):** a `UROLLUP_CURSOR_DIRS` entry or `--source` path names
   a `state.vscdb` file, a `cursor-state.json` fixture, or a directory holding either.
   A Cursor JSONL transcript passed alone exits 1 as not a usage owner.
