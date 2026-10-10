@@ -109,6 +109,8 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/legacy-user-fork-counters` | A legacy user fork copying `token_count` events, its counter continuing the parent’s | §3.4, §3.2 | Codex thread manager; ccusage copied-branch test | Codex CLI 0.150.0 |
 | `codex-rollout/paginated-counter-prefix` | A counter-only paginated subagent whose prefix copies the parent’s `token_count` without its session header | §3.4, §3.2 | Codex paginated prefix and counter seeding; `uro-kpbp` | Codex CLI 0.150.0 |
 | `codex-rollout/unverified-fork-boundary` | Fork-boundary evidence that cannot prove a child’s own usage: excluded as a coverage gap, other sessions still report | §3.4, §2.1 | Codex paginated prefix; review A of PR #16 | Codex CLI 0.150.0 |
+| `codex-rollout/guardian-migrated-boundary` | Migrated Guardian reviews whose `subagent_history_start_ordinal` lies past their last line: records naming the review are its own, a bounded migration’s compacted record counts, and a response it dropped is a gap | §3.4, §3.2 | Codex legacy-to-paginated migration | Codex CLI 0.154.0 rollouts migrated by 0.155.0–0.162.1 |
+| `codex-rollout/guardian-native-boundary` | Native paginated Guardian reviews from a parent compaction and from an earlier review’s checkpoint: the inherited prefix stays copied | §3.4, §3.2 | Codex live thread and Guardian checkpoint | Codex CLI 0.160.0 |
 | `codex-rollout/revert-file` | One thread over an original and a `_<rollout-id>` revert file with `history_base` | §2.1, §3.3, §3.6 | Codex revert, file names and ordinals | Codex CLI 0.154.0 |
 | `codex-rollout/zst-twin` | A `.jsonl` and its `.jsonl.zst` twin as one logical source | §2.2, §3.3 | Codex compression worker and discovery | Codex CLI 0.154.0 |
 | `codex-rollout/archived-rename` | Flat `archived_sessions/`, a compressed archived child, a leftover active copy, local-time names | §2.1, §3.6, §3.2 | Codex archive rename; ccusage archived discovery | Codex CLI 0.154.0 |
@@ -126,10 +128,10 @@ the double-counting example is in the
 - **Other dialects:** `claude-stream`, `codex-exec` (including cumulative
   `turn.completed.usage` across a resume), `pi-session` and `pi-events`. Captured
   streams arrive in milestone 0.5 and Pi in Phase 2, with their own fixtures.
-- **Migrated Codex rollouts:** `codex migrate-rollouts --apply` rewrites a legacy file
-  in place as paginated, dropping rolled-back usage records.
-  Modeling it needs a before and after pair plus capture-store expectations, which
-  belong with the capture work.
+- **Migration pairs:** `codex migrate-rollouts --apply` rewrites a legacy file in place
+  as paginated, dropping rolled-back usage records.
+  `codex-rollout/guardian-migrated-boundary` models migrated Guardian reviews; a before
+  and after pair needs capture-store expectations, which belong with the capture work.
 - **More cases derived from real sessions:** one case,
   `claude-project/derived-block-records-subagent`, is sanitized from this project’s own
   Claude Code logs; every other case is synthetic.

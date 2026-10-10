@@ -1,0 +1,245 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "guardian-native-boundary",
+  "dialect": "codex-rollout",
+  "summary": "Guardian reviews created natively as paginated children, one from the parent's compaction and one from the first review's checkpoint, each with subagent_history_start_ordinal inside the rollout.",
+  "rules": [
+    "design §3.4 Codex copied history (subagent_history_start_ordinal)",
+    "design §3.4 Codex requests",
+    "design §3.2 Spawn (guardian_review)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.160.0 paginated rollouts (Guardian checkpoints since rust-v0.158.0)"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/10/02/rollout-2026-10-02T09-00-00-019f0000-0000-7000-8000-001900000001.jsonl",
+      "lines": 8,
+      "thread": "019f0000-0000-7000-8000-001900000001"
+    },
+    {
+      "path": "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl",
+      "lines": 9,
+      "thread": "019f0000-0000-7000-8000-001900000002"
+    },
+    {
+      "path": "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl",
+      "lines": 11,
+      "thread": "019f0000-0000-7000-8000-001900000003"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-001900000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 4000,
+          "cache_read": 8000,
+          "cache_write": 0,
+          "output": 700,
+          "reasoning": 250
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001900000002",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001900000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl:1"
+      ],
+      "thread_source": "guardian_review",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 2600,
+          "cache_read": 0,
+          "cache_write": 0,
+          "output": 90,
+          "reasoning": 30
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-001900000003",
+      "kind": "subagent",
+      "parent": "019f0000-0000-7000-8000-001900000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:1"
+      ],
+      "thread_source": "guardian_review",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 1000,
+          "cache_read": 2400,
+          "cache_write": 0,
+          "output": 110,
+          "reasoning": 40
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c19_p1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001900000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-10-02T16:00:20.000Z",
+      "tokens": {
+        "uncached_input": 4000,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "output": 700,
+        "reasoning": 250
+      },
+      "selected": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-00-00-019f0000-0000-7000-8000-001900000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-00-00-019f0000-0000-7000-8000-001900000001.jsonl:6"
+      ],
+      "turn_id": "turn-c19-p1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c19_a1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001900000002",
+      "owner_candidates": [],
+      "model": "codex-auto-review",
+      "model_basis": "requested",
+      "effort": "low",
+      "timestamp": "2026-10-02T16:00:36.000Z",
+      "tokens": {
+        "uncached_input": 2600,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 90,
+        "reasoning": 30
+      },
+      "selected": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl:7"
+      ],
+      "evidence": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl:7",
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:2"
+      ],
+      "turn_id": "turn-c19-a1",
+      "root_turn_id": "turn-c19-p1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c19_b1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001900000003",
+      "owner_candidates": [],
+      "model": "codex-auto-review",
+      "model_basis": "requested",
+      "effort": "low",
+      "timestamp": "2026-10-02T16:01:05.000Z",
+      "tokens": {
+        "uncached_input": 1000,
+        "cache_read": 2400,
+        "cache_write": 0,
+        "output": 110,
+        "reasoning": 40
+      },
+      "selected": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:9"
+      ],
+      "evidence": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:9"
+      ],
+      "turn_id": "turn-c19-b1",
+      "root_turn_id": "turn-c19-p1"
+    }
+  ],
+  "copies": [
+    {
+      "refs": [
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:2",
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:3",
+        "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:4"
+      ],
+      "kind": "paginated-guardian-checkpoint-prefix",
+      "copy_of_thread": "019f0000-0000-7000-8000-001900000002",
+      "boundary_basis": "subagent_history_start_ordinal 4"
+    },
+    {
+      "ref": "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:2",
+      "kind": "compacted-latest-token-usage-record",
+      "copy_of": "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl:7",
+      "owner_thread": "019f0000-0000-7000-8000-001900000002"
+    },
+    {
+      "ref": "sessions/2026/10/02/rollout-2026-10-02T09-01-00-019f0000-0000-7000-8000-001900000003.jsonl:4",
+      "kind": "token-count-copy",
+      "copy_of": "sessions/2026/10/02/rollout-2026-10-02T09-00-30-019f0000-0000-7000-8000-001900000002.jsonl:8",
+      "owner_thread": "019f0000-0000-7000-8000-001900000002"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 3,
+      "owned": 3,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 7600,
+      "cache_read": 10400,
+      "cache_write": 0,
+      "output": 900,
+      "reasoning": 320
+    },
+    "total_tokens": 18900
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Count every token_count's last_token_usage as a request of the rollout that holds it",
+      "requests": 4,
+      "tokens": {
+        "uncached_input": 10200,
+        "cache_read": 10400,
+        "cache_write": 0,
+        "output": 990,
+        "reasoning": 350,
+        "total_tokens": 21590
+      }
+    }
+  ],
+  "notes": [
+    "A native paginated child persists its inherited items at ordinals 1 through subagent_history_start_ordinal - 1 and writes its own thread_settings_applied at the boundary.",
+    "The first review's prefix is the parent's compaction item alone, which carries no usage.",
+    "The second review's prefix is the first review's checkpoint: a compacted line keeping resp_synthetic_c19_a1, that review's turn context, and its running total, whose last usage is the same response. The record names the first review, and the counter follows it, so both are copies of that request.",
+    "Neither prefix names the review that holds it, so the boundary still assigns its unnamed lines to inherited history."
+  ]
+}

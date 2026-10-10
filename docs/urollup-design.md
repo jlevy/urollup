@@ -857,8 +857,14 @@ set these source-specific rules:
   so their requests merge by response ID.
 - **Codex requests:** from `rust-v0.153.0`, each `token_usage_record` is one response,
   keyed by `response_id` and owned by its `thread_id`; responses without usage write
-  none. A record whose `thread_id` differs from the file’s thread is a copy, and
-  `compacted.latest_token_usage_record` is never an observation.
+  none. Codex writes the thread that made the request into its record, and a copy keeps
+  it, so a record that names the file’s thread is that thread’s own wherever it sits,
+  before a declared history boundary included, and one that names another thread is a
+  copy. A `compacted` line’s `latest_token_usage_record` copies a record, except when it
+  names the file’s own thread and no usage record in the file reports its response: a
+  migration that kept only the suffix from that compaction left it as the only record of
+  the response, so it counts as the original, and any other original of the response
+  merges with it by response key.
 - **Codex request context:** a usage record takes its model and effort from the
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
@@ -919,20 +925,78 @@ set these source-specific rules:
   document except a `rate_limits` object, with the same malformed-line, repeated-key and
   null-field rules as Claude Code decoding.
   Consecutive identical `rate_limits` snapshots in a rollout share one value.
-- **Codex copied history:** usage after a `session_meta` that names another thread
-  belongs to that thread and is a copy.
-  A child rollout’s own records start at `subagent_history_start_ordinal`, or else at a
-  `thread_settings_applied` event (0.152 and later), which assigns later records to the
-  thread it names. An explicit ordinal boundary also identifies an inherited prefix
-  without an embedded parent session header; direct records, compacted usage copies and
-  cumulative counters use that ownership consistently.
+- **Codex copied history:** a usage record that names a thread belongs to it (Codex
+  requests, above); these rules place the lines that name none: `token_count` events,
+  and records without a `thread_id`. Such a line follows the latest earlier line that
+  names a thread: another thread’s `session_meta`, a `thread_settings_applied` event
+  (0.152 and later), a usage record, or the record a `compacted` line keeps.
+  A counter therefore follows the record whose response it reports, which Codex writes
+  just before it. A child rollout’s own lines start at `subagent_history_start_ordinal`:
+  before it, a line that no earlier line assigns is inherited history even without an
+  embedded parent session header, and the child’s own header assigns nothing.
+  A natively created paginated child persists its inherited items at ordinals 1 through
+  the boundary minus 1 and writes its own settings event at the boundary, so nothing in
+  its prefix names it.
+  Codex’s legacy-to-paginated migration instead puts the boundary one past the last line
+  it rewrote and drops every `session_meta` but the head, so a migrated child’s own
+  settings events and records sit before the boundary and assign its lines to it
+  ([research](project/research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
+  In a rollout without usage records that holds no other thread’s `session_meta` (a
+  native subagent prefix keeps its parent’s, and the migration keeps none), turns decide
+  the unassigned lines before the boundary, region by region: a line inside a turn the
+  parent root recorded is the parent’s copy, and the first turn it never recorded starts
+  the child’s own lines, whose first step is checked against the copied total as below.
+  The migration keeps `turn_context` lines, and `turn_id` is present from
+  `rust-v0.100.0`. A counter that no turn places is the parent’s copy when the parent
+  root, a rollout without usage records, reported its cumulative total; totals compare
+  with a missing count read as 0, since the migration writes
+  `cache_write_input_tokens: 0` where a legacy original omits it.
+  This rests on the parent’s rollout recording every turn and counter the child copied,
+  so a parent root here is a thread none of whose rollouts carries lineage: no top-level
+  `parent_thread_id` or `forked_from_id`, no `source.subagent.thread_spawn` parent
+  (where an old-format subagent, written before Codex had the top-level field, names its
+  parent; reading that link as a parent is `uro-3b12`), no boundary and no other
+  thread’s header. The nested link only keeps such a thread from deciding a child’s
+  turns: it is not lineage for the counter rules, since without a header or boundary its
+  rollout holds no copy.
+  A child’s own lines never precede a turn or a total its parent recorded, or a line
+  naming another thread, so after a turn-inferred start any of these before the boundary
+  proves the inference wrong: a later turn the parent recorded, a counter total it
+  reported (other than a repeat of the copied total), or a settings event, record or
+  compacted record naming another thread.
+  Every step from that start to the boundary is then excluded as unverified instead of
+  counted. The start stays voidable until a line at or past the boundary, or a line
+  naming the child’s own thread, which ends the window without voiding it because the
+  lines after it are the child’s by name.
+  A later unrecorded turn, as after a settings event without a thread ID, never moves
+  the start, and a line without an ordinal never closes the window.
+  One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
+  dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
+  spawned in that turn holds its copy, so the root’s next counter step and the child
+  both count that turn; `main` already does this for an unmigrated child.
+  Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
+  is excluded as unverified, as below, when the region shows migrated content: a turn
+  the parent’s turns cannot place, because it has no ID or the parent is not a
+  discovered root, or a boundary that no line of the file reaches.
+  Otherwise it stays inherited, as in a native prefix, where the child’s own settings
+  event reaches the boundary.
+  A migration that kept only the suffix from the child’s own compaction dropped every
+  earlier line, so in a rollout with usage records, when a `compacted` record naming the
+  child is the only record of its response before the boundary, a first running total
+  beyond what the child’s own records report is excluded as unverified too (without
+  usage records, the first-step check below does this).
+  A legacy child seeded with its parent’s total reports it even when the migration
+  dropped no other response.
+  In a rollout without usage records, the counter of a response that such a compacted
+  record already counts, compared with a missing count read as 0, adds no usage, though
+  it still moves the running total.
   A prefix without a known parent remains unowned copy evidence, never child usage.
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
-  an invalid `subagent_history_start_ordinal` places none of the rollout’s usage, and a
-  usage record or cumulative total without an `ordinal` is not placed.
-  A `token_count` that carries no usage needs no ordinal: one that reports only rate
-  limits (`info: null`), or one whose total repeats the running total, which Codex sends
-  with every rate-limit refresh.
+  an invalid `subagent_history_start_ordinal` places none of the rollout’s unnamed
+  usage, and a cumulative total or unnamed usage record without an `ordinal` is not
+  placed. A `token_count` that carries no usage needs no ordinal: one that reports only
+  rate limits (`info: null`), or one whose total repeats the running total, which Codex
+  sends with every rate-limit refresh.
   In a child with an explicit boundary, including a boundary of 0, or in any child after
   copied counters, the first own counter step that reports usage must match its
   `last_token_usage`, either as its delta from the inherited total (a seeded child) or
@@ -951,16 +1015,20 @@ set these source-specific rules:
   Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
   diagnostic and a coverage gap for its thread, so that thread and the whole history
   report partial coverage while every other session still reports; the anomaly never
-  stops the run. In a rollout without `token_usage_record` lines, the copy also ends at
-  the first `turn_context` whose turn ID the copied thread’s root rollout never
-  recorded; turn IDs are matched across rollouts by 128-bit digest.
+  stops the run. Its occurrences count the excluded steps (undecided usage, unverified
+  first steps and running totals beyond the child’s records), never steps decided as
+  copies. In a rollout without `token_usage_record` lines, a copy that follows another
+  thread’s `session_meta` also ends at the first `turn_context` whose turn ID that
+  thread’s root rollout never recorded; turn IDs and cumulative totals are matched
+  across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.
   In a rollout with `token_usage_record` lines, a `token_count` inside the copied prefix
   is a copy keyed to the copied thread’s last response ID when the prefix holds that
-  thread’s usage record; from 0.153 forked prefixes drop those records, so such a copy
-  stays an unkeyed copy-only request, excluded from totals.
+  thread’s usage record, or a `compacted` line that keeps it, as a Guardian checkpoint
+  does; from 0.153 forked prefixes drop those records, so such a copy stays an unkeyed
+  copy-only request, excluded from totals.
   A fork or subagent continues the parent’s running total, so the child’s counters start
   from the inherited total.
   Legacy destinations also copy the parent’s records, including `token_count` events

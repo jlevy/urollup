@@ -791,3 +791,64 @@ variant = "since"
 metric = "uncached_input"
 expected_delta = 3500
 expected_matches = 2
+
+[[entry]]
+id = "codex-guardian-checkpoint-counter"
+case = "codex-rollout/guardian-native-boundary"
+cause = "dedupe"
+citation = "docs/project/research/research-2026-10-10-codex-paginated-subagent-boundary.md#native-paginated-children"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove when ccusage stops counting the running total that a Guardian checkpoint copies into a new review's inherited prefix (the earlier review's last response, 2,690 tokens) as the new review's usage."
+
+[[entry.difference]]
+metric = "output"
+expected_delta = -90
+expected_matches = 10
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = -30
+expected_matches = 8
+
+[[entry.difference]]
+metric = "total"
+expected_delta = -2690
+expected_matches = 10
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -2600
+expected_matches = 10
+
+[[entry]]
+id = "codex-migrated-compacted-record"
+case = "codex-rollout/guardian-migrated-boundary"
+cause = "unsupported"
+citation = "docs/project/research/research-2026-10-10-codex-paginated-subagent-boundary.md#migrated-legacy-children"
+design = "docs/urollup-design.md#34-dialect-reconciliation-rules"
+retirement = "Remove when ccusage counts a compacted line's record that names its own rollout's thread and has no other record of its response, which a bounded migration leaves as the only record of that response (resp_synthetic_c18_h1, 4,150 tokens)."
+
+[[entry.difference]]
+metric = "cache_read"
+expected_delta = 1000
+expected_matches = 10
+
+[[entry.difference]]
+metric = "output"
+expected_delta = 150
+expected_matches = 10
+
+[[entry.difference]]
+metric = "reasoning"
+expected_delta = 50
+expected_matches = 8
+
+[[entry.difference]]
+metric = "total"
+expected_delta = 4150
+expected_matches = 10
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = 3000
+expected_matches = 10

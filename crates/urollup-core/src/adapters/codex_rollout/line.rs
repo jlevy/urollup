@@ -105,6 +105,9 @@ pub(super) struct Payload<'a> {
     pub(super) id: Option<Cow<'a, str>>,
     pub(super) cli_version: Option<Cow<'a, str>>,
     pub(super) source: Option<Cow<'a, str>>,
+    /// Whether `source.subagent.thread_spawn.parent_thread_id` is a string: before Codex
+    /// wrote a top-level `parent_thread_id`, a spawned subagent named its parent only there.
+    pub(super) spawn_parent: bool,
     pub(super) thread_source: Option<Cow<'a, str>>,
     pub(super) cwd: Option<Cow<'a, str>>,
     pub(super) parent_thread_id: Option<Cow<'a, str>>,
@@ -367,7 +370,9 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 }
                 PayloadField::Id => payload.id = map.next_value_seed(Text)?,
                 PayloadField::CliVersion => payload.cli_version = map.next_value_seed(Text)?,
-                PayloadField::Source => payload.source = map.next_value_seed(Text)?,
+                PayloadField::Source => {
+                    (payload.source, payload.spawn_parent) = map.next_value_seed(SourceSeed)?;
+                }
                 PayloadField::ThreadSource => payload.thread_source = map.next_value_seed(Text)?,
                 PayloadField::Cwd => payload.cwd = map.next_value_seed(Text)?,
                 PayloadField::ParentThreadId => {
@@ -723,6 +728,109 @@ impl<'de> Visitor<'de> for Text {
     }
 }
 
+/// Reads a `session_meta` `source`: its text when it is a string, and whether an object
+/// names a parent in `subagent.thread_spawn.parent_thread_id`. A repeated key keeps its
+/// last value, as a document does.
+struct SourceSeed;
+
+any_value_seed!(SourceSeed);
+
+impl<'de> Visitor<'de> for SourceSeed {
+    type Value = (Option<Cow<'de, str>>, bool);
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!((None, false), [bool, numbers, unit]);
+
+    fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<Self::Value, E> {
+        Ok((Some(Cow::Borrowed(value)), false))
+    }
+
+    fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+        Ok((Some(Cow::Owned(value.to_owned())), false))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut spawn_parent = false;
+        while let Some(key) = map.next_key_seed(KeyIs("subagent"))? {
+            if key {
+                spawn_parent =
+                    map.next_value_seed(NestedText(&["thread_spawn", "parent_thread_id"]))?;
+            } else {
+                map.next_value_seed(Skip)?;
+            }
+        }
+        Ok((None, spawn_parent))
+    }
+}
+
+/// Reads whether an object key, unescaped, is `.0`.
+struct KeyIs(&'static str);
+
+impl<'de> DeserializeSeed<'de> for KeyIs {
+    type Value = bool;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<bool, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for KeyIs {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, name: &str) -> Result<bool, E> {
+        Ok(name == self.0)
+    }
+}
+
+/// Reads whether the object path `.0` below a value leads to a string, keeping each
+/// repeated key's last value.
+struct NestedText(&'static [&'static str]);
+
+impl<'de> DeserializeSeed<'de> for NestedText {
+    type Value = bool;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<bool, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for NestedText {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(false, [bool, numbers, unit]);
+
+    fn visit_str<E: Error>(self, _: &str) -> Result<bool, E> {
+        Ok(self.0.is_empty())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+        let Some((first, rest)) = self.0.split_first() else {
+            Skip.visit_map(map)?;
+            return Ok(false);
+        };
+        let mut found = false;
+        while let Some(key) = map.next_key_seed(KeyIs(first))? {
+            if key {
+                found = map.next_value_seed(NestedText(rest))?;
+            } else {
+                map.next_value_seed(Skip)?;
+            }
+        }
+        Ok(found)
+    }
+}
+
 struct HistoryBoundarySeed;
 
 any_value_seed!(HistoryBoundarySeed);
@@ -850,6 +958,11 @@ mod tests {
                 id: owned(payload, "id"),
                 cli_version: owned(payload, "cli_version"),
                 source: owned(payload, "source"),
+                spawn_parent: text(
+                    payload,
+                    &["source", "subagent", "thread_spawn", "parent_thread_id"],
+                )
+                .is_some(),
                 thread_source: owned(payload, "thread_source"),
                 cwd: owned(payload, "cwd"),
                 parent_thread_id: owned(payload, "parent_thread_id"),
@@ -946,9 +1059,33 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_spawn_parent_is_read_from_the_source_object() {
+        fn read(line: &str) -> Payload<'_> {
+            Line::read(line.as_bytes()).expect("a valid line").payload
+        }
+        let spawned = read(
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p"}}}}}"#,
+        );
+        assert!(spawned.spawn_parent);
+        assert_eq!(spawned.source, None);
+        let cli = read(r#"{"type":"session_meta","payload":{"source":"cli"}}"#);
+        assert!(!cli.spawn_parent);
+        assert_eq!(cli.source.as_deref(), Some("cli"));
+        let guardian = read(
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
+        );
+        assert!(!guardian.spawn_parent);
+    }
+
+    #[test]
     fn fields_read_as_a_document_reads_them() {
         for line in [
             r#"{"timestamp":"2026-09-16T12:00:00Z","type":"session_meta","ordinal":4,"payload":{"id":"t","cli_version":"0.1","source":"cli","thread_source":"user","cwd":"/work/app","parent_thread_id":"p","forked_from_id":"f","subagent_history_start_ordinal":3}}"#,
+            r#"{"type":"session_meta","payload":{"id":"t","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p"},"thread_spawn":{}}}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}},"source":"cli"}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":"review","thread_spawn":{"parent_thread_id":"p"}}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":7}}}}}"#,
             r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"m","effort":"high"},"type":"compacted"}"#,
             r#"{"payload":{"turn_id":"t1"},"type":"turn_context","payload":{"model":"m"}}"#,
             r#"{"type":"turn_context","payload":{"turn_id":"t1","turn_id":null}}"#,
@@ -1125,8 +1262,39 @@ mod tests {
             2 => usage_record_object().prop_map(|value| ("latest_token_usage_record", value)),
             2 => info_object().prop_map(|value| ("info", value)),
             2 => rate_limits_object().prop_map(|value| ("rate_limits", value)),
+            2 => source_object().prop_map(|value| ("source", value)),
         ];
         prop_oneof![1 => leaf(), 8 => object(entries.boxed(), 0..8)].boxed()
+    }
+
+    /// A `source` object that may name a spawn parent, with repeated and misplaced keys.
+    fn source_object() -> BoxedStrategy<String> {
+        let spawn = object(
+            prop_oneof![
+                3 => leaf().prop_map(|value| ("parent_thread_id", value)),
+                1 => leaf().prop_map(|value| ("depth", value)),
+            ]
+            .boxed(),
+            0..3,
+        );
+        let subagent = object(
+            prop_oneof![
+                3 => spawn.prop_map(|value| ("thread_spawn", value)),
+                1 => leaf().prop_map(|value| ("thread_spawn", value)),
+                1 => leaf().prop_map(|value| ("other", value)),
+            ]
+            .boxed(),
+            0..3,
+        );
+        object(
+            prop_oneof![
+                3 => subagent.prop_map(|value| ("subagent", value)),
+                1 => leaf().prop_map(|value| ("subagent", value)),
+                1 => leaf().prop_map(|value| ("parent_thread_id", value)),
+            ]
+            .boxed(),
+            0..3,
+        )
     }
 
     /// A rollout line over the fields the pass reads, whose keys may repeat.
