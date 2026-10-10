@@ -58,7 +58,7 @@ VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 project | 2 | 7,500 | 500 | 8,000
 
 DIAGNOSTICS
-codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary
+codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -84,7 +84,7 @@ $ urollup report --all --format json --timezone UTC
     {
       "code": "codex-history-boundary-unverified",
       "count": 3,
-      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary"
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
     }
   ],
   "totals": {
@@ -215,7 +215,7 @@ DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
 2026-09-18 | 2 | 5,000 | 2,500 | 0 | 500 | 8,000
 
 DIAGNOSTICS
-codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary
+codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -254,7 +254,7 @@ $ urollup daily --all --format json --timezone UTC
     {
       "code": "codex-history-boundary-unverified",
       "count": 3,
-      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary"
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
     }
   ]
 }
@@ -274,7 +274,7 @@ thr-v1-4v2gk2vh2xghps98t1xx79s9hr | codex | project | 0 | - | - | -
 thr-v1-5v7d5swdnhm3953anp902kf4fc | codex | project | 1 | 6,000 | 400 | 6,400
 
 DIAGNOSTICS
-codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary
+codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -353,7 +353,7 @@ $ urollup sessions --all --format json --timezone UTC
     {
       "code": "codex-history-boundary-unverified",
       "count": 3,
-      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary"
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
     }
   ]
 }
@@ -373,7 +373,7 @@ thr-v1-4v2gk2vh2xghps98t1xx79s9hr | codex | project | 0 | - | - | -
 thr-v1-5v7d5swdnhm3953anp902kf4fc | codex | project | 1 | 6,000 | 400 | 6,400
 
 DIAGNOSTICS
-codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary
+codex-history-boundary-unverified x3: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -452,7 +452,7 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
     {
       "code": "codex-history-boundary-unverified",
       "count": 3,
-      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals and its first token_count after the boundary"
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
     }
   ]
 }

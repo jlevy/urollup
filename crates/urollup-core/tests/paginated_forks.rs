@@ -1020,14 +1020,20 @@ fn assert_parent_and_complete(ingested: &Ingested, parent_present: bool) {
 fn a_migrated_guardians_own_records_before_a_past_end_boundary_are_its_own() {
     // Codex's legacy-to-paginated migration rewrites a subagent rollout in place and sets
     // subagent_history_start_ordinal one past the last line it migrated, so the Guardian's
-    // own earlier turns all sit before the boundary. Their records name the Guardian.
-    for parent_present in [false, true] {
+    // own earlier turns all sit before the boundary. Their records name the Guardian. The
+    // rollout starts with the parent's compaction item, or with a compacted line that keeps
+    // no record (review A's probe d), which carries no usage and copies nothing.
+    let record_free_compaction =
+        json!({"ordinal": 1, "type": "compacted", "payload": {"message": ""}}).to_string();
+    for (parent_present, first) in [false, true].into_iter().flat_map(|present| {
+        [(present, compaction_item(1)), (present, record_free_compaction.clone())]
+    }) {
         let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
         write_child(
             &root,
             guardian_meta(10),
             &[
-                compaction_item(1),
+                first,
                 settings(2, CHILD),
                 direct(4, CHILD, "guardian-r1", 18, 2),
                 counter(5, 18, 2, 18, 2),
@@ -1117,7 +1123,10 @@ fn a_migrated_subagents_copied_prefix_before_a_past_end_boundary_stays_copied() 
 fn a_migrated_counter_only_child_counts_from_its_own_settings_before_the_boundary() {
     // A counter-only legacy child names itself in its settings event (0.152 and later), so
     // its own counters follow that event even before a migration's past-end boundary, and
-    // its first step is still checked against the copied total.
+    // its first step is still checked against the copied total. The copied counter before
+    // the event sits in no turn: the parent's matching counter proves it a copy, and
+    // without the parent it is excluded as a gap (round 2: only the region before the
+    // event is judged, not the whole file).
     for parent_present in [false, true] {
         let parent = [counter(1, 90, 10, 90, 10)];
         let root = fork_root(parent_present.then_some(&parent[..]), &[]);
@@ -1133,16 +1142,24 @@ fn a_migrated_counter_only_child_counts_from_its_own_settings_before_the_boundar
             ],
         );
         let ingested = ingest_every_way(&root);
-        assert_eq!(own_usage(&ingested, CHILD), (2, Some(26), Completeness::Complete));
-        assert_parent_and_complete(&ingested, parent_present);
+        if parent_present {
+            assert_eq!(own_usage(&ingested, CHILD), (2, Some(26), Completeness::Complete));
+            assert_parent_and_complete(&ingested, parent_present);
+        } else {
+            assert_eq!(own_usage(&ingested, CHILD).0, 2, "the own steps still count");
+            assert_excluded_as_gap(&ingested, CHILD);
+            assert_eq!(boundary_diagnostics(&ingested)[0].occurrences, 1);
+        }
     }
 }
 
 #[test]
 fn counter_usage_before_a_boundary_no_line_reaches_without_an_own_marker_is_a_gap() {
-    // Without a settings event or record naming the child, counters before a boundary that
-    // lies past every line may be the child's migrated usage or a copied prefix, so they are
-    // excluded as a coverage gap rather than silently treated as the parent's copies.
+    // Without a turn, a settings event or a record naming the child, counters before a
+    // boundary that lies past every line may be the child's migrated usage or a copied
+    // prefix, so they are excluded as a coverage gap rather than silently treated as the
+    // parent's copies. A counter whose total the parent root reports is its copy, so only
+    // the undecided step counts as an occurrence.
     for parent_present in [false, true] {
         let parent = [counter(1, 90, 10, 90, 10)];
         let root = fork_root(parent_present.then_some(&parent[..]), &[]);
@@ -1159,6 +1176,10 @@ fn counter_usage_before_a_boundary_no_line_reaches_without_an_own_marker_is_a_ga
             if parent_present { 100 } else { 0 }
         );
         assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(
+            boundary_diagnostics(&ingested)[0].occurrences,
+            if parent_present { 1 } else { 2 }
+        );
     }
 }
 
@@ -1184,5 +1205,322 @@ fn own_records_on_both_sides_of_a_resumed_migration_boundary_all_count() {
         assert_eq!(own_usage(&ingested, CHILD), (2, Some(32), Completeness::Complete));
         assert_parent_and_complete(&ingested, parent_present);
         assert_eq!(ledger_totals(&ingested.ledger).expect("totals").copy_only.requests, 0);
+    }
+}
+
+/// A `turn_context` for `turn`, or one without a `turn_id` (before `rust-v0.100.0`).
+fn turn(ordinal: u64, turn: Option<&str>) -> String {
+    let mut payload = json!({"model": "gpt-test", "effort": "low"});
+    if let Some(turn) = turn {
+        payload["turn_id"] = json!(turn);
+    }
+    json!({"ordinal": ordinal, "timestamp": "2026-01-01T00:00:01Z", "type": "turn_context",
+           "payload": payload})
+    .to_string()
+}
+
+/// The `session_meta` fields of a subagent of `PARENT` that Codex's legacy-to-paginated
+/// migration rewrote: no parent header survives, and the boundary is `boundary`.
+fn migrated_meta(boundary: u64) -> serde_json::Value {
+    json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+           "thread_source": "subagent", "subagent_history_start_ordinal": boundary})
+}
+
+/// A root parent with one turn and one 100-token counter.
+fn parent_with_turn() -> [String; 2] {
+    [turn(1, Some("p-turn-1")), counter(2, 90, 10, 90, 10)]
+}
+
+/// The occurrences of the one `codex-history-boundary-unverified` diagnostic.
+fn undecided_steps(ingested: &Ingested) -> u64 {
+    let diagnostics = boundary_diagnostics(ingested);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    diagnostics[0].occurrences
+}
+
+/// A migrated child's lines, with what it should report.
+struct MigratedShape {
+    name: &'static str,
+    boundary: u64,
+    records: Vec<String>,
+    /// The child's own requests and tokens when its parent root is present.
+    own_when_present: (u64, Option<u64>),
+    /// The gap's occurrences when the parent is absent.
+    undecided_when_absent: u64,
+}
+
+#[test]
+fn a_migrated_childs_prefix_is_decided_by_the_turns_its_parent_root_recorded() {
+    // Codex's migration keeps turn_context lines, and a child's own turn IDs are its own,
+    // so the copy ends at the first turn the parent root never recorded. Without the parent
+    // nothing decides it, and the undecided steps are the gap's occurrences. Shapes are
+    // review A's probes a (pure copy), b (copied then own) and g (no copied prefix).
+    let copied = [turn(1, Some("p-turn-1")), counter(2, 90, 10, 90, 10)];
+    let own = [turn(3, Some("c-turn-1")), counter(4, 108, 12, 18, 2)];
+    let fresh = [
+        turn(1, Some("c-turn-1")),
+        counter(2, 18, 2, 18, 2),
+        turn(3, Some("c-turn-2")),
+        counter(4, 23, 3, 5, 1),
+    ];
+    let shapes = [
+        MigratedShape {
+            name: "pure copy",
+            boundary: 3,
+            records: copied.to_vec(),
+            own_when_present: (0, None),
+            undecided_when_absent: 1,
+        },
+        MigratedShape {
+            name: "copied then own",
+            boundary: 5,
+            records: [copied.to_vec(), own.to_vec()].concat(),
+            own_when_present: (1, Some(20)),
+            undecided_when_absent: 2,
+        },
+        MigratedShape {
+            name: "no copied prefix",
+            boundary: 5,
+            records: fresh.to_vec(),
+            own_when_present: (2, Some(26)),
+            undecided_when_absent: 2,
+        },
+    ];
+    for shape in shapes {
+        for parent_present in [false, true] {
+            let root = fork_root(parent_present.then_some(&parent_with_turn()[..]), &[]);
+            write_child(&root, migrated_meta(shape.boundary), &shape.records);
+            let ingested = ingest_every_way(&root);
+            let name = shape.name;
+            if parent_present {
+                let (requests, tokens, coverage) = own_usage(&ingested, CHILD);
+                assert_eq!((requests, tokens), shape.own_when_present, "{name}");
+                assert_eq!(coverage, Completeness::Complete, "{name}");
+                assert_parent_and_complete(&ingested, parent_present);
+            } else {
+                assert_eq!(own_usage(&ingested, CHILD).0, 0, "{name}");
+                assert_excluded_as_gap(&ingested, CHILD);
+                assert_eq!(undecided_steps(&ingested), shape.undecided_when_absent, "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_inferred_own_turn_is_still_checked_against_the_copied_total() {
+    // The first own step after the parent's copied 100 tokens reports 35 tokens but
+    // advances the total by 70, so neither is proven the child's.
+    let root = fork_root(Some(&parent_with_turn()), &[]);
+    write_child(
+        &root,
+        migrated_meta(5),
+        &[
+            turn(1, Some("p-turn-1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("c-turn-1")),
+            counter(4, 150, 20, 30, 5),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).0, 0);
+    assert_eq!(counted_totals(&ingested), [100]);
+    assert_excluded_as_gap(&ingested, CHILD);
+    assert_eq!(undecided_steps(&ingested), 1);
+}
+
+#[test]
+fn a_turn_without_an_id_leaves_a_migrated_prefix_undecided() {
+    // Before rust-v0.100.0 a turn_context has no turn_id, so the parent's turns cannot
+    // place the counter after it, and its total is not one the parent reported.
+    let root = fork_root(Some(&parent_with_turn()), &[]);
+    write_child(&root, migrated_meta(3), &[turn(1, None), counter(2, 18, 2, 18, 2)]);
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).0, 0);
+    assert_excluded_as_gap(&ingested, CHILD);
+    assert_eq!(undecided_steps(&ingested), 1);
+}
+
+#[test]
+fn a_migrated_prefix_without_turns_is_decided_only_by_the_parents_totals() {
+    // Counters before any turn_context carry no turn evidence: one whose cumulative total
+    // the parent root reported is that counter's copy (review B's R6, a prefix-only child),
+    // and any other is undecided. In review A's probe c a settings event names the child
+    // after an undecided own step, so the step before it is a gap, not a silent copy.
+    let prefix_only = [counter(1, 90, 10, 90, 10)];
+    let probe_c = [
+        counter(1, 90, 10, 90, 10),
+        counter(2, 108, 12, 18, 2),
+        settings(3, CHILD),
+        counter(4, 113, 13, 5, 1),
+    ];
+    for parent_present in [false, true] {
+        let parent = [counter(1, 90, 10, 90, 10)];
+        let root = fork_root(parent_present.then_some(&parent[..]), &[]);
+        write_child(&root, migrated_meta(3), &prefix_only);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 0);
+        if parent_present {
+            assert_parent_and_complete(&ingested, parent_present);
+        } else {
+            assert_excluded_as_gap(&ingested, CHILD);
+            assert_eq!(undecided_steps(&ingested), 1);
+        }
+
+        let root = fork_root(parent_present.then_some(&parent[..]), &[]);
+        write_child(&root, migrated_meta(5), &probe_c);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 1, "the step after the settings counts");
+        assert_eq!(own_usage(&ingested, CHILD).1, Some(6));
+        assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(undecided_steps(&ingested), if parent_present { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn a_resumed_migrated_childs_prefix_is_judged_by_its_own_region() {
+    // Review B's R2e and R2f: a migrated counter-only child reopened later writes lines at
+    // its boundary, which says nothing about the migrated lines before it. Their turns still
+    // decide them, and without the parent they are a gap, never a silent copy.
+    let prefix = [
+        turn(1, Some("p-turn-1")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("c-turn-1")),
+        counter(4, 190, 20, 100, 10),
+    ];
+    let reopenings =
+        [vec![settings(5, CHILD)], vec![turn(5, Some("c-turn-2")), counter(6, 190, 20, 100, 10)]];
+    for reopening in reopenings {
+        for parent_present in [false, true] {
+            let root = fork_root(parent_present.then_some(&parent_with_turn()[..]), &[]);
+            write_child(&root, migrated_meta(5), &[prefix.to_vec(), reopening.clone()].concat());
+            let ingested = ingest_every_way(&root);
+            if parent_present {
+                assert_eq!(own_usage(&ingested, CHILD), (1, Some(110), Completeness::Complete));
+                assert_parent_and_complete(&ingested, parent_present);
+            } else {
+                assert_eq!(own_usage(&ingested, CHILD).0, 0);
+                assert_excluded_as_gap(&ingested, CHILD);
+                assert_eq!(undecided_steps(&ingested), 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn counter_only_turns_in_a_child_with_usage_records_are_not_yet_counted() {
+    // Review A's probe f: a migrated child's own counter-only turn before the boundary,
+    // then a usage record after it. A fork or subagent with usage records is accounted from
+    // its records alone, so the 20 counter-only tokens are not counted; uro-r8si tracks
+    // extending the counter twin rule to children. This pins the current result.
+    let root = fork_root(Some(&parent_with_turn()), &[]);
+    write_child(
+        &root,
+        migrated_meta(5),
+        &[
+            turn(1, Some("p-turn-1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("c-turn-1")),
+            counter(4, 108, 12, 18, 2),
+            settings(5, CHILD),
+            turn(6, Some("c-turn-2")),
+            direct(7, CHILD, "child-r2", 5, 1),
+            counter(8, 113, 13, 5, 1),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (1, Some(6), Completeness::Complete));
+    assert_parent_and_complete(&ingested, true);
+}
+
+#[test]
+fn a_native_childs_own_settings_at_its_boundary_follow_its_copied_prefix() {
+    // Codex persists a native paginated child's inherited items at ordinals 1 through the
+    // boundary minus 1, then writes the child's own thread_settings_applied
+    // (codex-rs/thread-store/src/live_thread.rs:155-177 and
+    // codex-rs/core/src/session/mod.rs:1704-1716 at rust-v0.162.1). The settings event
+    // therefore never precedes the copied counters, so they stay the parent's.
+    for parent_present in [false, true] {
+        let parent = [counter(1, 90, 10, 90, 10)];
+        let root = fork_root(parent_present.then_some(&parent[..]), &[]);
+        write_child(
+            &root,
+            json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+                   "thread_source": "subagent", "subagent_history_start_ordinal": 2}),
+            &[counter(1, 90, 10, 90, 10), settings(2, CHILD), counter(3, 108, 12, 18, 2)],
+        );
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+    }
+}
+
+/// A Guardian child that a bounded migration kept from its own compaction on: the
+/// compacted line keeps `guardian-r1`, then one turn reports `guardian-r2` with the running
+/// total `total` (input, output).
+fn compaction_child(total: (u64, u64)) -> Vec<String> {
+    vec![
+        compacted(1, CHILD, "guardian-r1", 40, 4),
+        turn(2, Some("g-turn-2")),
+        direct(3, CHILD, "guardian-r2", 18, 2),
+        counter(4, total.0, total.1, 18, 2),
+    ]
+}
+
+#[test]
+fn a_compacted_record_naming_its_own_thread_counts_once_when_its_line_is_gone() {
+    // A bounded migration keeps only the suffix from the child's newest compaction, so the
+    // compacted line's record is the only one left of its response: it counts as the
+    // child's own. A running total beyond what the child's records report shows responses
+    // the migration dropped, which is a gap rather than a silent loss.
+    for parent_present in [false, true] {
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(&root, guardian_meta(5), &compaction_child((58, 6)));
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(64), Completeness::Complete));
+        assert_parent_and_complete(&ingested, parent_present);
+        assert_eq!(ledger_totals(&ingested.ledger).expect("totals").copy_only.requests, 0);
+
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(&root, guardian_meta(5), &compaction_child((158, 16)));
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 2, "both surviving responses count");
+        assert_eq!(own_usage(&ingested, CHILD).1, Some(64));
+        assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(undecided_steps(&ingested), 1);
+    }
+}
+
+#[test]
+fn a_compacted_record_never_doubles_an_original_of_its_response() {
+    // In the same rollout the compacted line copies the record before it; in another
+    // rollout of the same thread both are originals of one response key, which merge.
+    let same_file = fork_root(Some(&parent_records()), &[]);
+    write_child(
+        &same_file,
+        guardian_meta(6),
+        &[
+            direct(1, CHILD, "guardian-r1", 40, 4),
+            counter(2, 40, 4, 40, 4),
+            compacted(3, CHILD, "guardian-r1", 40, 4),
+            direct(4, CHILD, "guardian-r2", 18, 2),
+            counter(5, 58, 6, 18, 2),
+        ],
+    );
+    let other_file = fork_root(Some(&parent_records()), &[]);
+    write_child(&other_file, guardian_meta(5), &compaction_child((58, 6)));
+    let meta = json!({"ordinal": 0, "type": "session_meta",
+                      "payload": {"id": CHILD, "parent_thread_id": PARENT}});
+    fs::write(
+        other_file
+            .path()
+            .join("sessions")
+            .join(format!("rollout-2026-01-01T00-00-03-{CHILD}_{GRANDCHILD}.jsonl")),
+        format!("{meta}\n{}\n", direct(1, CHILD, "guardian-r1", 40, 4)),
+    )
+    .expect("another rollout of the child");
+    for root in [same_file, other_file] {
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(64), Completeness::Complete));
+        assert_parent_and_complete(&ingested, true);
     }
 }

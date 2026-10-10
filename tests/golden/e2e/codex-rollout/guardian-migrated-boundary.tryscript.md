@@ -23,41 +23,46 @@ urollup report
 Selection all  Scope self  Timezone UTC
 
 TOTALS
-Requests  4
-Owned     4
+Requests  5
+Owned     5
 Ambiguous 0
 Unknown   0
-Uncached input 7,200
-Cache read     9,000
+Uncached input 10,200
+Cache read     10,000
 Cache write    0
-Output         840
-Reasoning      290
-Total tokens   17,040
+Output         990
+Reasoning      340
+Total tokens   21,190
 
 COVERAGE
-Status complete  Copies excluded 1  Limit observations 0
+Status partial  Copies excluded 0  Limit observations 0
 Unresolved 0  Possible 0  Requests without usage 0
 
 REQUEST SIZES (inclusive input tokens)
-Count 4  p50 2,400  p90 9,000  p99 9,000  max 9,000
+Count 5  p50 3,000  p90 9,000  p99 9,000  max 9,000
 
 ACCOUNT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-unknown | 4 | 16,200 | 840 | 17,040
+unknown | 5 | 20,200 | 990 | 21,190
 
 EFFORT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 low | 3 | 7,200 | 240 | 7,440
 medium | 1 | 9,000 | 600 | 9,600
+unknown | 1 | 4,000 | 150 | 4,150
 
 MODEL BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
 codex-auto-review | 3 | 7,200 | 240 | 7,440
 gpt-5.2-codex | 1 | 9,000 | 600 | 9,600
+unknown | 1 | 4,000 | 150 | 4,150
 
 PROJECT BREAKDOWN
 VALUE | REQUESTS | INPUT | OUTPUT | TOTAL
-project | 4 | 16,200 | 840 | 17,040
+project | 5 | 20,200 | 990 | 21,190
+
+DIAGNOSTICS
+codex-history-boundary-unverified x1: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -74,26 +79,32 @@ $ urollup report --all --format json --timezone UTC
     "timezone": "UTC"
   },
   "coverage": {
-    "copies_excluded": 1,
+    "copies_excluded": 0,
     "limit_observations": 0,
     "requests_without_usage": 0,
-    "complete": true
+    "complete": false
   },
-  "diagnostics": [],
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "count": 1,
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
+    }
+  ],
   "totals": {
     "requests": {
-      "owned": 4,
+      "owned": 5,
       "ambiguous": 0,
       "unknown": 0
     },
     "tokens": {
-      "uncached_input": 7200,
-      "cache_read": 9000,
+      "uncached_input": 10200,
+      "cache_read": 10000,
       "cache_write": 0,
       "cache_write_unspecified": 0,
-      "output": 840,
-      "reasoning": 290,
-      "total": 17040
+      "output": 990,
+      "reasoning": 340,
+      "total": 21190
     },
     "unresolved": {
       "requests": 0,
@@ -110,18 +121,18 @@ $ urollup report --all --format json --timezone UTC
         "group": "account",
         "value": "unknown",
         "requests": {
-          "owned": 4,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 7200,
-          "cache_read": 9000,
+          "uncached_input": 10200,
+          "cache_read": 10000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 840,
-          "reasoning": 290,
-          "total": 17040
+          "output": 990,
+          "reasoning": 340,
+          "total": 21190
         }
       }
     ],
@@ -161,6 +172,24 @@ $ urollup report --all --format json --timezone UTC
           "reasoning": 200,
           "total": 9600
         }
+      },
+      {
+        "group": "effort",
+        "value": "unknown",
+        "requests": {
+          "owned": 1,
+          "ambiguous": 0,
+          "unknown": 0
+        },
+        "tokens": {
+          "uncached_input": 3000,
+          "cache_read": 1000,
+          "cache_write": 0,
+          "cache_write_unspecified": 0,
+          "output": 150,
+          "reasoning": 50,
+          "total": 4150
+        }
       }
     ],
     "model": [
@@ -199,6 +228,24 @@ $ urollup report --all --format json --timezone UTC
           "reasoning": 200,
           "total": 9600
         }
+      },
+      {
+        "group": "model",
+        "value": "unknown",
+        "requests": {
+          "owned": 1,
+          "ambiguous": 0,
+          "unknown": 0
+        },
+        "tokens": {
+          "uncached_input": 3000,
+          "cache_read": 1000,
+          "cache_write": 0,
+          "cache_write_unspecified": 0,
+          "output": 150,
+          "reasoning": 50,
+          "total": 4150
+        }
       }
     ],
     "project": [
@@ -206,25 +253,25 @@ $ urollup report --all --format json --timezone UTC
         "group": "project",
         "value": "project",
         "requests": {
-          "owned": 4,
+          "owned": 5,
           "ambiguous": 0,
           "unknown": 0
         },
         "tokens": {
-          "uncached_input": 7200,
-          "cache_read": 9000,
+          "uncached_input": 10200,
+          "cache_read": 10000,
           "cache_write": 0,
           "cache_write_unspecified": 0,
-          "output": 840,
-          "reasoning": 290,
-          "total": 17040
+          "output": 990,
+          "reasoning": 340,
+          "total": 21190
         }
       }
     ]
   },
   "sizes": {
-    "count": 4,
-    "p50": 2400,
+    "count": 5,
+    "p50": 3000,
     "p90": 9000,
     "p99": 9000,
     "max": 9000
@@ -241,7 +288,10 @@ urollup daily
 Selection all  Scope self  Timezone UTC
 
 DATE | REQUESTS | UNCACHED | CACHE READ | CACHE WRITE | OUTPUT | TOTAL
-2026-09-19 | 4 | 7,200 | 9,000 | 0 | 840 | 17,040
+2026-09-19 | 5 | 10,200 | 10,000 | 0 | 990 | 21,190
+
+DIAGNOSTICS
+codex-history-boundary-unverified x1: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -261,22 +311,28 @@ $ urollup daily --all --format json --timezone UTC
     {
       "date": "2026-09-19",
       "requests": {
-        "owned": 4,
+        "owned": 5,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 7200,
-        "cache_read": 9000,
+        "uncached_input": 10200,
+        "cache_read": 10000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 840,
-        "reasoning": 290,
-        "total": 17040
+        "output": 990,
+        "reasoning": 340,
+        "total": 21190
       }
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "count": 1,
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
+    }
+  ]
 }
 ? 0
 ```
@@ -291,7 +347,10 @@ Selection all  Scope self  Timezone UTC
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
 thr-v1-28kcjsrhm8jqxx1g09tvfcr2nh | codex | project | 1 | 9,000 | 600 | 9,600
 thr-v1-6677t9nz0gvmcckg2155pb16rb | codex | project | 2 | 5,400 | 180 | 5,580
-thr-v1-7pewbzqqw85gcpmgzy1ng3gvf9 | codex | project | 1 | 1,800 | 60 | 1,860
+thr-v1-7pewbzqqw85gcpmgzy1ng3gvf9 | codex | project | 2 | 5,800 | 210 | 6,010
+
+DIAGNOSTICS
+codex-history-boundary-unverified x1: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -358,24 +417,30 @@ $ urollup sessions --all --format json --timezone UTC
       "agent": "codex",
       "project": "project",
       "requests": {
-        "owned": 1,
+        "owned": 2,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 800,
-        "cache_read": 1000,
+        "uncached_input": 3800,
+        "cache_read": 2000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 60,
-        "reasoning": 20,
-        "total": 1860
+        "output": 210,
+        "reasoning": 70,
+        "total": 6010
       },
       "last_date": "2026-09-19",
       "undated_requests": 0
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "count": 1,
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
+    }
+  ]
 }
 ? 0
 ```
@@ -390,7 +455,10 @@ Selection all  Scope self  Timezone UTC
 THREAD | AGENT | PROJECT | REQUESTS | INPUT | OUTPUT | TOTAL
 thr-v1-28kcjsrhm8jqxx1g09tvfcr2nh | codex | project | 1 | 9,000 | 600 | 9,600
 thr-v1-6677t9nz0gvmcckg2155pb16rb | codex | project | 2 | 5,400 | 180 | 5,580
-thr-v1-7pewbzqqw85gcpmgzy1ng3gvf9 | codex | project | 1 | 1,800 | 60 | 1,860
+thr-v1-7pewbzqqw85gcpmgzy1ng3gvf9 | codex | project | 2 | 5,800 | 210 | 6,010
+
+DIAGNOSTICS
+codex-history-boundary-unverified x1: Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals
 ? 0
 ```
 
@@ -457,24 +525,30 @@ $ urollup sessions --source . --no-default-sources --format json --timezone UTC
       "agent": "codex",
       "project": "project",
       "requests": {
-        "owned": 1,
+        "owned": 2,
         "ambiguous": 0,
         "unknown": 0
       },
       "tokens": {
-        "uncached_input": 800,
-        "cache_read": 1000,
+        "uncached_input": 3800,
+        "cache_read": 2000,
         "cache_write": 0,
         "cache_write_unspecified": 0,
-        "output": 60,
-        "reasoning": 20,
-        "total": 1860
+        "output": 210,
+        "reasoning": 70,
+        "total": 6010
       },
       "last_date": "2026-09-19",
       "undated_requests": 0
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "count": 1,
+      "detail": "Codex fork-boundary evidence could not prove which usage is this thread's own, so that usage is excluded as a coverage gap; inspect the rollout's subagent_history_start_ordinal, its record ordinals, its turn IDs against its parent's and its token_count totals"
+    }
+  ]
 }
 ? 0
 ```

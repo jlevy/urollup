@@ -2,7 +2,7 @@
   "format": "urollup-fixture-expected/v1",
   "case": "guardian-migrated-boundary",
   "dialect": "codex-rollout",
-  "summary": "Guardian review rollouts that Codex's legacy-to-paginated migration rewrote, so subagent_history_start_ordinal lies one past each file's last line while every record names the review's own thread.",
+  "summary": "Guardian review rollouts that Codex's legacy-to-paginated migration rewrote, so subagent_history_start_ordinal lies one past each file's last line while every record names the review's own thread; a bounded migration's compacted record is the review's own, and the response it dropped is a gap.",
   "rules": [
     "design §3.4 Codex copied history (subagent_history_start_ordinal)",
     "design §3.4 Codex requests",
@@ -80,13 +80,13 @@
       ],
       "thread_source": "guardian_review",
       "own": {
-        "requests": 1,
+        "requests": 2,
         "tokens": {
-          "uncached_input": 800,
-          "cache_read": 1000,
+          "uncached_input": 3800,
+          "cache_read": 2000,
           "cache_write": 0,
-          "output": 60,
-          "reasoning": 20
+          "output": 210,
+          "reasoning": 70
         }
       }
     }
@@ -177,6 +177,34 @@
     },
     {
       "key": {
+        "response_id": "resp_synthetic_c18_h1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-001800000003",
+      "owner_candidates": [],
+      "model": null,
+      "model_basis": null,
+      "effort": null,
+      "timestamp": "2026-09-19T17:01:00.000Z",
+      "tokens": {
+        "uncached_input": 3000,
+        "cache_read": 1000,
+        "cache_write": 0,
+        "output": 150,
+        "reasoning": 50
+      },
+      "selected": [
+        "sessions/2026/09/19/rollout-2026-09-19T10-01-00-019f0000-0000-7000-8000-001800000003.jsonl:2"
+      ],
+      "evidence": [
+        "sessions/2026/09/19/rollout-2026-09-19T10-01-00-019f0000-0000-7000-8000-001800000003.jsonl:2"
+      ],
+      "turn_id": "turn-c18-h1",
+      "root_turn_id": "turn-c18-p1"
+    },
+    {
+      "key": {
         "response_id": "resp_synthetic_c18_h2"
       },
       "identity_basis": "native",
@@ -204,19 +232,11 @@
       "root_turn_id": "turn-c18-p1"
     }
   ],
-  "copies": [
-    {
-      "ref": "sessions/2026/09/19/rollout-2026-09-19T10-01-00-019f0000-0000-7000-8000-001800000003.jsonl:2",
-      "kind": "compacted-latest-token-usage-record",
-      "copy_of": null,
-      "owner_thread": "019f0000-0000-7000-8000-001800000003",
-      "note": "The second review's record of resp_synthetic_c18_h1, kept only inside its compaction: the bounded migration dropped the original line, so the request is copy-only and excluded."
-    }
-  ],
+  "copies": [],
   "totals": {
     "requests": {
-      "unique": 4,
-      "owned": 4,
+      "unique": 5,
+      "owned": 5,
       "ambiguous": 0,
       "unknown": 0
     },
@@ -224,15 +244,23 @@
       "requests": 0
     },
     "tokens": {
-      "uncached_input": 7200,
-      "cache_read": 9000,
+      "uncached_input": 10200,
+      "cache_read": 10000,
       "cache_write": 0,
-      "output": 840,
-      "reasoning": 290
+      "output": 990,
+      "reasoning": 340
     },
-    "total_tokens": 17040
+    "total_tokens": 21190
   },
-  "diagnostics": [],
+  "diagnostics": [
+    {
+      "code": "codex-history-boundary-unverified",
+      "refs": [
+        "sessions/2026/09/19/rollout-2026-09-19T10-01-00-019f0000-0000-7000-8000-001800000003.jsonl:6"
+      ],
+      "note": "The second review's running total reports 3,140 tokens more than the two responses its lines keep: the bounded migration dropped an earlier response, so the review's coverage is a gap."
+    }
+  ],
   "limit_observations": [],
   "naive": [
     {
@@ -251,20 +279,20 @@
       "rule": "Sum each rollout's last cumulative total_token_usage",
       "requests": null,
       "tokens": {
-        "uncached_input": 10200,
+        "uncached_input": 13200,
         "cache_read": 10000,
         "cache_write": 0,
-        "output": 990,
-        "reasoning": 340,
-        "total_tokens": 21190
+        "output": 1090,
+        "reasoning": 380,
+        "total_tokens": 24290
       }
     }
   ],
   "notes": [
     "Codex's migration writes the head session_meta at ordinal 0, drops every later session_meta, and sets subagent_history_start_ordinal to the next ordinal after the last line it wrote, so the review's own settings event, records and counters all sit before the boundary.",
     "The first review was migrated whole: it starts with the parent's compaction item and its own thread_settings_applied, then two turns.",
-    "The second review was migrated from its own newest compaction: only that suffix survives, every line carries the session_meta timestamp, and its earlier response survives only as the compacted line's record, a copy without an original.",
+    "The second review was migrated from its own newest compaction: only that suffix survives and every line carries the session_meta timestamp. resp_synthetic_c18_h1 survives only as the compacted line's record, which names the review and has no other line here, so it counts as the review's own; an earlier response the migration dropped survives only in the running total, which reports more than the review's lines account for.",
     "Every token_usage_record names the review's own thread, so each is its original wherever it sits; each token_count follows the record before it.",
-    "Naive sums count the lost resp_synthetic_c18_h1 through the second review's running total."
+    "The PR #16 rule counted only the parent; summing running totals counts the dropped response but cannot tell it from copies."
   ]
 }
