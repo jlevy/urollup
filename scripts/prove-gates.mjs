@@ -69,11 +69,17 @@ export function nameMatcher(pattern) {
   return (name) => expression.test(name);
 }
 
-/** Every file below `directory`, at any depth, whose name satisfies `matches`. */
+/**
+ * Every file below `directory`, at any depth, whose name satisfies `matches`. A symbolic
+ * link is skipped: it is neither descended into nor returned for deletion.
+ */
 function filesBelow(directory, matches) {
   const found = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const child = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
     if (entry.isDirectory()) {
       found.push(...filesBelow(child, matches));
     } else if (matches(entry.name)) {
@@ -140,9 +146,35 @@ export function validateManifest(manifest, gates) {
   return manifest.probes;
 }
 
+/**
+ * Refuse an edit whose path is, or lies under, a symbolic link in the copy.
+ * `copyRepository` links each installed Node package to the real checkout, so an edit that
+ * followed a link would change or delete files outside the scratch copy. Each existing
+ * segment is checked with `lstat`, which never follows the link itself.
+ */
+function refuseLinkedPath(copyRoot, probe, edit) {
+  let current = copyRoot;
+  for (const segment of edit.path.split(/[\\/]/).filter(Boolean)) {
+    current = path.join(current, segment);
+    let stats;
+    try {
+      stats = lstatSync(current);
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+        return; // Nothing exists below this segment, so nothing there can be a link.
+      }
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      fail(`probe ${probe.id}: ${edit.path} is or lies under a symbolic link, which an edit never follows`);
+    }
+  }
+}
+
 /** Apply one probe's edits inside `copyRoot`, reading probe files from `probeRoot`. */
 export function applyEdits(copyRoot, probeRoot, probe) {
   for (const edit of probe.edits) {
+    refuseLinkedPath(copyRoot, probe, edit);
     const target = path.join(copyRoot, edit.path);
     const probeFile = (name) => readFileSync(path.join(probeRoot, name), "utf8");
     if ("delete" in edit) {
@@ -153,7 +185,7 @@ export function applyEdits(copyRoot, probeRoot, probe) {
     } else if ("deleteMatching" in edit) {
       // Deleting by name keeps a probe valid as matching files are added, such as a new
       // golden session; a pattern that matches nothing is stale and fails the proof.
-      if (!existsSync(target) || !statSync(target).isDirectory()) {
+      if (!existsSync(target) || !lstatSync(target).isDirectory()) {
         fail(`probe ${probe.id}: cannot delete files below ${edit.path}, which is not a directory`);
       }
       const files = filesBelow(target, nameMatcher(edit.deleteMatching));

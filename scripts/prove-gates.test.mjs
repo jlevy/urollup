@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -178,6 +178,52 @@ test("deleting by name reaches every depth and refuses stale patterns", () => {
       () => applyEdits(copy, scratch, { id: "file", edits: [{ path: "golden/README.md", deleteMatching: "*.md" }] }),
       /not a directory/,
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("edits never follow a symbolic link out of the copy", () => {
+  // The copy links each installed Node package to the real checkout, so an edit that
+  // followed a link would change or delete files outside the scratch copy.
+  const scratch = mkdtempSync(join(tmpdir(), "urollup-prove-gates-test-"));
+  try {
+    const real = join(scratch, "real", "pkg");
+    const copy = join(scratch, "copy");
+    mkdirSync(join(real, "lib"), { recursive: true });
+    mkdirSync(join(copy, "node_modules"), { recursive: true });
+    mkdirSync(join(copy, "tree"));
+    const realFiles = [join(real, "b.js"), join(real, "lib", "a.js")];
+    for (const file of [...realFiles, join(copy, "tree", "own.js")]) {
+      writeFileSync(file, "x\n");
+    }
+    writeFileSync(join(scratch, "tail.probe"), "y\n");
+    symlinkSync(real, join(copy, "node_modules", "pkg"));
+    symlinkSync(real, join(copy, "tree", "linked.js"));
+
+    for (const edit of [
+      { path: "node_modules/pkg", deleteMatching: "*.js" },
+      { path: "node_modules/pkg/lib", deleteMatching: "*.js" },
+      { path: "node_modules/pkg/b.js", delete: true },
+      { path: "node_modules/pkg/lib/a.js", append: "tail.probe" },
+      { path: "node_modules/pkg/new.js", create: "tail.probe" },
+    ]) {
+      assert.throws(() => applyEdits(copy, scratch, { id: "linked", edits: [edit] }), /symbolic link/, edit.path);
+    }
+
+    // A link inside the tree is neither descended into nor deleted.
+    applyEdits(copy, scratch, { id: "tree", edits: [{ path: "tree", deleteMatching: "*.js" }] });
+    assert.throws(() => statSync(join(copy, "tree", "own.js")), /ENOENT/);
+    assert.ok(lstatSync(join(copy, "tree", "linked.js")).isSymbolicLink(), "a matching link is kept");
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "only-linked", edits: [{ path: "tree", deleteMatching: "*.js" }] }),
+      /no file below tree matches/,
+    );
+
+    for (const file of realFiles) {
+      assert.equal(readFileSync(file, "utf8"), "x\n", file);
+    }
+    assert.throws(() => statSync(join(real, "new.js")), /ENOENT/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

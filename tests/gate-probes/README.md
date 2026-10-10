@@ -13,7 +13,9 @@ nonzero exit whose output matches the probe’s expected diagnostic.
   wildcards), so a probe that removes the golden corpus survives new sessions.
   A substitution must match exactly once, and a pattern must match at least one file, so
   a probe that has gone stale fails the proof rather than proving a gate against an
-  unchanged tree.
+  unchanged tree. An edit never follows a symbolic link: a path through one is refused,
+  and `deleteMatching` skips links below its directory, so no probe reaches the real
+  packages the copy links into `node_modules`.
 - **Coverage** is enforced: every prerequisite of `make check` needs a probe or a reason
   under `unprobed`, and `scripts/prove-gates.test.mjs` checks the committed manifest
   against the Makefile.
