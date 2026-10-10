@@ -860,7 +860,11 @@ set these source-specific rules:
   none. Codex writes the thread that made the request into its record, and a copy keeps
   it, so a record that names the file’s thread is that thread’s own wherever it sits,
   before a declared history boundary included, and one that names another thread is a
-  copy. `compacted.latest_token_usage_record` is never an observation.
+  copy. A `compacted` line’s `latest_token_usage_record` copies a record, except when it
+  names the file’s own thread and no usage record in the file reports its response: a
+  migration that kept only the suffix from that compaction left it as the only record of
+  the response, so it counts as the original, and any other original of the response
+  merges with it by response key.
 - **Codex request context:** a usage record takes its model and effort from the
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
@@ -934,12 +938,30 @@ set these source-specific rules:
   the boundary minus 1 and writes its own settings event at the boundary, so nothing in
   its prefix names it.
   Codex’s legacy-to-paginated migration instead puts the boundary one past the last line
-  it rewrote and drops every later `session_meta`, so a migrated child’s own settings
-  events and records sit before the boundary and assign its lines to it
+  it rewrote and drops every `session_meta` but the head, so a migrated child’s own
+  settings events and records sit before the boundary and assign its lines to it
   ([research](project/research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
-  When no line reaches the boundary and none names the rollout’s thread, counter usage
-  before the boundary may be the child’s migrated usage or a copied prefix, so it is
-  excluded as unverified, as below.
+  In a rollout without usage records that holds no other thread’s `session_meta` (a
+  native subagent prefix keeps its parent’s, and the migration keeps none), turns decide
+  the unassigned lines before the boundary, region by region: a line inside a turn the
+  parent root recorded is the parent’s copy, and the first turn it never recorded starts
+  the child’s own lines, whose first step is checked against the copied total as below.
+  The migration keeps `turn_context` lines, and `turn_id` is present from
+  `rust-v0.100.0`. A counter that no turn places is the parent’s copy when the parent
+  root, a rollout without usage records, reported its cumulative total.
+  Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
+  is excluded as unverified, as below, when the region shows migrated content: a turn
+  the parent’s turns cannot place, because it has no ID or the parent is not a
+  discovered root, or a boundary that no line of the file reaches.
+  Otherwise it stays inherited, as in a native prefix, where the child’s own settings
+  event reaches the boundary.
+  A migration that kept only the suffix from the child’s own compaction dropped every
+  earlier line, so in a rollout with usage records, when a `compacted` record naming the
+  child is the only record of its response before the boundary, a first running total
+  beyond what the child’s own records report is excluded as unverified too (without
+  usage records, the first-step check below does this).
+  A legacy child seeded with its parent’s total reports it even when the migration
+  dropped no other response.
   A prefix without a known parent remains unowned copy evidence, never child usage.
   Usage that a declared boundary cannot place is excluded, never counted as the child’s:
   an invalid `subagent_history_start_ordinal` places none of the rollout’s unnamed
@@ -965,9 +987,12 @@ set these source-specific rules:
   Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
   diagnostic and a coverage gap for its thread, so that thread and the whole history
   report partial coverage while every other session still reports; the anomaly never
-  stops the run. In a rollout without `token_usage_record` lines, the copy also ends at
-  the first `turn_context` whose turn ID the copied thread’s root rollout never
-  recorded; turn IDs are matched across rollouts by 128-bit digest.
+  stops the run. Its occurrences count the excluded steps (undecided usage, unverified
+  first steps and running totals beyond the child’s records), never steps decided as
+  copies. In a rollout without `token_usage_record` lines, a copy that follows another
+  thread’s `session_meta` also ends at the first `turn_context` whose turn ID that
+  thread’s root rollout never recorded; turn IDs and cumulative totals are matched
+  across rollouts by 128-bit digest.
   When such a rollout has a parent, another thread’s `session_meta` and no
   `subagent_history_start_ordinal`, a `codex-copied-history-inferred` diagnostic counts
   every copied line, skipped lines included.

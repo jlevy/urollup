@@ -106,9 +106,19 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   `subagent_history_start_ordinal` past the file’s last line, so every line, including
   the child’s own `token_usage_record` lines, falls before the boundary and is excluded
   as the parent’s copied history, with `coverage.complete: true` and no diagnostic.
-  The rerun found this in many migrated Guardian-review and subagent rollouts.
-  The fix is in [PR #32](https://github.com/jlevy/urollup/pull/32). It blocks G1
-  (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice (`uro-aakb`).
+  The rerun found this in many migrated Guardian-review and subagent rollouts
+  ([research](../../research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
+  In the `codex-rollout/guardian-migrated-boundary` fixture `main` reports 9,600 instead
+  of 21,190 tokens. [PR #32](https://github.com/jlevy/urollup/pull/32) owns a usage
+  record by the thread it names, decides a migrated counter-only child’s unassigned
+  lines by the turns its parent root recorded and by the parent’s counter totals, and
+  counts a `compacted` record that is the only record of its response.
+  What it still cannot place is a `codex-history-boundary-unverified` coverage gap, so
+  on real history whole-history Codex coverage stays partial where a migrated child’s
+  parent is not a discovered root, its turns have no IDs, a bounded migration dropped
+  responses, or its first own step does not continue the copied total.
+  It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
+  (`uro-aakb`).
 - **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
   open):** the same migration drops a legacy fork’s copied `session_meta`, so a migrated
   counter-only user fork counts its parent’s copied counters as its own.

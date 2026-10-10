@@ -73,15 +73,16 @@ Codex’s legacy-to-paginated migration rewrites a legacy rollout in place
 (`thread-store/src/local/rollout_migration.rs`, present since `rust-v0.155.0`).
 
 - It runs from `codex migrate-rollouts --apply`
-  ([`cli/src/main.rs:217-218`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/cli/src/main.rs#L217-L218))
+  ([`cli/src/main.rs:218-219`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/cli/src/main.rs#L218-L219))
   or at startup under the `background_paginated_rollout_migration` feature, which is
   under development and off by default but which an app-server client can switch on at
   runtime
   ([`features/src/lib.rs:1254-1259`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/features/src/lib.rs#L1254-L1259),
   [`app-server/src/request_processors/config_processor.rs:305-333`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/app-server/src/request_processors/config_processor.rs#L305-L333)).
 - A rollout whose `source` is any subagent source, Guardian included, or whose
-  `thread_source` is `subagent`, migrates as a subagent
-  ([`rollout_migration.rs:466-473`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration.rs#L466-L473)).
+  `thread_source` is `subagent`, migrates as a subagent, unless it is a memory
+  consolidation
+  ([`rollout_migration.rs:458-473`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration.rs#L458-L473)).
 - The head `session_meta` is rewritten at ordinal 0 as paginated with no boundary, and
   every later `session_meta` line is dropped, so a legacy copied prefix loses the
   foreign header that marked it
@@ -101,6 +102,11 @@ Codex’s legacy-to-paginated migration rewrites a legacy rollout in place
   Here the boundary marks where a resumed child appends, not where the child’s own lines
   start: the child’s own settings events, records and counters all sit before it, after
   any copied prefix.
+- `turn_context` lines pass through unchanged
+  ([`rollout_migration/canonicalizer.rs:291-298`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration/canonicalizer.rs#L291-L298)),
+  and a `turn_context` carries `turn_id` from `rust-v0.100.0` on.
+  A legacy subagent copied its parent’s rollout, so its copied turns are turns the
+  parent recorded, and its own turns are new.
 
 This matches the scanned shape: a paginated Guardian rollout that numbers its lines from
 0, starts with a compaction and a settings event naming itself, holds its own records,
@@ -128,12 +134,29 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    So a counter follows the record it reports, and a Guardian checkpoint’s counter
    follows the earlier reviewer.
 3. Before a declared boundary, an unnamed line with no such earlier line is the parent’s
-   inherited prefix, as PR #16 decided.
+   inherited prefix, as PR #16 decided, in a rollout that holds another thread’s
+   `session_meta` (a native subagent prefix keeps its parent’s) or has usage records.
    The rollout’s own header does not count, because it precedes the native prefix.
-4. When no line reaches the boundary and no line names the rollout’s thread, counter
-   usage before the boundary cannot be placed: it may be a migrated child’s own usage or
-   a copied prefix. It is excluded with a `codex-history-boundary-unverified` diagnostic
-   and a coverage gap rather than counted or silently treated as a copy.
+4. In a counter-only rollout without another thread’s `session_meta`, turns decide those
+   lines, region by region: inside a turn the parent root recorded they are its copy,
+   and the first turn it never recorded starts the child’s own lines, whose first step
+   is still checked against the copied total.
+   A counter that no turn places is a copy when the parent root, itself counter-only,
+   reported its cumulative total.
+5. Unnamed usage (counters and records without a `thread_id`) that rules 2 to 4 leave
+   undecided is excluded with a `codex-history-boundary-unverified` diagnostic and a
+   coverage gap, rather than counted or silently treated as a copy, when its region
+   shows migrated content: a turn without an ID, a parent that is not a discovered root,
+   or a boundary no line reaches.
+   Otherwise it is inherited, as in a native prefix whose own settings event reaches the
+   boundary. The diagnostic’s occurrences count these undecided steps, unverified first
+   steps and running totals beyond the child’s records, never steps decided as copies.
+6. A `compacted` line’s record that names the rollout’s own thread, when no usage record
+   in the rollout reports the same response, is that response’s only record left by a
+   bounded migration, so it is the original; any other original merges with it by
+   response key. In a rollout with usage records, a first running total after it beyond
+   what the child’s own records report shows responses the migration dropped, which is a
+   gap.
 
 PR #16’s other protections are unchanged: a foreign `session_meta`, records naming the
 parent, the first-step check against the inherited total, and the exclusion of unnamed
@@ -141,19 +164,31 @@ usage under an invalid or unpositioned boundary.
 
 ## Residual Risks
 
-- **Migrated counter-only children.** A child whose legacy content predates
-  `token_usage_record` (0.153) and whose settings events carry no thread ID (before
-  0.152) has nothing that names it, so rule 4 reports its counter usage as a coverage
-  gap instead of counting it.
+- **Undecidable migrated children.** A migrated counter-only child whose parent is not a
+  discovered root, or whose turns have no IDs (before 0.100), or whose counters precede
+  every turn and match no parent total, reports its undecided usage as a coverage gap
+  instead of counting it.
+  Only counter-only roots supply totals, so a child of a root with usage records gets no
+  total match.
+- **Children with usage records and counter-only turns.** A migrated or resumed child
+  with usage records is accounted from its records alone, so counter-only turns before
+  them are not counted (`uro-r8si`).
 - **Migrated user forks.** A legacy user fork migrates as an ordinary rollout: it keeps
   no boundary and loses the foreign header of its copied prefix.
-  Copied records still name the parent, but copied counters in a counter-only fork can
-  read as the fork’s own unless the parent’s settings events name the parent.
-  This is unchanged by `uro-jqc3` and needs a real-history check.
-- **Usage dropped by migration.** A bounded subagent migration drops the child’s records
-  before its newest compaction; only that `compacted` line’s record survives, as a copy.
-  urollup cannot recover the rest, and the surviving records carry the session start as
-  their timestamp.
+  Copied records still name the parent, but in a counter-only fork the copied counters
+  count as the fork’s own (`uro-p9ua`). The turn and total evidence of rule 4 would
+  decide them too, from the first line, but this is unchanged by `uro-jqc3`.
+- **Usage dropped by migration.** A bounded subagent migration drops the child’s lines
+  before its newest compaction.
+  Only that `compacted` line’s record survives, and the surviving lines carry the
+  session start as their timestamp, which moves their usage to that day.
+  The dropped responses are a gap only where the running total shows them: a total that
+  compaction lowered can hide them, and a legacy child seeded with its parent’s total
+  reports a gap even when the migration dropped no other response.
+- **Native settings order.** Rule 2 lets a line that names the child before the boundary
+  override it. Codex 0.152 through 0.162.1 writes a native child’s settings event at the
+  boundary, after its inherited prefix; a writer that put it first would make the prefix
+  count as the child’s.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
