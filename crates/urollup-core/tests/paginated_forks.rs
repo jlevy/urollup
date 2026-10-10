@@ -1855,3 +1855,28 @@ fn a_compacted_twin_matches_whether_or_not_a_count_is_written() {
     assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
     assert_parent_and_complete(&ingested, true);
 }
+
+#[test]
+fn a_line_naming_the_child_itself_never_voids_an_inferred_start() {
+    // Review E2. A child inferred its start at c-turn-1, then a settings event names the
+    // child before the boundary, as a later release's resume writes. That line is not
+    // evidence against the start: only a line naming another thread is. It ends the window,
+    // because the lines after it are the child's by name.
+    let root = fork_root(Some(&parent_with_turn()), &[]);
+    write_child(
+        &root,
+        migrated_meta(9),
+        &[
+            turn(1, Some("p-turn-1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("c-turn-1")),
+            counter(4, 108, 12, 18, 2),
+            settings(5, CHILD),
+            turn(6, Some("c-turn-2")),
+            counter(7, 113, 13, 5, 1),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (2, Some(26), Completeness::Complete));
+    assert_parent_and_complete(&ingested, true);
+}

@@ -1473,9 +1473,10 @@ fn observe_parsed_source(
     let mut named_own = false;
     // What the turns so far show about unassigned lines before the boundary.
     let mut prefix_turn = PrefixTurn::None;
-    // A child's own lines never precede a turn or a total its parent recorded, so after a
-    // turn-inferred start either one before the boundary proves the inference wrong, and
-    // everything from the start to the boundary is then undecided.
+    // A child's own lines never precede a turn or a total its parent recorded, or a line
+    // naming another thread, so after a turn-inferred start any of these before the
+    // boundary proves the inference wrong, and everything from the start to the boundary
+    // is then undecided.
     let mut inferred: Option<InferredStart> = None;
     let mut contradicted = false;
     // The latest running total a counter the counter rules read reported.
@@ -1520,8 +1521,9 @@ fn observe_parsed_source(
         // baseline.
         let before_boundary = native_boundary.precedes(record.ordinal);
         if let Some(start) = inferred.take() {
-            // The window stays open until a line at or past the boundary: a line without an
-            // ordinal does not say which side it is on.
+            // The window stays open until a line at or past the boundary, or a line naming
+            // this rollout's own thread, after which the lines are the child's by name. A
+            // line without an ordinal does not say which side of the boundary it is on.
             let past_boundary = match native_boundary {
                 NativeBoundary::At(boundary) => {
                     record.ordinal.is_some_and(|ordinal| ordinal >= boundary)
