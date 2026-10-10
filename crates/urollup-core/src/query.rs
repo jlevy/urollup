@@ -297,17 +297,24 @@ pub struct DailyRow {
 }
 
 /// One session row from `sessions`.
+///
+/// A row is either one thread or one agent's unowned group: the requests that agent's
+/// logs report with an ambiguous or unknown owner. Ownership uncertainty never hides the
+/// agent, so unowned requests of different agents stay in separate rows.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SessionRow {
-    /// Analytical thread ID; `None` is the ambiguous or unknown-owner group.
+    /// Analytical thread ID; `None` for an agent's unowned group.
     pub thread: Option<String>,
     /// Agent-native session ID: the Claude session ID, `session/agent` for a Claude
-    /// subagent, or the Codex thread ID. `None` for the null group and for threads
+    /// subagent, or the Codex thread ID. `None` for an unowned group and for threads
     /// without a native key, such as inline Claude sidechains.
     pub session: Option<String>,
-    /// Agent token, or `unknown` for the null group.
+    /// Agent token of the logs that reported the row's requests; an unowned group names
+    /// its source agent. `unknown` only for a thread no index entry or source names.
     pub agent: String,
-    /// Project name from the thread, when known.
+    /// Project name from the thread, when known. Always `None` for an unowned group,
+    /// which is not a session; the table prints `-` there and `unknown` for a thread
+    /// whose project was not recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     /// Counted requests by ownership.
@@ -343,7 +350,8 @@ pub struct SessionsDocument {
     pub schema_version: u8,
     /// Normalized query.
     pub query: QueryMetadata,
-    /// Session rows in analytical-ID order.
+    /// One unowned row per agent that has unowned requests, in agent order, then thread
+    /// rows in analytical-ID order.
     pub rows: Vec<SessionRow>,
     /// One diagnostic row per code relevant to the selection, in stable code order.
     pub diagnostics: Vec<DiagnosticSummary>,

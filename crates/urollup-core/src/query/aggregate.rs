@@ -6,12 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use jiff::civil::Date;
 
 use crate::accounting::totals::{Completeness, ledger_totals, selection_totals};
+use crate::adapters::Ingested;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{Counting, Ownership, Request};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::names::Name;
 use crate::ledger::tokens::TokenMeasures;
-use crate::selection::{IndexedSession, SessionIndex};
+use crate::selection::{Agent, IndexedSession, SessionIndex};
 
 use super::{
     AggregateTotals, CoverageSummary, DailyDocument, DailyRow, DiagnosticSummary, GroupBy,
@@ -60,7 +61,8 @@ pub fn report(
     groups: &BTreeSet<GroupBy>,
 ) -> Result<ReportDocument, QueryError> {
     let aggregate = aggregate_totals(sources, selected, all)?;
-    let requests = selected_requests(sources, selected, all);
+    // The report reads the selected requests three times, so it collects them once.
+    let requests: Vec<_> = selected_requests(sources, selected, all).collect();
     Ok(ReportDocument {
         schema_version: REPORT_SCHEMA_VERSION,
         query: metadata,
@@ -80,9 +82,8 @@ pub fn daily(
     metadata: QueryMetadata,
     timezone: &ResolvedTimeZone,
 ) -> Result<DailyDocument, QueryError> {
-    let requests = selected_requests(sources, selected, all);
     let mut dated: BTreeMap<Option<String>, Accumulator> = BTreeMap::new();
-    for selected_request in requests {
+    for selected_request in selected_requests(sources, selected, all) {
         let date = request_date(selected_request.request, timezone).map(|date| date.to_string());
         dated.entry(date).or_default().add(
             ownership_class(&selected_request.request.ownership),
@@ -113,15 +114,31 @@ pub fn daily(
     })
 }
 
-/// One session row's totals and the calendar extent `daily` would show for them.
+/// The group one `sessions` row reports.
+///
+/// Ownership and agent are separate facts. A request whose owner is ambiguous or unknown
+/// still came from one agent's logs, so it joins that agent's unowned group: never a
+/// guessed session or project, and never another agent's requests.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SessionGroup {
+    /// An agent's requests with no single proven owner; these sort before every thread.
+    Unowned(Agent),
+    /// One analytical thread.
+    Thread(AnalyticalId),
+}
+
+/// One session row's totals, the calendar extent `daily` would show for them, and the
+/// agent whose source reported its requests.
 #[derive(Clone, Copy, Debug, Default)]
 struct SessionAccumulator {
+    source: Option<Agent>,
     totals: Accumulator,
     last_date: Option<Date>,
     undated_requests: u64,
 }
 
-/// Builds one row per selected session, plus an explicit unowned row when needed.
+/// Builds one row per selected session, plus one unowned row per agent whose requests
+/// include some with no single proven owner.
 pub fn sessions(
     sources: &[QuerySource<'_>],
     index: &SessionIndex,
@@ -130,37 +147,50 @@ pub fn sessions(
     metadata: QueryMetadata,
     timezone: &ResolvedTimeZone,
 ) -> Result<SessionsDocument, QueryError> {
-    let requests = selected_requests(sources, selected, all);
-    let mut by_thread: BTreeMap<Option<AnalyticalId>, SessionAccumulator> = selected
+    let mut groups: BTreeMap<SessionGroup, SessionAccumulator> = selected
         .iter()
         .cloned()
-        .map(|thread| (Some(thread), SessionAccumulator::default()))
+        .map(|thread| (SessionGroup::Thread(thread), SessionAccumulator::default()))
         .collect();
-    for selected_request in requests {
-        let thread = match &selected_request.request.ownership {
-            Ownership::Owned { thread } => Some(thread.clone()),
-            Ownership::Ambiguous { .. } | Ownership::Unknown => None,
-        };
-        let row = by_thread.entry(thread).or_default();
-        row.totals.add(
-            ownership_class(&selected_request.request.ownership),
-            selected_request.measures(),
-        )?;
-        match request_date(selected_request.request, timezone) {
-            Some(date) => row.last_date = row.last_date.max(Some(date)),
-            None => {
-                row.undated_requests = checked_count(row.undated_requests, 1, "undated requests")?;
+    // Walk one source at a time, where its agent is in scope, so the requests every
+    // command selects need not each carry an agent.
+    for source in sources {
+        for selected_request in source_requests(source.ingested, selected, all) {
+            let ownership = &selected_request.request.ownership;
+            let group = match ownership {
+                Ownership::Owned { thread } => SessionGroup::Thread(thread.clone()),
+                Ownership::Ambiguous { .. } | Ownership::Unknown => {
+                    SessionGroup::Unowned(source.agent)
+                }
+            };
+            let row = groups.entry(group).or_default();
+            row.source.get_or_insert(source.agent);
+            row.totals.add(ownership_class(ownership), selected_request.measures())?;
+            match request_date(selected_request.request, timezone) {
+                Some(date) => row.last_date = row.last_date.max(Some(date)),
+                None => {
+                    row.undated_requests =
+                        checked_count(row.undated_requests, 1, "undated requests")?;
+                }
             }
         }
     }
-    let rows = by_thread
+    let rows = groups
         .into_iter()
-        .map(|(thread, row)| {
-            let indexed = thread.as_ref().and_then(|id| index.get(id));
+        .map(|(group, row)| {
+            let (thread, indexed, agent) = match group {
+                SessionGroup::Unowned(agent) => (None, None, Some(agent)),
+                SessionGroup::Thread(id) => {
+                    // The index names a thread's agent; a thread it lacks keeps the agent
+                    // of the source that reported its requests.
+                    let indexed = index.get(&id);
+                    (Some(id), indexed, indexed.map(|session| session.agent).or(row.source))
+                }
+            };
             Ok(SessionRow {
                 thread: thread.map(|id| id.to_string()),
                 session: indexed.and_then(IndexedSession::native_id),
-                agent: indexed.map_or("unknown", |session| session.agent.token()).to_owned(),
+                agent: agent.map_or("unknown", Agent::token).to_owned(),
                 project: indexed.and_then(|session| session.thread.project.value()).cloned(),
                 requests: row.totals.requests,
                 tokens: TokenCounts::from_measures(row.totals.tokens)?,
@@ -327,18 +357,28 @@ impl SelectedRequest<'_> {
     }
 }
 
+/// Every source's counted requests inside the selection, in source then ledger order.
 fn selected_requests<'a>(
     sources: &[QuerySource<'a>],
     selected: &BTreeSet<AnalyticalId>,
     all: bool,
-) -> Vec<SelectedRequest<'a>> {
-    sources
-        .iter()
-        .flat_map(|source| source.ingested.ledger.requests.values())
+) -> impl Iterator<Item = SelectedRequest<'a>> {
+    sources.iter().flat_map(move |source| source_requests(source.ingested, selected, all))
+}
+
+/// One source's counted requests inside the selection, in ledger order.
+fn source_requests<'a>(
+    ingested: &'a Ingested,
+    selected: &BTreeSet<AnalyticalId>,
+    all: bool,
+) -> impl Iterator<Item = SelectedRequest<'a>> {
+    ingested
+        .ledger
+        .requests
+        .values()
         .filter(|request| request.counting == Counting::Counted)
-        .filter(|request| all || request_is_inside(request, selected))
+        .filter(move |request| all || request_is_inside(request, selected))
         .map(|request| SelectedRequest { request })
-        .collect()
 }
 
 /// The calendar date `daily` buckets a request under: its last, else its first, timestamp
@@ -544,6 +584,7 @@ mod tests {
         observation
     }
 
+    /// Reconciles synthetic observations from one source into an adapter result.
     fn reconciled(
         mut input: crate::ledger::reconcile::ReconcileInput,
     ) -> crate::adapters::Ingested {
@@ -668,6 +709,213 @@ mod tests {
         );
         assert_eq!(unresolved.coverage.requests_without_usage, 0);
         assert!(!unresolved.coverage.complete);
+    }
+
+    /// One agent's synthetic ledger: an owned request, a request two threads both prove
+    /// they own (ambiguous), and a request with no owner evidence (unknown).
+    fn ledger_with_unowned_requests(agent: &str) -> crate::adapters::Ingested {
+        use crate::ledger::identity::KeyComponent;
+        use crate::ledger::reconcile::{OwnerEvidence, ReconcileInput};
+        use crate::ledger::scope::tests::PROVIDER_RESPONSE;
+        let shared = PROVIDER_RESPONSE
+            .key(vec![KeyComponent::text("provider"), KeyComponent::text(agent)])
+            .unwrap()
+            .derive()
+            .unwrap();
+        let mut first_claim = observation(1, &format!("{agent}-first"), true);
+        first_claim.keys.push(shared.clone());
+        let mut second_claim = observation(2, &format!("{agent}-second"), true);
+        second_claim.keys.push(shared);
+        let mut unknown = observation(3, &format!("{agent}-unused"), true);
+        unknown.owner = OwnerEvidence::None;
+        reconciled(ReconcileInput {
+            requests: vec![
+                observation(0, &format!("{agent}-owned"), true),
+                first_claim,
+                second_claim,
+                unknown,
+            ],
+            ..ReconcileInput::default()
+        })
+    }
+
+    /// Asserts that session rows partition the report's counted requests and tokens.
+    fn assert_rows_reconcile(
+        rows: &[crate::query::SessionRow],
+        totals: &crate::query::AggregateTotals,
+    ) {
+        let mut requests = RequestCounts::default();
+        let mut tokens = crate::query::TokenCounts::default();
+        let add = |sum: &mut Option<u64>, value: Option<u64>| {
+            if let Some(value) = value {
+                *sum = Some(sum.unwrap_or(0) + value);
+            }
+        };
+        for row in rows {
+            requests.owned += row.requests.owned;
+            requests.ambiguous += row.requests.ambiguous;
+            requests.unknown += row.requests.unknown;
+            add(&mut tokens.uncached_input, row.tokens.uncached_input);
+            add(&mut tokens.cache_read, row.tokens.cache_read);
+            add(&mut tokens.cache_write, row.tokens.cache_write);
+            add(&mut tokens.cache_write_5m, row.tokens.cache_write_5m);
+            add(&mut tokens.cache_write_1h, row.tokens.cache_write_1h);
+            add(&mut tokens.cache_write_unspecified, row.tokens.cache_write_unspecified);
+            add(&mut tokens.output, row.tokens.output);
+            add(&mut tokens.reasoning, row.tokens.reasoning);
+            add(&mut tokens.provider_only, row.tokens.provider_only);
+            add(&mut tokens.total, row.tokens.total);
+        }
+        assert_eq!(requests, totals.requests, "session rows partition the counted requests");
+        assert_eq!(tokens, totals.tokens, "session rows partition the counted tokens");
+    }
+
+    #[test]
+    fn unowned_session_rows_keep_their_source_agent() {
+        let claude = ledger_with_unowned_requests("claude");
+        let codex = ledger_with_unowned_requests("codex");
+        let sources = [
+            QuerySource { agent: Agent::Claude, ingested: &claude },
+            QuerySource { agent: Agent::Codex, ingested: &codex },
+        ];
+        let index = SessionIndex::default();
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).unwrap();
+        let document = sessions(
+            &sources,
+            &index,
+            &BTreeSet::new(),
+            true,
+            QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            &timezone,
+        )
+        .unwrap();
+
+        let unowned = RequestCounts { owned: 0, ambiguous: 1, unknown: 1 };
+        let owned = RequestCounts { owned: 1, ..RequestCounts::default() };
+        let rows: Vec<_> = document
+            .rows
+            .iter()
+            .map(|row| (row.thread.as_deref(), row.agent.as_str(), row.requests))
+            .collect();
+        assert_eq!(
+            rows[..2],
+            [(None, "claude", unowned), (None, "codex", unowned)],
+            "one unowned row per source agent, before the threads"
+        );
+        // Threads follow in analytical-ID order, each keeping its source agent.
+        let mut threads = rows[2..].to_vec();
+        assert!(threads.iter().all(|(thread, ..)| thread.is_some()));
+        assert!(threads.is_sorted_by_key(|(thread, ..)| *thread));
+        threads.sort_by_key(|(_, agent, _)| *agent);
+        assert_eq!(
+            threads.iter().map(|(_, agent, requests)| (*agent, *requests)).collect::<Vec<_>>(),
+            [("claude", owned), ("codex", owned)],
+            "never an unknown agent"
+        );
+        for row in document.rows.iter().filter(|row| row.thread.is_none()) {
+            assert_eq!(
+                (&row.session, &row.project),
+                (&None, &None),
+                "no session or project guessed"
+            );
+            assert_eq!(row.tokens.uncached_input, Some(20));
+            assert_eq!(row.tokens.output, Some(2));
+            // No observation has a timestamp, so each agent's row counts only its own
+            // two unowned requests as undated.
+            assert_eq!((row.last_date.as_deref(), row.undated_requests), (None, 2));
+        }
+
+        let report = report(
+            &sources,
+            &index,
+            &BTreeSet::new(),
+            true,
+            QueryMetadata::new("report", "all", Scope::SelfOnly, &timezone),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(report.totals.requests, RequestCounts { owned: 2, ambiguous: 2, unknown: 2 });
+        assert_rows_reconcile(&document.rows, &report.totals);
+    }
+
+    #[test]
+    fn mixed_agent_fixtures_keep_unowned_rows_per_agent_and_reconcile() {
+        let claude =
+            claude_project::ingest_root(&fixture("ambiguous-owner")).expect("Claude ingests");
+        let codex = codex_rollout::ingest_root(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codex-rollout/ambiguous-owner"),
+        )
+        .expect("Codex ingests");
+        let mut index = SessionIndex::default();
+        index.add(Agent::Claude, &claude).expect("Claude indexes");
+        index.add(Agent::Codex, &codex).expect("Codex indexes");
+        let selected = index
+            .select(&SelectionQuery { all: true, ..SelectionQuery::default() })
+            .expect("all sessions select");
+        let sources = [
+            QuerySource { agent: Agent::Claude, ingested: &claude },
+            QuerySource { agent: Agent::Codex, ingested: &codex },
+        ];
+        let timezone = ResolvedTimeZone::resolve(Some("UTC")).expect("UTC resolves");
+        let totals = |sources: &[QuerySource<'_>]| {
+            report(
+                sources,
+                &index,
+                &selected,
+                true,
+                QueryMetadata::new("report", "all", Scope::SelfOnly, &timezone),
+                &BTreeSet::new(),
+            )
+            .expect("report builds")
+            .totals
+        };
+        let document = sessions(
+            &sources,
+            &index,
+            &selected,
+            true,
+            QueryMetadata::new("sessions", "all", Scope::SelfOnly, &timezone),
+            &timezone,
+        )
+        .expect("sessions build");
+
+        let ambiguous = RequestCounts { ambiguous: 1, ..RequestCounts::default() };
+        let unowned: Vec<_> = document
+            .rows
+            .iter()
+            .filter(|row| row.thread.is_none())
+            .map(|row| (row.agent.as_str(), row.session.as_deref(), row.requests, row.tokens.total))
+            .collect();
+        assert_eq!(
+            unowned,
+            [("claude", None, ambiguous, Some(2_310)), ("codex", None, ambiguous, Some(12_600))]
+        );
+        // Each agent's unowned row carries the calendar fields `daily` uses.
+        for row in document.rows.iter().filter(|row| row.thread.is_none()) {
+            assert_eq!((row.last_date.as_deref(), row.undated_requests), (Some("2026-09-05"), 0));
+        }
+        assert!(document.rows.iter().all(|row| row.agent != "unknown"));
+
+        let combined = totals(&sources);
+        assert_eq!(combined.requests, RequestCounts { owned: 4, ambiguous: 2, unknown: 0 });
+        assert_eq!(combined.tokens.total, Some(30_335));
+        assert_rows_reconcile(&document.rows, &combined);
+        for (agent, source) in [("claude", &sources[..1]), ("codex", &sources[1..])] {
+            let rows: Vec<_> =
+                document.rows.iter().filter(|row| row.agent == agent).cloned().collect();
+            assert_rows_reconcile(&rows, &totals(source));
+        }
+    }
+
+    #[test]
+    fn selected_requests_stay_one_pointer_wide() {
+        // `report` collects one per selected request; `daily` and `sessions` stream them.
+        // Only `sessions` needs the source agent, and it reads that from the source.
+        assert_eq!(
+            std::mem::size_of::<super::SelectedRequest<'_>>(),
+            std::mem::size_of::<&crate::ledger::entities::Request>()
+        );
     }
 
     #[test]

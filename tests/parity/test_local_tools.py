@@ -98,6 +98,15 @@ def aggregate_session(
     return row
 
 
+def unowned_row(agent: str, last_date: str | None) -> dict[str, object]:
+    """Build one agent's whole-history unowned `sessions` row: no thread, session or project."""
+
+    row = aggregate_session(agent, last_date, thread=None)
+    row.update(session=None, requests={"owned": 0, "ambiguous": 1, "unknown": 0})
+    del row["project"]
+    return row
+
+
 def coverage_report() -> dict[str, object]:
     """Build a whole-history `report` document whose free-form fields carry markers."""
 
@@ -255,8 +264,10 @@ class LocalAggregateTests(unittest.TestCase):
                     # one whose requests the whole-history ledger finds ambiguous.
                     aggregate_session("claude", None, requests=0),
                     aggregate_session("codex", "2026-09-01", requests=0),
-                    # The unowned group and an unexpected agent are no stable sessions.
-                    aggregate_session("unknown", "2026-09-01", thread=None),
+                    # Each agent's unowned row and an unexpected agent are no stable
+                    # sessions, even when dated before the cutoff.
+                    unowned_row("claude", "2026-09-01"),
+                    unowned_row("codex", "2026-09-01"),
                     aggregate_session("other", "2026-09-01"),
                 ]
             },
@@ -270,7 +281,8 @@ class LocalAggregateTests(unittest.TestCase):
                 "excluded": {
                     "active_or_undated": 4,
                     "without_owned_requests": 2,
-                    "unowned_or_unrecognized_agent": 2,
+                    # One per unowned row, so one per agent with unowned requests.
+                    "unowned_or_unrecognized_agent": 3,
                 },
             },
         )
@@ -467,7 +479,9 @@ class LocalDiffTests(unittest.TestCase):
                 session_row(None, "claude", 3),  # an inline sidechain
                 session_row(f"{PRIVATE_MARKERS[2]}-empty", "claude", 0, requests=0),
                 session_row(codex, "codex", 104),
-                {**session_row(None, "unknown", 9), "thread": None},  # the unowned group
+                # Each agent's unowned group.
+                {**session_row(None, "claude", 9), "thread": None},
+                {**session_row(None, "codex", 4), "thread": None},
             ]
         }
         ccusage = {
@@ -517,7 +531,7 @@ class LocalDiffTests(unittest.TestCase):
         self.assertNotIn("--session", commands[0])
         # Matched: the stable Claude session and the Codex rollout joined by thread ID.
         # urollup-only: the stable session's subagent and the inline sidechain. The busy
-        # session, its subagent, the zero-request row and the unowned group are left out.
+        # session, its subagent, the zero-request row and both unowned groups are left out.
         # ccusage-only: the stable workflow row; the active Codex rollout is left out.
         self.assertEqual(counts, {"matched": 2, "urollup_only": 2, "ccusage_only": 1})
         self.assertEqual(

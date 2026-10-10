@@ -96,6 +96,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `claude-project/gateway-message-id-reuse` | One `message.id` reused across sessions, beside a true copy | §3.6, §9.1, §4.2, §3.2 | ccusage commit `a4b8420` | Claude Code 2.1.x |
 | `claude-project/derived-block-records-subagent` | A sanitized real session: agreeing block records, a spawn, and subagent block records disagreeing on `output_tokens` | §3.4, §3.2, §4.1 | Sanitized from this project’s own logs | Claude Code 2.1.270 |
 | `claude-project/inline-sidechains` | Two runs of legacy `isSidechain` turns inline in one main transcript | §3.2, §3.6, §4.2 | agentfdr legacy-sidechain reader and tests | Claude Code 1.0.x shape; exact release range unverified |
+| `claude-project/ambiguous-owner` | One response recorded as an original by two unlinked sessions: counted once, ambiguous ownership, kept with Claude Code | §4.2, §3.6 | `gateway-message-id-reuse` record shapes | Claude Code 2.1.x shape; the ambiguity is synthetic |
 | `codex-rollout/brief-repeated-snapshot` | Cumulative `token_count` with a repeated identical snapshot: the brief’s example | §3.4, §3.1 | Codex protocol and rollout tests | Codex CLI 0.150.0 |
 | `codex-rollout/info-null` | `info: null` before the first usage, and a rate-limit-only update | §3.4, §3.1 | Codex `turn.rs` and session tests | Codex CLI 0.150.0 |
 | `codex-rollout/counter-reset-epoch` | A cumulative total that restarts lower, opening a new epoch | §3.4, §3.3 | ccusage total-only path | Codex CLI 0.150.0 |
@@ -113,6 +114,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/multi-limit-id` | `rate_limits` alternating `limit_id`, with a repeat and carried-forward fields | §3.1, §4.4 | Codex rate-limit types and header parsing | Codex CLI 0.154.0 |
 | `codex-rollout/auto-review-model` | The `codex-auto-review` placeholder model and a tier-less settings event | §3.1, §3.2 | ccusage placeholder handling; Codex guardian sessions | Codex CLI 0.154.0 |
 | `codex-rollout/pending-tail` | Interior corruption and an unfinished last line | §2.2 | Codex line skipping and truncated-tail test | Codex CLI 0.154.0 |
+| `codex-rollout/ambiguous-owner` | One `response_id` recorded by two unlinked threads: counted once, ambiguous ownership, kept with Codex | §4.2, §3.4 | `token-usage-records` record shapes | Codex CLI 0.154.0 shape; the ambiguity is synthetic |
 
 Design sections are in [docs/urollup-design.md](../../../../docs/urollup-design.md), and
 the double-counting example is in the

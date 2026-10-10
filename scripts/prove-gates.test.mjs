@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PROBE_DIR, applyEdits, checkPrerequisites, judge, parseArgs, validateManifest } from "./prove-gates.mjs";
+import { PROBE_DIR, applyEdits, checkPrerequisites, judge, nameMatcher, parseArgs, validateManifest } from "./prove-gates.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -63,6 +63,22 @@ test("malformed probes are rejected before anything runs", () => {
     () => validateManifest({ probes: [probe({ edits: [{ path: "../outside", append: "x" }] })] }, gates),
     /outside the repository copy/,
   );
+  for (const pattern of ["", "e2e/*.md", "a\\b", true]) {
+    assert.throws(
+      () => validateManifest({ probes: [probe({ edits: [{ path: "tests", deleteMatching: pattern }] })] }, gates),
+      /non-empty file name pattern/,
+    );
+  }
+});
+
+test("name patterns match whole file names", () => {
+  const sessions = nameMatcher("*.tryscript.md");
+  assert.equal(sessions("cli-surface.tryscript.md"), true);
+  assert.equal(sessions("README.md"), false);
+  assert.equal(sessions("a.tryscript.md.bak"), false);
+  assert.equal(sessions("atryscriptxmd"), false, "a dot in the pattern is literal");
+  assert.equal(nameMatcher("v?.json")("v1.json"), true);
+  assert.equal(nameMatcher("v?.json")("v10.json"), false);
 });
 
 test("the committed manifest covers every gate in the Makefile", () => {
@@ -131,6 +147,83 @@ test("edits apply exactly and refuse stale probes", () => {
       () => applyEdits(copy, probes, { id: "missing", edits: [{ path: "nope.rs", append: "tail.probe" }] }),
       /does not exist/,
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("deleting by name reaches every depth and refuses stale patterns", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "urollup-prove-gates-test-"));
+  try {
+    const copy = join(scratch, "copy");
+    mkdirSync(join(copy, "golden", "e2e", "claude"), { recursive: true });
+    mkdirSync(join(copy, "golden", "samples"), { recursive: true });
+    for (const file of ["golden/cli.tryscript.md", "golden/new.tryscript.md", "golden/e2e/claude/case.tryscript.md", "golden/README.md", "golden/samples/expected.json"]) {
+      writeFileSync(join(copy, file), "x\n");
+    }
+
+    applyEdits(copy, scratch, { id: "corpus", edits: [{ path: "golden", deleteMatching: "*.tryscript.md" }] });
+    for (const gone of ["golden/cli.tryscript.md", "golden/new.tryscript.md", "golden/e2e/claude/case.tryscript.md"]) {
+      assert.throws(() => statSync(join(copy, gone)), /ENOENT/, gone);
+    }
+    for (const kept of ["golden/README.md", "golden/samples/expected.json"]) {
+      assert.ok(statSync(join(copy, kept)).isFile(), kept);
+    }
+
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "stale", edits: [{ path: "golden", deleteMatching: "*.tryscript.md" }] }),
+      /no file below golden matches "\*\.tryscript\.md"/,
+    );
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "file", edits: [{ path: "golden/README.md", deleteMatching: "*.md" }] }),
+      /not a directory/,
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("edits never follow a symbolic link out of the copy", () => {
+  // The copy links each installed Node package to the real checkout, so an edit that
+  // followed a link would change or delete files outside the scratch copy.
+  const scratch = mkdtempSync(join(tmpdir(), "urollup-prove-gates-test-"));
+  try {
+    const real = join(scratch, "real", "pkg");
+    const copy = join(scratch, "copy");
+    mkdirSync(join(real, "lib"), { recursive: true });
+    mkdirSync(join(copy, "node_modules"), { recursive: true });
+    mkdirSync(join(copy, "tree"));
+    const realFiles = [join(real, "b.js"), join(real, "lib", "a.js")];
+    for (const file of [...realFiles, join(copy, "tree", "own.js")]) {
+      writeFileSync(file, "x\n");
+    }
+    writeFileSync(join(scratch, "tail.probe"), "y\n");
+    symlinkSync(real, join(copy, "node_modules", "pkg"));
+    symlinkSync(real, join(copy, "tree", "linked.js"));
+
+    for (const edit of [
+      { path: "node_modules/pkg", deleteMatching: "*.js" },
+      { path: "node_modules/pkg/lib", deleteMatching: "*.js" },
+      { path: "node_modules/pkg/b.js", delete: true },
+      { path: "node_modules/pkg/lib/a.js", append: "tail.probe" },
+      { path: "node_modules/pkg/new.js", create: "tail.probe" },
+    ]) {
+      assert.throws(() => applyEdits(copy, scratch, { id: "linked", edits: [edit] }), /symbolic link/, edit.path);
+    }
+
+    // A link inside the tree is neither descended into nor deleted.
+    applyEdits(copy, scratch, { id: "tree", edits: [{ path: "tree", deleteMatching: "*.js" }] });
+    assert.throws(() => statSync(join(copy, "tree", "own.js")), /ENOENT/);
+    assert.ok(lstatSync(join(copy, "tree", "linked.js")).isSymbolicLink(), "a matching link is kept");
+    assert.throws(
+      () => applyEdits(copy, scratch, { id: "only-linked", edits: [{ path: "tree", deleteMatching: "*.js" }] }),
+      /no file below tree matches/,
+    );
+
+    for (const file of realFiles) {
+      assert.equal(readFileSync(file, "utf8"), "x\n", file);
+    }
+    assert.throws(() => statSync(join(real, "new.js")), /ENOENT/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

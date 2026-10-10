@@ -32,9 +32,9 @@ latest counted request with a timestamp, and `undated_requests`, its counted req
 without one. `daily` buckets requests by the same rule.
 A row with no dated request omits `last_date`. A session with a `last_date` before today
 and no undated requests had no counted owned usage today.
-A request that two sessions both prove they own is ambiguous: it is counted on the
-unowned row (`thread: null`) and dates neither session, so a whole-history row can
-differ from a `--session` run, which reads only the selected session’s file family.
+A request that two sessions both prove they own is ambiguous: it is counted on its
+agent’s unowned row (`thread: null`) and dates neither session, so a whole-history row
+can differ from a `--session` run, which reads only the selected session’s file family.
 
 Default discovery includes the configured Claude roots and Codex’s active and archived
 sessions. Source overrides affect which history is included.
@@ -64,8 +64,16 @@ Each command currently rereads the logs.
 Separate commands can observe different input when sessions are active.
 `report --group-by project,model` produces separate project and model breakdowns, not
 project × model rows.
-`--group-by` currently affects only `report`; the known CLI defect that accepts it on
-other commands is tracked as `uro-oz6w`.
+Only `report` takes `--group-by`; `daily` and `sessions` reject it as a usage error
+(exit 2) until joint grouping is implemented.
+
+`sessions` prints one row per session, plus one `unowned` row per agent for requests no
+single session owns, such as a response two sessions both record.
+An unowned row is not a session: in JSON its `thread` and `session` are `null` and it
+has no `project`, and the table prints `unowned` and a `-` project.
+Count sessions from rows with a non-null `thread`. Exact `--session` selection does not
+yet see another session’s claim on a shared response, so it counts that response as
+owned rather than as possible usage (`uro-s71z`).
 
 JSON is useful for inspection and scripts, but a report is a view, not a reusable
 request dataset or merge input.

@@ -62,8 +62,8 @@ A session is stable when its `sessions` row owns a counted request, has no
 urollup dates those rows by the rule `daily` uses.
 `sessions.excluded` counts the rest: `active_or_undated` for sessions with usage on or
 after the cutoff day or without a timestamp, `without_owned_requests` for sessions that
-own no counted request, and `unowned_or_unrecognized_agent` for unowned rows, which have
-no thread, and rows whose agent token this tool does not recognize.
+own no counted request, and `unowned_or_unrecognized_agent` for each agent’s unowned
+row, which has no thread, and for rows whose agent token this tool does not recognize.
 A request that two sessions both prove they own is ambiguous in the whole-history ledger
 and belongs to neither, so a finished session whose requests are all ambiguous counts as
 `without_owned_requests`. A per-session `urollup daily --session` run narrows discovery

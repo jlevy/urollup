@@ -255,12 +255,8 @@
       "violation": "the golden corpus is deleted",
       "edits": [
         {
-          "path": "tests/golden/cli-surface.tryscript.md",
-          "delete": true
-        },
-        {
-          "path": "tests/golden/e2e",
-          "delete": true
+          "path": "tests/golden",
+          "deleteMatching": "*.tryscript.md"
         }
       ],
       "expect": "golden corpus is missing"
