@@ -88,7 +88,10 @@ Codex totals stay provisional until the real-history comparison is rerun.
   loses its pre-upgrade usage, and a rollout that an older release appended counter-only
   turns to loses those turns, with `coverage.complete: true` and no diagnostic.
   In the `codex-rollout/mixed-counter-direct` fixture the history reports 90,000 instead
-  of 139,700 tokens. The fix is in [PR #26](https://github.com/jlevy/urollup/pull/26).
+  of 139,700 tokens. [PR #26](https://github.com/jlevy/urollup/pull/26) fixes root
+  rollouts (no parent, fork origin or history boundary), which hold most of this usage.
+  Forks and subagents keep the gap, and a nested all-legacy fork or subagent counts its
+  intermediate thread’s usage twice (`uro-r8si`, present on `main`).
 - **Source reading and Codex usage (fixed in
   [PR #18](https://github.com/jlevy/urollup/pull/18), merged 2026-10-09):** `.jsonl.gz`
   sources are silently excluded (`uro-nc34`); a source deleted or compressed during a

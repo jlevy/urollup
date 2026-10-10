@@ -4,7 +4,7 @@
   "dialect": "codex-rollout",
   "summary": "A session that Codex 0.150.0 started with cumulative token_count events only and 0.154.0 resumed with token_usage_record lines counts its counter-only turns and its usage records once each, and each token_count written just after the usage record of the same response, with exactly its usage, adds nothing.",
   "rules": [
-    "design §3.4 Codex counters beside usage records (a token_count adjacent to a token_usage_record with exactly its usage is its twin; every other token_count that reports usage goes through the counter rules)",
+    "design §3.4 Codex counters beside usage records (in a root rollout, a token_count adjacent to a token_usage_record with exactly its usage is its twin; every other token_count that reports usage goes through the counter rules)",
     "design §3.4 Codex counters",
     "design §3.4 Codex requests (token_usage_record)"
   ],

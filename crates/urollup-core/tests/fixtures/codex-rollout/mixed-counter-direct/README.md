@@ -1,11 +1,12 @@
 # mixed-counter-direct
 
-Tests a rollout that holds cumulative `token_count` usage beside `token_usage_record`
-lines: a session that a release before `rust-v0.153.0` started and a later release
-resumed (design §3.4, uro-h2sf). A `token_count` is the twin of a usage record when the
-two are adjacent usage events with exactly the same usage, and adds nothing but the
-running total; every other `token_count` that reports usage goes through the counter
-rules.
+Tests a root rollout that holds cumulative `token_count` usage beside
+`token_usage_record` lines: a session that a release before `rust-v0.153.0` started and
+a later release resumed (design §3.4, uro-h2sf). Both sessions are root rollouts, with
+one `session_meta` each and no parent, fork origin or history boundary.
+A `token_count` is the twin of a usage record when the two are adjacent usage events
+with exactly the same usage, and adds nothing but the running total; every other
+`token_count` that reports usage goes through the counter rules.
 
 - **Resumed session:** 0.150.0 writes two counter-only turns, three responses on lines
   5, 6 and 9. Three hours later 0.154.0 resumes it in the same file: in turn
