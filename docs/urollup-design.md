@@ -965,9 +965,11 @@ set these source-specific rules:
   reported (other than a repeat of the copied total), or a settings event, record or
   compacted record naming another thread.
   Every step from that start to the boundary is then excluded as unverified instead of
-  counted. The start stays voidable until a line at or past the boundary: a later
-  unrecorded turn, as after a settings event without a thread ID, never moves it, and a
-  line without an ordinal never closes it.
+  counted. The start stays voidable until a line at or past the boundary, or a line
+  naming the child’s own thread, which ends the window without voiding it because the
+  lines after it are the child’s by name.
+  A later unrecorded turn, as after a settings event without a thread ID, never moves
+  the start, and a line without an ordinal never closes the window.
   One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
   dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
   spawned in that turn holds its copy, so the root’s next counter step and the child

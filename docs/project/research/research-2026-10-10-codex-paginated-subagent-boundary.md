@@ -149,7 +149,8 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    After a turn-inferred start, a later turn the parent recorded, a counter total it
    reported other than the copied total, or a line naming another thread contradicts the
    inference, and the region from the start to the boundary becomes undecided.
-   The start stays open until a line at or past the boundary.
+   The start stays open until a line at or past the boundary, or a line naming the
+   child’s own thread, which ends the window without voiding it.
 5. Unnamed usage (counters and records without a `thread_id`) that rules 2 to 4 leave
    undecided is excluded with a `codex-history-boundary-unverified` diagnostic and a
    coverage gap, rather than counted or silently treated as a copy, when its region
