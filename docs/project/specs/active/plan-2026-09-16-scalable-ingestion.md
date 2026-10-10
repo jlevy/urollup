@@ -976,12 +976,15 @@ Choices made while implementing, where this design left room:
 
 - **Budget source (slice 1).** `ledger::capacity::effective_memory_under` takes the
   filesystem root, so fixture trees test it on every platform, and `effective_memory`
-  itself runs in a test on every CI platform: on Linux it is positive and at most
-  physical RAM, and elsewhere it is physical RAM. A cgroup is located through every
-  `cgroup2`, or v1 `memory`, mount whose root contains the path in `/proc/self/cgroup`,
-  and the smallest readable limit under any of them counts, so a duplicate, overmounted
-  or bind mount listed first hides nothing; a path outside every mount root, as in some
-  cgroup namespaces, is not located and contributes nothing.
+  itself runs in a test on every CI platform.
+  On Linux it must be physical RAM unless an allowance is found, every allowance found
+  must be positive, and where the whole `cgroup2` hierarchy is mounted the real `/proc`
+  files must locate the process’s own cgroup directory; elsewhere it must be physical
+  RAM. A cgroup is located through every `cgroup2`, or v1 `memory`, mount whose root
+  contains the path in `/proc/self/cgroup`, and the smallest readable limit under any of
+  them counts, so a duplicate, overmounted or bind mount listed first hides nothing; a
+  path outside every mount root, as in some cgroup namespaces, is not located and
+  contributes nothing.
   The v2 walk reads `memory.max` and `memory.high` from the process cgroup up to and
   including each mount point.
   `/proc/self/cgroup`, `mountinfo`, `limits` and `memory.stat` are read as bytes and
@@ -1012,12 +1015,17 @@ Choices made while implementing, where this design left room:
   whatever the order of the holds it raises and lowers; a refused transition changes
   nothing. `checkpoint(phase, estimate, holds)` replaces the phase’s charges with its
   exact estimate and sets holds in the same move, as the session-index and query
-  checkpoints need; `hold(changes)` sets holds and keeps the phase’s charges, including
-  charges made meanwhile; and `commit(agent, retained)` releases the agent’s phase
-  charges and discovery hold and holds its ledger.
-  `checkpoint` and `commit` run on the coordinating thread after workers join, since a
-  charge made meanwhile belongs to no defined phase; a debug assertion checks that `E`
-  still covers every hold and charge until exit.
+  checkpoints need; `hold(changes)` sets holds and keeps the phase’s charges; and
+  `commit(agent, retained)` releases the agent’s phase charges and discovery hold and
+  holds its ledger. All three run only on the coordinating thread after workers join, as
+  [Admission Determinism](#admission-determinism) requires: a hold changed while workers
+  charge would make refusal depend on whether a charge lands before or after it, and a
+  charge made during a checkpoint belongs to no defined phase.
+  The single read-modify-write is defense in depth: a transition that breaks this
+  contract still loses no charge, and a test changes holds while workers charge and
+  intern. Under a budget, a debug assertion in `checkpoint` and `commit` checks that `E`
+  covers every hold and charge until exit; `hold` is not checked, since a worker’s
+  intern charge can reach `E` before the until-exit total.
   A checkpoint also resets the large-record permit’s high-water charge, which is how the
   permit and worker slots are released when decode ends.
   `charge_large_record` keeps only that high-water charge; holding the permit,
@@ -1040,21 +1048,24 @@ Choices made while implementing, where this design left room:
   calls it before discovery with the plain slot and again when discovery finds a
   compressed source. A budget below `F` admits nothing: `ensure_floor` refuses it for any
   slot size, and every charge and transition refuses it with the memory refusal.
-  An unlimited ledger never refuses bytes; `E` saturates instead.
-  Each `charge` names a `Component` (records, κ, payloads, limits, interns, sources,
-  reserves or slots, the stats line’s components), so slices 4 to 6 add no call-site
-  change for statistics; the ledger keeps a running total per component (`charged_by`),
-  and slice 7’s stats line takes each phase’s difference and adds the checkpoint
-  estimate’s components, which the caller computes from the cost model.
+  An unlimited ledger never refuses bytes; `E` saturates instead, and stays saturated
+  through hold changes until a checkpoint or commit recomputes it, since its true value
+  is then unknown. Each `charge` names a `Component` (records, κ, payloads, limits,
+  interns, sources, reserves or slots, the stats line’s components), so slices 4 to 6
+  add no call-site change for statistics; the ledger keeps a running total per component
+  (`charged_by`), and slice 7’s stats line takes each phase’s difference and adds the
+  checkpoint estimate’s components, which the caller computes from the cost model.
   `charge_until_exit` counts as interns and the permit as slots.
   The largest `E` is recorded at transitions, since only charges move `E` between them
   and charges only add, so `charge` is one compare-and-swap loop plus one per-component
   add; it no longer updates a shared maximum.
-  The charge, reservation and permit methods are `#[must_use]`. The adapters’ row
-  admission now runs on a `MemoryAdmission` with an unlimited byte budget and the row
-  ceiling, one per ingest call; public ingest signatures and the CLI are unchanged, and
-  a row refusal still converts to `ReconcileError::CapacityExceeded`, so its message is
-  the same, which a test pins.
+  A test runs a two-agent invocation with every transition kind at one to eight workers
+  and checks that a successful run’s largest `E` is its exact threshold, as a heap limit
+  and as `F + H × largest`. The charge, reservation and permit methods are
+  `#[must_use]`. The adapters’ row admission now runs on a `MemoryAdmission` with an
+  unlimited byte budget and the row ceiling, one per ingest call; public ingest
+  signatures and the CLI are unchanged, and a row refusal still converts to
+  `ReconcileError::CapacityExceeded`, so its message is the same, which a test pins.
   Memory refusals reach callers as the new `AdapterError::Capacity`.
 
 ### Parallelism and Determinism
