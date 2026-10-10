@@ -659,7 +659,8 @@ fn check_query(report: &mut Report, case: &str, sources: &[(Agent, &Ingested)]) 
     );
     let ((rows, rendered), measured) = measure(|| {
         let document =
-            query::sessions(&query_sources, &index, &selected, true, metadata()).expect("sessions");
+            query::sessions(&query_sources, &index, &selected, true, metadata(), &timezone)
+                .expect("sessions");
         (document.rows.len(), serde_json::to_string(&document).expect("sessions render").len())
     });
     report.bound(
