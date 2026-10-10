@@ -146,10 +146,16 @@ The 0.1 engine already separates surface, format, vendor namespace, and model:
 | Account | `Thread.account` | `Basis::Unknown` | `Basis::Unknown` |
 | Effort | `Request.effort` | recorded when present | `turn_context` effort when present |
 
-`--group-by` in milestone 0.1 is `project`, `account`, `model`, and `effort`. Model rows
-use the request model, or per-component `ModelUsage` when one request names more than
-one model. Account grouping currently yields `unknown` because neither adapter records a
-stable account. `--agent` selects by the `Agent` enum; `--group-by agent` is designed
+`--group-by` in milestone 0.1 is `project`, `account`, `model`, and `effort`, on
+`report` only: each dimension is a separate breakdown, and `daily` and `sessions` reject
+the flag until joint calendar and dimension grouping (`uro-qvp1`) exists.
+Model rows use the request model, or per-component `ModelUsage` when one request names
+more than one model.
+Account grouping currently yields `unknown` because neither adapter records a stable
+account. The session index and current-session detection use the `Agent` enum; the
+`--agent` flag is planned for milestone 0.5
+([§10.4](../../../urollup-design.md#104-flag-index)) and is not in the 0.1 CLI.
+`--group-by agent` is designed
 ([§10.6](../../../urollup-design.md#106-ccusage-use-case-coverage)) but not implemented
 in the 0.1 `GroupBy` enum.
 
@@ -356,10 +362,11 @@ store; public notes say a `stop` payload may include `conversation_id` and
 `report`, `daily`, and `sessions` include Cursor when an opt-in root, override, or
 `--source` finds it.
 `--agent cursor` selects only Cursor threads.
-`--group-by model` and `--group-by provider` work on Cursor composers.
-`--group-by account` and `--group-by effort` use recorded values or `unknown`.
-Mixed-agent `--all` reports keep Claude, Codex, and opted-in Cursor in one ledger,
-grouped by the requested dimensions.
+`report --group-by model` and `--group-by provider` give separate breakdowns for Cursor
+composers, and `--group-by account` and `--group-by effort` use recorded values or
+`unknown`. `daily` and `sessions` take no `--group-by` until `uro-qvp1` adds joint
+grouping. Mixed-agent `--all` reports keep Claude, Codex, and opted-in Cursor in one
+ledger, with one breakdown per requested dimension.
 Default `--all` without a Cursor opt-in stays Claude and Codex only.
 
 Pricing, when milestone 0.4’s table exists, matches on provider, billing channel and
@@ -408,7 +415,8 @@ Each of these blocks the adapter bead `uro-p9ay`:
 - **Snapshot and evidence (`uro-9m75`).** How a live WAL-backed store is snapshotted,
   what that costs on a multi-GiB file, what the manifest records, how a row is cited as
   evidence when the design’s evidence references are byte extents, and how decode stays
-  within the ingest budget.
+  within the per-agent row ceiling that the other adapters charge while decoding, and
+  within the process-wide admission planned on `uro-6pi8`.
 - **Usage mapping (`uro-jrir`).** For session `usageData.costInCents`: ledger entity,
   call count, timestamp and money measure.
   For bubble `tokenCount`: field semantics.
