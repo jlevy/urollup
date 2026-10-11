@@ -348,7 +348,8 @@ memory.
 ### Process-Wide Admission (uro-6pi8)
 
 **Status:** design accepted (2026-10-09); slices 1 to 3 (budget source, ledger, and
-model and harness) implemented, with only the row ceiling wired into ingestion.
+model and harness) implemented, with only the row ceiling wired into ingestion; `F`
+rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -1227,7 +1228,9 @@ Choices made while implementing, where this design left room:
   construction checkpoint, which first measures `construction_estimate`; and Claude’s
   thread graph, which uses `with_capacity` and removes entries, so it is charged by
   capacity and by cumulative inserts.
-  Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`.
+  Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`,
+  with `F` measured on Linux directly, and the query constants from the calibration
+  matrix.
 
 ### Parallelism and Determinism
 
