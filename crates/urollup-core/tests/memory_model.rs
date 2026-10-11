@@ -58,7 +58,7 @@ use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
 use urollup_core::ledger::entities::{
     self as entities, Basis, Counting as RequestCounting, ModelBasis, ModelName, ModelUsage,
     Ownership, Pricing, PricingContext, ProviderLimitObservation, RecordRefs, Request, Requests,
-    Thread,
+    ServiceTier, Thread, TierBasis,
 };
 use urollup_core::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity,
@@ -896,6 +896,9 @@ enum Shape {
     /// One group whose members each have their own proven owner and served model, so its
     /// owner and model sets fill and their details list every member.
     OneGroupConflicts,
+    /// One group whose originals each record their own provider, service tier, speed and
+    /// geography, so the pricing merge's sets fill and its conflicts list every member's.
+    OneGroupPricing,
     /// Two distinct keys and the model invariant each: two key-graph nodes and an alias.
     ClaudeSingles,
     /// Pairs share both keys and disagree on the model: every pair splits.
@@ -914,12 +917,13 @@ enum Shape {
 }
 
 impl Shape {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::CodexSingles,
         Self::CodexPairs,
         Self::CodexKeyless,
         Self::OneGroup,
         Self::OneGroupConflicts,
+        Self::OneGroupPricing,
         Self::ClaudeSingles,
         Self::ClaudeSplits,
         Self::ClaudeBlocks,
@@ -939,6 +943,7 @@ impl Shape {
             | Self::CodexKeyless
             | Self::OneGroup
             | Self::OneGroupConflicts
+            | Self::OneGroupPricing
             | Self::ManyThreads
             | Self::HeavyThreads
             | Self::Limits => Agent::Codex,
@@ -1013,6 +1018,23 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
                 observation.owner = OwnerEvidence::Proven(id(IdPrefix::Thread, "owner", index));
                 observation.model = served(Name::new(&format!("model-{index}")));
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
+            }
+            Shape::OneGroupPricing => {
+                // Without owners, as in `OneGroup`, so the pricing merge's scratch is the
+                // largest step.
+                observation.owner = OwnerEvidence::None;
+                observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
+                let name = |dimension: &str| Name::new(&format!("{dimension}-{index:024}"));
+                observation.pricing = Some(Pricing::new(PricingContext {
+                    provider: Some(name("provider")),
+                    service_tier: Some(ServiceTier {
+                        name: name("tier"),
+                        basis: TierBasis::Request,
+                    }),
+                    speed: Some(name("speed")),
+                    inference_geo: Some(name("geo")),
+                    conflicted: false,
+                }));
             }
             Shape::ClaudeSingles | Shape::PayloadHeavy => {
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, &format!("msg-{index}")));
@@ -1103,6 +1125,19 @@ fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
         .filter(|model| model.basis == ModelBasis::Served)
         .map(|model| model.name.as_str())
         .collect();
+    // Each dimension's distinct names, as its conflict lists them.
+    let mut pricing: [BTreeSet<&str>; 4] = Default::default();
+    for context in input.requests.iter().filter_map(|observation| observation.pricing) {
+        let names = [
+            context.provider,
+            context.service_tier.map(|tier| tier.name),
+            context.speed,
+            context.inference_geo,
+        ];
+        for (dimension, name) in pricing.iter_mut().zip(names) {
+            dimension.extend(name.map(Name::as_str));
+        }
+    }
     ReconcileCounts {
         observations: input.requests.len() as u64,
         observation_capacity: input.requests.capacity() as u64,
@@ -1110,6 +1145,7 @@ fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
         observation_payload: input.requests.iter().map(DeepSize::heap).sum(),
         largest_group: 0,
         model_text: models.iter().map(|name| name.len() as u64).sum(),
+        pricing_text: pricing.iter().flatten().map(|name| name.len() as u64).sum(),
         limit_rows: input.limit_observations.len() as u64,
         threads: input.threads.len() as u64,
         thread_heap: input.threads.iter().map(DeepSize::heap).sum(),
@@ -1240,6 +1276,20 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let limits = ledger.limit_observations.len() as u64;
     let pushed = split + conflicting + ambiguous + diagnostics;
     report.bound_total("live above E", &case, excess, pushed);
+    // Group scratch's pricing step is named apart: its share is what group scratch holds
+    // above its lists and largest other step, which only the pricing group makes necessary.
+    let scratch = model::group_scratch(agent, largest, counts.model_text, counts.pricing_text);
+    let other_steps = [
+        model::group_keys(largest * model::key_bound(agent)),
+        model::group_revisions(largest),
+        model::group_owners(largest),
+        model::group_models(largest, counts.model_text),
+        model::group_records(largest),
+        model::group_fields(agent, largest),
+    ];
+    let without_pricing = model::group_lists(agent, largest)
+        + other_steps.into_iter().max().expect("group scratch has steps");
+    let pricing = scratch.saturating_sub(without_pricing);
 
     report.bound(
         "stage canonical",
@@ -1274,7 +1324,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
         stages.delta(ReconcileStage::Requests),
         &[
             ("request_vector", model::request_vector(sets, counts.observations, most_aliases)),
-            ("group_scratch", model::group_scratch(agent, largest, counts.model_text)),
+            ("group_scratch", scratch - pricing),
+            ("group_pricing", pricing),
             ("split_growth", split),
             ("conflicting_key", conflicting),
             ("ambiguous_owners", ambiguous),
@@ -1774,8 +1825,10 @@ fn main() {
     check_split_growth(&mut report);
     for shape in Shape::ALL {
         // Warm the shape's names and identities first, so that no measured window interns:
-        // one member's model name per observation, for the conflicting group.
-        if matches!(shape, Shape::OneGroupConflicts) {
+        // one member's model name per observation, for the conflicting group, and its
+        // pricing names and context, for the pricing group. The small run interns the
+        // pricing group's merged context, which takes its first member's values.
+        if matches!(shape, Shape::OneGroupConflicts | Shape::OneGroupPricing) {
             drop(synthetic_input(shape, 4_000));
         }
         drop(reconcile_with_stages(

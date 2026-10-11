@@ -1158,12 +1158,19 @@ Choices made while implementing, where this design left room:
     another and free what they allocate: `group_keys` (the ranked key set, then the
     aliases beside it), `group_revisions`, `group_owners` (the proven-owner set and the
     detail listing their IDs), `group_models` (the served-model set, then the detail
-    listing them), `group_records` and, for Claude, `group_fields`. A listed detail’s
-    transient (`listed_detail`: the item strings and their vector, the joined text and
-    `format!`’s first buffer) was not modeled before; the conflicting-group harness
-    input exercises it. Per member at 1,000 members it is 231 B for Codex (lists 40,
-    owners 191) and 389 B for Claude (lists 134, keys 255). `ReconcileCounts` gains
-    `model_text`, which bounds the model names a detail lists.
+    listing them), `group_pricing` (the pricing merge: the originals that carry a
+    context and their contexts, the merged dimension’s value and name sets, and the
+    conflicts, which `format!` doubles to at most twice their text, beside the detail’s
+    joined text and the buffer `format!` outgrows), `group_records` and, for Claude,
+    `group_fields`. A listed detail’s transient (`listed_detail`: the item strings and
+    their vector, the joined text and `format!`’s first buffer) was not modeled before;
+    the conflicting-group harness input exercises it.
+    Per member at 1,000 members it is 231 B for Codex (lists 40, owners 191) and 389 B
+    for Claude (lists 134, keys 255). `ReconcileCounts` gains `model_text`, which bounds
+    the model names a detail lists, and `pricing_text`, which bounds the pricing names a
+    conflict lists, counted per dimension.
+    Without pricing names the pricing step is 182 B per member, below the owners’ step,
+    so neither total changes; it grows with the names its conflicts list.
   - **Thread reconciliation** is the sum of `thread_sort`, `thread_maps`, the group
     vectors (`thread_groups`: at most four rows’ capacity per row, even while one
     doubles, tightened from 3 × a minimum-capacity vector per row), `thread_clones` (2 ×
@@ -1237,13 +1244,17 @@ Choices made while implementing, where this design left room:
     derivation, the name and pricing tables’ first nodes, a fresh thread’s name and
     pricing caches, and cold name, overflow and pricing-context interning that no
     earlier code has warmed;
-  - reconciliation of twelve synthetic inputs of 4,000 observations, each shaped so that
-    one term dominates (one or two keys, shared and split keys, one group, one group
-    whose members each have their own proven owner and served model, payloads, light and
-    evidence-heavy threads, limits), between each pair of stages against the model
-    functions behind each stage, and as a whole phase against the larger phase
+  - reconciliation of thirteen synthetic inputs of 4,000 observations, each shaped so
+    that one term dominates (one or two keys, shared and split keys, one group, one
+    group whose members each have their own proven owner and served model, one group
+    whose originals each record their own pricing context in every dimension, payloads,
+    light and evidence-heavy threads, limits), between each pair of stages against the
+    model functions behind each stage, and as a whole phase against the larger phase
     estimate’s components (`kappa`, `payloads`, `limits`, `sources`), each of which must
     be necessary in some phase check, with what grouping pushed beside them.
+    Group scratch’s pricing step is named apart, as `group_pricing`: its share is what
+    group scratch holds above its lists and largest other step, which only the pricing
+    group makes necessary.
     Live heap is tracked at every allocation against each checkpoint’s `E`: grouping
     without a group’s scratch from the start, with the largest linked set’s from
     `Order`, then finalize;
@@ -1268,6 +1279,8 @@ Choices made while implementing, where this design left room:
   - Thread reconciliation without its copies fails the evidence-heavy threads’ phase
     (150%) and their `E`.
   - Halving the copies fails only `thread_reconcile_is_its_parts`.
+  - Removing the pricing step from group scratch fails the pricing group’s requests
+    stage (142%) and `group_scratch_is_its_lists_and_largest_step`.
   - Removing group scratch’s owner and model step, the owners’ listed detail, or the
     models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
     which pins every part per member.

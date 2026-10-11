@@ -1321,6 +1321,11 @@ fn build_request(
     }))
 }
 
+/// The pricing dimensions a conflicting-context detail can name, in merge order, which
+/// admission charges with the detail's text.
+pub(crate) const PRICING_DIMENSIONS: [&str; 4] =
+    ["provider", "service_tier", "speed", "inference_geo"];
+
 /// Merges the pricing context of a request's originals; copies never contribute.
 ///
 /// An original fills the dimensions others left missing, in canonical order. Originals
@@ -1337,26 +1342,27 @@ fn pricing_context(
     let contexts: Vec<&PricingContext> =
         carriers.iter().filter_map(|record| record.pricing.map(Pricing::context)).collect();
     let first = carriers.first()?.pricing?;
+    let [provider, service_tier, speed, inference_geo] = PRICING_DIMENSIONS;
     let mut conflicts = Vec::new();
     let merged = PricingContext {
         provider: merged_dimension(
             &contexts,
-            "provider",
+            provider,
             |c| c.provider,
             Name::as_str,
             &mut conflicts,
         ),
         service_tier: merged_dimension(
             &contexts,
-            "service_tier",
+            service_tier,
             |c| c.service_tier,
             |tier| tier.name.as_str(),
             &mut conflicts,
         ),
-        speed: merged_dimension(&contexts, "speed", |c| c.speed, Name::as_str, &mut conflicts),
+        speed: merged_dimension(&contexts, speed, |c| c.speed, Name::as_str, &mut conflicts),
         inference_geo: merged_dimension(
             &contexts,
-            "inference_geo",
+            inference_geo,
             |c| c.inference_geo,
             Name::as_str,
             &mut conflicts,
