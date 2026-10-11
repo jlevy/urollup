@@ -968,12 +968,16 @@ set these source-specific rules:
   counted. The start stays voidable until a line at or past the boundary, or a line
   naming the child’s own thread, which ends the window without voiding it because the
   lines after it are the child’s by name.
-  A later unrecorded turn, as after a settings event without a thread ID, never moves
-  the start, and a line without an ordinal never closes the window.
+  A settings event without a thread ID (written before 0.152) names no owner, so it
+  leaves an open start’s lines the child’s; a later unrecorded turn never moves the
+  start, and a line without an ordinal never closes the window.
+  The counter that voids a start by repeating a total the parent reported is the
+  parent’s copy, so a child’s own step that repeats one in every count is dropped.
   One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
   dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
-  spawned in that turn holds its copy, so the root’s next counter step and the child
-  both count that turn; `main` already does this for an unmigrated child.
+  spawned in that turn, or a user fork taken before the rollback, holds its copy, so the
+  root’s next counter step and the child both count that turn; `main` already does this
+  for an unmigrated child.
   Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
   is excluded as unverified, as below, when the region shows migrated content: a turn
   the parent’s turns cannot place, because it has no ID or the parent is not a
@@ -987,17 +991,21 @@ set these source-specific rules:
   parent link and no other thread’s `session_meta` is therefore judged as if its
   boundary lay past its last line, unless it has a mark of a rollout that copied
   nothing: a `history_base`, which a native fork that references its parent declares; a
-  `thread_source` of `subagent` or `guardian_review`, since Codex bounds every subagent
-  that inherits context; or a seeded first counter, whose total neither its own
-  `last_token_usage` nor a total its parent root reported accounts for, as a native
-  fork’s continues the total Codex seeds it with.
-  Turns, totals and lines naming a thread then decide its lines from the first, as
-  above, and an inferred start stays voidable to the end of the file unless a line names
-  the fork. A migration that kept only the suffix from the child’s own compaction dropped
-  every earlier line, so in a rollout with usage records, when a `compacted` record
-  naming the child is the only record of its response before the boundary, a first
-  running total beyond what the child’s own records report is excluded as unverified too
-  (without usage records, the first-step check below does this).
+  `thread_source` of `subagent` or `guardian_review`, or a subagent `source` other than
+  memory consolidation, since Codex bounds every subagent that inherits context and its
+  migration bounds every rollout with a subagent `source` or `thread_source`; or a
+  seeded first counter, whose total neither its own `last_token_usage` nor a total its
+  parent root reported accounts for, as a native fork’s continues the total Codex seeds
+  it with. Only a counter-only parent root supplies those totals, so when a parent that
+  rolled back its first turn also holds usage records, a fork’s copy of its first
+  counter looks seeded and still counts again (`uro-eh0d`). Turns, totals and lines
+  naming a thread then decide its lines from the first, as above, and an inferred start
+  stays voidable to the end of the file unless a line names the fork.
+  A migration that kept only the suffix from the child’s own compaction dropped every
+  earlier line, so in a rollout with usage records, when a `compacted` record naming the
+  child is the only record of its response before the boundary, a first running total
+  beyond what the child’s own records report is excluded as unverified too (without
+  usage records, the first-step check below does this).
   A legacy child seeded with its parent’s total reports it even when the migration
   dropped no other response.
   In a rollout without usage records, the counter of a response that such a compacted
@@ -1024,8 +1032,8 @@ set these source-specific rules:
   A step that only repeats the inherited total reports no usage, so the step after it is
   the one checked. A child with neither an explicit boundary nor copied counters starts
   from zero unchecked, so a native paginated fork written before 0.153, whose counters
-  continue the total Codex seeded it with, still counts that total again
-  ([research](project/research/research-2026-10-10-codex-paginated-subagent-boundary.md#residual-risks)).
+  continue the total Codex seeded it with, still counts that total again (`uro-p12c`;
+  [research](project/research/research-2026-10-10-codex-paginated-subagent-boundary.md#residual-risks)).
   The parent’s latest total is not a substitute for its total at the fork.
   Each rollout with usage excluded this way gets one `codex-history-boundary-unverified`
   diagnostic and a coverage gap for its thread, so that thread and the whole history

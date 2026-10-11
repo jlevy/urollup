@@ -192,6 +192,8 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    inference, and the region from the start to the boundary becomes undecided.
    The start stays open until a line at or past the boundary, or a line naming the
    child’s own thread, which ends the window without voiding it.
+   A settings event without a thread ID (written before 0.152) names no owner, so as of
+   `uro-p9ua` it leaves an open start’s lines the child’s.
 5. Unnamed usage (counters and records without a `thread_id`) that rules 2 to 4 leave
    undecided is excluded with a `codex-history-boundary-unverified` diagnostic and a
    coverage gap, rather than counted or silently treated as a copy, when its region
@@ -211,11 +213,13 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    is judged by rules 4 and 5 as if its boundary lay past its last line: a counter-only
    paginated rollout with a parent link and no other thread’s `session_meta`, without a
    mark of a rollout that copied nothing.
-   The marks are a `history_base`, a `thread_source` of `subagent` or `guardian_review`,
+   The marks are a `history_base`; a `thread_source` of `subagent` or `guardian_review`,
+   or a subagent `source` other than memory consolidation, as the migration tests it;
    and a seeded first counter, whose total neither its own last usage nor a total its
    parent root reported accounts for.
    The parent’s totals keep a copied counter in the rule when a migrated root’s rollback
-   planning dropped its first turn and left that turn’s usage in the next counter.
+   planning dropped its first turn and left that turn’s usage in the next counter; only
+   a counter-only root supplies them.
    So its lines are the parent root’s copy from the first line until the first turn the
    parent never recorded, whose first step is checked against the copied total.
    No line reaches the boundary, so an inferred start stays voidable to the end of the
@@ -241,6 +245,11 @@ usage under an invalid or unpositioned boundary.
   A subagent spawned in that turn still holds its copy, so its inferred own start counts
   that usage again (`uro-eh0d`). `main` does the same for an unmigrated child through
   the legacy turn switch.
+  Rule 7 extends this to a migrated user fork taken before the parent rolled back a turn
+  it copied: in a synthetic case it reports 280 against a real 220, where `main` reports
+  380 (`paginated_forks.rs` pins it).
+  A local real-history check found no migrated user fork with own totals inside a parent
+  rollback window.
 
 - **Turn evidence beyond roots.** Turns are checked only against complete roots.
   A turn index over every rollout would decide nested chains and siblings too
@@ -265,16 +274,22 @@ usage under an invalid or unpositioned boundary.
   `history_base` and no settings event naming it), is indistinguishable from a migrated
   fork, so it is a gap when its parent is absent although it copied nothing.
   When a migrated parent’s rollback planning dropped its first turn and the parent is
-  absent, the fork’s first counter looks seeded, so the fork counts that copy as its own
-  usage, as before `uro-p9ua`.
+  absent, holds usage records or has lineage, no counter-only root supplies the totals
+  that show the fork’s first counter is a copy, so it looks seeded and the fork counts
+  that copy as its own usage, as before `uro-p9ua`. With the parent present, that copy
+  counts twice (`uro-eh0d`; a synthetic case reports 350 against a real 190). A fork’s
+  own step that repeats a total its parent reported, in every count, as a retried prompt
+  can, voids its inferred start and is decided as the parent’s copy, so it is dropped
+  with complete coverage; PR #32’s rule does the same for a migrated subagent
+  (`paginated_forks.rs` pins both).
 
 - **Native counter-only forks count their seed.** A referenced fork written before 0.153
   has no usage records, and its first counter continues the parent’s total that Codex
   seeded it with. urollup starts a fork that has neither a boundary nor copied counters
   from zero, so that step counts the parent’s total again, with complete coverage.
   Rule 7 deliberately leaves such a fork, marked by its `history_base` and seeded first
-  counter, unchanged (`paginated_forks.rs` pins it); checking the seed against the
-  parent’s totals would fix it.
+  counter, unchanged (`uro-p12c`, which `paginated_forks.rs` pins); checking the seed
+  against the parent’s totals would fix it.
   A migrated fork resumed by 0.153 or later falls out of rule 7 once it has usage
   records, and its counter-only turns are not counted (`uro-r8si`).
 
