@@ -506,7 +506,7 @@ pub fn reconcile_with_capacity(
     selector: &dyn RevisionSelector,
     capacity: &super::capacity::ObservationCapacity,
 ) -> Result<Ledger, ReconcileError> {
-    reconcile_with_stages(input, selector, capacity, &mut |_| {})
+    reconcile_with_stages(input, selector, capacity, &mut |_| Ok(()))
 }
 
 /// A point inside reconciliation, in the order reconciliation passes them: where slice 5's
@@ -520,8 +520,14 @@ pub enum ReconcileStage {
     Canonical,
     /// The key graph holds every key and lineage link.
     KeyGraph,
-    /// The grouping order is sorted, and the first-key list is freed.
-    Order,
+    /// The grouping order is sorted, and the first-key list is freed. No request is built
+    /// yet; the linked sets are now known.
+    Order {
+        /// The linked sets, one request each before conflicting keys split any.
+        sets: u64,
+        /// The observations in the largest linked set, which bounds one group's scratch.
+        largest_group: u64,
+    },
     /// Every request is built; observations, the order and the key graph are still held.
     Requests,
     /// Observations, the order and the key graph are freed.
@@ -532,13 +538,14 @@ pub enum ReconcileStage {
     Finalized,
 }
 
-/// [`reconcile_with_capacity`], calling `stage` at each [`ReconcileStage`]. Output is the
-/// same whatever `stage` does.
+/// [`reconcile_with_capacity`], calling `stage` at each [`ReconcileStage`]. The first stage
+/// whose call returns an error stops reconciliation before it allocates further, and that
+/// error is returned; otherwise output is the same whatever `stage` does.
 pub fn reconcile_with_stages(
     input: ReconcileInput,
     selector: &dyn RevisionSelector,
     capacity: &super::capacity::ObservationCapacity,
-    stage: &mut dyn FnMut(ReconcileStage),
+    stage: &mut dyn FnMut(ReconcileStage) -> Result<(), ReconcileError>,
 ) -> Result<Ledger, ReconcileError> {
     ensure_capacity(input.requests.len(), capacity)?;
     let ReconcileInput {
@@ -554,7 +561,7 @@ pub fn reconcile_with_stages(
     } = input;
     let mut coverage =
         ReconcileCoverage { observations: count(requests.len()), ..ReconcileCoverage::default() };
-    stage(ReconcileStage::Start);
+    stage(ReconcileStage::Start)?;
 
     let mut registry = IdentityRegistry::new();
     let threads = reconcile_threads(threads, &mut registry, &mut diagnostics)?;
@@ -562,7 +569,7 @@ pub fn reconcile_with_stages(
     let relationships = reconcile_relationships(relationships, &thread_ids)?;
     let mut observations = canonicalize_request_owners(requests, &thread_ids);
     dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
-    stage(ReconcileStage::Canonical);
+    stage(ReconcileStage::Canonical)?;
 
     // Register every key, linking keys that share an observation, then lineage links.
     let mut graph = KeyGraph::with_capacity(observations.len());
@@ -575,7 +582,7 @@ pub fn reconcile_with_stages(
         let (a, b) = (graph.node(&link.a), graph.node(&link.b));
         graph.link(a, b);
     }
-    stage(ReconcileStage::KeyGraph);
+    stage(ReconcileStage::KeyGraph)?;
 
     // Group observations by linked set: sets in order of their lowest ID, members in
     // canonical order.
@@ -586,12 +593,11 @@ pub fn reconcile_with_stages(
     order.sort_unstable_by(|(left_root, left), (right_root, right)| {
         graph.id(*left_root).cmp(graph.id(*right_root)).then(left.cmp(right))
     });
-    stage(ReconcileStage::Order);
+    let (sets, largest_group) = linked_sets(&order);
+    stage(ReconcileStage::Order { sets: count(sets), largest_group: count(largest_group) })?;
 
     // One request per set, plus rare extra parts from conflicting keys; sizing up front
     // avoids doubling the widest vector of the run.
-    let sets = order.windows(2).filter(|pair| pair[0].0 != pair[1].0).count()
-        + usize::from(!order.is_empty());
     let mut requests = Vec::with_capacity(sets + sets / 32);
     let mut candidates = LinkGraph::new();
     let mut start = 0;
@@ -652,14 +658,14 @@ pub fn reconcile_with_stages(
         }
         start = end;
     }
-    stage(ReconcileStage::Requests);
+    stage(ReconcileStage::Requests)?;
     drop(order);
     drop(observations);
     drop(graph);
-    stage(ReconcileStage::Released);
+    stage(ReconcileStage::Released)?;
 
     let mut requests = Requests::from_unsorted(requests);
-    stage(ReconcileStage::Sorted);
+    stage(ReconcileStage::Sorted)?;
     let candidate_sets = resolve_candidate_sets(&candidates, &mut requests, &mut diagnostics);
     coverage.candidate_sets = count(candidate_sets.len());
     coverage.requests = count(requests.len());
@@ -680,7 +686,7 @@ pub fn reconcile_with_stages(
     let diagnostics = super::diagnostics::compact(diagnostics);
     gaps.sort();
     gaps.dedup();
-    stage(ReconcileStage::Finalized);
+    stage(ReconcileStage::Finalized)?;
     Ok(Ledger {
         threads,
         relationships,
@@ -1156,6 +1162,24 @@ fn release_payload(observation: &mut RequestObservation) {
     observation.keys = InlineList::new();
     observation.model_usage = InlineList::new();
     observation.invariants = InlineList::new();
+}
+
+/// The linked sets in a grouping order sorted by root, and the members of the largest:
+/// one pass, allocating nothing.
+fn linked_sets(order: &[(u32, u32)]) -> (usize, usize) {
+    let (mut sets, mut largest, mut run) = (0, 0, 0);
+    let mut previous = None;
+    for &(root, _) in order {
+        if previous == Some(root) {
+            run += 1;
+        } else {
+            sets += 1;
+            run = 1;
+            previous = Some(root);
+        }
+        largest = largest.max(run);
+    }
+    (sets, largest)
 }
 
 fn index_u32(index: usize) -> u32 {

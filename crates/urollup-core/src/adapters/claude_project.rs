@@ -138,6 +138,15 @@ pub(crate) const OWNER_STATE_PER_RECORD: u64 = {
 /// scratch adds one entry per record to the Claude construction charge in κ.
 pub(crate) const ELIGIBLE_ENTRY_BYTES: u64 = size_of::<(&AnalyticalId, &ParsedRecord)>() as u64;
 
+/// The revision-invariant field a Claude observation carries: the served model, on which a
+/// group whose members disagree splits (`ledger::admission::model::group_lists`).
+pub(crate) const MODEL_INVARIANT: &str = "model";
+
+/// The disagreement Claude's block selector reports when revisions differ in input or cache
+/// fields (`ledger::admission::model::group_revisions`).
+pub(crate) const BLOCK_DISAGREEMENT: &str =
+    "input or cache fields differ across Claude block records";
+
 /// The `(index, result)` pair a worker of the parallel join holds per transcript.
 pub(crate) const JOIN_PAIR_BYTES: u64 =
     size_of::<(usize, Option<Result<DecodedSource, AdapterError>>)>() as u64;
@@ -1464,7 +1473,7 @@ fn observe(
         observation.effort = record.effort.map(|effort| strings.resolve(effort).into());
         observation.timestamp = record.timestamp.map(|time| time.get().into());
         if let Some(model) = observation.model.as_ref() {
-            observation.invariants.push(("model", model.name));
+            observation.invariants.push((MODEL_INVARIANT, model.name));
         }
     }
     Ok(observation)
@@ -1643,7 +1652,7 @@ impl RevisionSelector for ClaudeBlockSelector {
                 .iter()
                 .filter_map(|revision| revision.usage.map(TokenMeasures::from))
                 .any(|usage| input_measures(&usage) != input_measures(&selected))
-                .then(|| "input or cache fields differ across Claude block records".to_owned())
+                .then(|| BLOCK_DISAGREEMENT.to_owned())
                 .into_iter()
                 .collect()
         });

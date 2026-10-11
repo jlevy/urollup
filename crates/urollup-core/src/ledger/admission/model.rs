@@ -219,18 +219,31 @@ pub const fn btree_entry(key: u64, value: u64) -> u64 {
     max(entry.saturating_mul(5).div_ceil(2), btree_node(key, value).div_ceil(5))
 }
 
-/// A `BTreeMap` or `BTreeSet` of `entries` built by `collect()` from an iterator: the
-/// standard library first collects the entries into a vector and stable-sorts it, then
-/// builds the tree from the sorted vector, whose nodes the per-entry rule bounds.
+/// The nodes of a B-tree of `entries` built in bulk from sorted entries, as `collect()`
+/// builds one: every node is full except along the right border, so one node for up to
+/// eleven entries, and otherwise at most one per ten entries plus four for the border.
+pub const fn btree_bulk(entries: u64, key: u64, value: u64) -> u64 {
+    if entries == 0 {
+        return 0;
+    }
+    let nodes = if entries <= 11 { 1 } else { (entries / 10).saturating_add(4) };
+    nodes.saturating_mul(btree_node(key, value))
+}
+
+/// A `BTreeMap` or `BTreeSet` of `entries` built by `collect()` from an iterator, at its
+/// peak: the standard library collects the entries into a vector, which may grow by
+/// doubling, then stable-sorts it, then builds the tree in bulk beside it. The vector holds
+/// at most twice the entries once grown.
 pub const fn btree_collected(entries: u64, key: u64, value: u64) -> u64 {
     if entries == 0 {
         return 0;
     }
     let pair = key.saturating_add(value);
-    grown_vec(entries, pair)
-        .saturating_add(sort_scratch(entries, pair))
-        .saturating_add(entries.saturating_mul(btree_entry(key, value)))
-        .saturating_add(btree_node(key, value))
+    let collected = sized_vec(max(entries.saturating_mul(2), minimum_capacity(pair)), pair);
+    max(
+        grown_vec(entries, pair),
+        collected.saturating_add(max(sort_scratch(entries, pair), btree_bulk(entries, key, value))),
+    )
 }
 
 /// The type sizes the model charges per unit.
@@ -281,6 +294,12 @@ pub mod sizes {
     pub const NAME: u64 = size_of::<Name>() as u64;
     /// A `BTreeSet` or `Vec` header, as a candidate-set list holds it.
     pub const SET_HEADER: u64 = size_of::<std::collections::BTreeSet<AnalyticalId>>() as u64;
+    /// A string slice, as the sets of served models and field values hold them.
+    pub const STR: u64 = size_of::<&str>() as u64;
+    /// A `String`, as a listed detail's item strings are held.
+    pub const STRING: u64 = size_of::<String>() as u64;
+    /// A `Vec`, as a group's parts are held.
+    pub const LIST: u64 = size_of::<Vec<usize>>() as u64;
 }
 
 /// The most key-graph nodes one observation of `agent` can add, including the
@@ -361,7 +380,8 @@ impl RequestStructure {
 /// One request's references per observation: an evidence reference with half an
 /// allocation's cost, and one alias with its share of an allocation per key.
 pub const fn request_references(keys: u64) -> u64 {
-    sizes::EVIDENCE + ALLOCATION_COST / 2 + keys * (sizes::ID + ALLOCATION_COST)
+    (sizes::EVIDENCE + ALLOCATION_COST / 2)
+        .saturating_add(keys.saturating_mul(sizes::ID + ALLOCATION_COST))
 }
 
 /// The key graph per node: three vectors at 3 × and the slots at 1.5 ×, old and new
@@ -440,21 +460,37 @@ pub const fn limit_row() -> u64 {
     )
 }
 
-/// One diagnostic whose detail text has `detail_capacity` bytes of capacity (a `format!`
-/// detail's capacity, not its length) and which cites `evidence` references: its row at
-/// 5 × (compaction iterates the input vector, of up to twice the rows, while it pushes
-/// into a doubling vector, and its sorts fit within that), its text and its evidence
-/// vector.
+/// A diagnostic's row at 5 ×: compaction iterates the input vector, of up to twice the
+/// rows, while it pushes into a doubling vector, and its sorts fit within that.
+pub const DIAGNOSTIC_ROW: u64 = 5 * sizes::DIAGNOSTIC;
+
+/// A diagnostic's detail text of `capacity` bytes: a `format!` detail's capacity, not its
+/// length.
+pub const fn diagnostic_detail(capacity: u64) -> u64 {
+    allocation(capacity)
+}
+
+/// A diagnostic's `evidence` references, collected into a vector that may grow by doubling
+/// and then stable-sorted, whose scratch the vector's 3 × covers.
+pub const fn diagnostic_evidence(evidence: u64) -> u64 {
+    grown_vec(evidence, sizes::EVIDENCE)
+}
+
+/// One diagnostic whose detail text has `detail_capacity` bytes of capacity and which
+/// cites `evidence` references: its row ([`DIAGNOSTIC_ROW`]), its text
+/// ([`diagnostic_detail`]) and its evidence ([`diagnostic_evidence`]).
 pub const fn diagnostic(detail_capacity: u64, evidence: u64) -> u64 {
-    5 * sizes::DIAGNOSTIC + allocation(detail_capacity) + grown_vec(evidence, sizes::EVIDENCE)
+    DIAGNOSTIC_ROW
+        .saturating_add(diagnostic_detail(detail_capacity))
+        .saturating_add(diagnostic_evidence(evidence))
 }
 
 /// A new process-interned [`Name`] of `text` bytes: the text, its leaked reference and
 /// its entry in the name table.
 pub const fn name_intern(text: u64) -> u64 {
     allocation(text)
-        + allocation(size_of::<&str>() as u64)
-        + btree_entry(size_of::<&str>() as u64, sizes::NAME)
+        .saturating_add(allocation(sizes::STR))
+        .saturating_add(btree_entry(sizes::STR, sizes::NAME))
 }
 
 /// The name table's one-time base, charged with the first name: its first B-tree node.
@@ -527,7 +563,7 @@ pub const ZSTD_CONTEXT: u64 = 96 << 10;
 /// wildcopy slack. A block is the window or 128 KiB, whichever is smaller.
 pub const fn zstd_stream(window: u64) -> u64 {
     let block = if window < ZSTD_BLOCK { window } else { ZSTD_BLOCK };
-    ZSTD_CONTEXT + block + window + 2 * block + 2 * 32
+    ZSTD_CONTEXT.saturating_add(window).saturating_add(3 * block).saturating_add(2 * 32)
 }
 
 /// The slot's zstd decoder: the stream for an 8 MiB window and the frame loop's input
@@ -787,7 +823,7 @@ pub const fn construction_estimate(agent: Agent, counts: &ConstructionCounts) ->
     }
 }
 
-/// Exact counts at a reconciliation checkpoint, before grouping.
+/// Exact counts at a reconciliation checkpoint.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReconcileCounts {
     /// Request observations.
@@ -802,15 +838,22 @@ pub struct ReconcileCounts {
     /// The observations' owned payloads by the costing rule: spilled keys and
     /// invariants and per-model usage.
     pub observation_payload: u64,
-    /// The observations in the largest linked set, which bounds one group's scratch; at a
-    /// checkpoint, where linked sets are not yet known, the observations.
+    /// The observations in the largest linked set, which bounds one group's scratch. It is
+    /// known from [`ReconcileStage::Order`](crate::ledger::reconcile::ReconcileStage) on; a
+    /// checkpoint before it passes 0, since no group is built before then.
     pub largest_group: u64,
+    /// The text of the distinct served-model names the observations carry, which bounds
+    /// the names one conflicting-models detail lists. The interned names' bytes bound it.
+    pub model_text: u64,
     /// Provider limit observations.
     pub limit_rows: u64,
     /// Thread observations, which reconciliation sorts, registers, groups and merges.
     pub threads: u64,
     /// The heap the thread observations own, by the costing rule.
     pub thread_heap: u64,
+    /// The most evidence references one thread observation holds, which its merge
+    /// collects and sorts.
+    pub largest_thread_evidence: u64,
     /// Lineage links, which reconciliation sorts.
     pub links: u64,
     /// The deep size of everything else the input holds: relationships, tool actions,
@@ -818,44 +861,208 @@ pub struct ReconcileCounts {
     pub metadata: u64,
 }
 
-/// The scratch one group of `members` observations allocates while its request is
-/// built: member, original and revision lists, a split's parts, keys and evidence, and
-/// the sets that rank its keys, check its fields and collect its owners and models.
-pub const fn group_scratch(agent: Agent, members: u64) -> u64 {
+/// Whether `agent`'s observations carry a revision-invariant field, so that a group whose
+/// members disagree on it splits into one request per member. Only Claude's do: the served
+/// model.
+pub const fn splits(agent: Agent) -> bool {
+    matches!(agent, Agent::Claude)
+}
+
+/// The text an [`AnalyticalId`] displays as: its three-letter prefix, `-v1-` and 26
+/// digits.
+pub const ID_TEXT: u64 = 33;
+
+/// The first buffer `format!` allocates for a listed detail: twice the detail's literal
+/// text, under 32 bytes for every detail grouping writes.
+const FORMAT_BUFFER: u64 = 64;
+
+/// The transient heap of a diagnostic detail that lists `items` items of `text` bytes in
+/// all, joined by `, `: the vector of item strings and the strings, the first buffer of
+/// the item being written, the joined text, and `format!`'s first buffer, which the detail
+/// outgrows. The detail itself is charged with its diagnostic ([`diagnostic_detail`]).
+pub const fn listed_detail(items: u64, text: u64) -> u64 {
+    if items == 0 {
+        return 0;
+    }
+    sized_vec(items, sizes::STRING)
+        .saturating_add(text.saturating_add(items.saturating_mul(ALLOCATION_COST)))
+        .saturating_add(allocation(8))
+        .saturating_add(allocation(text.saturating_add(items.saturating_mul(2))))
+        .saturating_add(allocation(FORMAT_BUFFER))
+}
+
+/// A vector filtered from `entries` items by `collect()`, once grown: at most twice the
+/// entries, and at least the minimum capacity.
+const fn filtered_vec(entries: u64, element: u64) -> u64 {
+    sized_vec(max(entries.saturating_mul(2), minimum_capacity(element)), element)
+}
+
+/// The names of the fields a group's members disagree on, for a dialect that splits: one
+/// node and Claude's one field name.
+const FIELD_NAMES: u64 = btree_node(sizes::STRING, 0)
+    .saturating_add(allocation(crate::adapters::claude_project::MODEL_INVARIANT.len() as u64));
+
+/// One group's lists, live while its requests are built: its members and the one part
+/// they form, the part's ID, and the originals and revisions each request filters from its
+/// part. A dialect that splits ([`splits`]) instead holds one single-member list per part,
+/// every part's ID, each part's artifact-local key and its derivation, and the names of
+/// the fields that split them.
+pub const fn group_lists(agent: Agent, members: u64) -> u64 {
     if members == 0 {
         return 0;
     }
     let pointer = sizes::POINTER;
+    let lists = sized_vec(members, pointer).saturating_add(2 * filtered_vec(members, pointer));
+    if splits(agent) {
+        lists
+            .saturating_add(sized_vec(members, sizes::LIST))
+            .saturating_add(members.saturating_mul(sized_vec(1, pointer)))
+            .saturating_add(filtered_vec(members, sizes::ID))
+            .saturating_add(sized_vec(1, sizes::DERIVED_KEY))
+            .saturating_add(KEY_DERIVATION)
+            .saturating_add(FIELD_NAMES)
+    } else {
+        lists.saturating_add(sized_vec(1, sizes::LIST)).saturating_add(filtered_vec(1, sizes::ID))
+    }
+}
+
+/// Resolving a group's canonical ID from `keys` keys, at the larger of its two steps: the
+/// ranked set collected from the keys, then the aliases vector, sorted and shrunk beside
+/// the set.
+pub const fn group_keys(keys: u64) -> u64 {
+    max(
+        btree_collected(keys, sizes::KEY_RANK, 0),
+        btree_bulk(keys, sizes::KEY_RANK, 0).saturating_add(grown_vec(keys, sizes::ID)),
+    )
+}
+
+/// Selecting a request's revision among at most `members`: the latest-revision rule's
+/// sequences, which grow as they are collected, and a block disagreement, its copy and the
+/// detail that lists it.
+pub const fn group_revisions(members: u64) -> u64 {
+    let text = crate::adapters::claude_project::BLOCK_DISAGREEMENT.len() as u64;
+    grown_vec(members, size_of::<u64>() as u64)
+        .saturating_add(2 * (sized_vec(1, sizes::STRING) + allocation(text)))
+        .saturating_add(listed_detail(1, text))
+}
+
+/// A group's proven owners, at most one per member: the set they are inserted into and,
+/// when there are several, the detail that lists their IDs.
+pub const fn group_owners(members: u64) -> u64 {
+    btree_map(members, sizes::ID, 0)
+        .saturating_add(listed_detail(members, members.saturating_mul(ID_TEXT)))
+}
+
+/// A group's served models, at most one per member, whose distinct names hold at most
+/// `model_text` bytes, at the larger of its two steps: the set collected from them, then,
+/// when they differ, the detail that lists them beside the set.
+pub const fn group_models(members: u64, model_text: u64) -> u64 {
+    max(
+        btree_collected(members, sizes::STR, 0),
+        btree_bulk(members, sizes::STR, 0).saturating_add(listed_detail(members, model_text)),
+    )
+}
+
+/// A request's record list, which grows by doubling before it shrinks to its records.
+pub const fn group_records(members: u64) -> u64 {
+    grown_vec(members, sizes::EVIDENCE)
+}
+
+/// Finding the fields a group's members disagree on, for a dialect that splits: the map
+/// of Claude's one field to the set of its distinct values, at most one per member, and the
+/// detail that names the field.
+pub const fn group_fields(agent: Agent, members: u64) -> u64 {
+    if !splits(agent) || members == 0 {
+        return 0;
+    }
+    let text = crate::adapters::claude_project::MODEL_INVARIANT.len() as u64;
+    btree_map(1, sizes::STR, sizes::SET_HEADER)
+        .saturating_add(btree_map(members, sizes::STR, 0))
+        .saturating_add(listed_detail(1, text))
+}
+
+/// The scratch one group of `members` observations allocates while its requests are built:
+/// its lists ([`group_lists`]) and the largest of the steps that run one after another,
+/// each freeing what it allocated: resolving its keys, selecting revisions, collecting its
+/// owners and its models, gathering records, and finding the fields its members disagree
+/// on. `model_text` bounds the served-model names a detail can list.
+pub const fn group_scratch(agent: Agent, members: u64, model_text: u64) -> u64 {
+    if members == 0 {
+        return 0;
+    }
     let keys = members.saturating_mul(key_bound(agent));
-    sized_vec(members, pointer)
-        .saturating_add(2 * grown_vec(members, pointer))
-        .saturating_add(sized_vec(members, 3 * pointer))
-        .saturating_add(members.saturating_mul(sized_vec(1, pointer)))
-        .saturating_add(sized_vec(members, sizes::DERIVED_KEY))
-        .saturating_add(sized_vec(members, sizes::EVIDENCE))
-        .saturating_add(grown_vec(members, sizes::ID))
-        .saturating_add(btree_collected(keys, sizes::KEY_RANK, 0))
-        .saturating_add(grown_vec(keys, sizes::ID))
-        .saturating_add(3 * btree_collected(members, 2 * pointer, pointer))
-        .saturating_add(KEY_DERIVATION)
+    let identity = max(group_keys(keys), group_revisions(members));
+    let sets = max(group_owners(members), group_models(members, model_text));
+    let rest = max(group_records(members), group_fields(agent, members));
+    group_lists(agent, members).saturating_add(max(identity, max(sets, rest)))
+}
+
+/// Thread reconciliation's stable sort of `threads` thread rows.
+pub const fn thread_sort(threads: u64) -> u64 {
+    sort_scratch(threads, sizes::THREAD)
+}
+
+/// The maps thread reconciliation inserts `threads` thread observations into: the
+/// identity registry, the link graph, the groups and the reconciled threads; and the
+/// canonical-ID map collected from the reconciled threads.
+pub const fn thread_maps(threads: u64) -> u64 {
+    btree_map(threads, sizes::ID, sizes::IDENTITY_KEY)
+        .saturating_add(btree_map(threads, sizes::ID, sizes::ID))
+        .saturating_add(btree_map(threads, sizes::ID, sizes::LIST))
+        .saturating_add(btree_map(threads, sizes::ID, sizes::THREAD))
+        .saturating_add(btree_collected(threads, sizes::ID, sizes::ID))
+}
+
+/// The vectors that group `threads` thread rows: a group of `k` rows holds at most
+/// `max(minimum capacity, 3) × k` rows' capacity, even while it doubles, and one
+/// allocation each, plus the new one while one doubles.
+pub const fn thread_groups(threads: u64) -> u64 {
+    let per_row = max(minimum_capacity(sizes::THREAD), 3)
+        .saturating_mul(sizes::THREAD)
+        .saturating_add(ALLOCATION_COST);
+    threads.saturating_mul(per_row).saturating_add(ALLOCATION_COST)
+}
+
+/// The copies thread reconciliation makes of `thread_heap` bytes of thread observations:
+/// the merged threads' identities, keys, values and evidence, and the identity registry's
+/// key clones, each at most the observations' heap.
+pub const fn thread_clones(thread_heap: u64) -> u64 {
+    thread_heap.saturating_mul(2)
+}
+
+/// Merging one thread whose observation holds `evidence` references: its evidence
+/// collected into a set and sorted, then copied out beside the set; and, one field at a
+/// time, the values collected from it and their distinct set, or the native keys' map of
+/// up to eleven fields to their values.
+pub const fn thread_merge(evidence: u64) -> u64 {
+    let evidence = max(
+        btree_collected(evidence, sizes::EVIDENCE, 0),
+        btree_bulk(evidence, sizes::EVIDENCE, 0)
+            .saturating_add(sized_vec(evidence, sizes::EVIDENCE)),
+    );
+    let field = max(
+        filtered_vec(1, sizes::POINTER).saturating_add(btree_collected(1, sizes::STR, 0)),
+        btree_node(sizes::STR, sizes::SET_HEADER).saturating_add(11 * btree_node(sizes::STR, 0)),
+    );
+    evidence.saturating_add(field)
 }
 
 /// The structures thread reconciliation builds for `threads` thread observations that own
-/// `thread_heap` bytes: the stable sort's scratch, the identity registry with a clone of
-/// each key, the link graph, the groups and their vectors, the merged map with its
-/// clones, and the canonical-ID map.
-pub const fn thread_reconcile(threads: u64, thread_heap: u64) -> u64 {
+/// `thread_heap` bytes, the largest holding `largest_evidence` references: the sort's
+/// scratch, the maps, the group vectors, the copies, and one thread's merge.
+///
+/// Precondition: each thread identity appears once and carries no aliases, as both
+/// adapters emit them, so every group is one observation. Merging several would also
+/// collect their aliases and fields, which this does not charge.
+pub const fn thread_reconcile(threads: u64, thread_heap: u64, largest_evidence: u64) -> u64 {
     if threads == 0 {
         return 0;
     }
-    sort_scratch(threads, sizes::THREAD)
-        .saturating_add(btree_map(threads, sizes::ID, sizes::IDENTITY_KEY))
-        .saturating_add(btree_map(threads, sizes::ID, sizes::ID))
-        .saturating_add(btree_map(threads, sizes::ID, 3 * sizes::POINTER))
-        .saturating_add(threads.saturating_mul(grown_vec(1, sizes::THREAD)))
-        .saturating_add(btree_map(threads, sizes::ID, sizes::THREAD))
-        .saturating_add(btree_map(threads, sizes::ID, sizes::ID))
-        .saturating_add(thread_heap.saturating_mul(2))
+    thread_sort(threads)
+        .saturating_add(thread_maps(threads))
+        .saturating_add(thread_groups(threads))
+        .saturating_add(thread_clones(thread_heap))
+        .saturating_add(thread_merge(largest_evidence))
 }
 
 /// The transient scratch of deriving one key's ID: the key's kind and components, the
@@ -903,27 +1110,44 @@ pub const fn request_vector(sets: u64, observations: u64, keys: u64) -> u64 {
         .saturating_add(observations.saturating_mul(request_references(keys)))
 }
 
-/// The modeled heap while `agent`'s observations group into requests, from the counts at
-/// the grouping checkpoint. Linked sets are bounded by the observations, and the largest
-/// group by `counts.largest_group`. Split growth, the structures conflicting keys leave and
-/// the diagnostics grouping pushes are charged where they are pushed.
+/// The part of the grouping and finalize estimates' request structure that does not grow
+/// with the observations: the key derivation's allowance, the key graph's minimum slots and
+/// its vectors' allocation costs, and those of the observation, first-key, order and
+/// request vectors. κ × observations plus this covers both estimates' request structure
+/// before [`ReconcileStage::Order`](crate::ledger::reconcile::ReconcileStage).
+pub const RECONCILE_RESERVE: u64 = KEY_DERIVATION
+    + 3 * 2 * ALLOCATION_COST
+    + 2 * sized_vec(8, sizes::KEY_SLOT)
+    + 4 * ALLOCATION_COST;
+
+/// The modeled heap while `agent`'s observations group into requests: the observation
+/// vector, the key graph, the grouping order and the presized request vector with its
+/// references, each per observation within κ's grouping share, and the thread structures.
+/// Linked sets are bounded by the observations. From
+/// [`ReconcileStage::Order`](crate::ledger::reconcile::ReconcileStage) on, `counts`
+/// carries the largest linked set, whose scratch is added once, since each group frees
+/// its scratch before the next; before it, the largest set is 0. Split growth, the
+/// structures conflicting keys leave and the diagnostics grouping pushes are charged where
+/// they are pushed.
 pub const fn grouping_estimate(agent: Agent, counts: &ReconcileCounts) -> PhaseEstimate {
     let observations = counts.observations;
-    let sorts =
-        max(sort_scratch(counts.threads, sizes::THREAD), sort_scratch(counts.links, sizes::LINK));
     PhaseEstimate {
         kappa: sized_vec(counts.observation_capacity, sizes::OBSERVATION)
             .saturating_add(key_graph(counts.key_nodes, observations))
             .saturating_add(grouping_order(observations))
             .saturating_add(request_vector(observations, observations, key_bound(agent)))
-            .saturating_add(group_scratch(agent, counts.largest_group)),
+            .saturating_add(group_scratch(agent, counts.largest_group, counts.model_text)),
         payloads: counts.observation_payload.saturating_mul(2),
         limits: counts.limit_rows.saturating_mul(limit_row()),
         sources: counts
             .metadata
             .saturating_mul(3)
-            .saturating_add(thread_reconcile(counts.threads, counts.thread_heap))
-            .saturating_add(sorts),
+            .saturating_add(thread_reconcile(
+                counts.threads,
+                counts.thread_heap,
+                counts.largest_thread_evidence,
+            ))
+            .saturating_add(sort_scratch(counts.links, sizes::LINK)),
         ..PhaseEstimate::ZERO
     }
 }
@@ -941,10 +1165,11 @@ pub const fn finalize_estimate(agent: Agent, counts: &ReconcileCounts) -> PhaseE
             .saturating_add(4 * ALLOCATION_COST),
         payloads: counts.observation_payload.saturating_mul(2),
         limits: counts.limit_rows.saturating_mul(limit_row()),
-        sources: counts
-            .metadata
-            .saturating_mul(3)
-            .saturating_add(thread_reconcile(counts.threads, counts.thread_heap)),
+        sources: counts.metadata.saturating_mul(3).saturating_add(thread_reconcile(
+            counts.threads,
+            counts.thread_heap,
+            counts.largest_thread_evidence,
+        )),
         ..PhaseEstimate::ZERO
     }
 }
@@ -1007,31 +1232,40 @@ mod tests {
                         <= entries * btree_entry(key, value) + btree_node(key, value),
                     "{entries} × ({key} + {value})"
                 );
-                assert!(btree_collected(entries, key, value) >= btree_map(entries, key, value));
+                assert!(btree_collected(entries, key, value) >= grown_vec(entries, key + value));
+                assert!(
+                    btree_bulk(entries, key, value)
+                        <= btree_map(entries, key, value) + 3 * btree_node(key, value)
+                );
             }
         }
     }
 
-    /// κ is pinned to the current row sizes, so a change to any of these types fails here
-    /// and has to update the plan's κ table with it.
+    /// κ is pinned to the current row sizes, so a change to any of these types fails here,
+    /// printing every pinned value at once, and has to update the plan's κ table with it.
     #[test]
     fn kappa_is_pinned_to_the_row_sizes() {
-        assert_eq!(
-            (sizes::OBSERVATION, sizes::REQUEST, sizes::ID, sizes::KEY_NODE, sizes::EVIDENCE),
-            (224, 216, 17, 30, 16)
-        );
-        assert_eq!((decoded_record(Agent::Codex), decoded_record(Agent::Claude)), (240, 528));
+        let phases = |structure: RequestStructure| {
+            (structure.construction, structure.grouping, structure.finalize, structure.retained)
+        };
         let codex = request_structure(Agent::Codex);
         let claude = request_structure(Agent::Claude);
         assert_eq!(
-            (codex.construction, codex.grouping, codex.finalize, codex.retained),
-            (792, 654, 656, 345)
+            (
+                (sizes::OBSERVATION, sizes::REQUEST, sizes::ID, sizes::KEY_NODE, sizes::EVIDENCE),
+                (decoded_record(Agent::Codex), decoded_record(Agent::Claude)),
+                phases(codex),
+                phases(claude),
+                (kappa(Agent::Codex), kappa(Agent::Claude)),
+            ),
+            (
+                (224, 216, 17, 30, 16),
+                (240, 528),
+                (792, 654, 656, 345),
+                (1074, 980, 868, 443),
+                (792, 1074)
+            )
         );
-        assert_eq!(
-            (claude.construction, claude.grouping, claude.finalize, claude.retained),
-            (1074, 980, 868, 443)
-        );
-        assert_eq!((kappa(Agent::Codex), kappa(Agent::Claude)), (792, 1074));
         for structure in [codex, claude] {
             assert_eq!(
                 structure.kappa(),
@@ -1041,6 +1275,132 @@ mod tests {
                     .max(structure.finalize)
                     .max(structure.retained)
             );
+        }
+    }
+
+    /// κ × observations plus [`RECONCILE_RESERVE`] covers the request structure grouping
+    /// and finalize charge at their checkpoints before `Order`, and each phase's share of κ
+    /// is exactly what that estimate charges per observation, so κ's composition is checked
+    /// against the estimates the model harness measures. From `Order`, the largest linked
+    /// set's scratch is added: beyond one member's, κ's headroom over grouping covers it
+    /// while that set holds up to a fifth of the observations, and the `Order` checkpoint
+    /// charges any more.
+    #[test]
+    fn kappa_covers_the_grouping_and_finalize_estimates() {
+        for agent in [Agent::Codex, Agent::Claude] {
+            let structure = request_structure(agent);
+            let kappa = structure.kappa();
+            for observations in (0..3_000).chain([1 << 16, 1 << 20, 1 << 30]) {
+                let counts = ReconcileCounts {
+                    observations,
+                    observation_capacity: observations,
+                    key_nodes: observations * key_bound(agent),
+                    ..ReconcileCounts::default()
+                };
+                let grouping = grouping_estimate(agent, &counts).kappa;
+                let finalize = finalize_estimate(agent, &counts).kappa;
+                let case = format!("{agent:?} × {observations}");
+                assert!(grouping <= kappa * observations + RECONCILE_RESERVE, "{case}");
+                assert!(finalize <= kappa * observations + RECONCILE_RESERVE, "{case}");
+                assert!(grouping >= structure.grouping * observations, "{case}");
+                assert!(
+                    grouping <= structure.grouping * observations + RECONCILE_RESERVE,
+                    "{case}"
+                );
+                assert!(finalize >= structure.finalize * observations, "{case}");
+                assert!(
+                    finalize <= structure.finalize * observations + RECONCILE_RESERVE,
+                    "{case}"
+                );
+                // Beyond one member's scratch, which the `Order` checkpoint charges.
+                let one = group_scratch(agent, 1, 0);
+                let order = ReconcileCounts { largest_group: observations / 5, ..counts };
+                let grouping = grouping_estimate(agent, &order).kappa;
+                assert!(
+                    grouping <= kappa * observations + RECONCILE_RESERVE + one,
+                    "{case} at Order"
+                );
+            }
+        }
+    }
+
+    /// Group scratch is its lists and the largest of its steps, and each part is pinned per
+    /// member at 1,000 members: the model harness's one-group inputs bound the whole term,
+    /// but no realistic input makes a single step necessary there, because the B-tree and
+    /// vector rules around it leave more slack than the step itself.
+    #[test]
+    fn group_scratch_is_its_lists_and_largest_step() {
+        let members = 1_000;
+        let per_member = |bytes: u64| bytes / members;
+        let parts = |agent: Agent| {
+            (
+                per_member(group_lists(agent, members)),
+                per_member(group_keys(members * key_bound(agent))),
+                per_member(group_revisions(members)),
+                per_member(group_owners(members)),
+                per_member(group_models(members, 0)),
+                per_member(group_records(members)),
+                per_member(group_fields(agent, members)),
+            )
+        };
+        assert_eq!(
+            (parts(Agent::Codex), parts(Agent::Claude)),
+            ((40, 86, 24, 191, 93, 48, 0), (134, 255, 24, 191, 93, 48, 68))
+        );
+        for agent in [Agent::Codex, Agent::Claude] {
+            for members in [0, 1, 2, 7, 100, 1_000, 100_000] {
+                for model_text in [0, 10 * members, 1 << 20] {
+                    let steps = [
+                        group_keys(members * key_bound(agent)),
+                        group_revisions(members),
+                        group_owners(members),
+                        group_models(members, model_text),
+                        group_records(members),
+                        group_fields(agent, members),
+                    ];
+                    let largest = steps.into_iter().max().unwrap_or(0);
+                    let expected =
+                        if members == 0 { 0 } else { group_lists(agent, members) + largest };
+                    assert_eq!(group_scratch(agent, members, model_text), expected);
+                }
+            }
+        }
+    }
+
+    /// Thread reconciliation is the sum of its parts, each pinned at 1,000 threads holding
+    /// 1 MiB with at most 64 evidence references each.
+    #[test]
+    fn thread_reconcile_is_its_parts() {
+        let (threads, heap, evidence) = (1_000, 1 << 20, 64);
+        let parts = (
+            thread_sort(threads),
+            thread_maps(threads),
+            thread_groups(threads),
+            thread_clones(heap),
+            thread_merge(evidence),
+        );
+        assert_eq!(parts, (352_016, 1_390_032, 1_440_032, 2_097_152, 9_712));
+        assert_eq!(
+            thread_reconcile(threads, heap, evidence),
+            parts.0 + parts.1 + parts.2 + parts.3 + parts.4
+        );
+        assert_eq!(thread_reconcile(0, heap, evidence), 0);
+    }
+
+    /// A diagnostic is its row, its detail and its evidence.
+    #[test]
+    fn diagnostics_are_their_row_detail_and_evidence() {
+        assert_eq!(DIAGNOSTIC_ROW, 5 * 80);
+        assert_eq!(diagnostic(130, 4), DIAGNOSTIC_ROW + allocation(130) + grown_vec(4, 16));
+    }
+
+    /// Every analytical ID displays as [`ID_TEXT`] bytes.
+    #[test]
+    fn ids_display_as_id_text() {
+        for prefix in crate::ledger::identity::IdPrefix::ALL {
+            let id =
+                IdentityKey::new(prefix, "test", Vec::new()).derive_id().expect("an ID derives");
+            assert_eq!(id.to_string().len() as u64, ID_TEXT, "{prefix:?}");
         }
     }
 
@@ -1090,9 +1450,11 @@ mod tests {
             key_nodes: 2_000,
             observation_payload: 4_000,
             largest_group: 3,
+            model_text: 30,
             limit_rows: 10,
             threads: 4,
             thread_heap: 400,
+            largest_thread_evidence: 2,
             links: 0,
             metadata: 2_000,
         };

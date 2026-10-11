@@ -8,13 +8,15 @@
 //! - **Primitives:** vectors, hash maps (inserted, presized and churned), B-trees
 //!   (inserted and collected), stable sorts and `Arc` text, at every count up to a few
 //!   thousand, growing one structure and checking the running peak, so each check is O(N).
-//! - **Structures:** diagnostic compaction, the structures a conflicting key leaves, an
-//!   ambiguous request's owners, the request sort, a key derivation, the name table's
-//!   first node, a thread's name cache, and cold name and overflow interning.
+//! - **Structures:** diagnostic compaction, without evidence so the rows and details are
+//!   tight and with 64 references so the evidence is, the structures a conflicting key
+//!   leaves, an ambiguous request's owners, the request sort, a key derivation, the name
+//!   table's first node, a thread's name cache, and cold name and overflow interning.
 //! - **Reconciliation:** tight synthetic inputs, one per term, measured between the
 //!   [`ReconcileStage`]s where slice 5's checkpoints run, and the whole run against the
-//!   grouping and finalize estimates, with live heap tracked against that `E` at every
-//!   allocation.
+//!   larger phase estimate by component. Live heap is tracked at every allocation against
+//!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
+//!   largest linked set's from `Order`, then finalize.
 //! - **Retained state:** each ingest's ledger, discovery and the session index against
 //!   their deep sizes, on every fixture and on generated corpora at one and eight workers.
 //! - **Query and slots:** query documents and their rendering, each decoder's heap, a long
@@ -36,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead as _, Write as _};
+use std::mem::discriminant;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,9 +48,9 @@ use serde_json::json;
 use urollup_core::adapters::{Ingested, claude_project, codex_rollout};
 use urollup_core::ledger::admission::deep_size::DeepSize;
 use urollup_core::ledger::admission::model::{
-    self, ReconcileCounts, allocation, btree_collected, btree_entry, btree_map, btree_node,
-    grown_vec, hash_base, hash_churned, hash_entry, hash_table, hash_with_capacity, sizes,
-    sort_scratch,
+    self, PhaseEstimate, ReconcileCounts, allocation, btree_collected, btree_entry, btree_map,
+    btree_node, grown_vec, hash_base, hash_churned, hash_entry, hash_table, hash_with_capacity,
+    sizes, sort_scratch,
 };
 use urollup_core::ledger::capacity::ObservationCapacity;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
@@ -61,7 +64,7 @@ use urollup_core::ledger::identity::{
 use urollup_core::ledger::linking::LinkGraph;
 use urollup_core::ledger::names::{self, Name};
 use urollup_core::ledger::reconcile::{
-    LatestRevision, Ledger, ObservationRole, OwnerEvidence, ReconcileInput, ReconcileStage,
+    LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, ReconcileStage,
     RequestObservation, reconcile_with_stages,
 };
 use urollup_core::ledger::scope::{
@@ -638,33 +641,43 @@ fn id(prefix: IdPrefix, kind: &str, index: usize) -> AnalyticalId {
 /// Composite terms, each against the real structure it models.
 fn check_structures(report: &mut Report) {
     // Diagnostic compaction: distinct subjects, so nothing merges, from a vector of twice
-    // the rows, its worst case.
+    // the rows, its worst case. Without evidence the rows and details are each tight; with
+    // 64 references each, the evidence is.
     let count = 1_025;
     let subjects: Vec<AnalyticalId> =
         (0..count).map(|index| id(IdPrefix::Request, "diag", index)).collect();
-    let (charge, measured) = measure(|| {
-        let mut diagnostics = Vec::with_capacity(2 * count);
-        let mut charge = 0;
-        for (index, subject) in subjects.iter().enumerate() {
-            let detail = format!("observations sharing a key disagree on {index}");
-            let evidence =
-                (0..4).map(|offset| EvidenceRef::new(0, offset * 100 + index as u64, 10));
-            let diagnostic = Diagnostic::new(
-                DiagnosticCode::ConflictingSharedKey,
-                Some(subject.clone()),
-                evidence,
-                detail,
-            );
-            charge += model::diagnostic(
-                diagnostic.detail.capacity() as u64,
-                diagnostic.evidence.len() as u64,
-            );
-            diagnostics.push(diagnostic);
-        }
-        drop(compact(diagnostics));
-        charge
-    });
-    report.bound("diagnostics", "1,025 compacted", measured.peak, &[("diagnostic", charge)]);
+    for (case, references) in [("1,025 compacted", 0), ("1,025 compacted, 64 references", 64)] {
+        let ((details, evidence), measured) = measure(|| {
+            let mut diagnostics = Vec::with_capacity(2 * count);
+            let (mut details, mut evidence) = (0, 0);
+            for (index, subject) in subjects.iter().enumerate() {
+                let detail = format!("observations sharing a key disagree on {index}");
+                let cited = (0..references)
+                    .map(|offset| EvidenceRef::new(0, offset * 1_000 + index as u64, 10));
+                let diagnostic = Diagnostic::new(
+                    DiagnosticCode::ConflictingSharedKey,
+                    Some(subject.clone()),
+                    cited,
+                    detail,
+                );
+                details += model::diagnostic_detail(diagnostic.detail.capacity() as u64);
+                evidence += model::diagnostic_evidence(diagnostic.evidence.len() as u64);
+                diagnostics.push(diagnostic);
+            }
+            drop(compact(diagnostics));
+            (details, evidence)
+        });
+        report.bound(
+            "diagnostics",
+            case,
+            measured.peak,
+            &[
+                ("DIAGNOSTIC_ROW", count as u64 * model::DIAGNOSTIC_ROW),
+                ("diagnostic_detail", details),
+                ("diagnostic_evidence", evidence),
+            ],
+        );
+    }
 
     // A conflicting key's candidate graph, candidate sets and components, for 500 keys of
     // 2 to 4 parts.
@@ -807,6 +820,9 @@ enum Shape {
     CodexKeyless,
     /// Every observation shares one key: one group, whose scratch dominates.
     OneGroup,
+    /// One group whose members each have their own proven owner and served model, so its
+    /// owner and model sets fill and their details list every member.
+    OneGroupConflicts,
     /// Two distinct keys and the model invariant each: two key-graph nodes and an alias.
     ClaudeSingles,
     /// Pairs share both keys and disagree on the model: every pair splits.
@@ -817,21 +833,26 @@ enum Shape {
     PayloadHeavy,
     /// One thread per observation: thread reconciliation dominates.
     ManyThreads,
+    /// One thread per observation, each citing 256 records as a Claude session thread
+    /// does: the threads' heap and its copies dominate.
+    HeavyThreads,
     /// Two limit observations per observation.
     Limits,
 }
 
 impl Shape {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::CodexSingles,
         Self::CodexPairs,
         Self::CodexKeyless,
         Self::OneGroup,
+        Self::OneGroupConflicts,
         Self::ClaudeSingles,
         Self::ClaudeSplits,
         Self::ClaudeBlocks,
         Self::PayloadHeavy,
         Self::ManyThreads,
+        Self::HeavyThreads,
         Self::Limits,
     ];
 
@@ -844,13 +865,15 @@ impl Shape {
             | Self::CodexPairs
             | Self::CodexKeyless
             | Self::OneGroup
+            | Self::OneGroupConflicts
             | Self::ManyThreads
+            | Self::HeavyThreads
             | Self::Limits => Agent::Codex,
         }
     }
 }
 
-fn synthetic_thread(index: usize) -> Thread {
+fn synthetic_thread(index: usize, evidence: usize) -> Thread {
     Thread {
         identity: stored_thread(&format!("thread-{index}")),
         basis: IdentityBasis::Native,
@@ -862,15 +885,22 @@ fn synthetic_thread(index: usize) -> Thread {
         execution_environment: Basis::Observed("local".to_owned()),
         project: Basis::Inferred("project".to_owned()),
         account: Basis::Unknown,
-        evidence: vec![EvidenceRef::new(u32::try_from(index % 8).expect("fits"), 0, 10)],
+        evidence: (0..evidence.max(1))
+            .map(|record| {
+                EvidenceRef::new(u32::try_from(index % 8).expect("fits"), record as u64 * 100, 10)
+            })
+            .collect(),
     }
 }
 
 fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
     let sources: Vec<AnalyticalId> =
         (0..8).map(|index| id(IdPrefix::Source, "test-source", index)).collect();
-    let thread_count = if matches!(shape, Shape::ManyThreads) { observations } else { 4 };
-    let threads: Vec<Thread> = (0..thread_count).map(synthetic_thread).collect();
+    let thread_count =
+        if matches!(shape, Shape::ManyThreads | Shape::HeavyThreads) { observations } else { 4 };
+    let evidence = if matches!(shape, Shape::HeavyThreads) { 256 } else { 1 };
+    let threads: Vec<Thread> =
+        (0..thread_count).map(|index| synthetic_thread(index, evidence)).collect();
     let models = [Name::new("model-a"), Name::new("model-b")];
     let mut requests = Vec::with_capacity(observations);
     let mut limit_observations = Vec::new();
@@ -893,7 +923,7 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
         );
         let served = |model: Name| Some(ModelName { name: model, basis: ModelBasis::Served });
         match shape {
-            Shape::CodexSingles | Shape::ManyThreads | Shape::Limits => {
+            Shape::CodexSingles | Shape::ManyThreads | Shape::HeavyThreads | Shape::Limits => {
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, &format!("resp-{index}")));
             }
             Shape::CodexPairs => {
@@ -904,6 +934,11 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
                 // Without owners, the group pushes no conflicting-owner diagnostic, so its
                 // scratch stands alone.
                 observation.owner = OwnerEvidence::None;
+                observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
+            }
+            Shape::OneGroupConflicts => {
+                observation.owner = OwnerEvidence::Proven(id(IdPrefix::Thread, "owner", index));
+                observation.model = served(Name::new(&format!("model-{index}")));
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
             }
             Shape::ClaudeSingles | Shape::PayloadHeavy => {
@@ -977,7 +1012,8 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
     }
 }
 
-/// The counts a grouping checkpoint would see in `input`.
+/// The counts a grouping checkpoint before `Order` would see in `input`: no group is built
+/// yet, so the largest linked set is 0.
 fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
     let key_nodes: u64 = input
         .requests
@@ -987,15 +1023,29 @@ fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
         })
         .sum::<u64>()
         + 2 * input.links.len() as u64;
+    let models: BTreeSet<&str> = input
+        .requests
+        .iter()
+        .filter_map(|observation| observation.model.as_ref())
+        .filter(|model| model.basis == ModelBasis::Served)
+        .map(|model| model.name.as_str())
+        .collect();
     ReconcileCounts {
         observations: input.requests.len() as u64,
         observation_capacity: input.requests.capacity() as u64,
         key_nodes,
         observation_payload: input.requests.iter().map(DeepSize::heap).sum(),
-        largest_group: input.requests.len() as u64,
+        largest_group: 0,
+        model_text: models.iter().map(|name| name.len() as u64).sum(),
         limit_rows: input.limit_observations.len() as u64,
         threads: input.threads.len() as u64,
         thread_heap: input.threads.iter().map(DeepSize::heap).sum(),
+        largest_thread_evidence: input
+            .threads
+            .iter()
+            .map(|thread| thread.evidence.len() as u64)
+            .max()
+            .unwrap_or(0),
         links: input.links.len() as u64,
         metadata: [
             model::sized_vec(input.threads.capacity() as u64, sizes::THREAD),
@@ -1016,16 +1066,26 @@ struct Stages {
     entries: Vec<(ReconcileStage, u64, u64)>,
 }
 
-/// The observations in the largest linked set, read from the ledger: a request's records,
-/// or a candidate set's members together.
-fn largest_group(ledger: &Ledger) -> u64 {
-    let size = |request: &Request| request.evidence().len() + request.copies().len();
-    let records = ledger.requests.values().map(size);
-    let split = ledger
-        .candidate_sets
-        .iter()
-        .map(|set| set.iter().filter_map(|id| ledger.requests.get(id)).map(size).sum());
-    records.chain(split).max().unwrap_or(0) as u64
+impl Stages {
+    /// The peak between `stage` and the stage before it, above the live heap at the earlier.
+    fn delta(&self, stage: ReconcileStage) -> u64 {
+        let same = |seen: &ReconcileStage| discriminant(seen) == discriminant(&stage);
+        let index = self.entries.iter().position(|(seen, _, _)| same(seen)).expect("stage seen");
+        let (_, _, peak) = self.entries[index];
+        let (_, previous, _) = self.entries[index - 1];
+        peak.saturating_sub(previous)
+    }
+}
+
+/// The phase estimate's components as terms, so that each must be necessary in some
+/// phase check.
+fn components(estimate: &PhaseEstimate) -> [(&'static str, u64); 4] {
+    [
+        ("phase kappa", estimate.kappa),
+        ("phase payloads", estimate.payloads),
+        ("phase limits", estimate.limits),
+        ("phase sources", estimate.sources),
+    ]
 }
 
 fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
@@ -1034,38 +1094,49 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let base = live();
     let input = synthetic_input(shape, observations);
     let counts = reconcile_counts(&input);
-    let grouping = model::grouping_estimate(agent, &counts);
     let finalize = model::finalize_estimate(agent, &counts);
     let mut stages = Stages { entries: Vec::with_capacity(16) };
+    let mut order = (0, 0);
     EXCESS.store(0, Ordering::Relaxed);
     PEAK.store(live(), Ordering::Relaxed);
     let capacity = ObservationCapacity::from_rows(usize::MAX);
-    // `E` is each phase's checkpoint estimate. Growth that grouping pushes is only known
-    // afterwards, so live heap above `E` at any allocation is checked against it below.
+    // `E` is each checkpoint's estimate: grouping without a group's scratch from the start,
+    // then with the largest linked set's from `Order`, then finalize. Growth that grouping
+    // pushes is only known afterwards, so live heap above `E` at any allocation is checked
+    // against it below.
     let ledger = reconcile_with_stages(input, &LatestRevision, &capacity, &mut |stage| {
         let now = live();
         let peak = PEAK.swap(now, Ordering::Relaxed);
         stages.entries.push((stage, now, peak));
-        match stage {
-            ReconcileStage::Start => LIMIT.store(base + grouping.total(), Ordering::Relaxed),
-            ReconcileStage::Released => LIMIT.store(base + finalize.total(), Ordering::Relaxed),
+        let estimate = match stage {
+            ReconcileStage::Start => Some(model::grouping_estimate(agent, &counts)),
+            ReconcileStage::Order { sets, largest_group } => {
+                order = (sets, largest_group);
+                let at_order = ReconcileCounts { largest_group, ..counts };
+                Some(model::grouping_estimate(agent, &at_order))
+            }
+            ReconcileStage::Released => Some(finalize),
             ReconcileStage::Canonical
             | ReconcileStage::KeyGraph
-            | ReconcileStage::Order
             | ReconcileStage::Requests
             | ReconcileStage::Sorted
-            | ReconcileStage::Finalized => {}
+            | ReconcileStage::Finalized => None,
+        };
+        if let Some(estimate) = estimate {
+            LIMIT.store(base + estimate.total(), Ordering::Relaxed);
         }
+        Ok(())
     })
     .expect("the synthetic input reconciles");
     LIMIT.store(u64::MAX, Ordering::Relaxed);
     let excess = EXCESS.swap(0, Ordering::Relaxed);
+    let (sets, largest) = order;
+    let grouping =
+        model::grouping_estimate(agent, &ReconcileCounts { largest_group: largest, ..counts });
 
     // What grouping pushed, read from the result. A diagnostic's occurrences count the
     // evidence it held before compaction kept a sample.
     let requests = ledger.requests.len() as u64;
-    let parts: u64 = ledger.candidate_sets.iter().map(|set| set.len() as u64).sum();
-    let sets = requests - parts + ledger.candidate_sets.len() as u64;
     let split = if requests > sets + sets / 32 { model::split_growth(requests) } else { 0 };
     let conflicting: u64 =
         ledger.candidate_sets.iter().map(|set| model::conflicting_key(set.len() as u64)).sum();
@@ -1094,33 +1165,32 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let most_aliases =
         ledger.requests.values().map(|request| request.aliases.len() as u64).max().unwrap_or(0);
     let limits = ledger.limit_observations.len() as u64;
-    let largest = largest_group(&ledger);
     let pushed = split + conflicting + ambiguous + diagnostics;
     report.bound_total("live above E", &case, excess, pushed);
 
-    let stage_delta = |stage: ReconcileStage| -> u64 {
-        let index =
-            stages.entries.iter().position(|(seen, _, _)| *seen == stage).expect("stage seen");
-        let (_, _, peak) = stages.entries[index];
-        let (_, previous, _) = stages.entries[index - 1];
-        peak.saturating_sub(previous)
-    };
     report.bound(
         "stage canonical",
         &case,
-        stage_delta(ReconcileStage::Canonical),
-        &[("thread_reconcile", model::thread_reconcile(counts.threads, counts.thread_heap))],
+        stages.delta(ReconcileStage::Canonical),
+        &[(
+            "thread_reconcile",
+            model::thread_reconcile(
+                counts.threads,
+                counts.thread_heap,
+                counts.largest_thread_evidence,
+            ),
+        )],
     );
     report.bound(
         "stage key graph",
         &case,
-        stage_delta(ReconcileStage::KeyGraph),
+        stages.delta(ReconcileStage::KeyGraph),
         &[("key_graph", model::key_graph(counts.key_nodes, counts.observations))],
     );
     report.bound(
         "stage order",
         &case,
-        stage_delta(ReconcileStage::Order),
+        stages.delta(ReconcileStage::Order { sets: 0, largest_group: 0 }),
         &[("grouping_order", model::grouping_order(counts.observations))],
     );
     // The selected revision's per-model usage is cloned into its request just before the
@@ -1128,10 +1198,10 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     report.bound_beside(
         "stage requests",
         &case,
-        stage_delta(ReconcileStage::Requests),
+        stages.delta(ReconcileStage::Requests),
         &[
             ("request_vector", model::request_vector(sets, counts.observations, most_aliases)),
-            ("group_scratch", model::group_scratch(agent, largest)),
+            ("group_scratch", model::group_scratch(agent, largest, counts.model_text)),
             ("split_growth", split),
             ("conflicting_key", conflicting),
             ("ambiguous_owners", ambiguous),
@@ -1142,13 +1212,13 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     report.bound(
         "stage sorted",
         &case,
-        stage_delta(ReconcileStage::Sorted),
+        stages.delta(ReconcileStage::Sorted),
         &[("request_sort", model::request_sort(requests))],
     );
     report.bound(
         "stage finalized",
         &case,
-        stage_delta(ReconcileStage::Finalized),
+        stages.delta(ReconcileStage::Finalized),
         &[
             ("alias_map", model::alias_map(aliases)),
             ("limit_row", limits.max(counts.limit_rows) * model::limit_row()),
@@ -1156,15 +1226,17 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
             ("conflicting_key", conflicting),
         ],
     );
-    // The whole run, from before the input existed, against the larger phase estimate,
-    // plus what grouping pushed.
+    // The whole run, from before the input existed, against the larger phase estimate by
+    // component, plus what grouping pushed.
     let (_, end, _) = *stages.entries.last().expect("stages seen");
     let peak = stages.entries.iter().map(|(_, _, peak)| *peak).max().unwrap_or(0).max(end);
-    report.bound_total(
+    let phase = if grouping.total() >= finalize.total() { grouping } else { finalize };
+    report.bound_beside(
         "reconcile phases",
         &case,
         peak.saturating_sub(base),
-        grouping.total().max(finalize.total()) + pushed,
+        &components(&phase),
+        pushed,
     );
     // The heap the ledger frees when dropped is what it retains.
     let heap = ledger.heap();
@@ -1213,7 +1285,7 @@ fn check_query_reserve(report: &mut Report) {
         synthetic_input(Shape::CodexSingles, 8_000),
         &LatestRevision,
         &ObservationCapacity::from_rows(usize::MAX),
-        &mut |_| {},
+        &mut |_| Ok(()),
     )
     .expect("the synthetic input reconciles");
     let threads = std::mem::take(&mut ledger.threads);
@@ -1626,12 +1698,16 @@ fn main() {
     check_structures(&mut report);
     check_split_growth(&mut report);
     for shape in Shape::ALL {
-        // Warm the shape's names and identities first.
+        // Warm the shape's names and identities first, so that no measured window interns:
+        // one member's model name per observation, for the conflicting group.
+        if matches!(shape, Shape::OneGroupConflicts) {
+            drop(synthetic_input(shape, 4_000));
+        }
         drop(reconcile_with_stages(
             synthetic_input(shape, 10),
             &LatestRevision,
             &ObservationCapacity::from_rows(usize::MAX),
-            &mut |_| {},
+            &mut |_| Ok(()),
         ));
         check_reconcile(&mut report, shape, 4_000);
     }

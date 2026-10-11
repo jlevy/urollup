@@ -4,8 +4,8 @@ use proptest::prelude::*;
 
 use super::{
     KeyGraph, LatestRevision, LineageLink, NativeSequence, ObservationRole, OwnerEvidence,
-    ReconcileError, ReconcileInput, RequestObservation, RevisionChoice, RevisionSelector,
-    reconcile,
+    ReconcileError, ReconcileInput, ReconcileStage, RequestObservation, RevisionChoice,
+    RevisionSelector, linked_sets, reconcile, reconcile_with_stages,
 };
 use crate::accounting::totals::{Completeness, PartialReason, ledger_totals, selection_totals};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
@@ -139,6 +139,64 @@ fn run(requests: Vec<RequestObservation>) -> super::Ledger {
 
 fn codes(ledger: &super::Ledger) -> Vec<DiagnosticCode> {
     ledger.diagnostics.iter().map(|d| d.code).collect()
+}
+
+#[test]
+fn linked_sets_count_runs_of_one_root_and_the_longest() {
+    assert_eq!(linked_sets(&[]), (0, 0));
+    assert_eq!(linked_sets(&[(4, 0)]), (1, 1));
+    assert_eq!(linked_sets(&[(1, 0), (1, 1), (2, 2), (3, 3), (3, 4), (3, 5)]), (3, 3));
+}
+
+/// Every stage is reached in order, `Order` reports the linked sets and the largest, and a
+/// stage whose call fails stops reconciliation with that error.
+#[test]
+fn stages_report_linked_sets_and_a_failing_stage_stops_reconciliation() {
+    let input = || ReconcileInput {
+        requests: vec![
+            observed(0, 10, "msg_1", 7),
+            observed(1, 10, "msg_1", 7),
+            observed(0, 20, "msg_2", 5),
+        ],
+        source_table: test_sources(),
+        ..ReconcileInput::default()
+    };
+    let capacity = crate::ledger::capacity::ObservationCapacity::from_rows(usize::MAX);
+    let mut seen = Vec::new();
+    let ledger = reconcile_with_stages(input(), &LatestRevision, &capacity, &mut |stage| {
+        seen.push(stage);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        seen,
+        [
+            ReconcileStage::Start,
+            ReconcileStage::Canonical,
+            ReconcileStage::KeyGraph,
+            ReconcileStage::Order { sets: 2, largest_group: 2 },
+            ReconcileStage::Requests,
+            ReconcileStage::Released,
+            ReconcileStage::Sorted,
+            ReconcileStage::Finalized,
+        ]
+    );
+    assert_eq!(ledger, reconcile(input(), &LatestRevision).unwrap());
+
+    let refusal = ReconcileError::OffsetOutOfRange(evidence(0, 1));
+    let mut after_order = Vec::new();
+    let result = reconcile_with_stages(input(), &LatestRevision, &capacity, &mut |stage| {
+        if matches!(stage, ReconcileStage::Order { .. }) {
+            return Err(refusal.clone());
+        }
+        after_order.push(stage);
+        Ok(())
+    });
+    assert_eq!(result, Err(refusal));
+    assert_eq!(
+        after_order,
+        [ReconcileStage::Start, ReconcileStage::Canonical, ReconcileStage::KeyGraph]
+    );
 }
 
 #[test]
