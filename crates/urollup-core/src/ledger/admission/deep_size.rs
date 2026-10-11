@@ -60,13 +60,18 @@ pub trait DeepSize {
     }
 }
 
+/// Declares types that own no heap. A type that needs no drop glue can own none, so a
+/// heap-owning field added to one of them fails to compile here until it is sized.
 macro_rules! owns_no_heap {
     ($($type:ty),* $(,)?) => {
-        $(impl DeepSize for $type {
-            fn heap(&self) -> u64 {
-                0
+        $(
+            const _: () = assert!(!std::mem::needs_drop::<$type>());
+            impl DeepSize for $type {
+                fn heap(&self) -> u64 {
+                    0
+                }
             }
-        })*
+        )*
     };
 }
 
