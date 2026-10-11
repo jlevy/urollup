@@ -58,8 +58,9 @@ impl Name {
 
 /// The admission model's charge for every distinct name this process has interned:
 /// each text, its leaked reference and its table entry, and the table's first node.
-/// Interned names live until exit. Each thread's cache of recent names is charged with its
-/// worker slot (`model::NAME_CACHE`).
+/// Interned names live until exit. Each worker thread's cache of recent names is charged
+/// with its worker slot (`model::NAME_CACHE`), and the coordinating thread's until exit
+/// (`model::COORDINATING_CACHES`).
 pub fn interned_bytes() -> u64 {
     INTERNED_BYTES.load(atomic::Ordering::Relaxed)
 }

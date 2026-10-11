@@ -438,6 +438,7 @@ for every count up to a few thousand:
 | Baseline `F` | invocation | measured | measured constant | exit |
 | Discovery metadata | discovered source, catalog entry, Codex locator thread | struct plus owned path and string bytes of `DiscoveredSource`, `CatalogSource` and the thread-ID map | derived | that agent’s ingest returns |
 | Coordinating slot | invocation | one worker slot `b` for the peeks that read sources on the coordinating thread: Codex catalog links for `--session` and `--source` classification | derived | the discovery checkpoint |
+| Coordinating caches | invocation | the coordinating thread’s caches of recently interned names and pricing contexts (`COORDINATING_CACHES`, 768 B), which Codex `normalize` and reconciliation’s pricing merge fill on that thread after workers join | derived | exit, charged from the discovery checkpoint |
 | Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`); 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`); 16 MiB for line-buffer capacity up to 4 MiB, the line need `4 × C′` ([line buffers](#admission-determinism)), which also covers each Claude subagent’s `.meta.json` sidecar (read with `read_to_end` up to 1 MiB and parsed after the scan drops its line buffer); a 640 KiB document allowance for a `quotaLimits` document; 2 MiB thread stack; the join’s `done` vector at its minimum capacity, 12 × the larger adapter’s `(index, result)` pair plus two allocations; the thread’s cache of recently interned names and its destructor’s registration, and its cache of recently interned pricing contexts; when discovery found a `.zst` source, the frame loop’s decoder for an 8 MiB window (zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula) plus its `ZSTD_DStreamInSize()` input buffer of 131,075 B, about 8.6 MiB; when it found a gzip source, flate2’s 32 KiB input buffer and miniz_oxide’s `InflateState` (a 32 KiB dictionary and decoding tables), charged as 80 KiB, plus the header fields flate2 keeps for a member, up to 65,535 B each (`extra` sized exactly, `filename` and `comment` grown byte by byte) | derived; the 4 MiB, 8 MiB and 640 KiB thresholds are *guesses* | the agent’s decode ends |
 | Large-record permit (`A_large`) | invocation | the largest need its holder has held at once: `4 × C′` for a line buffer whose capacity `C′` passes 4 MiB (256 MiB at `ReadOptions::DEFAULT_MAX_RECORD_BYTES`), plus the decoder for a zstd window above 8 MiB (about 129 MiB at zstd’s default limit, `ZSTD_WINDOWLOG_LIMIT_DEFAULT`), plus the running cost of a `quotaLimits` document past 640 KiB | derived | the agent’s decode ends |
 | Decoded record | every retained record, request-bearing or not, including Codex rollouts pending for `normalize` and Claude copies and replays | 3 × its size: Claude ≤ 200 B, Codex 80 B (size assertions) | derived | Codex: its rollout is observed; Claude: its chunk is consumed by `reconcile_input` |
@@ -493,7 +494,8 @@ session index and `release_discovery`; the same for Claude, with the Codex ledge
 committed; then query and render.
 
 - **Discovery checkpoint:** before each agent’s decode, a checkpoint charges that
-  agent’s worker slots; before Codex decode it also releases the coordinating slot.
+  agent’s worker slots; before Codex decode it also releases the coordinating slot and
+  charges the coordinating thread’s caches until exit.
 - **Decode** runs on parallel workers.
   Before a record is pushed, it is charged its decoded size, κ when it bears a request,
   its payload allocations, its limit rows and any new process intern.
@@ -1186,6 +1188,9 @@ Choices made while implementing, where this design left room:
     vector at its minimum capacity (9,856 B for the larger adapter pair, 816 B), the
     thread’s name cache (512 B) and pricing-context cache (256 B), and the zstd
     (`zstd_stream(8 MiB)` plus the frame loop’s input buffer) or gzip decoder.
+    The coordinating thread’s two caches outlive its slot, since Codex `normalize` and
+    reconciliation’s pricing merge intern on it after workers join, so
+    `COORDINATING_CACHES` (768 B) charges them until exit.
     `GZIP_DECODER` is 80 KiB of decoder state plus flate2’s header fields, `extra` sized
     exactly and `filename` and `comment` grown byte by byte, each up to 65,535 bytes:
     528 KiB in all. `large_record` charges `line_need` past 4 MiB, `zstd_stream` of a
@@ -1200,9 +1205,9 @@ Choices made while implementing, where this design left room:
     `Records` for `decoded_record`; `Kappa` for κ, `source_observations`, the group
     scratch, the split growth, a conflicting key’s structures and ambiguous owners;
     `Payloads` for payload terms, `CODEX_TURN_STATE` and `diagnostic`; `Limits` for
-    `limit_row`; `Interns` for the intern charges and table bases; `Sources` for source
-    and thread rows; `Reserves` for the query and index reserves; and `Slots` for
-    `worker_slot` and `large_record`.
+    `limit_row`; `Interns` for the intern charges and table bases and
+    `COORDINATING_CACHES`; `Sources` for source and thread rows; `Reserves` for the
+    query and index reserves; and `Slots` for `worker_slot` and `large_record`.
   - **Phase estimates** return a `PhaseEstimate` with one field per ledger `Component`
     and a `total()`, for slice 7’s statistics line: decoded records under `records`,
     observations, the key graph, requests and their working sets under `kappa`, payloads
@@ -1259,7 +1264,8 @@ Choices made while implementing, where this design left room:
     without a group’s scratch from the start, with the largest linked set’s from
     `Order`, then finalize;
   - each fixture and generated corpus’s ledger, discovery and session index against
-    their deep heap, at one and eight workers;
+    their deep heap, at one and eight workers, and what a fresh thread that coordinates
+    its ingest keeps afterwards against `COORDINATING_CACHES`;
   - query documents apart from their rendering, each decoder’s Rust heap (gzip with the
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
@@ -1311,7 +1317,8 @@ Choices made while implementing, where this design left room:
   - A key derivation measures 688 bytes, within `KEY_DERIVATION`’s 4 KiB allowance; a
     fresh thread’s name cache 48 bytes on macOS, which runs thread-local destructors
     itself, within `NAME_CACHE`’s 512, and its pricing-context cache 48 bytes, within
-    `PRICING_CACHE`’s 256.
+    `PRICING_CACHE`’s 256. A fresh thread that coordinates an ingest keeps 0 to 128
+    bytes of caches on x86_64 Linux, within `COORDINATING_CACHES`’ 768.
   - `QUERY_PER_ROW` (1 KiB) and `QUERY_FIXED` (64 KiB) stay *guesses*: the harness’s
     sessions document of 201 rows holds about 650 bytes per row beyond its per-request
     lists, its fixed part included, and an empty report holds under 1 KiB.

@@ -19,7 +19,8 @@
 //!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
 //!   largest linked set's from `Order`, then finalize.
 //! - **Retained state:** each ingest's ledger, discovery and the session index against
-//!   their deep sizes, on every fixture and on generated corpora at one and eight workers.
+//!   their deep sizes, on every fixture and on generated corpora at one and eight workers,
+//!   and the caches a fresh thread that coordinates the ingest keeps afterwards.
 //! - **Query and slots:** query documents and their rendering, each decoder's heap, a long
 //!   line's scan, and zstd's context and stream.
 //!
@@ -1455,7 +1456,8 @@ fn counts(ingested: &Ingested) -> IngestCounts {
 
 /// Discovers and ingests `root`, checking discovery and the retained ledger against their
 /// deep heap, then reports the peak beside the forward estimate that can be computed
-/// after the fact.
+/// after the fact, and checks what a fresh coordinating thread keeps once the result is
+/// dropped.
 fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
     // The first run warms lazily initialized state: interned names, timezone data and
     // thread-local caches, which belong to the baseline or to process interns.
@@ -1508,6 +1510,25 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
         );
         drop(ingested);
     }
+    // A fresh thread coordinates the ingest, as the main thread does once the discovery
+    // checkpoint releases the coordinating slot, and keeps its name and pricing caches
+    // until it exits.
+    let root = root.to_owned();
+    let interns_before = interns();
+    let kept = std::thread::spawn(move || {
+        let before = live();
+        drop(ingest(agent, &root, 8));
+        live().saturating_sub(before)
+    })
+    .join()
+    .expect("the coordinating thread runs");
+    report.bound_beside(
+        "coordinating caches",
+        &format!("{}/{case}", agent.token()),
+        kept,
+        &[("COORDINATING_CACHES", model::COORDINATING_CACHES)],
+        interns() - interns_before,
+    );
 }
 
 fn write_lines(path: &Path, lines: &[serde_json::Value]) {

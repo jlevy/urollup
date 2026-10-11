@@ -291,8 +291,10 @@ impl Pricing {
 
 /// The admission model's charge for every distinct pricing context this process has
 /// interned: each context's allocation and table entry, and the table's first node.
-/// Interned contexts live until exit. Each thread's cache of recent contexts is charged
-/// with its worker slot (`model::PRICING_CACHE`).
+/// Interned contexts live until exit. Each worker thread's cache of recent contexts is
+/// charged with its worker slot (`model::PRICING_CACHE`), and the coordinating thread's,
+/// where Codex observes its rollouts and reconciliation merges contexts, until exit
+/// (`model::COORDINATING_CACHES`).
 pub fn interned_pricing_bytes() -> u64 {
     PRICING_INTERNED_BYTES.load(atomic::Ordering::Relaxed)
 }

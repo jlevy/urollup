@@ -544,6 +544,12 @@ pub const PRICING_CACHE: u64 = grown_vec(
     size_of::<crate::ledger::entities::Pricing>() as u64,
 );
 
+/// The coordinating thread's name and pricing caches, which the discovery checkpoint
+/// charges until exit when it releases the coordinating slot: that thread still interns
+/// after workers join, as Codex observes its rollouts and reconciliation merges pricing
+/// contexts, and its caches live until the process exits.
+pub const COORDINATING_CACHES: u64 = NAME_CACHE + PRICING_CACHE;
+
 /// Line-buffer capacity up to this decodes inside a worker slot; a larger line buffer
 /// needs the large-record permit.
 pub const SLOT_LINE_CAPACITY: u64 = 4 << 20;
