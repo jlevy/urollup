@@ -435,6 +435,46 @@ fn a_copied_counter_step_with_inconsistent_usage_is_only_evidence() {
     assert_eq!(ingested.ledger.coverage.copies, control.ledger.coverage.copies);
 }
 
+/// A parent with one usage record, and a child that reports its own usage records, so
+/// its counters are not cumulative, and copies a counter of the parent's before its
+/// boundary with `copied_last` as its last usage.
+fn copied_counter_in_records(copied_last: &Value) -> Ingested {
+    let root = tempfile::tempdir().expect("temporary directory is created");
+    let total = usage(100, 20, 10, 10);
+    write(&root, PARENT, 0, &[meta(PARENT), turn("turn"), record(PARENT, "parent", &total)]);
+    write(
+        &root,
+        CHILD,
+        1,
+        &[
+            child_meta(2),
+            at(1, &counter(&total, copied_last)),
+            at(2, &turn("turn")),
+            at(3, &record(CHILD, "child", &usage(40, 10, 0, 4))),
+        ],
+    );
+    ingest_every_way(&root)
+}
+
+#[test]
+fn a_copied_counter_with_inconsistent_usage_beside_records_is_only_evidence() {
+    // The copy builder keeps the copy's evidence without its usage; the ingest still
+    // completes, and every count equals the control's.
+    let ingested = copied_counter_in_records(&usage(10, 20, 0, 10));
+    let control = copied_counter_in_records(&usage(100, 20, 10, 10));
+    assert_eq!(
+        counted(&ingested),
+        [[Some(30), Some(10), Some(0), Some(4)], [Some(70), Some(20), Some(10), Some(10)]]
+    );
+    assert_eq!(counted(&ingested), counted(&control));
+    assert_eq!(ingested.ledger.coverage.copies, 2);
+    assert_eq!(ingested.ledger.coverage.copies, control.ledger.coverage.copies);
+    assert!(diagnostics(&ingested).is_empty(), "{:?}", diagnostics(&ingested));
+    assert_eq!(diagnostics(&ingested), diagnostics(&control));
+    assert!(gaps(&ingested).is_empty(), "{:?}", gaps(&ingested));
+    assert_eq!(gaps(&ingested), gaps(&control));
+}
+
 #[test]
 fn a_child_step_after_an_unreadable_copied_total_is_excluded_and_reported() {
     let total = usage(100, 120, 0, 10);
