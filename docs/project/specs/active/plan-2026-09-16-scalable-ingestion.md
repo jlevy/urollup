@@ -438,7 +438,7 @@ for every count up to a few thousand:
 | Baseline `F` | invocation | measured | measured constant | exit |
 | Discovery metadata | discovered source, catalog entry, Codex locator thread | struct plus owned path and string bytes of `DiscoveredSource`, `CatalogSource` and the thread-ID map | derived | that agent’s ingest returns |
 | Coordinating slot | invocation | one worker slot `b` for the peeks that read sources on the coordinating thread: Codex catalog links for `--session` and `--source` classification | derived | the discovery checkpoint |
-| Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`); 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`); 16 MiB for line-buffer capacity up to 4 MiB, the line need `4 × C′` ([line buffers](#admission-determinism)), which also covers each Claude subagent’s `.meta.json` sidecar (read with `read_to_end` up to 1 MiB and parsed after the scan drops its line buffer); a 640 KiB document allowance for a `quotaLimits` document; 2 MiB thread stack; the join’s `done` vector at its minimum capacity, 12 × the larger adapter’s `(index, result)` pair plus two allocations; the thread’s cache of recently interned names and its destructor’s registration; when discovery found a `.zst` source, the frame loop’s decoder for an 8 MiB window (zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula) plus its `ZSTD_DStreamInSize()` input buffer of 131,075 B, about 8.6 MiB; when it found a gzip source, flate2’s 32 KiB input buffer and miniz_oxide’s `InflateState` (a 32 KiB dictionary and decoding tables), charged as 80 KiB, plus the header fields flate2 keeps for a member, up to 65,535 B each (`extra` sized exactly, `filename` and `comment` grown byte by byte) | derived; the 4 MiB, 8 MiB and 640 KiB thresholds are *guesses* | the agent’s decode ends |
+| Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`); 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`); 16 MiB for line-buffer capacity up to 4 MiB, the line need `4 × C′` ([line buffers](#admission-determinism)), which also covers each Claude subagent’s `.meta.json` sidecar (read with `read_to_end` up to 1 MiB and parsed after the scan drops its line buffer); a 640 KiB document allowance for a `quotaLimits` document; 2 MiB thread stack; the join’s `done` vector at its minimum capacity, 12 × the larger adapter’s `(index, result)` pair plus two allocations; the thread’s cache of recently interned names and its destructor’s registration, and its cache of recently interned pricing contexts; when discovery found a `.zst` source, the frame loop’s decoder for an 8 MiB window (zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula) plus its `ZSTD_DStreamInSize()` input buffer of 131,075 B, about 8.6 MiB; when it found a gzip source, flate2’s 32 KiB input buffer and miniz_oxide’s `InflateState` (a 32 KiB dictionary and decoding tables), charged as 80 KiB, plus the header fields flate2 keeps for a member, up to 65,535 B each (`extra` sized exactly, `filename` and `comment` grown byte by byte) | derived; the 4 MiB, 8 MiB and 640 KiB thresholds are *guesses* | the agent’s decode ends |
 | Large-record permit (`A_large`) | invocation | the largest need its holder has held at once: `4 × C′` for a line buffer whose capacity `C′` passes 4 MiB (256 MiB at `ReadOptions::DEFAULT_MAX_RECORD_BYTES`), plus the decoder for a zstd window above 8 MiB (about 129 MiB at zstd’s default limit, `ZSTD_WINDOWLOG_LIMIT_DEFAULT`), plus the running cost of a `quotaLimits` document past 640 KiB | derived | the agent’s decode ends |
 | Decoded record | every retained record, request-bearing or not, including Codex rollouts pending for `normalize` and Claude copies and replays | 3 × its size: Claude ≤ 200 B, Codex 80 B (size assertions) | derived | Codex: its rollout is observed; Claude: its chunk is consumed by `reconcile_input` |
 | Request structure (κ) | request-bearing record | the dialect’s largest per-record total over its later phases ([κ by dialect](#request-structure-by-dialect)) | derived | the retained ledger is committed |
@@ -446,7 +446,7 @@ for every count up to a few thousand:
 | Record payloads | allocation | exact bytes by the costing rule: per-source strings (Claude `Arc<str>`, vector slot and map entry; Codex 3 × text, 8 B end offset and map entry), Claude extras and tool-use digests, Codex usage counts, distinct rate-limit snapshots and session metadata, spilled keys, `model_usage` and invariants | derived | construction ends, or with the retained ledger |
 | Limit row | provider limit observation | 3 × 128 B as built, or 128 B input plus its sort-cache tuple plus 128 B output during limit reconciliation, whichever is larger | derived | retained ledger |
 | Diagnostic | occurrence | 5 × `Diagnostic` (compaction holds its input, of up to twice the rows, beside a doubling output), its detail text at its capacity and 16 B per evidence reference at 3 × | derived | compaction; retained ones stay |
-| Process interns | new distinct `Name`; new overflow `Measures` pattern | text allocation, leaked reference and B-tree entry, and with the first name the table’s first node; 72 B row in a doubling vector plus its map entry, and with the first pattern the vector’s minimum capacity and the map’s base | derived from `names.rs` and `tokens.rs` | exit |
+| Process interns | new distinct `Name`; new overflow `Measures` pattern; new distinct `PricingContext` | text allocation, leaked reference and B-tree entry, and with the first name the table’s first node; 72 B row in a doubling vector plus its map entry, and with the first pattern the vector’s minimum capacity and the map’s base; the context’s leaked allocation and B-tree set entry (`pricing_intern`), and with the first context the set’s first node (`PRICING_TABLE_BASE`) | derived from `names.rs`, `tokens.rs` and `entities.rs` | exit |
 | Retained ledger | agent | deep size of `Ingested` after finalize, which replaces that agent’s decode and construction charges | computed | exit; discovery tables leave at `release_discovery` |
 | Query reserve | request in a retained ledger | 48 B: at most one selected-request item and one request-size value per counted request, which a query may collect (`report` collects both), each 8 B at 3 × | derived | the query checkpoint |
 | Session index | indexed thread | deep size of its `IndexedSession` | derived | exit |
@@ -473,11 +473,11 @@ asserts it.
 
 | Phase | Per request-bearing record | Codex | Claude |
 | --- | --- | --- | --- |
-| Construction | the observation (224 B) at 3 × while `normalize` or `reconcile_input` appends it; for Codex, a parent-totals digest or an own-response entry, whichever is larger (two 16 B hash entries while `counter_totals` builds a parent root’s set); for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map, 386 B) and the eligibility vector’s stable-sort scratch (16 B per record) | 792 B | 1,074 B |
-| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (216 B) × 33/32 as presized; one evidence reference | 654 B, key bound 1 | 980 B, key bound 3 |
-| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation, and the canonical-ID map’s entry for each alias (106 B) | 656 B | 868 B |
-| Retained and query | the retained request (216 B and its references) plus the 48 B query reserve | 345 B | 443 B |
-| κ | the largest phase | 792 B | 1,074 B |
+| Construction | the observation (232 B) at 3 × while `normalize` or `reconcile_input` appends it; for Codex, a parent-totals digest or an own-response entry, whichever is larger (two 16 B hash entries while `counter_totals` builds a parent root’s set); for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map, 386 B) and the eligibility vector’s stable-sort scratch (16 B per record) | 816 B | 1,098 B |
+| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (224 B) × 33/32 as presized; one evidence reference | 670 B, key bound 1 | 996 B, key bound 3 |
+| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation, and the canonical-ID map’s entry for each alias (106 B) | 680 B | 892 B |
+| Retained and query | the retained request (224 B and its references) plus the 48 B query reserve | 353 B | 451 B |
+| κ | the largest phase | 816 B | 1,098 B |
 
 The model closes two gaps in today’s admission, which retains but never charges Claude
 `<synthetic>` records without a request ID and Codex session-meta, turn-context,
@@ -834,7 +834,7 @@ This is arithmetic on derived charges and *guessed* inputs, not a measurement;
 The inputs, per request-bearing record and before `H`, are:
 
 - **Codex during decode:** 1.0–1.55 KB: the decoded record (240 B), κ (about 0.7 KB when
-  this table was computed; 792 B as derived, see below), 0.1–0.4 KB of other payloads
+  this table was computed; 816 B as derived, see below), 0.1–0.4 KB of other payloads
   and source and thread rows (*guess*), and 0–1 retained records that bear no request,
   such as turn contexts and zero-usage token counts, at 240 B each (*guess*).
 - **Distinct limit snapshots:** 0 or 1 per Codex request-bearing record.
@@ -876,12 +876,13 @@ means the break-even `H` is below the 1.1 floor, so no calibration result fits.
 With the Codex ledger held, Claude decode is the peak unless Codex alone grows or
 snapshots are dense.
 
-Slice 3 derived Codex κ at 792 B, 120 B per record above the 0.7 KB used here, and
-measured `F` at 7 MiB. The κ change raises each Codex decode figure by about 0.1 GiB on
-the historical corpus and 0.5–0.6 GiB at 100 GiB, at `H` = 1.5, and `F` lowers every
-figure by 9 MiB. No row changes which phase is larger, and only the rows where Codex
-decode is the peak lose break-even `H`, by up to about 0.25; `uro-z1h1` replaces these
-figures in any case.
+Codex κ is now 816 B as derived, 144 B per record above the 0.7 KB used here, after
+slice 3 derived 792 B and the shared pricing-context pointer added 8 B to each
+observation and request; slice 3 measured `F` at 7 MiB. The κ change raises each Codex
+decode figure by about 0.1 GiB on the historical corpus and 0.6–0.7 GiB at 100 GiB, at
+`H` = 1.5, and `F` lowers every figure by 9 MiB. No row changes which phase is larger,
+and only the rows where Codex decode is the peak lose break-even `H`, by up to about
+0.3; `uro-z1h1` replaces these figures in any case.
 
 **The 100 GiB policy risk.** The accepted policy’s 100 GiB envelope is at risk from the
 model’s conservatism, not from measured memory.
@@ -1133,8 +1134,8 @@ Choices made while implementing, where this design left room:
     it; two hash entries of 16 B), the larger of that and the 18 B `own_responses`
     entry, since a record adds to at most one; Claude’s construction adds the
     eligibility vector’s 16 B of stable-sort scratch to its 386 B of owner state.
-    Finalize adds the canonical-ID map’s 106 B entry for each alias, so Claude’s is 868
-    B, and the retained-and-query phase is 345 B for Codex and 443 B for Claude.
+    Finalize adds the canonical-ID map’s 106 B entry for each alias, so Claude’s is 892
+    B, and the retained-and-query phase is 353 B for Codex and 451 B for Claude.
     The key bound is asserted on every path of every observation builder, Codex’s inline
     copy builder included (now `copied_counter_observation`), each maximal path with
     equality; Claude’s other paths assert `<`, and Codex’s `<=`, since a keyless Codex
@@ -1176,8 +1177,8 @@ Choices made while implementing, where this design left room:
     the read buffer and boxed reader, the retained line, `line_need` at 4 MiB (`4 × C′`,
     16 MiB), the 640 KiB `quotaLimits` allowance, the thread stack, the join’s `done`
     vector at its minimum capacity (9,856 B for the larger adapter pair, 816 B), the
-    thread’s name cache (512 B), and the zstd (`zstd_stream(8 MiB)` plus the frame
-    loop’s input buffer) or gzip decoder.
+    thread’s name cache (512 B) and pricing-context cache (256 B), and the zstd
+    (`zstd_stream(8 MiB)` plus the frame loop’s input buffer) or gzip decoder.
     `GZIP_DECODER` is 80 KiB of decoder state plus flate2’s header fields, `extra` sized
     exactly and `filename` and `comment` grown byte by byte, each up to 65,535 bytes:
     528 KiB in all. `large_record` charges `line_need` past 4 MiB, `zstd_stream` of a
@@ -1233,8 +1234,9 @@ Choices made while implementing, where this design left room:
     evidence, where the rows and details are each necessary, and with 64 references
     each, where the evidence is; a conflicting key’s structures, ambiguous owners, the
     request sort (presized and shrunk), the request vector’s split growth, one key
-    derivation, the name table’s first node, a fresh thread’s name cache, and cold name
-    and overflow interning that no earlier code has warmed;
+    derivation, the name and pricing tables’ first nodes, a fresh thread’s name and
+    pricing caches, and cold name, overflow and pricing-context interning that no
+    earlier code has warmed;
   - reconciliation of twelve synthetic inputs of 4,000 observations, each shaped so that
     one term dominates (one or two keys, shared and split keys, one group, one group
     whose members each have their own proven owner and served model, payloads, light and
@@ -1295,7 +1297,8 @@ Choices made while implementing, where this design left room:
     `GZIP_DECODER`.
   - A key derivation measures 688 bytes, within `KEY_DERIVATION`’s 4 KiB allowance; a
     fresh thread’s name cache 48 bytes on macOS, which runs thread-local destructors
-    itself, within `NAME_CACHE`’s 512.
+    itself, within `NAME_CACHE`’s 512, and its pricing-context cache 48 bytes, within
+    `PRICING_CACHE`’s 256.
   - `QUERY_PER_ROW` (1 KiB) and `QUERY_FIXED` (64 KiB) stay *guesses*: the harness’s
     sessions document of 201 rows holds about 650 bytes per row beyond its per-request
     lists, its fixed part included, and an empty report holds under 1 KiB.

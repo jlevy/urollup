@@ -3,8 +3,8 @@
 //! Admission charges a committed ledger, a session index and discovery metadata by their
 //! deep size. Vectors, strings and boxes count their exact capacity; maps count the
 //! model's upper bound, since the standard maps do not expose their node or bucket
-//! layout. Interned names and overflow measures are process-wide and charged when they
-//! are interned, not here.
+//! layout. Interned names, overflow measures and pricing contexts are process-wide and
+//! charged when they are interned, not here.
 //!
 //! [`DeepSize::heap`] is what a value owns on the heap; [`DeepSize::deep_size`] adds the
 //! value's own size, for a value that is itself on the heap, such as a vector element
@@ -23,8 +23,9 @@ use crate::ledger::coverage::{CoverageGap, ReconcileCoverage, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
     Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
-    ProviderLimitObservation, RecordRefs, Relationship, RelationshipKind, Request, RevisionStatus,
-    SelectedUsage, SourceArtifact, SourceCapability, Thread, ToolAction, UsageRevision,
+    Pricing, ProviderLimitObservation, RecordRefs, Relationship, RelationshipKind, Request,
+    RevisionStatus, SelectedUsage, SourceArtifact, SourceCapability, Thread, ToolAction,
+    UsageRevision,
 };
 use crate::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityKey, IdentityVersion, KeyComponent, StoredIdentity,
@@ -105,6 +106,8 @@ owns_no_heap!(
     Name,
     NativeSequence,
     ObservationRole,
+    // An interned context, charged when it is interned.
+    Pricing,
     ReconcileCoverage,
     RecordCounters,
     Representation,
@@ -330,6 +333,7 @@ impl DeepSize for Request {
             last_seen,
             model,
             effort,
+            pricing,
             usage,
             records,
             originals,
@@ -344,6 +348,7 @@ impl DeepSize for Request {
             last_seen.heap(),
             model.heap(),
             effort.heap(),
+            pricing.heap(),
             usage.heap(),
             records.heap(),
             originals.heap(),
@@ -397,7 +402,8 @@ impl DeepSize for UnobservedReason {
             | Self::ParallelGuardianReview
             | Self::LegacyRemoteCompaction
             | Self::UnreadableSource
-            | Self::UnverifiedHistoryBoundary => 0,
+            | Self::UnverifiedHistoryBoundary
+            | Self::InconsistentUsage => 0,
         }
     }
 }
@@ -453,6 +459,7 @@ impl DeepSize for RequestObservation {
             invariants,
             model,
             effort,
+            pricing,
             timestamp,
         } = self;
         fields([
@@ -466,6 +473,7 @@ impl DeepSize for RequestObservation {
             invariants.heap(),
             model.heap(),
             effort.heap(),
+            pricing.heap(),
             timestamp.heap(),
         ])
     }

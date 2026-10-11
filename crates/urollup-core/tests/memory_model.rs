@@ -11,7 +11,8 @@
 //! - **Structures:** diagnostic compaction, without evidence so the rows and details are
 //!   tight and with 64 references so the evidence is, the structures a conflicting key
 //!   leaves, an ambiguous request's owners, the request sort, a key derivation, the name
-//!   table's first node, a thread's name cache, and cold name and overflow interning.
+//!   and pricing tables' first nodes, a thread's name and pricing caches, and cold name,
+//!   overflow and pricing-context interning.
 //! - **Reconciliation:** tight synthetic inputs, one per term, measured between the
 //!   [`ReconcileStage`]s where slice 5's checkpoints run, and the whole run against the
 //!   larger phase estimate by component. Live heap is tracked at every allocation against
@@ -55,8 +56,9 @@ use urollup_core::ledger::admission::model::{
 use urollup_core::ledger::capacity::ObservationCapacity;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
 use urollup_core::ledger::entities::{
-    Basis, Counting as RequestCounting, ModelBasis, ModelName, ModelUsage, Ownership,
-    ProviderLimitObservation, RecordRefs, Request, Requests, Thread,
+    self as entities, Basis, Counting as RequestCounting, ModelBasis, ModelName, ModelUsage,
+    Ownership, Pricing, PricingContext, ProviderLimitObservation, RecordRefs, Request, Requests,
+    Thread,
 };
 use urollup_core::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity,
@@ -337,13 +339,15 @@ fn ingest(agent: Agent, root: &Path, count: usize) -> Ingested {
     .expect("the corpus ingests")
 }
 
-/// The model's charge for every process intern so far: names and overflow patterns.
+/// The model's charge for every process intern so far: names, overflow patterns and
+/// pricing contexts.
 fn interns() -> u64 {
-    names::interned_bytes() + tokens::overflow_interned_bytes()
+    names::interned_bytes() + tokens::overflow_interned_bytes() + entities::interned_pricing_bytes()
 }
 
-/// Interns names and overflow patterns that no earlier code interned, so the table bases
-/// and this thread's name cache are charged where they are allocated. It must run first.
+/// Interns names, overflow patterns and pricing contexts that no earlier code interned, so
+/// the table bases and this thread's caches are charged where they are allocated. It must
+/// run first.
 fn check_cold_interns(report: &mut Report) {
     let texts: Vec<String> = (0..1_000).map(|index| format!("cold-name-{index:05}")).collect();
     let charged_before = names::interned_bytes();
@@ -402,9 +406,45 @@ fn check_cold_interns(report: &mut Report) {
         rest.retained,
         &[("overflow_intern", tokens::overflow_interned_bytes() - charged_before)],
     );
+    // Contexts whose names are interned before any measured window.
+    let contexts: Vec<PricingContext> = (0..1_000)
+        .map(|index| PricingContext {
+            provider: Some(Name::new(&format!("cold-provider-{index:05}"))),
+            ..PricingContext::default()
+        })
+        .collect();
+    let charged_before = entities::interned_pricing_bytes();
+    let ((), first) = measure(|| {
+        Pricing::new(contexts[0].clone());
+    });
+    report.bound(
+        "intern cold",
+        "first pricing context",
+        first.retained,
+        &[
+            ("pricing_intern", model::pricing_intern()),
+            (
+                "PRICING_TABLE_BASE",
+                entities::interned_pricing_bytes() - charged_before - model::pricing_intern(),
+            ),
+            ("PRICING_CACHE", model::PRICING_CACHE),
+        ],
+    );
+    let charged_before = entities::interned_pricing_bytes();
+    let ((), rest) = measure(|| {
+        for context in &contexts[1..] {
+            Pricing::new(context.clone());
+        }
+    });
+    report.bound(
+        "intern cold",
+        "999 more pricing contexts",
+        rest.retained,
+        &[("pricing_intern", entities::interned_pricing_bytes() - charged_before)],
+    );
 }
 
-/// The name table's first node, and a fresh thread's name cache.
+/// The name and pricing tables' first nodes, and a fresh thread's name and pricing caches.
 fn check_name_structures(report: &mut Report) {
     let name = Name::new("cold-name-00000");
     let (map, measured) = measure(|| {
@@ -429,6 +469,38 @@ fn check_name_structures(report: &mut Report) {
     .join()
     .expect("the thread runs");
     report.bound("name cache", "fresh thread", cache, &[("NAME_CACHE", model::NAME_CACHE)]);
+    let context = Pricing::new(PricingContext {
+        provider: Some(Name::new("cold-provider-00000")),
+        ..PricingContext::default()
+    });
+    let (set, measured) = measure(|| {
+        let mut set: BTreeSet<&'static PricingContext> = BTreeSet::new();
+        set.insert(context.context());
+        set
+    });
+    drop(set);
+    report.bound(
+        "pricing table",
+        "first node",
+        measured.peak,
+        &[("PRICING_TABLE_BASE", model::PRICING_TABLE_BASE)],
+    );
+    // Inside a fresh thread whose name cache exists, interning an existing context
+    // allocates only the thread's pricing cache.
+    let cache = std::thread::spawn(move || {
+        Name::new("cold-name-00001");
+        let before = live();
+        Pricing::new(context.context().clone());
+        live().saturating_sub(before)
+    })
+    .join()
+    .expect("the thread runs");
+    report.bound(
+        "pricing cache",
+        "fresh thread",
+        cache,
+        &[("PRICING_CACHE", model::PRICING_CACHE)],
+    );
 }
 
 /// The running peak above `start`, after each step of a growing structure.
@@ -488,7 +560,7 @@ fn check_vec<const S: usize>(report: &mut Report, count: usize) {
         items.shrink_to_fit();
         shrunk.keep(running_peak(start), grown_vec(length as u64, S as u64));
     }
-    let case = format!("{S} B × 1..{count}");
+    let case = format!("{S} B Ã 1..{count}");
     report.bound("vec push", &case, grown.measured, &[("grown_vec", grown.estimate)]);
     report.bound("vec shrink", &case, shrunk.measured, &[("grown_vec", shrunk.estimate)]);
 }
@@ -509,7 +581,7 @@ fn check_hash<const S: usize>(report: &mut Report, count: usize) {
         rule.keep(running_peak(start), entries * hash_entry(entry) + hash_base(entry));
     }
     drop(set);
-    let case = format!("{S} B × 1..{count}");
+    let case = format!("{S} B Ã 1..{count}");
     report.bound("hash insert", &case, table.measured, &[("hash_table", table.estimate)]);
     report.bound("hash rule", &case, rule.measured, &[("hash_entry+hash_base", rule.estimate)]);
     let capacity = count.min(1 << (8 * S.min(3)));
@@ -567,7 +639,7 @@ fn check_btree<const K: usize>(report: &mut Report, count: usize) {
         rule.keep(running_peak(start), entries * btree_entry(key, value) + btree_node(key, value));
     }
     drop(map);
-    let case = format!("{K} B keys × 1..{count}");
+    let case = format!("{K} B keys Ã 1..{count}");
     report.bound("btree insert", &case, inserted.measured, &[("btree_map", inserted.estimate)]);
     report.bound("btree rule", &case, rule.measured, &[("btree_entry", rule.estimate)]);
     let mut collected = Worst::new();
@@ -598,7 +670,7 @@ fn check_sort<const S: usize>(report: &mut Report, count: usize) {
     }
     report.bound(
         "stable sort",
-        &format!("{S} B × 2..{count}"),
+        &format!("{S} B Ã 2..{count}"),
         sorted.measured,
         &[("sort_scratch", sorted.estimate)],
     );
@@ -736,6 +808,7 @@ fn check_structures(report: &mut Report) {
             last_seen: None,
             model: None,
             effort: None,
+            pricing: None,
             usage: None,
             records: RecordRefs::Empty,
             originals: 0,
@@ -1090,7 +1163,7 @@ fn components(estimate: &PhaseEstimate) -> [(&'static str, u64); 4] {
 
 fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let agent = shape.agent();
-    let case = format!("{shape:?} × {observations}");
+    let case = format!("{shape:?} Ã {observations}");
     let base = live();
     let input = synthetic_input(shape, observations);
     let counts = reconcile_counts(&input);
@@ -1257,6 +1330,7 @@ fn check_split_growth(report: &mut Report) {
         last_seen: None,
         model: None,
         effort: None,
+        pricing: None,
         usage: None,
         records: RecordRefs::Empty,
         originals: 0,
@@ -1356,7 +1430,7 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
             ingested.heap() + new_interns,
         );
         let counts = counts(&ingested);
-        // Metadata stays beside the request structure that κ covers.
+        // Metadata stays beside the request structure that Îº covers.
         let metadata = [
             ingested.manifest.heap(),
             ingested.sources.heap(),
@@ -1656,7 +1730,7 @@ fn main() {
             "model",
             agent.token(),
             format!(
-                "κ {} (construction {}, grouping {}, finalize {}, retained {}); decoded record {}; key bound {}",
+                "Îº {} (construction {}, grouping {}, finalize {}, retained {}); decoded record {}; key bound {}",
                 structure.kappa(),
                 structure.construction,
                 structure.grouping,
@@ -1683,10 +1757,11 @@ fn main() {
         "model",
         "slot parts",
         format!(
-            "join pair {}, done vector {}, name cache {}, gzip {}, zstd {}, largest permit need {}, Codex turn state {}",
+            "join pair {}, done vector {}, name cache {}, pricing cache {}, gzip {}, zstd {}, largest permit need {}, Codex turn state {}",
             model::JOIN_PAIR,
             model::JOIN_DONE,
             model::NAME_CACHE,
+            model::PRICING_CACHE,
             model::GZIP_DECODER,
             model::ZSTD_DECODER,
             model::LARGEST_LARGE_RECORD,
@@ -1723,14 +1798,14 @@ fn main() {
     }
     for (sessions, records, padding) in [(2, 200, 0), (4, 200, 0), (4, 200, 2048)] {
         let corpus = claude_corpus(sessions, records, padding);
-        let case = format!("generated {sessions}×{records} pad {padding}");
+        let case = format!("generated {sessions}Ã{records} pad {padding}");
         check_ingest(&mut report, Agent::Claude, &case, corpus.path());
     }
     for (rollouts, records, period, padding) in
         [(2, 200, 1, 0), (4, 200, 50, 0), (4, 200, 50, 2048)]
     {
         let corpus = codex_corpus(rollouts, records, period, padding);
-        let case = format!("generated {rollouts}×{records} limits/{period} pad {padding}");
+        let case = format!("generated {rollouts}Ã{records} limits/{period} pad {padding}");
         check_ingest(&mut report, Agent::Codex, &case, corpus.path());
     }
     report.note("time", "ingest", format!("{} ms", started.elapsed().as_millis()));
@@ -1743,7 +1818,7 @@ fn main() {
         let codex = codex_corpus(sessions, records, 50, 0);
         let claude = ingest(Agent::Claude, claude.path(), 1);
         let codex = ingest(Agent::Codex, codex.path(), 1);
-        let case = format!("generated {sessions}×{records}");
+        let case = format!("generated {sessions}Ã{records}");
         check_query(&mut report, &case, &[(Agent::Claude, &claude), (Agent::Codex, &codex)]);
     }
     check_query_reserve(&mut report);

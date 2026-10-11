@@ -2972,8 +2972,11 @@ mod tests {
         let thread = "019f0000-0000-7000-8000-000000000001";
         let thread_ids = BTreeMap::from([(thread.to_owned(), thread_identity(thread).unwrap().id)]);
         let record = RecordView { evidence: EvidenceRef::new(0, 0, 1), timestamp: None };
-        let context =
-            TurnContext { model: Some(Name::new("gpt-test")), effort: Some(Name::new("high")) };
+        let context = TurnContext {
+            model: Some(Name::new("gpt-test")),
+            effort: Some(Name::new("high")),
+            pricing: None,
+        };
         let usage =
             CodexUsage { input: Some(3), output: Some(1), total: Some(4), ..CodexUsage::default() };
         let mut interner = Interner::default();

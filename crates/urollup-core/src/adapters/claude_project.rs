@@ -1775,7 +1775,7 @@ mod tests {
         let observe_line = |line: &str, ambiguous: &HashSet<[u8; 16]>| {
             let evidence = source_evidence(0);
             let mut decoder = SourceDecoder::new("project/s1.jsonl");
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             assert_eq!(decoder.decode(&raw), RecordDisposition::Decoded, "{line}");
             let owners = Owners { messages: HashMap::new(), uuids: HashMap::new() };
             observe(

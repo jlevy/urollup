@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::slice;
+use std::sync::atomic::{self, AtomicU64};
 use std::sync::{Mutex, PoisonError};
 
 use jiff::Timestamp;
@@ -255,8 +256,11 @@ const _: () = assert!(std::mem::size_of::<Option<Pricing>>() == 8);
 /// Every interned context.
 static PRICING_TABLE: Mutex<BTreeSet<&'static PricingContext>> = Mutex::new(BTreeSet::new());
 
+/// The admission model's charge for every distinct context interned so far.
+static PRICING_INTERNED_BYTES: AtomicU64 = AtomicU64::new(0);
+
 /// Recently interned contexts per thread, so records that repeat one skip the shared lock.
-const RECENT_PRICING_CAPACITY: usize = 8;
+pub(crate) const RECENT_PRICING_CAPACITY: usize = 8;
 
 thread_local! {
     static RECENT_PRICING: RefCell<Vec<Pricing>> = const { RefCell::new(Vec::new()) };
@@ -285,11 +289,26 @@ impl Pricing {
     }
 }
 
+/// The admission model's charge for every distinct pricing context this process has
+/// interned: each context's allocation and table entry, and the table's first node.
+/// Interned contexts live until exit. Each thread's cache of recent contexts is charged
+/// with its worker slot (`model::PRICING_CACHE`).
+pub fn interned_pricing_bytes() -> u64 {
+    PRICING_INTERNED_BYTES.load(atomic::Ordering::Relaxed)
+}
+
 fn intern_pricing(context: PricingContext) -> Pricing {
     let mut table = PRICING_TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(interned) = table.get(&context) {
         return Pricing(interned);
     }
+    // The first context also pays the table's one-time base, its first node.
+    let base =
+        if table.is_empty() { crate::ledger::admission::model::PRICING_TABLE_BASE } else { 0 };
+    PRICING_INTERNED_BYTES.fetch_add(
+        crate::ledger::admission::model::pricing_intern() + base,
+        atomic::Ordering::Relaxed,
+    );
     let interned: &'static PricingContext = Box::leak(Box::new(context));
     table.insert(interned);
     Pricing(interned)

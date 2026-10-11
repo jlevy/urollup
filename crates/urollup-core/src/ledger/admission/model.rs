@@ -27,7 +27,7 @@ use std::mem::size_of;
 
 use super::Component;
 use crate::ledger::diagnostics::Diagnostic;
-use crate::ledger::entities::{ProviderLimitObservation, Request, Thread};
+use crate::ledger::entities::{PricingContext, ProviderLimitObservation, Request, Thread};
 use crate::ledger::identity::{AnalyticalId, IdentityKey};
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{LineageLink, RequestObservation};
@@ -250,7 +250,8 @@ pub const fn btree_collected(entries: u64, key: u64, value: u64) -> u64 {
 pub mod sizes {
     use super::{
         AnalyticalId, DerivedKey, Diagnostic, EvidenceRef, IdentityBasis, IdentityKey, LineageLink,
-        Name, ProviderLimitObservation, Request, RequestObservation, Thread, size_of,
+        Name, PricingContext, ProviderLimitObservation, Request, RequestObservation, Thread,
+        size_of,
     };
 
     /// A request observation row.
@@ -292,6 +293,8 @@ pub mod sizes {
     pub const PERMUTATION: u64 = size_of::<usize>() as u64;
     /// An interned name, as rows and per-thread caches hold it.
     pub const NAME: u64 = size_of::<Name>() as u64;
+    /// An interned pricing context, as its table leaks it.
+    pub const PRICING_CONTEXT: u64 = size_of::<PricingContext>() as u64;
     /// A `BTreeSet` or `Vec` header, as a candidate-set list holds it.
     pub const SET_HEADER: u64 = size_of::<std::collections::BTreeSet<AnalyticalId>>() as u64;
     /// A string slice, as the sets of served models and field values hold them.
@@ -496,6 +499,16 @@ pub const fn name_intern(text: u64) -> u64 {
 /// The name table's one-time base, charged with the first name: its first B-tree node.
 pub const NAME_TABLE_BASE: u64 = btree_node(size_of::<&str>() as u64, sizes::NAME);
 
+/// A new process-interned [`PricingContext`]: its leaked allocation and its entry in the
+/// pricing table, a set of references. Its names are interned and charged on their own.
+pub const fn pricing_intern() -> u64 {
+    allocation(sizes::PRICING_CONTEXT).saturating_add(btree_entry(sizes::POINTER, 0))
+}
+
+/// The pricing table's one-time base, charged with the first context: its first B-tree
+/// node.
+pub const PRICING_TABLE_BASE: u64 = btree_node(sizes::POINTER, 0);
+
 /// A new interned overflow [`Measures`](crate::ledger::tokens::Measures) pattern: its row
 /// in a doubling vector and its hash-map entry.
 pub const fn overflow_intern() -> u64 {
@@ -515,6 +528,15 @@ pub const OVERFLOW_TABLE_BASE: u64 = grown_vec(1, crate::ledger::tokens::OVERFLO
 /// a per-thread vector where the platform does not run thread-local destructors itself.
 pub const NAME_CACHE: u64 = grown_vec(crate::ledger::names::RECENT_CAPACITY as u64, sizes::NAME)
     + grown_vec(1, 2 * sizes::POINTER);
+
+/// A thread's cache of recently interned pricing contexts (`Pricing::new`'s
+/// `RECENT_PRICING`), up to eight references in a doubling vector. Its destructor's
+/// registration shares the vector [`NAME_CACHE`] charges, which holds four entries before it
+/// grows.
+pub const PRICING_CACHE: u64 = grown_vec(
+    crate::ledger::entities::RECENT_PRICING_CAPACITY as u64,
+    size_of::<crate::ledger::entities::Pricing>() as u64,
+);
 
 /// Line-buffer capacity up to this decodes inside a worker slot; a larger line buffer
 /// needs the large-record permit.
@@ -631,8 +653,8 @@ pub const fn join_copies() -> u64 {
 /// One worker slot `b`: the read buffer and boxed reader, the retained line, the line need
 /// at the slot's 4 MiB capacity (16 MiB, which also covers a Claude subagent's sidecar,
 /// read up to 1 MiB and parsed after the scan drops its line buffer), the `quotaLimits`
-/// allowance, the thread stack, the join's `done` vector, the thread's name cache, and the
-/// zstd or gzip decoder when discovery found such a source.
+/// allowance, the thread stack, the join's `done` vector, the thread's name and pricing
+/// caches, and the zstd or gzip decoder when discovery found such a source.
 pub const fn worker_slot(zstd: bool, gzip: bool) -> u64 {
     let mut slot = allocation(READ_BUFFER)
         + allocation(READER_STATE)
@@ -641,7 +663,8 @@ pub const fn worker_slot(zstd: bool, gzip: bool) -> u64 {
         + QUOTA_DOCUMENT_ALLOWANCE
         + WORKER_STACK
         + JOIN_DONE
-        + NAME_CACHE;
+        + NAME_CACHE
+        + PRICING_CACHE;
     if zstd {
         slot += ZSTD_DECODER;
     }
@@ -1259,11 +1282,11 @@ mod tests {
                 (kappa(Agent::Codex), kappa(Agent::Claude)),
             ),
             (
-                (224, 216, 17, 30, 16),
-                (240, 528),
-                (792, 654, 656, 345),
-                (1074, 980, 868, 443),
-                (792, 1074)
+                (232, 224, 17, 30, 16),
+                (240, 552),
+                (816, 670, 680, 353),
+                (1098, 996, 892, 451),
+                (816, 1098)
             )
         );
         for structure in [codex, claude] {
@@ -1428,7 +1451,8 @@ mod tests {
             + (640 << 10)
             + (2 << 20)
             + JOIN_DONE
-            + NAME_CACHE;
+            + NAME_CACHE
+            + PRICING_CACHE;
         assert_eq!(plain, expected_plain);
         assert!((19 << 20..20 << 20).contains(&plain), "{plain}");
         let zstd = worker_slot(true, false) - plain;
