@@ -1384,7 +1384,9 @@ mod tests {
     /// against the estimates the model harness measures. From `Order`, the largest linked
     /// set's scratch is added: beyond one member's, κ's headroom over grouping covers it
     /// while that set holds up to a fifth of the observations, and the `Order` checkpoint
-    /// charges any more.
+    /// charges any more. The parts proportional to model and pricing text are not per
+    /// record, so κ does not cover them: the checks run with no text, and only `Order`
+    /// charges them.
     #[test]
     fn kappa_covers_the_grouping_and_finalize_estimates() {
         for agent in [Agent::Codex, Agent::Claude] {

@@ -78,7 +78,7 @@ The pricing context of a turn is the provider and selected tier its thread had w
   its boundary lay past its last line, and otherwise only at or after the boundary,
   never before it, on a line without an ordinal, or under an invalid boundary.
   So it never sets the tier of such a fork, or of a migrated child whose boundary lies
-  past its end.
+  past its end, until `uro-1uy7` lands.
 - **Basis:** the tier is the thread’s selected tier, kept with the basis
   `TierBasis::ThreadSetting`, not the tier a request was sent with.
   Codex filters the selected tier by its FastMode feature and model support
@@ -113,11 +113,12 @@ the parent recorded is the parent’s copy, and the first turn the parent never 
 starts the child’s own lines.
 A later parent turn, a parent counter total or a line naming another thread before `B`
 voids that inferred start; a line naming the child ends the window without voiding it.
-Guardian reviews follow the same rules: a migrated review owns its records before a
-boundary past its last line, and a native review’s inherited prefix stays copied.
-The migration gives a legacy user fork no boundary and drops its copied header, so a
-counter-only paginated rollout with a parent link and no other thread’s `session_meta`
-is judged as if its boundary lay past its last line, unless it declares a
+A settings event without a thread ID inside an open inferred start leaves the lines
+after it the child’s. Guardian reviews follow the same rules: a migrated review owns its
+records before a boundary past its last line, and a native review’s inherited prefix
+stays copied. The migration gives a legacy user fork no boundary and drops its copied
+header, so a counter-only paginated rollout with a parent link and no other thread’s
+`session_meta` is judged as if its boundary lay past its last line, unless it declares a
 `history_base`, has a subagent `thread_source` or `source`, or has a seeded first
 counter, whose total is neither its own last usage nor a total its parent root reported;
 its parent’s turns and totals then decide its lines from the first (`uro-p9ua`, fixed in

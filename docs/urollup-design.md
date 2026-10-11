@@ -928,7 +928,8 @@ set these source-specific rules:
   boundary. Before it the setting may be the parent’s copied history, and a line without
   an ordinal, or any line under an invalid boundary, cannot be placed.
   So a snapshot without a thread never sets the tier of such a fork, or of a migrated
-  child whose boundary lies past its end, even inside its own inferred start.
+  child whose boundary lies past its end, even inside its own inferred start, until
+  `uro-1uy7` lands.
 - **Codex counters:** older files use cumulative `token_count` events.
   An update whose running total advances counts the advance as one request.
   A decrease in any cumulative component opens a new counter epoch with a diagnostic,

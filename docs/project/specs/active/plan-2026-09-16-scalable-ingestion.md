@@ -508,6 +508,9 @@ committed; then query and render.
   The one exception is the scratch of the largest linked set, which no decode count
   bounds: κ’s headroom over its grouping share covers it while that set holds up to a
   fifth of the observations, and beyond that the `Order` checkpoint can refuse.
+  The parts of that scratch proportional to model and pricing text (`group_models` and
+  `group_pricing`) are not per record, so κ does not cover them and only the `Order`
+  checkpoint charges them.
   Day and group rows and rendered bytes, which no decode count bounds, can still refuse
   at query, after both ingests.
 - **Checkpoints** run on the coordinating thread before each agent’s decode,
@@ -1130,7 +1133,8 @@ Choices made while implementing, where this design left room:
     2^20 and 2^30 observations, each phase’s share of κ is what its estimate charges per
     observation, κ × observations plus `RECONCILE_RESERVE` (4,512 B) covers both
     estimates’ request structure before `Order`, and with the largest linked set at a
-    fifth of the observations it also covers that set’s scratch beyond one member’s.
+    fifth of the observations it also covers that set’s scratch beyond one member’s,
+    with no model or pricing text, whose parts only the `Order` checkpoint charges.
     Codex construction adds 120 B per request-bearing record for a parent-totals digest
     (`ParentEvidence::totals`, plus the source’s own set while `counter_totals` builds
     it; two hash entries of 16 B), the larger of that and the 18 B `own_responses`
@@ -1270,9 +1274,9 @@ Choices made while implementing, where this design left room:
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
 
-  On x86_64 Linux at this head, all 389 bounds pass in about 5 seconds of a debug build.
+  On x86_64 Linux at this head, all 393 bounds pass in about 5 seconds of a debug build.
   Primitives measure 66–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
-  68–81%, stable sorts 100%), retained ledgers 92–98% of their deep heap,
+  68–81%, stable sorts 100%), retained ledgers 92–99% of their deep heap,
   reconciliation’s retained output 77–99%, discovery 100%, session indexes 53–93% and
   coordinating threads’ caches 0–16%, diagnostics 42–99%, stages 3–100%, whole
   reconciliation phases 29–73% (19–34% before the largest group’s scratch was charged
@@ -1286,7 +1290,7 @@ Choices made while implementing, where this design left room:
   - Halving the copies fails only `thread_reconcile_is_its_parts`.
   - Removing the pricing step from group scratch fails the pricing group’s requests
     stage (142%) and `group_scratch_is_its_lists_and_largest_step`.
-  - Zeroing `COORDINATING_CACHES` fails 36 of the 45 coordinating-thread checks.
+  - Zeroing `COORDINATING_CACHES` fails 37 of the 46 coordinating-thread checks.
   - Removing group scratch’s owner and model step, the owners’ listed detail, or the
     models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
     which pins every part per member.
