@@ -751,9 +751,10 @@ reserved resource observation entity.
 **Status:** Confirmed.
 
 Session hierarchy comes from a **discovery index**, built before reconciliation from
-only thread-identifying data: Claude transcript paths and subagent `.meta.json` files,
-including those under `subagents/workflows/`, each Codex rollout’s first `session_meta`
-record, and each Pi session header.
+only thread-identifying data: Claude transcript paths, the session a subagent
+transcript’s lines name ([§3.4](#34-dialect-reconciliation-rules)) and subagent
+`.meta.json` files, including those under `subagents/workflows/`, each Codex rollout’s
+first `session_meta` record, and each Pi session header.
 It covers every root and date, because Codex subagents can start in later date
 directories and descendants can have usage outside the interval.
 
@@ -837,6 +838,33 @@ set these source-specific rules:
   `output_tokens`, so reconciliation selects one whole record (largest `output_tokens`,
   then highest block index, then last in file order, then lowest `src-` ID), adds a
   diagnostic when input or cache fields differ, and never merges fields.
+- **Claude Code subagent threads:** a subagent thread is the session its lines’
+  `sessionId` names plus the agent ID in its file name, not the directory that holds the
+  file. A record belongs to the session it names, or, when it names none, to the first
+  session an earlier line of its file named.
+  The file’s `.meta.json` sidecar belongs to the first session any of its lines name.
+  Without a named session, either falls back to the session whose directory holds the
+  file. A resumed or forked session can hold a byte-identical copy of an earlier
+  session’s subagent transcript and sidecar in its own `subagents/` directory, and the
+  copy’s lines still name the earlier session.
+  The copy is therefore that session’s subagent: each response it repeats is one request
+  with identical original records and one owner, and the copy alone still counts it once
+  after Claude Code deletes the original.
+  A line that names the holding session belongs to that session’s subagent with the same
+  agent ID. A tool use is issued by the thread that recorded it natively: a resumed
+  session’s replay of a spawning record issues it for the session it names, and a nested
+  copy, such as a `progress` record’s, issues none, since the nested agent’s own
+  transcript reports it.
+  When several records report a spawning tool use, the first in the canonical order of
+  the owner rule below decides, so the session’s own record comes before a fork-style
+  subagent’s replay of it, whichever file discovery reads first.
+  A thread never spawns itself: a fork whose replay is the only record left is spawned
+  by its session. Once the session’s transcript is deleted, another fork’s replay of a
+  spawning record can still decide that spawn, so a sibling fork can take a wrong parent
+  and nested forks can spawn each other (`uro-x146`). Where several files describe one
+  thread, the one with the lowest `src-` ID gives its purpose and project, and one spawn
+  edge: from the issuer of the lowest-`src-` sidecar whose tool use has one, else from
+  the thread’s session.
 - **Claude Code copies:** a record that replays another thread’s record is a copy owned
   by that thread, never counted and never an ambiguous key.
   A `progress` record nesting a subagent’s assistant message is always a copy.
@@ -855,9 +883,11 @@ set these source-specific rules:
   which derives from the root-relative path, breaks the tie.
 - **Claude Code resumed sessions:** a main-session record whose `sessionId` names
   another session is a resumed replay.
-  It is a copy, owned by the thread that owns its `uuid`, or else by the session it
-  names, and it adds a fork edge from that session to the resuming one, with a thread
-  for the named session even when its file was not discovered.
+  It is a copy, owned by the thread that owns its `uuid`, or else by the thread of the
+  named session that owns its `message.id`, as a side question repeating it does once
+  that session’s own transcript is deleted, or else by the session it names.
+  It adds a fork edge from that session to the resuming one, with a thread for the named
+  session even when its file was not discovered.
   A replay never claims ownership, so a resuming session whose file sorts before the
   original cannot take the original’s usage.
 - **Claude Code shared message IDs:** when records that are not replays report one
@@ -2100,6 +2130,11 @@ Every reading command accepts these flags, which compile into the `QuerySpec`:
 - Session hierarchy comes from the
   [discovery index](#32-relationships-and-the-discovery-index), and `sources` reports
   each root’s earliest retained record ([§2.1](#21-dialects-and-discovery)).
+- A transcript path selects the thread whose records the file holds.
+  A Claude transcript can hold records of several threads, as a copied subagent
+  transcript continued under the session that holds it does
+  ([§3.4](#34-dialect-reconciliation-rules)); its path then selects the thread its
+  location implies, the one a hook’s `agent_transcript_path` means.
 
 ### 6.2 Current-Session Detection
 
@@ -2620,6 +2655,20 @@ records how the engine reached this shape, with dated whole-history measurements
   narrowed selection, so ingest reads it or reports it as incomplete; a complete first
   line that is not valid JSON or not a `session_meta` record links nothing, and its
   rollout is narrowed by its own thread.
+  A Claude family is a session’s transcript and directory, and a subagent transcript
+  whose lines first name another session joins that session’s family too
+  ([§3.4](#34-dialect-reconciliation-rules)). A subagent transcript also matches the
+  native and `thr-` IDs of the session its lines name, and a match keeps every family it
+  joins. Selecting that session by its native or `thr-` ID therefore reads a copy under
+  another session’s directory, with the holding session’s family, even after Claude Code
+  deletes the session’s own transcript and directory, or when they lie in another
+  project directory or root.
+  The families themselves are still sibling paths, so across project directories and
+  roots the path of the session’s transcript does not reach the copy, and selecting the
+  copy by agent ID, path or `thr-` ID does not read the session’s transcript
+  (`uro-4v0g`). That session is read with the adapter’s line rule from the transcript’s
+  first complete lines, within one record’s worth of bytes; a transcript whose window
+  ends before a line names one stays in every narrowed selection.
   Identifying the dialect of a `--source` directory likewise skips files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,

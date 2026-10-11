@@ -1,9 +1,10 @@
 //! The first pass over a Claude Code transcript line.
 //!
 //! Every line contributes its record type, its sidechain flag and, until a source has
-//! them, its CLI version and working directory; only a line that can bear a request
-//! needs the rest. [`LineHead::read`] reads those fields, and whether the line bears
-//! usage, without building a JSON document or allocating for the fields it ignores.
+//! them, its CLI version, working directory and, in a subagent transcript, the session it
+//! names; only a line that can bear a request needs the rest. [`LineHead::read`] reads
+//! those fields, and whether the line bears usage, without building a JSON document or
+//! allocating for the fields it ignores.
 //!
 //! The pass is exact with respect to parsing a `serde_json::Value` document followed by
 //! the adapter's path helpers:
@@ -55,6 +56,8 @@ pub(super) struct LineHead<'a> {
     pub(super) version: Option<Cow<'a, str>>,
     /// The `cwd` string, when it was asked for.
     pub(super) cwd: Option<Cow<'a, str>>,
+    /// The `sessionId` string, when it was asked for.
+    pub(super) session: Option<Cow<'a, str>>,
     /// Whether `message.usage.output_tokens` is an unsigned integer.
     message_usage: bool,
     /// Whether `data.message.message.usage.output_tokens` is an unsigned integer.
@@ -62,16 +65,18 @@ pub(super) struct LineHead<'a> {
 }
 
 impl<'a> LineHead<'a> {
-    /// Reads the head of one line, keeping `version` and `cwd` only when asked for.
+    /// Reads the head of one line, keeping `version`, `cwd` and `sessionId` only when
+    /// asked for.
     ///
     /// Fails exactly when the line is not a valid JSON document.
     pub(super) fn read(
         bytes: &'a [u8],
         want_version: bool,
         want_cwd: bool,
+        want_session: bool,
     ) -> Result<Self, serde_json::Error> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-        let head = Head { want_version, want_cwd }.deserialize(&mut deserializer)?;
+        let head = Head { want_version, want_cwd, want_session }.deserialize(&mut deserializer)?;
         deserializer.end()?;
         Ok(head)
     }
@@ -141,6 +146,7 @@ enum Field {
     IsSidechain,
     Version,
     Cwd,
+    SessionId,
     Message,
     Data,
     Other,
@@ -169,6 +175,7 @@ impl Visitor<'_> for FieldName {
             "isSidechain" => Field::IsSidechain,
             "version" => Field::Version,
             "cwd" => Field::Cwd,
+            "sessionId" => Field::SessionId,
             "message" => Field::Message,
             "data" => Field::Data,
             _ => Field::Other,
@@ -180,6 +187,7 @@ impl Visitor<'_> for FieldName {
 struct Head {
     want_version: bool,
     want_cwd: bool,
+    want_session: bool,
 }
 
 impl<'de> DeserializeSeed<'de> for Head {
@@ -207,13 +215,18 @@ impl<'de> Visitor<'de> for Head {
                 Field::IsSidechain => head.sidechain = map.next_value_seed(IsTrue)?,
                 Field::Version if self.want_version => head.version = map.next_value_seed(Text)?,
                 Field::Cwd if self.want_cwd => head.cwd = map.next_value_seed(Text)?,
+                Field::SessionId if self.want_session => {
+                    head.session = map.next_value_seed(Text)?;
+                }
                 Field::Message => {
                     head.message_usage = map.next_value_seed(UnsignedAt(MESSAGE_OUTPUT_TOKENS))?;
                 }
                 Field::Data => {
                     head.nested_usage = map.next_value_seed(UnsignedAt(NESTED_OUTPUT_TOKENS))?;
                 }
-                Field::Version | Field::Cwd | Field::Other => map.next_value_seed(Skip)?,
+                Field::Version | Field::Cwd | Field::SessionId | Field::Other => {
+                    map.next_value_seed(Skip)?;
+                }
             }
         }
         Ok(head)
@@ -1267,6 +1280,7 @@ mod tests {
             sidechain: value.get("isSidechain").and_then(Value::as_bool) == Some(true),
             version: owned("version"),
             cwd: owned("cwd"),
+            session: owned("sessionId"),
             message_usage: unsigned(&value, &["message", "usage", "output_tokens"]).is_some(),
             nested_usage: value.pointer("/data/message").is_some_and(|nested| {
                 unsigned(nested, &["message", "usage", "output_tokens"]).is_some()
@@ -1276,12 +1290,12 @@ mod tests {
 
     fn assert_matches_document(bytes: &[u8]) {
         let expected = from_document(bytes);
-        let head = LineHead::read(bytes, true, true).ok();
+        let head = LineHead::read(bytes, true, true, true).ok();
         assert_eq!(head, expected, "{}", String::from_utf8_lossy(bytes));
-        let unwanted = LineHead::read(bytes, false, false).ok();
+        let unwanted = LineHead::read(bytes, false, false, false).ok();
         assert_eq!(unwanted.is_some(), expected.is_some());
         if let Some(unwanted) = unwanted {
-            assert_eq!((unwanted.version, unwanted.cwd), (None, None));
+            assert_eq!((unwanted.version, unwanted.cwd, unwanted.session), (None, None, None));
         }
     }
 
@@ -1481,9 +1495,11 @@ mod tests {
 
     #[test]
     fn unescaped_strings_are_borrowed_from_the_line() {
-        let head = LineHead::read(br#"{"version":"2.1.0","cwd":"a\/b"}"#, true, true).unwrap();
+        let line = br#"{"version":"2.1.0","cwd":"a\/b","sessionId":"s-1"}"#;
+        let head = LineHead::read(line, true, true, true).unwrap();
         assert!(matches!(head.version, Some(Cow::Borrowed("2.1.0"))));
         assert!(matches!(head.cwd, Some(Cow::Owned(ref cwd)) if cwd == "a/b"));
+        assert!(matches!(head.session, Some(Cow::Borrowed("s-1"))));
     }
 
     /// A JSON object text from generated entries, which may repeat a key: a document keeps
@@ -1595,6 +1611,7 @@ mod tests {
                 .prop_map(|value| ("isSidechain", value)),
             2 => leaf().prop_map(|value| ("version", value)),
             2 => leaf().prop_map(|value| ("cwd", value)),
+            2 => leaf().prop_map(|value| ("sessionId", value)),
             2 => message(1).prop_map(|value| ("message", value)),
             2 => message(2).prop_map(|value| ("data", value)),
             3 => leaf().prop_map(|value| ("content", value)),

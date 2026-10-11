@@ -424,6 +424,8 @@ impl ParsedRecord {
 }
 
 struct SourceFacts {
+    /// The thread the file belongs to: its main session, or for a subagent transcript the
+    /// subagent of the first session its lines name, wherever the file lies.
     thread: NativeThread,
     /// The snapshot `src-` ID, set after the reader fingerprints the first record.
     source_id: Option<AnalyticalId>,
@@ -608,8 +610,8 @@ struct DecodedSource {
     facts: SourceFacts,
     subagent_meta: Option<SubagentMeta>,
     records: Vec<ParsedRecord>,
-    /// Tool-use IDs in record order, with the thread of the record that issued each.
-    tool_uses: Vec<(Digest, NativeThread)>,
+    /// Tool-use IDs in record order, each with the index of the record that reports it.
+    tool_uses: Vec<(Digest, usize)>,
     /// The table that this source's symbols index.
     strings: Strings,
 }
@@ -634,7 +636,7 @@ fn decode_source(
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    let SourceDecoder { thread, mut strings, mut facts, mut records, mut tool_uses } = decoder;
+    let SourceDecoder { mut strings, mut facts, mut records, mut tool_uses, .. } = decoder;
     if let Some(identity) = &entry.source {
         facts.source_id = Some(identity.id.clone());
     }
@@ -644,10 +646,10 @@ fn decode_source(
     tool_uses.shrink_to_fit();
     strings.freeze();
     let mut subagent_meta = None;
-    if thread.agent.is_some() {
+    if facts.thread.agent.is_some() {
         if let (Some(identity), Some(meta)) = (entry.source.as_ref(), read_subagent_meta(&path)?) {
             subagent_meta = Some(SubagentMeta {
-                child: thread,
+                child: facts.thread,
                 tool_use: meta.tool_use_id.as_deref().map(digest),
                 agent_type: meta.agent_type,
                 source_id: identity.id.clone(),
@@ -692,11 +694,14 @@ fn read_subagent_meta_with_limit(
 
 /// The state of one transcript while its lines decode.
 struct SourceDecoder {
+    /// The thread the file's location implies.
     thread: NativeThread,
+    /// Whether a line of this subagent transcript has named its session yet.
+    session_named: bool,
     strings: Strings,
     facts: SourceFacts,
     records: Vec<ParsedRecord>,
-    tool_uses: Vec<(Digest, NativeThread)>,
+    tool_uses: Vec<(Digest, usize)>,
 }
 
 impl SourceDecoder {
@@ -705,6 +710,7 @@ impl SourceDecoder {
         let thread = thread_from_path(locator, &mut strings);
         Self {
             thread,
+            session_named: false,
             strings,
             facts: SourceFacts {
                 thread,
@@ -738,10 +744,21 @@ impl SourceDecoder {
         if facts.evidence.is_none() {
             facts.evidence = Some(*raw.evidence);
         }
-        let Ok(head) = LineHead::read(raw.bytes, facts.version.is_none(), facts.project.is_none())
-        else {
+        let subagent = self.thread.agent.is_some();
+        let Ok(head) = LineHead::read(
+            raw.bytes,
+            facts.version.is_none(),
+            facts.project.is_none(),
+            subagent && !self.session_named,
+        ) else {
             return RecordDisposition::Malformed;
         };
+        if let Some(session) = head.session.as_deref() {
+            // A copy of a subagent transcript under another session's directory still names
+            // the session that ran it, so it is that session's subagent (design §3.4).
+            facts.thread.session = self.strings.intern(session);
+            self.session_named = true;
+        }
         if facts.version.is_none() {
             facts.version = head.version.as_deref().map(str::to_owned);
         }
@@ -789,6 +806,16 @@ impl SourceDecoder {
         if request_record && admission.is_some_and(|budget| !budget.reserve_row(Agent::Claude)) {
             return RecordDisposition::Stop;
         }
+        // A subagent record belongs to the subagent of the session it names, or, when it
+        // names none, of the first session an earlier line named, else the directory's, so
+        // the records of a copied transcript are the original subagent's.
+        let record_thread = if subagent {
+            let session =
+                session.map_or(self.facts.thread.session, |session| self.strings.intern(session));
+            NativeThread { session, ..self.facts.thread }
+        } else {
+            record_thread
+        };
         let record =
             self.record(raw.evidence, record_thread, fields, session, forced_copy, request_record);
         self.records.push(record);
@@ -822,10 +849,7 @@ impl SourceDecoder {
         set(Count::Output, fields.message.usage.output);
         set(Count::Reasoning, fields.message.usage.reasoning);
         set(Count::BlockIndex, fields.api_block_index);
-        for tool_use_id in &fields.message.tool_use_ids {
-            self.tool_uses.push((digest(tool_use_id), thread));
-        }
-        ParsedRecord {
+        let record = ParsedRecord {
             offset: evidence.offset,
             length: u64::from(evidence.length),
             thread,
@@ -855,7 +879,16 @@ impl SourceDecoder {
             counts,
             counted,
             extras: record_extras(fields),
+        };
+        // A tool use is issued by the thread that recorded it natively (`thread_graph`
+        // chooses among the records that report it). A nested copy issued none: the nested
+        // agent's own transcript reports them, and without it the spawn falls back to its
+        // session.
+        if !forced_copy {
+            let index = self.records.len();
+            self.tool_uses.extend(fields.message.tool_use_ids.iter().map(|id| (digest(id), index)));
         }
+        record
     }
 }
 
@@ -936,9 +969,9 @@ struct Corpus {
     chunks: Vec<RecordChunk>,
     facts: Vec<SourceFacts>,
     subagent_meta: Vec<SubagentMeta>,
-    /// The thread of the first record, in discovery and record order, that issued each
-    /// tool use a subagent sidecar names.
-    tool_owners: HashMap<Digest, NativeThread>,
+    /// The records that report each tool use a subagent sidecar names, by chunk and
+    /// record index.
+    tool_records: HashMap<Digest, Vec<(usize, usize)>>,
 }
 
 impl Corpus {
@@ -953,7 +986,7 @@ impl Corpus {
             chunks: Vec::with_capacity(decoded.len()),
             facts: Vec::with_capacity(decoded.len()),
             subagent_meta: Vec::new(),
-            tool_owners: HashMap::new(),
+            tool_records: HashMap::new(),
         };
         let mut manifest =
             SnapshotManifest { entries: Vec::with_capacity(decoded.len()), skipped_links };
@@ -966,11 +999,12 @@ impl Corpus {
                 record.remap(&remap);
             }
             if let (Some(id), false) = (&facts.source_id, records.is_empty()) {
+                let chunk = corpus.chunks.len();
                 corpus.chunks.push(RecordChunk { source: id.clone(), records });
-            }
-            for (tool_use, thread) in tool_uses {
-                if spawning_tool_uses.contains(&tool_use) {
-                    corpus.tool_owners.entry(tool_use).or_insert_with(|| remap.thread(thread));
+                for (tool_use, record) in tool_uses {
+                    if spawning_tool_uses.contains(&tool_use) {
+                        corpus.tool_records.entry(tool_use).or_default().push((chunk, record));
+                    }
                 }
             }
             corpus.subagent_meta.extend(
@@ -1177,8 +1211,8 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
     let ambiguous = ambiguous_messages(&corpus, &owners);
     let mut diagnostics = ambiguity_diagnostics(&corpus, &ambiguous, &owners, &source_table);
     let (threads, relationships, ids) = thread_graph(&corpus, &source_table)?;
-    let Corpus { strings, chunks, facts, subagent_meta, tool_owners } = corpus;
-    drop((facts, subagent_meta, tool_owners));
+    let Corpus { strings, chunks, facts, subagent_meta, tool_records } = corpus;
+    drop((facts, subagent_meta, tool_records));
 
     // Reserve per chunk after earlier record vectors have dropped. A single reserve for
     // every record would allocate the observation table (~232 B each) while the corpus
@@ -1295,20 +1329,50 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
     let mut native_threads: Vec<NativeThread> = native_threads.into_iter().collect();
     native_threads.sort_by(|left, right| left.text_order(*right, strings));
 
-    let purpose_by_thread: HashMap<NativeThread, &str> = corpus
-        .subagent_meta
-        .iter()
-        .filter_map(|meta| meta.agent_type.as_deref().map(|purpose| (meta.child, purpose)))
-        .collect();
+    // Several files can describe one thread, as a copied subagent transcript and its
+    // original do: the file with the lowest `src-` ID gives its purpose and project, so
+    // discovery order never decides them.
+    let mut metas: Vec<&SubagentMeta> = corpus.subagent_meta.iter().collect();
+    metas.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    let mut purpose_by_thread: HashMap<NativeThread, &str> = HashMap::new();
+    for meta in &metas {
+        if let Some(purpose) = meta.agent_type.as_deref() {
+            purpose_by_thread.entry(meta.child).or_insert(purpose);
+        }
+    }
+    // A spawning tool use is issued by the native owner of the first record that reports
+    // it in owner precedence, so a main-session record of it comes before a fork's replay
+    // of that record, whichever file discovery reads first. A thread never spawns itself.
+    let issuer = |meta: &SubagentMeta| {
+        corpus
+            .tool_records
+            .get(&meta.tool_use?)?
+            .iter()
+            .map(|&(chunk, record)| {
+                let chunk = &corpus.chunks[chunk];
+                (&chunk.source, &chunk.records[record])
+            })
+            .filter(|(_, record)| record.native_owner() != meta.child)
+            .min_by(compare_owner_precedence)
+            .map(|(_, record)| record.native_owner())
+    };
+    // One spawn edge per child, by the same rule: the lowest-`src-` sidecar whose tool use
+    // has an issuer names the parent, else the child's session does. It cites every sidecar
+    // that names the same parent, so a copied sidecar never gives a child a second parent.
+    let mut sidecars: HashMap<NativeThread, Vec<&SubagentMeta>> = HashMap::new();
+    for meta in &metas {
+        sidecars.entry(meta.child).or_default().push(meta);
+    }
     let mut spawned = HashSet::new();
-    for meta in &corpus.subagent_meta {
-        let parent = meta
-            .tool_use
-            .and_then(|tool_use| corpus.tool_owners.get(&tool_use))
-            .copied()
-            .unwrap_or_else(|| NativeThread::main(meta.child.session));
-        spawned.insert(meta.child);
-        relationships.push((RelationshipKind::Spawn, parent, meta.child, meta.evidence));
+    for (child, sidecars) in sidecars {
+        let session = NativeThread::main(child.session);
+        let parent = sidecars.iter().find_map(|meta| issuer(meta)).unwrap_or(session);
+        spawned.insert(child);
+        for meta in sidecars {
+            if issuer(meta).unwrap_or(session) == parent {
+                relationships.push((RelationshipKind::Spawn, parent, child, meta.evidence));
+            }
+        }
     }
     // A subagent without a sidecar is spawned by its session, cited by its first record.
     let unspawned: Vec<NativeThread> = native_threads
@@ -1340,7 +1404,9 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
 
     let mut thread_evidence: HashMap<NativeThread, Vec<EvidenceRef>> = HashMap::new();
     let mut project_by_thread: HashMap<NativeThread, Sym> = HashMap::new();
-    for facts in &corpus.facts {
+    let mut facts_by_source: Vec<&SourceFacts> = corpus.facts.iter().collect();
+    facts_by_source.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    for facts in facts_by_source {
         if let Some(evidence) = &facts.evidence {
             thread_evidence.entry(facts.thread).or_default().push(*evidence);
         }
@@ -1469,6 +1535,17 @@ fn observe(
                 .uuid
                 .and_then(|uuid| owners.uuids.get(&uuid))
                 .filter(|owner| **owner != record.thread)
+        })
+        .or_else(|| {
+            // A resumed replay whose session's own record is gone, as after Claude Code
+            // deletes that session's transcript, takes the thread of that session that now
+            // owns the message, such as a side question repeating it, so it never names a
+            // second owner.
+            record
+                .message
+                .as_ref()
+                .and_then(|message| owners.messages.get(&message.digest))
+                .filter(|owner| record.is_foreign_session() && owner.session == recorded_session)
         });
     let owner = replay_owner
         .and_then(|owner| ids.get(owner))
@@ -1707,24 +1784,60 @@ fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation
         .then_with(|| right.evidence.source.cmp(&left.evidence.source))
 }
 
+/// The thread a transcript's location implies: the session of its file or directory,
+/// with the agent ID of a file under `subagents/`.
 fn thread_from_path(locator: &str, strings: &mut Strings) -> NativeThread {
-    let path = Path::new(locator);
+    let (session, agent) = location_ids(Path::new(locator));
+    NativeThread {
+        session: strings.intern(&session),
+        agent: agent.map(|agent| strings.intern(&agent)),
+        inline_digest: None,
+    }
+}
+
+/// The session and agent ID a transcript path's location implies, without any
+/// compression suffix.
+///
+/// The path may be absolute, as a selector is, so the session is the component before the
+/// last `subagents` component: a directory above the root that is named `subagents` is
+/// never a session's.
+fn location_ids(path: &Path) -> (String, Option<String>) {
+    let path = match Representation::of_path(path) {
+        Some(Representation::Zstd | Representation::Gzip) => path.with_extension(""),
+        Some(Representation::Plain) | None => path.to_owned(),
+    };
     let components: Vec<Cow<'_, str>> =
         path.components().map(|component| component.as_os_str().to_string_lossy()).collect();
-    let subagents = components.iter().position(|component| component == "subagents");
-    match subagents {
-        Some(index) if index > 0 => {
-            let session = strings.intern(&components[index.saturating_sub(1)]);
-            let agent = path.file_stem().map(|stem| {
-                let stem = stem.to_string_lossy();
-                strings.intern(stem.strip_prefix("agent-").unwrap_or(&stem))
-            });
-            NativeThread { session, agent, inline_digest: None }
-        }
-        _ => NativeThread::main(strings.intern(
-            &path.file_stem().map_or(Cow::Borrowed(locator), |stem| stem.to_string_lossy()),
-        )),
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy());
+    match components.iter().rposition(|component| component == "subagents") {
+        Some(index) if index > 0 => (
+            components[index.saturating_sub(1)].clone().into_owned(),
+            stem.map(|stem| stem.strip_prefix("agent-").unwrap_or(&stem).to_owned()),
+        ),
+        _ => (stem.unwrap_or_else(|| path.as_os_str().to_string_lossy()).into_owned(), None),
     }
+}
+
+/// The native thread ID a Claude transcript's location implies: `session`, or
+/// `session/agent` for a file under `subagents/`.
+///
+/// A file can hold records of more than one thread, as a copied subagent transcript
+/// continued under the session that holds it does; its path then names this thread, the
+/// one a hook's transcript path means.
+pub(crate) fn located_native_id(path: &Path) -> String {
+    match location_ids(path) {
+        (session, Some(agent)) => format!("{session}/{agent}"),
+        (session, None) => session,
+    }
+}
+
+/// The session a Claude transcript line names: its `sessionId` string, read by the rule
+/// decoding applies to every line, without building a JSON document.
+///
+/// A line that is not a valid JSON document, or whose `sessionId` is missing or not a
+/// string, names none, and a repeated key keeps its last value.
+pub fn line_session(line: &[u8]) -> Option<String> {
+    LineHead::read(line, false, false, true).ok()?.session.map(Cow::into_owned)
 }
 
 #[cfg(test)]
@@ -1736,7 +1849,7 @@ mod tests {
 
     use super::{
         ClaudeBlockSelector, Count, NativeThread, RecordTime, SourceDecoder, Strings, claude_usage,
-        digest, read_subagent_meta_with_limit,
+        digest, line_session, read_subagent_meta_with_limit,
     };
     use crate::adapters::AdapterError;
     use crate::ledger::reconcile::{NativeSequence, RequestObservation, RevisionSelector};
@@ -1985,6 +2098,18 @@ mod tests {
     }
 
     #[test]
+    fn a_line_names_the_session_its_head_reads() {
+        assert_eq!(line_session(b"{\"sessionId\":\"s-1\"}\n").as_deref(), Some("s-1"));
+        let repeated = br#"{"sessionId":"s-1","type":"user","sessionId":"s-2"}"#;
+        assert_eq!(line_session(repeated).as_deref(), Some("s-2"));
+        assert_eq!(line_session(br#"{"sessionId":7}"#), None);
+        assert_eq!(line_session(br#"{"sessionId":null}"#), None);
+        assert_eq!(line_session(br#"{"data":{"sessionId":"s-1"}}"#), None);
+        assert_eq!(line_session(br#"{"sessionId":"s-1""#), None, "an unfinished document");
+        assert_eq!(line_session(br#"{"sessionId":"s-1"} x"#), None, "trailing characters");
+    }
+
+    #[test]
     fn typed_records_drop_content_but_keep_tool_ownership_and_usage() {
         let payload = "x".repeat(2 * 1024 * 1024);
         let value = serde_json::json!({
@@ -2009,7 +2134,8 @@ mod tests {
             Some("message-one")
         );
         assert_eq!(record.uuid, Some(digest("record-one")));
-        assert_eq!(decoder.tool_uses, [(digest("tool-one"), decoder.thread)]);
+        assert_eq!(decoder.tool_uses, [(digest("tool-one"), 0)]);
+        assert_eq!(record.native_owner(), decoder.thread);
         assert_eq!(record.count(Count::Input), Some(3));
         assert_eq!(record.count(Count::Output), Some(10));
         assert_eq!(record.count(Count::CacheRead), None);
