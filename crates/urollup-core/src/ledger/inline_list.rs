@@ -109,10 +109,11 @@ impl<T, const N: usize> From<Vec<T>> for InlineList<T, N> {
 
 impl<T: DeepSize, const N: usize> DeepSize for InlineList<T, N> {
     fn heap(&self) -> u64 {
-        let spilled = self.spilled.as_deref().map_or(0, |items| {
+        let Self { inline, spilled } = self;
+        let spilled = spilled.as_deref().map_or(0, |items| {
             allocation(std::mem::size_of::<Vec<T>>() as u64).saturating_add(items.heap())
         });
-        self.inline.iter().flatten().fold(spilled, |total, item| total.saturating_add(item.heap()))
+        inline.iter().flatten().fold(spilled, |total, item| total.saturating_add(item.heap()))
     }
 }
 

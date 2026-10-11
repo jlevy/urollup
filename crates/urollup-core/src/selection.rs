@@ -108,7 +108,8 @@ pub struct SessionIndex {
 
 impl crate::ledger::admission::deep_size::DeepSize for SessionIndex {
     fn heap(&self) -> u64 {
-        self.sessions.heap().saturating_add(self.relationships.heap())
+        let Self { sessions, relationships } = self;
+        sessions.heap().saturating_add(relationships.heap())
     }
 }
 

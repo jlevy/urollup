@@ -5,27 +5,42 @@
 //! model's upper bound, since the standard maps do not expose their node or bucket
 //! layout. Interned names and overflow measures are process-wide and charged when they
 //! are interned, not here.
+//!
+//! [`DeepSize::heap`] is what a value owns on the heap; [`DeepSize::deep_size`] adds the
+//! value's own size, for a value that is itself on the heap, such as a vector element
+//! counted by its vector, or one boxed. A value held on the stack, such as a function's
+//! return value, is charged its heap only.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::mem::size_of;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use super::model::{allocation, btree_map, sized_vec};
 use crate::adapters::Ingested;
-use crate::ledger::coverage::{CoverageGap, UnobservedReason};
-use crate::ledger::diagnostics::Diagnostic;
+use crate::ledger::coverage::{CoverageGap, ReconcileCoverage, UnobservedReason};
+use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Counting, ModelUsage, Ownership, ProviderLimitObservation, RecordRefs, Relationship,
-    RelationshipKind, Request, SelectedUsage, SourceArtifact, SourceCapability, Thread, ToolAction,
+    Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsage, Ownership,
+    ProviderLimitObservation, RecordRefs, Relationship, RelationshipKind, Request, RevisionStatus,
+    SelectedUsage, SourceArtifact, SourceCapability, Thread, ToolAction, UsageRevision,
 };
-use crate::ledger::identity::{AnalyticalId, IdentityKey, KeyComponent, StoredIdentity};
+use crate::ledger::identity::{
+    AnalyticalId, IdPrefix, IdentityKey, IdentityVersion, KeyComponent, StoredIdentity,
+};
 use crate::ledger::names::Name;
-use crate::ledger::reconcile::{Ledger, LineageLink, ReconcileInput, RequestObservation};
-use crate::ledger::scope::DerivedKey;
-use crate::selection::IndexedSession;
+use crate::ledger::reconcile::{
+    Ledger, LineageLink, NativeSequence, ObservationRole, OwnerEvidence, ReconcileInput,
+    RequestObservation,
+};
+use crate::ledger::scope::{DerivedKey, IdentityBasis};
+use crate::ledger::tokens::Measures;
+use crate::selection::{Agent, IndexedSession};
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{
-    CoverageFailure, FileIdentity, ManifestEntry, SkippedLink, SnapshotManifest, SourceChange,
+    CoverageFailure, Cutoff, FileIdentity, Fingerprint, ManifestEntry, RecordCounters,
+    Representation, SkippedLink, SkippedLinkReason, SnapshotManifest, SourceChange,
 };
 use crate::sources::reader::LogicalSource;
 use crate::sources::roots::{DiscoveredSource, Discovery, UnreadableEntry};
@@ -35,8 +50,8 @@ pub trait DeepSize {
     /// The heap this value owns beyond its own `size_of`, by the costing rule.
     fn heap(&self) -> u64;
 
-    /// `size_of` plus [`DeepSize::heap`]: what a value costs where it is not part of a
-    /// larger allocation.
+    /// `size_of` plus [`DeepSize::heap`]: what a value costs where it is itself on the
+    /// heap.
     fn deep_size(&self) -> u64
     where
         Self: Sized,
@@ -55,6 +70,7 @@ macro_rules! owns_no_heap {
     };
 }
 
+// Plain values, which own nothing on the heap.
 owns_no_heap!(
     u8,
     u16,
@@ -63,14 +79,32 @@ owns_no_heap!(
     usize,
     bool,
     &'static str,
-    AnalyticalId,
-    DerivedKey,
-    EvidenceRef,
-    Name,
-    ModelUsage,
-    Counting,
-    ProviderLimitObservation,
+    SystemTime,
+    io::ErrorKind,
     jiff::Timestamp,
+    Agent,
+    AnalyticalId,
+    CompactTimestamp,
+    Confidence,
+    Cutoff,
+    DerivedKey,
+    DiagnosticCode,
+    EvidenceRef,
+    Fingerprint,
+    IdPrefix,
+    IdentityBasis,
+    IdentityVersion,
+    Measures,
+    ModelBasis,
+    ModelName,
+    Name,
+    NativeSequence,
+    ObservationRole,
+    ReconcileCoverage,
+    RecordCounters,
+    Representation,
+    RevisionStatus,
+    SkippedLinkReason,
 );
 
 fn sum<'a, T: DeepSize + 'a>(items: impl IntoIterator<Item = &'a T>) -> u64 {
@@ -143,6 +177,14 @@ impl<T: DeepSize> DeepSize for Basis<T> {
     }
 }
 
+/// Adds up the heap of every listed field.
+fn fields(heaps: impl IntoIterator<Item = u64>) -> u64 {
+    heaps.into_iter().fold(0, u64::saturating_add)
+}
+
+// Every struct below is destructured without `..`, and every field's heap is added, so a
+// new field fails to compile until it is sized here.
+
 impl DeepSize for KeyComponent {
     fn heap(&self) -> u64 {
         match self {
@@ -154,32 +196,46 @@ impl DeepSize for KeyComponent {
 
 impl DeepSize for IdentityKey {
     fn heap(&self) -> u64 {
-        self.kind.heap().saturating_add(self.components.heap())
+        let Self { prefix, version, kind, components } = self;
+        fields([prefix.heap(), version.heap(), kind.heap(), components.heap()])
     }
 }
 
 impl DeepSize for StoredIdentity {
     fn heap(&self) -> u64 {
-        self.key.heap()
+        let Self { id, key } = self;
+        fields([id.heap(), key.heap()])
     }
 }
 
 impl DeepSize for Thread {
     fn heap(&self) -> u64 {
-        [
-            self.identity.heap(),
-            self.aliases.heap(),
-            self.native_key.heap(),
-            self.source.heap(),
-            self.initiator.heap(),
-            self.purpose.heap(),
-            self.execution_environment.heap(),
-            self.project.heap(),
-            self.account.heap(),
-            self.evidence.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self {
+            identity,
+            basis,
+            aliases,
+            native_key,
+            source,
+            initiator,
+            purpose,
+            execution_environment,
+            project,
+            account,
+            evidence,
+        } = self;
+        fields([
+            identity.heap(),
+            basis.heap(),
+            aliases.heap(),
+            native_key.heap(),
+            source.heap(),
+            initiator.heap(),
+            purpose.heap(),
+            execution_environment.heap(),
+            project.heap(),
+            account.heap(),
+            evidence.heap(),
+        ])
     }
 }
 
@@ -194,22 +250,57 @@ impl DeepSize for RelationshipKind {
 
 impl DeepSize for Relationship {
     fn heap(&self) -> u64 {
-        self.kind.heap().saturating_add(self.evidence.heap())
+        let Self { kind, from, to, confidence, evidence } = self;
+        fields([kind.heap(), from.heap(), to.heap(), confidence.heap(), evidence.heap()])
     }
 }
 
 impl DeepSize for Ownership {
     fn heap(&self) -> u64 {
         match self {
+            Self::Owned { thread } => thread.heap(),
             Self::Ambiguous { candidates } => candidates.heap(),
-            Self::Owned { .. } | Self::Unknown => 0,
+            Self::Unknown => 0,
         }
+    }
+}
+
+impl DeepSize for Counting {
+    fn heap(&self) -> u64 {
+        match self {
+            Self::Unresolved { counted } => counted.heap(),
+            Self::Counted | Self::CopyOnly => 0,
+        }
+    }
+}
+
+impl DeepSize for OwnerEvidence {
+    fn heap(&self) -> u64 {
+        match self {
+            Self::Proven(thread) => thread.heap(),
+            Self::None => 0,
+        }
+    }
+}
+
+impl DeepSize for ModelUsage {
+    fn heap(&self) -> u64 {
+        let Self { model, usage, source } = self;
+        fields([model.heap(), usage.heap(), source.heap()])
+    }
+}
+
+impl DeepSize for UsageRevision {
+    fn heap(&self) -> u64 {
+        let Self { usage, model_usage } = self;
+        fields([usage.heap(), model_usage.heap()])
     }
 }
 
 impl DeepSize for SelectedUsage {
     fn heap(&self) -> u64 {
-        self.revision.model_usage.heap()
+        let Self { revision, evidence, status } = self;
+        fields([revision.heap(), evidence.heap(), status.heap()])
     }
 }
 
@@ -217,30 +308,79 @@ impl DeepSize for RecordRefs {
     fn heap(&self) -> u64 {
         match self {
             Self::Many(records) => records.heap(),
-            Self::Empty | Self::One(_) => 0,
+            Self::One(record) => record.heap(),
+            Self::Empty => 0,
         }
     }
 }
 
 impl DeepSize for Request {
     fn heap(&self) -> u64 {
-        [self.aliases.heap(), self.ownership.heap(), self.usage.heap(), self.records.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self {
+            id,
+            basis,
+            aliases,
+            ownership,
+            first_seen,
+            last_seen,
+            model,
+            effort,
+            usage,
+            records,
+            originals,
+            counting,
+        } = self;
+        fields([
+            id.heap(),
+            basis.heap(),
+            aliases.heap(),
+            ownership.heap(),
+            first_seen.heap(),
+            last_seen.heap(),
+            model.heap(),
+            effort.heap(),
+            usage.heap(),
+            records.heap(),
+            originals.heap(),
+            counting.heap(),
+        ])
     }
 }
 
 impl DeepSize for ToolAction {
     fn heap(&self) -> u64 {
-        [self.identity.heap(), self.call_id.heap(), self.tool_name.heap(), self.evidence.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self { identity, basis, call_id, tool_name, request, evidence } = self;
+        fields([
+            identity.heap(),
+            basis.heap(),
+            call_id.heap(),
+            tool_name.heap(),
+            request.heap(),
+            evidence.heap(),
+        ])
+    }
+}
+
+impl DeepSize for ProviderLimitObservation {
+    fn heap(&self) -> u64 {
+        let Self { limit_name, window, observed_at, owner_thread, owner_request, native, evidence } =
+            self;
+        fields([
+            limit_name.heap(),
+            window.heap(),
+            observed_at.heap(),
+            owner_thread.heap(),
+            owner_request.heap(),
+            native.heap(),
+            evidence.heap(),
+        ])
     }
 }
 
 impl DeepSize for Diagnostic {
     fn heap(&self) -> u64 {
-        self.evidence.heap().saturating_add(self.detail.heap())
+        let Self { code, subject, evidence, occurrences, detail } = self;
+        fields([code.heap(), subject.heap(), evidence.heap(), occurrences.heap(), detail.heap()])
     }
 }
 
@@ -259,72 +399,122 @@ impl DeepSize for UnobservedReason {
 
 impl DeepSize for CoverageGap {
     fn heap(&self) -> u64 {
-        self.reason.heap().saturating_add(self.evidence.heap())
+        let Self { reason, thread, evidence } = self;
+        fields([reason.heap(), thread.heap(), evidence.heap()])
     }
 }
 
 impl DeepSize for Ledger {
     fn heap(&self) -> u64 {
-        [
-            self.threads.heap(),
-            self.relationships.heap(),
-            self.requests.heap(),
-            self.tool_actions.heap(),
-            self.limit_observations.heap(),
-            self.candidate_sets.heap(),
-            self.diagnostics.heap(),
-            self.gaps.heap(),
-            self.source_table.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self {
+            threads,
+            relationships,
+            requests,
+            tool_actions,
+            limit_observations,
+            candidate_sets,
+            revision_rule,
+            diagnostics,
+            gaps,
+            coverage,
+            source_table,
+        } = self;
+        fields([
+            threads.heap(),
+            relationships.heap(),
+            requests.heap(),
+            tool_actions.heap(),
+            limit_observations.heap(),
+            candidate_sets.heap(),
+            revision_rule.heap(),
+            diagnostics.heap(),
+            gaps.heap(),
+            coverage.heap(),
+            source_table.heap(),
+        ])
     }
 }
 
 impl DeepSize for RequestObservation {
     fn heap(&self) -> u64 {
-        [self.keys.heap(), self.model_usage.heap(), self.invariants.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self {
+            evidence,
+            keys,
+            role,
+            owner,
+            usage,
+            model_usage,
+            sequence,
+            invariants,
+            model,
+            effort,
+            timestamp,
+        } = self;
+        fields([
+            evidence.heap(),
+            keys.heap(),
+            role.heap(),
+            owner.heap(),
+            usage.heap(),
+            model_usage.heap(),
+            sequence.heap(),
+            invariants.heap(),
+            model.heap(),
+            effort.heap(),
+            timestamp.heap(),
+        ])
     }
 }
 
 impl DeepSize for LineageLink {
     fn heap(&self) -> u64 {
-        self.evidence.heap()
+        let Self { a, b, evidence } = self;
+        fields([a.heap(), b.heap(), evidence.heap()])
     }
 }
 
 impl DeepSize for ReconcileInput {
     fn heap(&self) -> u64 {
-        [
-            self.threads.heap(),
-            self.relationships.heap(),
-            self.requests.heap(),
-            self.tool_actions.heap(),
-            self.limit_observations.heap(),
-            self.links.heap(),
-            self.gaps.heap(),
-            self.diagnostics.heap(),
-            self.source_table.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self {
+            threads,
+            relationships,
+            requests,
+            tool_actions,
+            limit_observations,
+            links,
+            gaps,
+            diagnostics,
+            source_table,
+        } = self;
+        fields([
+            threads.heap(),
+            relationships.heap(),
+            requests.heap(),
+            tool_actions.heap(),
+            limit_observations.heap(),
+            links.heap(),
+            gaps.heap(),
+            diagnostics.heap(),
+            source_table.heap(),
+        ])
     }
 }
 
 impl DeepSize for FileIdentity {
     fn heap(&self) -> u64 {
-        self.path.heap()
+        let Self { path, device, inode } = self;
+        fields([path.heap(), device.heap(), inode.heap()])
     }
 }
 
 impl DeepSize for CoverageFailure {
     fn heap(&self) -> u64 {
         match self {
-            Self::CorruptCompressedData { message, .. } => message.heap(),
+            Self::CorruptCompressedData { decoded_offset, message } => {
+                fields([decoded_offset.heap(), message.heap()])
+            }
             Self::TwinFingerprintMismatch { path, locator }
-            | Self::UnreadableTwin { path, locator } => path.heap().saturating_add(locator.heap()),
+            | Self::UnreadableTwin { path, locator } => fields([path.heap(), locator.heap()]),
             Self::Oversized { .. }
             | Self::IncompleteCompressedFrame { .. }
             | Self::ReadError { .. } => 0,
@@ -335,7 +525,9 @@ impl DeepSize for CoverageFailure {
 impl DeepSize for SourceChange {
     fn heap(&self) -> u64 {
         match self {
-            Self::ReadFromOtherRepresentation { primary, .. } => primary.heap(),
+            Self::ReadFromOtherRepresentation { primary, representation } => {
+                fields([primary.heap(), representation.heap()])
+            }
             Self::BrieflyAbsent { .. }
             | Self::Vanished
             | Self::RemovedAfterScan
@@ -350,30 +542,54 @@ impl DeepSize for SourceChange {
 
 impl DeepSize for ManifestEntry {
     fn heap(&self) -> u64 {
-        [
-            self.source.heap(),
-            self.environment.heap(),
-            self.dialect.heap(),
-            self.locator.heap(),
-            self.file.heap(),
-            self.twins.heap(),
-            self.failures.heap(),
-            self.changes.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self {
+            source,
+            environment,
+            dialect,
+            locator,
+            file,
+            representation,
+            twins,
+            file_len,
+            modified,
+            fingerprint,
+            cutoff,
+            counters,
+            first_malformed,
+            failures,
+            changes,
+        } = self;
+        fields([
+            source.heap(),
+            environment.heap(),
+            dialect.heap(),
+            locator.heap(),
+            file.heap(),
+            representation.heap(),
+            twins.heap(),
+            file_len.heap(),
+            modified.heap(),
+            fingerprint.heap(),
+            cutoff.heap(),
+            counters.heap(),
+            first_malformed.heap(),
+            failures.heap(),
+            changes.heap(),
+        ])
     }
 }
 
 impl DeepSize for SkippedLink {
     fn heap(&self) -> u64 {
-        self.path.heap()
+        let Self { path, reason } = self;
+        fields([path.heap(), reason.heap()])
     }
 }
 
 impl DeepSize for SnapshotManifest {
     fn heap(&self) -> u64 {
-        self.entries.heap().saturating_add(self.skipped_links.heap())
+        let Self { entries, skipped_links } = self;
+        fields([entries.heap(), skipped_links.heap()])
     }
 }
 
@@ -388,66 +604,63 @@ impl DeepSize for SourceCapability {
 
 impl DeepSize for SourceArtifact {
     fn heap(&self) -> u64 {
-        [self.dialect_version.heap(), self.capability.heap(), self.snapshot.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self { dialect_version, capability, snapshot } = self;
+        fields([dialect_version.heap(), capability.heap(), snapshot.heap()])
     }
 }
 
 impl DeepSize for Ingested {
     fn heap(&self) -> u64 {
-        [
-            self.manifest.heap(),
-            self.sources.heap(),
-            self.threads.heap(),
-            self.relationships.heap(),
-            self.ledger.heap(),
-            self.limit_observations.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self { manifest, sources, threads, relationships, ledger, limit_observations } = self;
+        fields([
+            manifest.heap(),
+            sources.heap(),
+            threads.heap(),
+            relationships.heap(),
+            ledger.heap(),
+            limit_observations.heap(),
+        ])
     }
 }
 
 impl DeepSize for IndexedSession {
     fn heap(&self) -> u64 {
-        self.thread.heap().saturating_add(self.source_paths.heap())
+        let Self { thread, agent, source_paths } = self;
+        fields([thread.heap(), agent.heap(), source_paths.heap()])
     }
 }
 
 impl DeepSize for LogicalSource {
     fn heap(&self) -> u64 {
-        [self.plain.heap(), self.zstd.heap(), self.gzip.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self { plain, zstd, gzip } = self;
+        fields([plain.heap(), zstd.heap(), gzip.heap()])
     }
 }
 
 impl DeepSize for DiscoveredSource {
     fn heap(&self) -> u64 {
-        [self.root.heap(), self.locator.heap(), self.files.heap()]
-            .into_iter()
-            .fold(0, u64::saturating_add)
+        let Self { root, locator, files } = self;
+        fields([root.heap(), locator.heap(), files.heap()])
     }
 }
 
 impl DeepSize for UnreadableEntry {
     fn heap(&self) -> u64 {
-        self.path.heap()
+        let Self { path, kind } = self;
+        fields([path.heap(), kind.heap()])
     }
 }
 
 impl DeepSize for Discovery {
     fn heap(&self) -> u64 {
-        [
-            self.sources.heap(),
-            self.skipped_links.heap(),
-            self.missing_roots.heap(),
-            self.unreadable.heap(),
-            self.duplicate_paths.heap(),
-        ]
-        .into_iter()
-        .fold(0, u64::saturating_add)
+        let Self { sources, skipped_links, missing_roots, unreadable, duplicate_paths } = self;
+        fields([
+            sources.heap(),
+            skipped_links.heap(),
+            missing_roots.heap(),
+            unreadable.heap(),
+            duplicate_paths.heap(),
+        ])
     }
 }
 
