@@ -2335,14 +2335,16 @@ fn owned_tiers(ingested: &Ingested, native: &str) -> Vec<Option<&'static str>> {
 }
 
 #[test]
-fn an_unmarked_forks_thread_less_settings_do_not_yet_set_its_tier() {
+fn an_unmarked_forks_thread_less_settings_do_not_set_its_tier_until_uro_1uy7() {
     // Found merging PR #33 into PR #19. Every line of an unmarked fork falls before its
     // boundary, as every line of a migrated subagent with a boundary past its end does, so
     // a settings snapshot without a thread_id (written before 0.152) never sets the
     // child's tier, even inside its own open start: the rule cannot yet tell it from the
     // parent's copied settings. Nothing reads the tier yet. The child's own 20 and 15
-    // still count, 195 in all, and the parent keeps its own tier.
-    let own = [
+    // still count, 195 in all, and the parent keeps its own tier. Both placements
+    // uro-1uy7 will change are pinned: inside the open start, and before the fork's
+    // first own turn, where no start is open yet.
+    let inside = [
         fork_first_turn().to_vec(),
         vec![
             tier_settings(Some(7), None, "priority"),
@@ -2351,12 +2353,22 @@ fn an_unmarked_forks_thread_less_settings_do_not_yet_set_its_tier() {
         ],
     ]
     .concat();
+    let before = vec![
+        tier_settings(Some(5), None, "priority"),
+        turn(6, Some("f-turn-1")),
+        counter(7, 158, 22, 18, 2),
+        turn(8, Some("f-turn-2")),
+        counter(9, 170, 25, 12, 3),
+    ];
     let parent =
         [vec![tier_settings(None, Some(PARENT), "flex")], parent_with_two_turns().to_vec()]
             .concat();
-    for meta in [migrated_fork_meta(), migrated_meta(12)] {
+    for (own, meta) in [&inside, &before]
+        .into_iter()
+        .flat_map(|own| [migrated_fork_meta(), migrated_meta(12)].map(|meta| (own, meta)))
+    {
         let root = fork_root(Some(&parent), &[]);
-        write_child(&root, meta.clone(), &migrated_fork(&own));
+        write_child(&root, meta.clone(), &migrated_fork(own));
         let ingested = ingest_every_way(&root);
         assert_eq!(own_usage(&ingested, CHILD), (2, Some(35), Completeness::Complete), "{meta}");
         assert_eq!(owned_tiers(&ingested, CHILD), [None, None], "{meta}");
