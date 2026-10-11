@@ -116,8 +116,9 @@ pub(super) struct Payload<'a> {
     pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) model: Option<Cow<'a, str>>,
     pub(super) model_provider: Option<Cow<'a, str>>,
-    /// The recorded `thread_settings.service_tier`, never local configuration.
-    pub(super) service_tier: Option<Cow<'a, str>>,
+    /// `thread_settings`, when it is an object: the snapshot of the thread's settings
+    /// that a `thread_settings_applied` event records, never local configuration.
+    pub(super) thread_settings: Option<ThreadSettings<'a>>,
     pub(super) effort: Option<Cow<'a, str>>,
     /// The payload's own usage record fields, whose `thread_id` a
     /// `thread_settings_applied` event also names.
@@ -396,7 +397,7 @@ impl<'de> Visitor<'de> for PayloadSeed {
                     payload.model_provider = map.next_value_seed(Text)?;
                 }
                 PayloadField::ThreadSettings => {
-                    payload.service_tier = map.next_value_seed(ServiceTierSeed)?;
+                    payload.thread_settings = map.next_value_seed(ThreadSettingsSeed)?;
                 }
                 PayloadField::Effort => payload.effort = map.next_value_seed(Text)?,
                 PayloadField::Usage(field) => payload.usage_record.read(field, &mut map)?,
@@ -417,13 +418,34 @@ impl<'de> Visitor<'de> for PayloadSeed {
     }
 }
 
-/// Reads only the service tier from a settings object, replacing repeated objects.
-struct ServiceTierSeed;
+/// The fields pricing reads from a `thread_settings` snapshot.
+///
+/// Codex writes the thread's complete settings with every update and omits
+/// `service_tier` when none is selected, so an absent tier is a cleared one.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct ThreadSettings<'a> {
+    /// `service_tier`, the thread's selected tier.
+    pub(super) service_tier: Option<Cow<'a, str>>,
+    /// `model_provider_id`, the thread's provider.
+    pub(super) model_provider_id: Option<Cow<'a, str>>,
+}
 
-any_value_seed!(ServiceTierSeed);
+/// The fields of a settings snapshot.
+#[derive(Clone, Copy)]
+enum SettingsField {
+    ServiceTier,
+    ModelProviderId,
+    Other,
+}
 
-impl<'de> Visitor<'de> for ServiceTierSeed {
-    type Value = Option<Cow<'de, str>>;
+/// Reads a settings object's pricing fields; any other value is no snapshot. A repeated
+/// key keeps its last value, as a document parse does.
+struct ThreadSettingsSeed;
+
+any_value_seed!(ThreadSettingsSeed);
+
+impl<'de> Visitor<'de> for ThreadSettingsSeed {
+    type Value = Option<ThreadSettings<'de>>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("any JSON value")
@@ -432,15 +454,21 @@ impl<'de> Visitor<'de> for ServiceTierSeed {
     lenient_visits!(None, [bool, numbers, str, unit]);
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut tier = None;
-        while let Some(is_tier) = map.next_key_seed(Key(|name| name == "service_tier"))? {
-            if is_tier {
-                tier = map.next_value_seed(Text)?;
-            } else {
-                map.next_value_seed(Skip)?;
+        let mut settings = ThreadSettings::default();
+        while let Some(field) = map.next_key_seed(Key(|name| match name {
+            "service_tier" => SettingsField::ServiceTier,
+            "model_provider_id" => SettingsField::ModelProviderId,
+            _ => SettingsField::Other,
+        }))? {
+            match field {
+                SettingsField::ServiceTier => settings.service_tier = map.next_value_seed(Text)?,
+                SettingsField::ModelProviderId => {
+                    settings.model_provider_id = map.next_value_seed(Text)?;
+                }
+                SettingsField::Other => map.next_value_seed(Skip)?,
             }
         }
-        Ok(tier)
+        Ok(Some(settings))
     }
 }
 
@@ -939,7 +967,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
+        DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, ThreadSettings,
+        UsageFields,
     };
     use crate::adapters::codex_rollout::CodexUsage;
     use crate::sources::decode::{parse_record, text, unsigned};
@@ -1017,9 +1046,13 @@ mod tests {
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
                 model_provider: owned(payload, "model_provider"),
-                service_tier: payload
+                thread_settings: payload
                     .get("thread_settings")
-                    .and_then(|settings| owned(settings, "service_tier")),
+                    .filter(|settings| settings.is_object())
+                    .map(|settings| ThreadSettings {
+                        service_tier: owned(settings, "service_tier"),
+                        model_provider_id: owned(settings, "model_provider_id"),
+                    }),
                 effort: owned(payload, "effort"),
                 // A payload-level `turn_id` is the payload's own field, not its usage
                 // record's.
@@ -1176,29 +1209,47 @@ mod tests {
     }
 
     #[test]
-    fn pricing_metadata_preserves_recorded_provider_and_nested_tier() {
+    fn pricing_metadata_preserves_recorded_provider_and_settings_snapshot() {
         let line = Line::read(
             br#"{"type":"session_meta","payload":{"model_provider":"custom-provider"}}"#,
         )
         .unwrap();
         assert_eq!(line.payload.model_provider.as_deref(), Some("custom-provider"));
+        let snapshot = |tier: Option<&str>, provider: Option<&str>| {
+            Some(ThreadSettings {
+                service_tier: tier.map(|tier| Cow::Owned(tier.to_owned())),
+                model_provider_id: provider.map(|provider| Cow::Owned(provider.to_owned())),
+            })
+        };
         for (settings, expected) in [
-            (r#"{"service_tier":"fast"}"#, Some("fast")),
-            (r#"{"service_tier":"unrecognized"}"#, Some("unrecognized")),
-            (r#"{"service_tier":"fast","service_tier":"standard"}"#, Some("standard")),
-            (r#"{"service_tier":null}"#, None),
-            (r#"{"service_tier":2}"#, None),
+            (r#"{"service_tier":"fast"}"#, snapshot(Some("fast"), None)),
+            (r#"{"service_tier":"unrecognized"}"#, snapshot(Some("unrecognized"), None)),
+            (
+                r#"{"service_tier":"fast","service_tier":"standard"}"#,
+                snapshot(Some("standard"), None),
+            ),
+            (r#"{"service_tier":null}"#, snapshot(None, None)),
+            (r#"{"service_tier":2}"#, snapshot(None, None)),
+            (
+                r#"{"model":"m","model_provider_id":"other-provider","approval_policy":"never"}"#,
+                snapshot(None, Some("other-provider")),
+            ),
+            ("{}", snapshot(None, None)),
             ("null", None),
+            ("[]", None),
         ] {
             let input = format!(
                 r#"{{"type":"event_msg","payload":{{"type":"thread_settings_applied","thread_settings":{settings}}}}}"#
             );
             let line = Line::read(input.as_bytes()).unwrap();
-            assert_eq!(line.payload.service_tier.as_deref(), expected);
+            assert_eq!(line.payload.thread_settings, expected, "{settings}");
             assert_matches_document(input.as_bytes());
         }
         assert_matches_document(
             br#"{"payload":{"thread_settings":{"service_tier":"fast"},"thread_settings":{}}}"#,
+        );
+        assert_matches_document(
+            br#"{"payload":{"thread_settings":{"service_tier":"fast"},"thread_settings":1}}"#,
         );
     }
 
@@ -1319,6 +1370,7 @@ mod tests {
             Just("forked_from_id"),
             Just("turn_id"),
             Just("model"),
+            Just("model_provider"),
             Just("effort"),
             Just("thread_id"),
             Just("response_id"),
@@ -1334,8 +1386,19 @@ mod tests {
             2 => info_object().prop_map(|value| ("info", value)),
             2 => rate_limits_object().prop_map(|value| ("rate_limits", value)),
             2 => source_object().prop_map(|value| ("source", value)),
+            2 => thread_settings_object().prop_map(|value| ("thread_settings", value)),
         ];
         prop_oneof![1 => leaf(), 8 => object(entries.boxed(), 0..8)].boxed()
+    }
+
+    /// A settings snapshot with pricing fields, other fields and repeated keys.
+    fn thread_settings_object() -> BoxedStrategy<String> {
+        let entries = prop_oneof![
+            3 => leaf().prop_map(|value| ("service_tier", value)),
+            2 => leaf().prop_map(|value| ("model_provider_id", value)),
+            1 => leaf().prop_map(|value| ("model", value)),
+        ];
+        prop_oneof![1 => leaf(), 6 => object(entries.boxed(), 0..4)].boxed()
     }
 
     /// A `source` object that may name a spawn parent, with repeated and misplaced keys.

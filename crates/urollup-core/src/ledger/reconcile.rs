@@ -30,7 +30,6 @@
 //!    the others [`Counting::Unresolved`], which totals never add.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use jiff::Timestamp;
 
@@ -38,8 +37,8 @@ use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
     Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsageList,
-    Ownership, PricingContext, ProviderLimitObservation, Relationship, RelationshipKind, Request,
-    Requests, RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
+    Ownership, Pricing, PricingContext, ProviderLimitObservation, Relationship, RelationshipKind,
+    Request, Requests, RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::inline_list::InlineList;
@@ -117,7 +116,7 @@ pub struct RequestObservation {
     /// The reasoning effort, when recorded.
     pub effort: Option<Name>,
     /// Recorded pricing metadata; copies cannot establish it for an original request.
-    pub pricing: Option<Arc<PricingContext>>,
+    pub pricing: Option<Pricing>,
     /// The record's timestamp.
     pub timestamp: Option<CompactTimestamp>,
 }
@@ -1322,40 +1321,85 @@ fn build_request(
     }))
 }
 
-/// Merge only original metadata. Missing fields may be filled by another original;
-/// contradictory recorded values must leave pricing unresolved.
+/// Merges the pricing context of a request's originals; copies never contribute.
+///
+/// An original fills the dimensions others left missing, in canonical order. Originals
+/// that record different values for a dimension mark the context conflicted, with a
+/// diagnostic that names each such dimension and its values and cites the originals that
+/// carry a context.
 fn pricing_context(
     originals: &[&RequestObservation],
     id: &AnalyticalId,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Arc<PricingContext>> {
-    let mut contexts = originals.iter().filter_map(|record| record.pricing.as_ref());
-    let first = contexts.next()?;
-    let mut merged = first.as_ref().clone();
-    for context in contexts {
-        merged.conflicted |= context.conflicted;
-        for (target, incoming) in [
-            (&mut merged.provider, context.provider),
-            (&mut merged.service_tier, context.service_tier),
-            (&mut merged.speed, context.speed),
-            (&mut merged.inference_geo, context.inference_geo),
-        ] {
-            match (*target, incoming) {
-                (Some(old), Some(new)) if old != new => merged.conflicted = true,
-                (None, Some(value)) => *target = Some(value),
-                (Some(_), _) | (None, None) => {}
-            }
-        }
-    }
+) -> Option<Pricing> {
+    let carriers: Vec<&RequestObservation> =
+        originals.iter().copied().filter(|record| record.pricing.is_some()).collect();
+    let contexts: Vec<&PricingContext> =
+        carriers.iter().filter_map(|record| record.pricing.map(Pricing::context)).collect();
+    let first = carriers.first()?.pricing?;
+    let mut conflicts = Vec::new();
+    let merged = PricingContext {
+        provider: merged_dimension(
+            &contexts,
+            "provider",
+            |c| c.provider,
+            Name::as_str,
+            &mut conflicts,
+        ),
+        service_tier: merged_dimension(
+            &contexts,
+            "service_tier",
+            |c| c.service_tier,
+            |tier| tier.name.as_str(),
+            &mut conflicts,
+        ),
+        speed: merged_dimension(&contexts, "speed", |c| c.speed, Name::as_str, &mut conflicts),
+        inference_geo: merged_dimension(
+            &contexts,
+            "inference_geo",
+            |c| c.inference_geo,
+            Name::as_str,
+            &mut conflicts,
+        ),
+        conflicted: contexts.iter().any(|context| context.conflicted),
+    };
+    let merged =
+        PricingContext { conflicted: merged.conflicted || !conflicts.is_empty(), ..merged };
     if merged.conflicted {
+        let detail = if conflicts.is_empty() {
+            "an original record's pricing context was already conflicted, so none of them can choose a rate".to_owned()
+        } else {
+            format!(
+                "original records disagree on {}, so none of them can choose a rate",
+                conflicts.join("; ")
+            )
+        };
         diagnostics.push(Diagnostic::new(
             DiagnosticCode::ConflictingPricingContext,
             Some(id.clone()),
-            originals.iter().map(|record| record.evidence),
-            "original records disagree on a recorded pricing dimension, so none of them can choose a rate",
+            carriers.iter().map(|record| record.evidence),
+            detail,
         ));
     }
-    Some(if &merged == first.as_ref() { Arc::clone(first) } else { Arc::new(merged) })
+    Some(if merged == *first.context() { first } else { Pricing::new(merged) })
+}
+
+/// One pricing dimension merged across originals in canonical order: the first recorded
+/// value, and a conflict naming the dimension and its distinct values when they differ.
+fn merged_dimension<T: Copy + Ord>(
+    contexts: &[&PricingContext],
+    dimension: &str,
+    field: impl Fn(&PricingContext) -> Option<T>,
+    text: impl Fn(T) -> &'static str,
+    conflicts: &mut Vec<String>,
+) -> Option<T> {
+    let values: BTreeSet<T> = contexts.iter().filter_map(|context| field(context)).collect();
+    if values.len() > 1 {
+        let names: BTreeSet<&str> = values.iter().map(|value| text(*value)).collect();
+        conflicts
+            .push(format!("{dimension} ({})", names.into_iter().collect::<Vec<_>>().join(", ")));
+    }
+    contexts.iter().find_map(|context| field(context))
 }
 
 fn ownership(

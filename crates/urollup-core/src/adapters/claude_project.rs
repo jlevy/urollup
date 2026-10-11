@@ -31,8 +31,9 @@ use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ModelUsage, PricingContext, ProviderLimitObservation,
-    Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, Confidence, ModelBasis, ModelName, ModelUsage, Pricing, PricingContext,
+    ProviderLimitObservation, Relationship, RelationshipKind, ServiceTier, SourceArtifact,
+    SourceCapability, Thread, TierBasis,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -300,7 +301,7 @@ struct ParsedRecord {
     project: Option<Sym>,
     model: Option<Sym>,
     effort: Option<Sym>,
-    pricing: Option<Arc<PricingContext>>,
+    pricing: Option<Pricing>,
     forced_copy: bool,
     request_record: bool,
     /// The digest of `uuid`, which only joins replays to originals.
@@ -633,14 +634,7 @@ fn decode_source(
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    let SourceDecoder {
-        thread,
-        mut strings,
-        mut facts,
-        mut records,
-        mut tool_uses,
-        last_pricing: _,
-    } = decoder;
+    let SourceDecoder { thread, mut strings, mut facts, mut records, mut tool_uses } = decoder;
     if let Some(identity) = &entry.source {
         facts.source_id = Some(identity.id.clone());
     }
@@ -703,7 +697,6 @@ struct SourceDecoder {
     facts: SourceFacts,
     records: Vec<ParsedRecord>,
     tool_uses: Vec<(Digest, NativeThread)>,
-    last_pricing: Option<Arc<PricingContext>>,
 }
 
 impl SourceDecoder {
@@ -725,7 +718,6 @@ impl SourceDecoder {
             },
             records: Vec::new(),
             tool_uses: Vec::new(),
-            last_pricing: None,
         }
     }
 
@@ -845,7 +837,7 @@ impl SourceDecoder {
                 .map(|project| strings.intern(&project)),
             model: fields.message.model.as_deref().map(|model| strings.intern(model)),
             effort: fields.effort.as_deref().map(|effort| strings.intern(effort)),
-            pricing: pricing_context(&fields.message.pricing, &mut self.last_pricing),
+            pricing: pricing_context(&fields.message.pricing),
             forced_copy,
             request_record,
             uuid: fields.uuid.as_deref().map(digest),
@@ -867,26 +859,19 @@ impl SourceDecoder {
     }
 }
 
-/// Share repeated native context without carrying missing fields across requests.
-fn pricing_context(
-    fields: &line::PricingFields<'_>,
-    previous: &mut Option<Arc<PricingContext>>,
-) -> Option<Arc<PricingContext>> {
+/// A request's recorded pricing context, interned so identical contexts share storage.
+/// A field the record omits stays unknown; it never comes from an earlier request.
+fn pricing_context(fields: &line::PricingFields<'_>) -> Option<Pricing> {
     let context = PricingContext {
         speed: fields.speed.as_deref().map(Name::new),
-        service_tier: fields.service_tier.as_deref().map(Name::new),
+        service_tier: fields
+            .service_tier
+            .as_deref()
+            .map(|tier| ServiceTier { name: Name::new(tier), basis: TierBasis::Request }),
         inference_geo: fields.inference_geo.as_deref().map(Name::new),
         ..PricingContext::default()
     };
-    if context == PricingContext::default() {
-        return None;
-    }
-    if let Some(existing) = previous.as_ref().filter(|old| old.as_ref() == &context) {
-        return Some(Arc::clone(existing));
-    }
-    let context = Arc::new(context);
-    *previous = Some(Arc::clone(&context));
-    Some(context)
+    (context != PricingContext::default()).then(|| Pricing::new(context))
 }
 
 /// The project name a working directory implies: its last component.
@@ -1506,7 +1491,7 @@ fn observe(
             basis: ModelBasis::Served,
         });
         observation.effort = record.effort.map(|effort| strings.resolve(effort).into());
-        observation.pricing.clone_from(&record.pricing);
+        observation.pricing = record.pricing;
         observation.timestamp = record.timestamp.map(|time| time.get().into());
         if let Some(model) = observation.model.as_ref() {
             observation.invariants.push((MODEL_INVARIANT, model.name));

@@ -31,9 +31,9 @@ use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode, SAMPLE_EVIDENCE_LIMIT};
 use crate::ledger::entities::{
-    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, PricingContext,
-    ProviderLimitObservation, Relationship, RelationshipKind, SourceArtifact, SourceCapability,
-    Thread,
+    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, Pricing, PricingContext,
+    ProviderLimitObservation, Relationship, RelationshipKind, ServiceTier, SourceArtifact,
+    SourceCapability, Thread, TierBasis,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -220,8 +220,18 @@ enum RecordKind {
     },
     ThreadSettingsApplied {
         thread_id: Option<Sym>,
-        service_tier: Option<Name>,
+        /// The event's settings snapshot, when `thread_settings` is an object.
+        settings: Option<Box<SettingsSnapshot>>,
     },
+}
+
+/// The pricing fields of a `thread_settings_applied` snapshot, which Codex writes whole
+/// with every settings update.
+struct SettingsSnapshot {
+    /// The thread's selected tier; a snapshot without one has cleared it.
+    service_tier: Option<Name>,
+    /// The thread's provider, when the snapshot records one.
+    provider: Option<Name>,
 }
 
 impl ParsedRecord {
@@ -440,12 +450,12 @@ struct RateLimits {
     native: String,
 }
 
-/// A turn's model and reasoning effort.
-#[derive(Clone, Debug, Default)]
+/// A turn's model, reasoning effort and pricing context.
+#[derive(Clone, Copy, Debug, Default)]
 struct TurnContext {
     model: Option<Name>,
     effort: Option<Name>,
-    pricing: Option<Arc<PricingContext>>,
+    pricing: Option<Pricing>,
 }
 
 /// The turn contexts of one rollout, by turn ID.
@@ -900,7 +910,12 @@ impl SourceDecoder {
             RecordType::EventMsg => match payload.event_type {
                 EventType::ThreadSettingsApplied => Some(RecordKind::ThreadSettingsApplied {
                     thread_id: self.interner.intern_some(payload.usage_record.thread_id.as_deref()),
-                    service_tier: payload.service_tier.as_deref().map(Name::new),
+                    settings: payload.thread_settings.as_ref().map(|settings| {
+                        Box::new(SettingsSnapshot {
+                            service_tier: settings.service_tier.as_deref().map(Name::new),
+                            provider: settings.model_provider_id.as_deref().map(Name::new),
+                        })
+                    }),
                 }),
                 EventType::TokenCount => {
                     let mut usage = UsageMask::default();
@@ -1559,7 +1574,7 @@ fn observe_parsed_source(
     // Whether the declared boundary leaves usage-bearing lines to another thread or to none.
     let mut copied_prefix = false;
     let mut turns = Turns::new();
-    let mut pricing_by_thread: HashMap<Sym, Arc<PricingContext>> = HashMap::new();
+    let mut pricing_by_thread: HashMap<Sym, PricingContext> = HashMap::new();
     let mut current_turn: Option<Sym> = None;
     let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
     let mut inherited_total = None;
@@ -1748,8 +1763,7 @@ fn observe_parsed_source(
                     named_own = false;
                     inferred = None;
                     if let Some(provider) = provider {
-                        let pricing = pricing_by_thread.entry(thread_id).or_default();
-                        Arc::make_mut(pricing).provider = Some(*provider);
+                        pricing_by_thread.entry(thread_id).or_default().provider = Some(*provider);
                     }
                 }
             }
@@ -1797,32 +1811,44 @@ fn observe_parsed_source(
                         TurnContext {
                             model: *model,
                             effort: *effort,
-                            pricing: pricing_by_thread.get(&active_thread).cloned(),
+                            pricing: pricing_by_thread
+                                .get(&active_thread)
+                                .filter(|context| **context != PricingContext::default())
+                                .map(|context| Pricing::new(context.clone())),
                         },
                     );
                 }
                 current_turn = *turn_id;
             }
-            RecordKind::ThreadSettingsApplied { thread_id, service_tier } => {
+            RecordKind::ThreadSettingsApplied { thread_id, settings } => {
                 active_thread = thread_id.unwrap_or(file_thread);
                 named_own = *thread_id == Some(file_thread);
                 if thread_id.is_some() {
                     inferred = None;
                 }
-                // A settings event that names a thread sets that thread's tier wherever it
-                // sits, as a usage record's name decides its owner: a migrated child's own
-                // settings precede its boundary. One that names no thread sets this
-                // rollout's tier only where a declared boundary places it after the
-                // inherited prefix; before it, or with no ordinal to place, it may be the
-                // parent's copied setting, and a turn-inferred start can still be voided.
-                let tier_thread = match *thread_id {
+                // A settings snapshot that names a thread sets that thread's tier and provider
+                // wherever it sits, as a usage record's name decides its owner: a migrated
+                // child's own settings precede its boundary. One that names no thread sets
+                // this rollout's own: anywhere in a rollout without a declared boundary, and
+                // otherwise only at or after the boundary. Before it, the setting may be the
+                // parent's copied history, and a turn-inferred start can still be voided; a
+                // line without an ordinal, or any line under an invalid boundary, cannot be
+                // placed.
+                let settings_thread = match *thread_id {
                     Some(thread) => Some(thread),
                     None if before_boundary || native_boundary.cannot_place(record.ordinal) => None,
                     None => Some(file_thread),
                 };
-                if let Some((thread, tier)) = tier_thread.zip(*service_tier) {
-                    let pricing = pricing_by_thread.entry(thread).or_default();
-                    Arc::make_mut(pricing).service_tier = Some(tier);
+                if let (Some(thread), Some(settings)) = (settings_thread, settings) {
+                    let context = pricing_by_thread.entry(thread).or_default();
+                    // Codex writes the whole snapshot and omits the tier when none is
+                    // selected, so a snapshot without one clears it.
+                    context.service_tier = settings
+                        .service_tier
+                        .map(|name| ServiceTier { name, basis: TierBasis::ThreadSetting });
+                    if let Some(provider) = settings.provider {
+                        context.provider = Some(provider);
+                    }
                 }
             }
             RecordKind::UsageRecord(usage_record) => {
@@ -2771,7 +2797,7 @@ fn usage_observation(
 fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
     observation.model = context.model.map(|name| ModelName { name, basis: ModelBasis::Requested });
     observation.effort = context.effort;
-    observation.pricing.clone_from(&context.pricing);
+    observation.pricing = context.pricing;
 }
 
 /// Normalizes a usage object; an input below its cache categories is the caller's to
