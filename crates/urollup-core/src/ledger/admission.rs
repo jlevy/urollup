@@ -28,7 +28,12 @@
 //!   until process-wide admission is wired in, the row ceiling derived from `--max-ram`)
 //!   is counted here too, separately from bytes.
 //!
-//! Nothing in ingestion charges bytes yet; adapters use the row ceiling only.
+//! [`model`] prices each unit of retained state and each phase, and [`deep_size`] measures
+//! committed state. Nothing in ingestion charges bytes yet; adapters use the row ceiling
+//! only.
+
+pub mod deep_size;
+pub mod model;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -84,9 +89,12 @@ pub struct ProcessModel {
 }
 
 impl ProcessModel {
-    /// The placeholder constants until calibration: `F` of 16 MiB and `H` of 1.5.
-    pub const DEFAULT: Self =
-        Self { baseline: 16 << 20, headroom: Headroom { numerator: 3, denominator: 2 } };
+    /// The measured baseline [`model::BASELINE_BYTES`] and the placeholder `H` of 1.5,
+    /// until calibration replaces it.
+    pub const DEFAULT: Self = Self {
+        baseline: model::BASELINE_BYTES,
+        headroom: Headroom { numerator: 3, denominator: 2 },
+    };
 
     /// `F + H × heap`: the whole-process estimate a heap term implies.
     pub fn whole_process(self, heap: u64) -> u64 {
@@ -1369,6 +1377,6 @@ mod tests {
         assert_eq!(half.apply(u64::MAX), u64::MAX);
         assert_eq!(Headroom::ratio(1, 2), None);
         assert_eq!(Headroom::ratio(1, 0), None);
-        assert_eq!(ProcessModel::DEFAULT.whole_process(2 * MIB), 19 * MIB);
+        assert_eq!(ProcessModel::DEFAULT.whole_process(2 * MIB), model::BASELINE_BYTES + 3 * MIB);
     }
 }

@@ -94,6 +94,36 @@ const COUNTER_KEY: KeySpec = KeySpec {
 const _: () =
     assert!(size_of::<ParsedRecord>() <= 80, "a decoded Codex record outgrew its size budget");
 
+/// The bytes of one decoded record, which admission charges while its rollout waits to be
+/// observed (`ledger::admission::model::decoded_record`).
+pub(crate) const DECODED_RECORD_BYTES: u64 = size_of::<ParsedRecord>() as u64;
+
+/// Per request-bearing record while `normalize` builds observations, beside the observation:
+/// a counter-only parent root's token count adds its total's digest to
+/// `ParentEvidence::totals` while `counter_totals` builds the rollout's own set (two tables
+/// at once), or a usage record adds its response to its rollout's `own_responses`. A record
+/// adds to at most one, so the larger bounds both.
+pub(crate) const CONSTRUCTION_STATE_PER_RECORD: u64 = {
+    use crate::ledger::admission::model::hash_entry;
+    let digest = 2 * hash_entry(size_of::<TotalDigest>() as u64);
+    let response = hash_entry(size_of::<Sym>() as u64);
+    if digest > response { digest } else { response }
+};
+
+/// Per `turn_context` record while `normalize` builds observations: its digest in the root
+/// rollout's `root_turns` (collected, so 3 ×), its entry in `KnownTurns`, and its entry in
+/// its rollout's turn map.
+pub(crate) const TURN_STATE_PER_CONTEXT: u64 = {
+    use crate::ledger::admission::model::hash_entry;
+    3 * size_of::<TurnDigest>() as u64
+        + hash_entry(size_of::<TurnDigest>() as u64)
+        + hash_entry(size_of::<(Sym, TurnContext)>() as u64)
+};
+
+/// The `(index, result)` pair a worker of the parallel join holds per rollout.
+pub(crate) const JOIN_PAIR_BYTES: u64 =
+    size_of::<(usize, Option<Result<(ManifestEntry, DecodedRollout), AdapterError>>)>() as u64;
+
 /// Everything one rollout contributes before normalization.
 struct ParsedSource {
     /// The source ID every record of the rollout shares; `None` only without records.
@@ -1817,30 +1847,13 @@ fn observe_parsed_source(
                 }
                 if !cumulative && owner != Some(file_thread_text) {
                     if let Some(usage) = &last {
-                        let mut observation = RequestObservation::new(view.evidence);
-                        observation.role = ObservationRole::Copy;
-                        observation.owner = owner
-                            .and_then(|owner| thread_ids.get(owner))
-                            .cloned()
-                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                        observation.usage = Some(codex_usage(usage)?.into());
-                        if let Some(response_id) =
-                            owner.and_then(|owner| last_response_by_thread.get(owner))
-                        {
-                            observation.keys.push(
-                                RESPONSE_KEY
-                                    .key(vec![
-                                        KeyComponent::text(PROVIDER_NAMESPACE),
-                                        KeyComponent::text(strings.resolve(*response_id)),
-                                    ])?
-                                    .derive()?,
-                            );
-                        }
-                        observation.timestamp = view.timestamp;
-                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
-                            apply_context(&mut observation, context);
-                        }
-                        observations.push(observation);
+                        let response = owner
+                            .and_then(|owner| last_response_by_thread.get(owner))
+                            .map(|response| strings.resolve(*response));
+                        let context = current_turn.and_then(|turn| turns.get(&turn));
+                        observations.push(copied_counter_observation(
+                            &view, usage, owner, response, thread_ids, context,
+                        )?);
                     }
                 } else if cumulative {
                     let Some(total) = &total else { continue };
@@ -2514,6 +2527,37 @@ fn counter_signature(total: &CodexUsage) -> String {
     .join(":")
 }
 
+/// A copy observation of the usage another thread's counter repeats in this rollout, keyed
+/// by that thread's latest response when one is known.
+fn copied_counter_observation(
+    view: &RecordView,
+    usage: &CodexUsage,
+    owner: Option<&str>,
+    response_id: Option<&str>,
+    thread_ids: &BTreeMap<String, AnalyticalId>,
+    context: Option<&TurnContext>,
+) -> Result<RequestObservation, AdapterError> {
+    let mut observation = RequestObservation::new(view.evidence);
+    observation.role = ObservationRole::Copy;
+    observation.owner = owner
+        .and_then(|owner| thread_ids.get(owner))
+        .cloned()
+        .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+    observation.usage = Some(codex_usage(usage)?.into());
+    if let Some(response_id) = response_id {
+        observation.keys.push(
+            RESPONSE_KEY
+                .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(response_id)])?
+                .derive()?,
+        );
+    }
+    observation.timestamp = view.timestamp;
+    if let Some(context) = context {
+        apply_context(&mut observation, context);
+    }
+    Ok(observation)
+}
+
 fn usage_observation(
     record: &RecordView,
     payload: &UsagePayload<'_>,
@@ -2613,6 +2657,98 @@ mod tests {
     fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
         let evidence = EvidenceRef::new(0, 0, u64::try_from(line.len()).unwrap());
         decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+    }
+
+    #[test]
+    fn observations_stay_within_the_admission_key_bound() {
+        use std::collections::{BTreeMap, HashMap};
+
+        use super::{
+            CounterObservation, RecordView, TurnContext, Turns, UsagePayload,
+            copied_counter_observation, counter_observation, thread_identity, usage_observation,
+        };
+        use crate::ledger::admission::model::key_bound;
+        use crate::ledger::names::Name;
+        use crate::ledger::reconcile::{ObservationRole, RequestObservation};
+        use crate::selection::Agent;
+
+        let thread = "019f0000-0000-7000-8000-000000000001";
+        let thread_ids = BTreeMap::from([(thread.to_owned(), thread_identity(thread).unwrap().id)]);
+        let record = RecordView { evidence: EvidenceRef::new(0, 0, 1), timestamp: None };
+        let context =
+            TurnContext { model: Some(Name::new("gpt-test")), effort: Some(Name::new("high")) };
+        let usage =
+            CodexUsage { input: Some(3), output: Some(1), total: Some(4), ..CodexUsage::default() };
+        let mut interner = Interner::default();
+        let turn = interner.intern("turn");
+        let turns: Turns = HashMap::from([(turn, context)]);
+        let direct = |response_id| {
+            let payload = UsagePayload {
+                thread_id: Some(thread),
+                response_id,
+                usage: Some(usage),
+                turn: Some(turn),
+            };
+            usage_observation(
+                &record,
+                &payload,
+                ObservationRole::Original,
+                thread,
+                &thread_ids,
+                &turns,
+            )
+            .unwrap()
+        };
+        let counter = |owner| {
+            counter_observation(
+                &record,
+                &usage,
+                &usage,
+                CounterObservation {
+                    role: ObservationRole::Original,
+                    owner,
+                    thread_ids: &thread_ids,
+                    context: Some(&context),
+                    delta: None,
+                },
+            )
+            .unwrap()
+        };
+        let copy = |owner, response_id| {
+            copied_counter_observation(
+                &record,
+                &usage,
+                owner,
+                response_id,
+                &thread_ids,
+                Some(&context),
+            )
+            .unwrap()
+        };
+        // Each key is a key-graph node, as is the artifact-local key a keyless observation
+        // gets; a revision-invariant field could split it and add one more. No Codex builder
+        // sets an invariant, so a split never adds one.
+        let nodes = |observation: &RequestObservation| {
+            u64::try_from(
+                observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty()),
+            )
+            .unwrap()
+        };
+        // The maximal path of each builder: a direct usage record with its response ID, a
+        // counter whose owner has a thread ID, and an inherited copy keyed by its owner's
+        // latest response; each pushes one key and no invariant.
+        for maximal in
+            [direct(Some("resp")), counter(Some(thread)), copy(Some(thread), Some("resp"))]
+        {
+            assert_eq!(maximal.keys.len(), 1, "{maximal:?}");
+            assert!(maximal.invariants.is_empty(), "{maximal:?}");
+            assert_eq!(nodes(&maximal), key_bound(Agent::Codex), "{maximal:?}");
+        }
+        // The other paths push fewer keys and stay within the bound.
+        for other in [direct(None), counter(None), copy(None, None), copy(Some(thread), None)] {
+            assert!(other.keys.is_empty() && other.invariants.is_empty(), "{other:?}");
+            assert!(nodes(&other) <= key_bound(Agent::Codex), "{other:?}");
+        }
     }
 
     #[test]
