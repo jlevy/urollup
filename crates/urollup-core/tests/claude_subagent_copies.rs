@@ -477,3 +477,27 @@ fn a_fork_replaying_the_record_that_spawned_it_never_spawns_itself() {
     let ingested = ingest_invariantly(root.path());
     assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &fork), [session]);
 }
+
+#[test]
+fn a_sibling_forks_replay_never_decides_a_spawn_its_session_recorded() {
+    let root = case_copy(FORK_CASE);
+    let first = subagent_file(root.path(), FORK_SESSION, FORK_AGENT);
+    let meta = json!({"agentType": "fork", "toolUseId": "toolu_01Synthetic05Fork"});
+    fs::write(first.with_extension("meta.json"), format!("{meta}\n")).expect("the sidecar");
+    // A later sibling fork replays the session by `uuid` through the record that spawned
+    // the first fork, and discovery reads its file first in reversed order.
+    let sibling = subagent_file(root.path(), FORK_SESSION, "a0000000000050002");
+    for number in 1..=4 {
+        let mut record = line(&first, number);
+        record["agentId"] = json!("a0000000000050002");
+        append_line(&sibling, &record);
+    }
+    let fork = subagent_id(FORK_SESSION, FORK_AGENT);
+    let session = thread_id(FORK_SESSION);
+
+    // The session's own record comes first by owner precedence, whichever file discovery
+    // reads first, so the sibling's replay never parents the first fork.
+    let ingested = ingest_invariantly(root.path());
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &fork), [session]);
+    assert_eq!(totals(&ingested).owned.requests, 3, "the sibling's replays are copies");
+}
