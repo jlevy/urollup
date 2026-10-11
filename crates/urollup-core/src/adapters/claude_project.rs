@@ -772,9 +772,9 @@ impl SourceDecoder {
         if request_record && admission.is_some_and(|budget| !budget.reserve_row(Agent::Claude)) {
             return RecordDisposition::Stop;
         }
-        // A subagent record belongs to the subagent of the session it names, or of the
-        // file's session when it names none, so the records of a copied transcript are the
-        // original subagent's.
+        // A subagent record belongs to the subagent of the session it names, or, when it
+        // names none, of the session an earlier line named, else the directory's, so the
+        // records of a copied transcript are the original subagent's.
         let record_thread = if subagent {
             let session =
                 session.map_or(self.facts.thread.session, |session| self.strings.intern(session));
