@@ -3,12 +3,13 @@ type: is
 id: is-01m2y1redkntka5x0rwr6kjmkb
 title: Add synthetic Cursor fixtures and goldens
 kind: task
-status: in_progress
+status: open
 priority: 2
-version: 9
+version: 11
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 delegate: cursor@spud10
-labels: []
+labels:
+  - post-0.1
 dependencies:
   - type: blocks
     target: is-01m2y1rrq5qkqz1vd10tb4qcjr
@@ -16,7 +17,7 @@ parent_id: is-01m2y1qw9mgfwsbpdgam8nn13r
 hold: null
 hold_until: null
 created_at: 2026-09-19T23:59:21.522Z
-updated_at: 2026-09-20T23:40:07.523Z
+updated_at: 2026-10-11T06:29:18.420Z
 started_at: 2026-09-20T09:51:23.040Z
 ---
 Synthetic fixtures under crates/urollup-core/tests/fixtures/<dialect>/, goldens under tests/golden/e2e/<dialect>/, and result checks. Cover model/provider grouping, copies, resumes, subagents, Best-of-N, and dual-store ownership.

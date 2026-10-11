@@ -5,10 +5,11 @@ title: "PR #14 A5: choose and record the Cursor SQLite reader under supply-chain
 kind: bug
 status: open
 priority: 2
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 delegate: null
-labels: []
+labels:
+  - post-0.1
 dependencies:
   - type: blocks
     target: is-01m2y1rag1z513ncz2mr4k7vk9
@@ -16,7 +17,7 @@ parent_id: is-01m2y1qw9mgfwsbpdgam8nn13r
 hold: null
 hold_until: null
 created_at: 2026-10-09T07:44:42.871Z
-updated_at: 2026-10-09T07:50:57.348Z
+updated_at: 2026-10-11T06:29:17.132Z
 started_at: 2026-10-09T07:45:09.948Z
 ---
 Severity: Medium. PR #14, review A: https://github.com/jlevy/urollup/pull/14#pullrequestreview-5467142502

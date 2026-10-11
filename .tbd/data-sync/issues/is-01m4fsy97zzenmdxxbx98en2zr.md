@@ -5,10 +5,11 @@ title: "PR #14 A13: define Cursor opt-in override entries, source targets and JS
 kind: bug
 status: open
 priority: 3
-version: 5
+version: 6
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 delegate: null
-labels: []
+labels:
+  - post-0.1
 dependencies:
   - type: blocks
     target: is-01m2y1rag1z513ncz2mr4k7vk9
@@ -16,7 +17,7 @@ parent_id: is-01m2y1qw9mgfwsbpdgam8nn13r
 hold: null
 hold_until: null
 created_at: 2026-10-09T07:44:45.822Z
-updated_at: 2026-10-09T07:50:57.659Z
+updated_at: 2026-10-11T06:29:17.139Z
 started_at: 2026-10-09T07:45:12.480Z
 ---
 Severity: Low. PR #14, review A: https://github.com/jlevy/urollup/pull/14#pullrequestreview-5467142502

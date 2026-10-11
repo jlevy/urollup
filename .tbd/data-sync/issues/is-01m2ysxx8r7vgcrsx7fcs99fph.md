@@ -3,18 +3,19 @@ type: is
 id: is-01m2ysxx8r7vgcrsx7fcs99fph
 title: Record Decision 20 exception for named Cursor state-store reader
 kind: task
-status: in_progress
+status: open
 priority: 2
-version: 6
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
 delegate: cursor@spud10
-labels: []
+labels:
+  - post-0.1
 dependencies: []
 parent_id: is-01m2y1qw9mgfwsbpdgam8nn13r
 hold: null
 hold_until: null
 created_at: 2026-09-20T07:01:46.388Z
-updated_at: 2026-10-09T07:16:48.925Z
+updated_at: 2026-10-11T06:29:19.405Z
 started_at: 2026-09-20T09:51:23.070Z
 ---
 

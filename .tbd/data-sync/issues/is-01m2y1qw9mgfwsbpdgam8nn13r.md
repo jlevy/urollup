@@ -5,9 +5,10 @@ title: "Spec: Cursor dialect with model and provider facets"
 kind: epic
 status: open
 priority: 2
-version: 17
+version: 19
 spec_path: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md
-labels: []
+labels:
+  - post-0.1
 dependencies: []
 parent_id: is-01m2f0tdnzmd4d9fy3afh49bfx
 child_order_hints:
@@ -26,7 +27,7 @@ child_order_hints:
   - is-01m4fsy6bqyv66kcg2sbnvgbhj
   - is-01m4fsy97zzenmdxxbx98en2zr
 created_at: 2026-09-19T23:59:02.962Z
-updated_at: 2026-10-09T07:50:45.612Z
+updated_at: 2026-10-11T06:29:19.735Z
 ---
 Add Cursor as a urollup agent with first-class model and provider facets under docs/project/specs/active/plan-2026-09-19-cursor-dialect.md. Implementation belongs no earlier than the product Phase 3 database-input work under confirmed Decision 20, with uro-3fbc also complete. An earlier database adapter requires an explicit confirmed exception; it is outside milestone 0.1 and Phase 2 Pi/Gemini.
 
@@ -38,4 +39,4 @@ Cursor current-session detection and its unsupported-dialect diagnostic are plan
 
 ## Notes
 
-Reconciled the plan spec with research-2026-09-19-cursor-agent-logs.md (uro-890b, closed). Phase 0 facts are locked in the spec. Goals downgraded: no Claude-grade per-request tokens/cache; discovery is opt-in (not default); model is catalog/native id, not a served provider API id; provider is inferred (including cursor for Grok/Composer). Product-plan G2 now says opted-in Cursor sessions and notes the usage gap. Design one-liners did not contradict. No adapter. No ingest-capacity Rust. uro-3fbc remains the Phase 0 gate (checklist items are checked in the spec).
+2026-10-10: Cursor support is deferred past the initial 0.1 release by maintainer decision; 0.1 ships Claude Code and Codex only. PR #14 (plan, branch cursor-dialect at 2d4134a) and PR #20 (adapter, branch cursor-state-adapter at 2ecf386) are closed and their branches kept for later work. PR #14 review B found the plan merge-ready apart from B3 (fold 4be4ad4 into 3d1c63f before landing) and B4-B6 wording. PR #20 reviews A and B found blockers listed in uro-wf20-style follow-up (see the child bead for the #20 review findings). Maintainer decisions 2026-10-10: Cursor confirmed as a planned supported agent (uro-jfaw); SQLite dependency deferred (uro-kddq); a bubble without a per-bubble model reports an unknown model; --agent stays a 0.5 flag (uro-feyo).

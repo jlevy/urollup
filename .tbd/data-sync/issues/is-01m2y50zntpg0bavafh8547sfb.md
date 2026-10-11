@@ -5,9 +5,10 @@ title: Reconcile Cursor docs against the accepted implementation stack
 kind: task
 status: open
 priority: 2
-version: 8
+version: 9
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
-labels: []
+labels:
+  - post-0.1
 dependencies:
   - type: blocks
     target: is-01m2y7eh0genxhf98p3h08fmn9
@@ -18,7 +19,7 @@ child_order_hints:
   - is-01m2yjn0fjtg72ag044th3pzjp
   - is-01m2yjn0s0jbsvf46c7j128yr2
 created_at: 2026-09-20T00:56:27.065Z
-updated_at: 2026-09-20T05:18:15.741Z
+updated_at: 2026-10-11T06:29:17.039Z
 ---
 PR #14 remains separate on main and has no Actions checks because main has no workflow. A git merge-tree simulation against ingest-capacity d446732 conflicts in the product plan: retain both the full End-to-End Acceptance Goals section and the later-Cursor pointer. Cursor plan/research link to implementation files and the scalable-ingestion spec absent on current main. After the implementation stack lands, rebase Cursor onto main, resolve the conflict, check local links and privacy/synthetic-only claims, run docs CI, and record review. Do not mix Cursor adapter implementation into 0.1. Local data claims were not independently re-surveyed by this audit. Spec on branch cursor-dialect: docs/project/specs/active/plan-2026-09-19-cursor-dialect.md.
 
