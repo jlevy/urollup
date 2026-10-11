@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 13
+version: 14
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-10-09T17:45:33.356Z
+updated_at: 2026-10-11T04:54:18.705Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -76,3 +76,5 @@ Reviewed price table, PriceTable contract, overrides, staleness diagnostics, --r
 
 
 2026-10-09 (restack): draft PR https://github.com/jlevy/urollup/pull/19 is rebased onto main bdaa7ce (PRs #15, #16, #18 and #22 merged). New head 95ae000 (code commit 0a102d8, docs commit 95ae000), base main, still a draft and not ready for review. Main's accounting rules, diagnostics, coverage and tests are unchanged apart from the intended Codex cache-write subtraction; pricing context follows main's turn_id context lookup, and docs/formats now describe main. Local fmt, clippy -D warnings, rustdoc, 347 workspace tests, make golden and 32 e2e result cases pass with no golden change (every Codex fixture records zero cache writes). Restack follow-ups are in the PR description: the service-tier filter versus main's unplaced (missing-ordinal) settings events, the 200-to-208-byte Claude record budget comment and its memory accounting, the AdapterError::Input doc comment, and no fixture with nonzero Codex cache writes.
+
+2026-10-10: The WIP money and price-table modules (accounting::money, accounting::pricing table/request/totals) and the Claude advisor-pricing test moved out of PR #19 to branch feat/pricing-engine, commit 7d9a242 on top of PR #19 head abb5998, pushed with no PR. That commit re-adds PricingContext.billing_channel, which only the matcher reads. fmt, cargo test -p urollup-core and workspace clippy pass there. PR #19 now carries only the Codex cache-write correction, retained pricing context and the format contracts. Rebase feat/pricing-engine after PR #19 merges.
