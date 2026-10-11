@@ -99,6 +99,13 @@ impl SourceTable {
     }
 }
 
+impl crate::ledger::admission::deep_size::DeepSize for SourceTable {
+    fn heap(&self) -> u64 {
+        let Self { ids } = self;
+        crate::ledger::admission::deep_size::DeepSize::heap(ids)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EvidenceRef, SourceTable};
