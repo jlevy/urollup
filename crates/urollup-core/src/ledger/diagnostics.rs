@@ -52,6 +52,9 @@ pub enum DiagnosticCode {
     /// Codex fork-boundary evidence could not prove which usage is the thread's own, so
     /// that usage was excluded as a coverage gap.
     CodexHistoryBoundaryUnverified,
+    /// A Codex usage object's input was below its cache reads plus writes, so its record or
+    /// counter step was excluded as a coverage gap.
+    CodexInclusiveInputUnderflow,
     /// One Codex rollout was found at more than one location.
     CodexRolloutDuplicateLocation,
     /// A complete source line was malformed.
@@ -93,6 +96,7 @@ impl DiagnosticCode {
             Self::CodexEstimateCompaction => "codex-estimate-compaction",
             Self::CodexEstimateContextWindowFill => "codex-estimate-context-window-fill",
             Self::CodexHistoryBoundaryUnverified => "codex-history-boundary-unverified",
+            Self::CodexInclusiveInputUnderflow => "codex-inclusive-input-underflow",
             Self::CodexRolloutDuplicateLocation => "codex-rollout-duplicate-location",
             Self::MalformedLine => "malformed-line",
             Self::PendingTail => "pending-tail",

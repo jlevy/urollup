@@ -184,6 +184,8 @@ pub enum AdapterError {
     #[error(transparent)]
     Tokens(#[from] crate::ledger::tokens::TokenOverflow),
     /// A dialect's inclusive input counter was below the cache reads and writes it includes.
+    /// The Codex adapter excludes such usage with a diagnostic before it normalizes, so
+    /// this reports a broken invariant rather than inconsistent input.
     #[error(transparent)]
     Input(#[from] crate::ledger::tokens::InputBelowCache),
     /// A source-decoding worker thread panicked.

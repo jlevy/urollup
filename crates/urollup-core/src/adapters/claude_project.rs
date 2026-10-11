@@ -1122,6 +1122,7 @@ fn normalize(
             | DiagnosticCode::CodexEstimateCompaction
             | DiagnosticCode::CodexEstimateContextWindowFill
             | DiagnosticCode::CodexHistoryBoundaryUnverified
+            | DiagnosticCode::CodexInclusiveInputUnderflow
             | DiagnosticCode::CodexRolloutDuplicateLocation
             | DiagnosticCode::MalformedLine
             | DiagnosticCode::PendingTail

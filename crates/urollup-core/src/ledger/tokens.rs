@@ -5,9 +5,12 @@
 //! recorded as a subset of output that is never added again. Each category is `None` when
 //! the source does not report it, which is different from a reported zero.
 //!
-//! Dialects disagree on what "input" means: Codex and other Responses API clients report
-//! input that includes cache reads, while Claude reports input that excludes cache reads
-//! and writes. [`InputSemantics`] makes that explicit, so no report has to guess.
+//! Dialects disagree on what "input" means: Codex input is read as including cache reads
+//! and cache writes, while Claude reports input that excludes both. Codex source states
+//! that cache reads are inside its input and reports writes beside them in the same input
+//! breakdown, but does not state that writes are inside it, so that part is an inference
+//! (docs/formats/accounting-incidents.md). [`InputSemantics`] makes the choice explicit,
+//! so no report has to guess.
 //!
 //! All arithmetic is checked; `clippy::arithmetic_side_effects` is denied in this module.
 
@@ -338,7 +341,8 @@ impl TokenMeasures {
 /// What a dialect's native input count includes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InputSemantics {
-    /// Native input includes cache reads and writes (Codex and the Responses API).
+    /// Native input is read as including cache reads and writes (Codex). That writes are
+    /// included is an inference from Codex's Responses API mapping, not a stated contract.
     IncludesCache,
     /// Native input excludes cache reads and writes (Claude): it is the uncached input.
     ExcludesCache,
@@ -373,7 +377,7 @@ pub struct InputBelowCache {
 ///
 /// With [`InputSemantics::IncludesCache`], a missing cache category reads as 0, and an input
 /// smaller than the cache categories is an error rather than a silent zero; the Codex
-/// adapter returns it, which stops ingestion.
+/// adapter excludes that usage as inconsistent and reports a coverage gap.
 pub fn normalize_input(
     semantics: InputSemantics,
     native: NativeInput,
@@ -503,6 +507,79 @@ mod tests {
         assert_eq!(normalized.uncached_input, Some(70));
         assert_eq!(normalized.inclusive_input().unwrap(), Some(100));
         assert_eq!(normalized.cache_write_unspecified, Some(10));
+    }
+
+    /// Every combination of present and missing counts in a small range: an error exactly
+    /// when input is below reads plus writes, a missing count reading as 0, and otherwise
+    /// categories that add back up to the native input.
+    #[test]
+    fn inclusive_input_normalizes_exhaustively() {
+        let values = || std::iter::once(None).chain((0..8_u64).map(Some));
+        for input in values() {
+            for cache_read in values() {
+                for cache_write in values() {
+                    let native = NativeInput { input, cache_read, cache_write };
+                    let result = normalize_input(InputSemantics::IncludesCache, native);
+                    let read = cache_read.unwrap_or(0);
+                    let write = cache_write.unwrap_or(0);
+                    let cached = read.checked_add(write).unwrap();
+                    match input {
+                        Some(input) if input < cached => assert_eq!(
+                            result,
+                            Err(InputBelowCache { input, cache_read: read, cache_write: write }),
+                            "{native:?}"
+                        ),
+                        Some(input) => {
+                            let measures = result.unwrap();
+                            assert_eq!(
+                                measures.uncached_input,
+                                input.checked_sub(cached),
+                                "{native:?}"
+                            );
+                            assert_eq!(measures.cache_read, cache_read, "{native:?}");
+                            assert_eq!(measures.cache_write_unspecified, cache_write, "{native:?}");
+                            assert_eq!(measures.inclusive_input().unwrap(), Some(input));
+                        }
+                        None => {
+                            let measures = result.unwrap();
+                            assert_eq!(measures.uncached_input, None, "{native:?}");
+                            assert_eq!(measures.cache_read, cache_read, "{native:?}");
+                            assert_eq!(measures.cache_write_unspecified, cache_write, "{native:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proptest! {
+        /// Normalization is linear on consistent usage, so a counter delta of normalized
+        /// running totals equals the normalized usage of the request it adds.
+        #[test]
+        fn counter_deltas_equal_per_request_normalization(
+            first in (0_u64..1_000, 0_u64..1_000, 0_u64..1_000),
+            second in (0_u64..1_000, 0_u64..1_000, 0_u64..1_000),
+        ) {
+            let native = |(read, write, uncached): (u64, u64, u64)| NativeInput {
+                input: Some(read.checked_add(write).unwrap().checked_add(uncached).unwrap()),
+                cache_read: Some(read),
+                cache_write: Some(write),
+            };
+            let total = |(a, b, c): (u64, u64, u64), (x, y, z): (u64, u64, u64)| {
+                (a.checked_add(x).unwrap(), b.checked_add(y).unwrap(), c.checked_add(z).unwrap())
+            };
+            let normalize =
+                |usage| normalize_input(InputSemantics::IncludesCache, native(usage)).unwrap();
+            let mut counter = crate::ledger::counters::RunningTotal::new();
+            let opening = counter.observe(&normalize(first), None).unwrap();
+            prop_assert_eq!(opening.delta, normalize(first));
+            let step = counter.observe(&normalize(total(first, second)), None).unwrap();
+            if step.event == crate::ledger::counters::CounterEvent::Repeated {
+                prop_assert_eq!(second, (0, 0, 0));
+            } else {
+                prop_assert_eq!(step.delta, normalize(second));
+            }
+        }
     }
 
     #[test]

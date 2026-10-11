@@ -476,3 +476,82 @@ fn an_unverifiable_codex_fork_boundary_does_not_stop_the_report() {
         "{diagnostic_codes:?}"
     );
 }
+
+#[test]
+fn an_inconsistent_codex_record_is_a_gap_beside_a_claude_session() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
+    let claude = fixtures.join("claude-project/missing-request-id");
+    let codex = tempfile::tempdir().expect("temporary directory is created");
+    copy_compressed(
+        &fixtures.join("codex-rollout/cache-write-input"),
+        codex.path(),
+        "",
+        <[u8]>::to_vec,
+    );
+    let thread = "019f0000-0000-7000-8000-002200000001";
+    let lines = [
+        serde_json::json!({"timestamp":"2026-09-21T15:00:00.000Z","type":"session_meta","payload":{"id":thread,"cli_version":"0.154.0","source":"cli","model_provider":"openai"}}),
+        // Below its cache reads plus writes, and below its cache reads alone.
+        serde_json::json!({"timestamp":"2026-09-21T15:00:10.000Z","type":"token_usage_record","payload":{"thread_id":thread,"response_id":"writes","usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":50,"output_tokens":5}}}),
+        serde_json::json!({"timestamp":"2026-09-21T15:00:20.000Z","type":"token_usage_record","payload":{"thread_id":thread,"response_id":"reads","usage":{"input_tokens":10,"cached_input_tokens":11,"cache_write_input_tokens":0,"output_tokens":1}}}),
+        serde_json::json!({"timestamp":"2026-09-21T15:00:30.000Z","type":"token_usage_record","payload":{"thread_id":thread,"response_id":"valid","usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":4}}}),
+    ];
+    let bad = codex.path().join("sessions/2026/09/21");
+    std::fs::create_dir_all(&bad).expect("rollout directory is created");
+    let text = lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(bad.join(format!("rollout-2026-09-21T08-00-00-{thread}.jsonl")), text)
+        .expect("rollout is writable");
+    let run = |command: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_urollup"))
+            .args([command, "--no-default-sources", "--source"])
+            .arg(&claude)
+            .arg("--source")
+            .arg(codex.path())
+            .args(["--format", "json", "--timezone", "UTC"])
+            .env("NO_COLOR", "1")
+            .env_remove("UROLLUP_JOBS")
+            .env_remove("UROLLUP_STATS")
+            .env_remove("UROLLUP_MAX_RAM")
+            .output()
+            .expect("the urollup binary runs");
+        assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("complete JSON output")
+    };
+
+    let sessions = run("sessions");
+    let totals: std::collections::BTreeMap<String, u64> = sessions["rows"]
+        .as_array()
+        .expect("session rows")
+        .iter()
+        .filter_map(|row| {
+            Some((row["session"].as_str()?.to_owned(), row["tokens"]["total"].as_u64()?))
+        })
+        .collect();
+    let agents: std::collections::BTreeSet<&str> = sessions["rows"]
+        .as_array()
+        .expect("session rows")
+        .iter()
+        .filter_map(|row| row["agent"].as_str())
+        .collect();
+    assert_eq!(agents, ["claude", "codex"].into(), "both agents report");
+    assert_eq!(totals.get(thread), Some(&44), "only the consistent record counts: {totals:?}");
+    assert_eq!(totals.get("019f0000-0000-7000-8000-002000000001"), Some(&2_810));
+
+    let report = run("report");
+    assert_eq!(report["coverage"]["complete"], serde_json::Value::Bool(false));
+    assert_eq!(
+        report["diagnostics"],
+        serde_json::json!([{
+            "code": "codex-inclusive-input-underflow",
+            "count": 2,
+            "detail": format!(
+                "Codex input_tokens 100 is below its 60 cached and 50 cache-write tokens at \
+                 2026/09/21/rollout-2026-09-21T08-00-00-{thread}.jsonl:2, so that usage is \
+                 excluded as a coverage gap; 2 records or counter steps of this rollout are \
+                 excluded"
+            ),
+        }])
+    );
+}

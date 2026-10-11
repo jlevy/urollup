@@ -19,6 +19,9 @@ pub enum UnobservedReason {
     /// A Codex fork boundary could not separate inherited history from the thread's own
     /// usage, so usage that may be the thread's own was excluded rather than counted.
     UnverifiedHistoryBoundary,
+    /// A record's counters contradict each other, as Codex input below its cache reads and
+    /// writes does, so its usage was excluded rather than counted.
+    InconsistentUsage,
     /// Another reason, named by a registry token.
     Other(String),
 }
