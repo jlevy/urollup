@@ -1266,6 +1266,7 @@ fn pricing_context(
         merged.conflicted |= context.conflicted;
         for (target, incoming) in [
             (&mut merged.provider, context.provider),
+            (&mut merged.billing_channel, context.billing_channel),
             (&mut merged.service_tier, context.service_tier),
             (&mut merged.speed, context.speed),
             (&mut merged.inference_geo, context.inference_geo),

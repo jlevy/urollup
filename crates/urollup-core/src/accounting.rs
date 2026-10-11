@@ -3,4 +3,6 @@
 //! - [`totals`] computes ownership-aware grand totals, thread selections, and the
 //!   unresolved and possible measures that are never added (§4.2).
 
+pub mod money;
+pub mod pricing;
 pub mod totals;

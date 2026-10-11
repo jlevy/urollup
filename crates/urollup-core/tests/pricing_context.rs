@@ -260,3 +260,102 @@ fn fixture_requests_keep_their_expected_recorded_tier_and_speed() {
     }
     assert_eq!(checked, 13, "fixture requests with an expected tier or speed");
 }
+
+#[test]
+fn claude_advisor_costs_use_each_model_once_and_label_default_assumptions() {
+    use urollup_core::accounting::pricing::TokenRates;
+    use urollup_core::accounting::pricing::request::{PricingDefaults, price_request};
+    use urollup_core::accounting::pricing::table::{PriceKey, PriceRow, PriceTable};
+    let root = tempfile::tempdir().unwrap();
+    let session = "11111111-1111-4111-8111-111111111111";
+    let lines = [
+        serde_json::json!({"type":"assistant","sessionId":session,"uuid":"record","requestId":"request","timestamp":"2026-01-01T00:00:00Z","message":{
+            "id":"message","model":"primary-model","usage":{
+                "input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":10,
+                "iterations":[{"type":"advisor_message","model":"advisor-model","input_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":5}]
+            }
+        }}),
+    ];
+    fs::write(root.path().join(format!("{session}.jsonl")), jsonl(&lines)).unwrap();
+    let ingested = urollup_core::adapters::claude_project::ingest_root(root.path()).unwrap();
+    let request = ingested.ledger.requests.values().next().unwrap();
+    let defaults = PricingDefaults {
+        provider: Name::new("synthetic"),
+        channel: Name::new("api"),
+        tier: Name::new("standard"),
+        speed: Name::new("standard"),
+        geography: Name::new("global"),
+    };
+    let key = PriceKey {
+        provider: defaults.provider,
+        channel: defaults.channel,
+        tier: defaults.tier,
+        speed: defaults.speed,
+        geography: defaults.geography,
+        model: Name::new("primary-model"),
+    };
+    let rows = [("primary-model", "2", "10"), ("advisor-model", "4", "20")].map(
+        |(model, input, output)| PriceRow {
+            key: PriceKey { model: Name::new(model), ..key },
+            effective_from: "2026-01-01T00:00:00Z".parse().unwrap(),
+            effective_until: None,
+            input_over: None,
+            currency: "USD".to_owned(),
+            rates: TokenRates {
+                uncached_input: Some(input.parse().unwrap()),
+                output: Some(output.parse().unwrap()),
+                ..TokenRates::default()
+            },
+        },
+    );
+    let table = PriceTable::new(rows.into()).unwrap();
+    let priced = price_request(request, &table, defaults, None).unwrap();
+    assert!(!priced.missing_usage);
+    assert_eq!(priced.models.len(), 2);
+    for model in &priced.models {
+        assert_eq!(model.price.tokens.known_amount.to_string(), "0.0003");
+        assert_eq!(model.price.tokens.unpriced_tokens, 0);
+        assert!(model.price.tokens.unknown_usage.is_empty());
+        assert_eq!(
+            model.assumed,
+            ["provider", "billing_channel", "service_tier", "speed", "inference_geo"]
+        );
+    }
+    assert_eq!(
+        priced.models.iter().map(|model| model.price.tokens.priced_tokens).sum::<u64>(),
+        165
+    );
+    let mut missing = request.clone();
+    missing.usage = None;
+    assert!(price_request(&missing, &table, defaults, None).unwrap().missing_usage);
+    let mut conflicted = request.clone();
+    conflicted.pricing =
+        Some(std::sync::Arc::new(urollup_core::ledger::entities::PricingContext {
+            conflicted: true,
+            ..Default::default()
+        }));
+    let unavailable = price_request(&conflicted, &table, defaults, None).unwrap();
+    assert!(unavailable.models.iter().all(|model| model.price.tokens.priced_tokens == 0
+        && model.price.unmatched
+            == Some(urollup_core::accounting::pricing::table::UnpricedReason::ConflictingContext)));
+    let mut undated = request.clone();
+    undated.first_seen = None;
+    undated.last_seen = None;
+    let unavailable = price_request(&undated, &table, defaults, None).unwrap();
+    assert!(unavailable.models.iter().all(|model| model.price.unmatched
+        == Some(urollup_core::accounting::pricing::table::UnpricedReason::MissingDate)));
+    let counterfactual =
+        price_request(&undated, &table, defaults, Some("2026-01-01T00:00:00Z".parse().unwrap()))
+            .unwrap();
+    assert!(counterfactual.models.iter().all(|model| model.price.unmatched.is_none()));
+    let mut other_provider = request.clone();
+    other_provider.pricing =
+        Some(std::sync::Arc::new(urollup_core::ledger::entities::PricingContext {
+            provider: Some(Name::new("unlisted-provider")),
+            ..Default::default()
+        }));
+    let unavailable = price_request(&other_provider, &table, defaults, None).unwrap();
+    assert!(unavailable.models.iter().all(|model| model.price.unmatched
+        == Some(urollup_core::accounting::pricing::table::UnpricedReason::NoMatchingRate)
+        && !model.assumed.contains(&"provider")));
+}

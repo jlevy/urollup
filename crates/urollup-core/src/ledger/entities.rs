@@ -208,6 +208,8 @@ pub struct ModelName {
 pub struct PricingContext {
     /// Recorded provider identifier; absent is unknown, not a first-party guarantee.
     pub provider: Option<Name>,
+    /// Recorded billing channel, if available independently of the provider.
+    pub billing_channel: Option<Name>,
     /// Recorded service tier, including unrecognized values.
     pub service_tier: Option<Name>,
     /// Recorded inference speed, such as Claude fast mode.
