@@ -419,8 +419,11 @@ for every count up to a few thousand:
   non-root node of the standard B-tree holds at least five of its eleven entries; each
   node costs an internal node’s allocation.
   A push site charges the larger of 2.5 × entry and a fifth of a node per entry, plus
-  one node per map. A tree built by `collect()` from an unsorted iterator also holds the
-  collected vector and its stable-sort scratch while it is built.
+  one node per map. A tree built by `collect()` is built in bulk from the collected
+  vector, at most twice its entries once grown, after a stable sort: it costs the larger
+  of the vector while it grows and the vector beside its sort scratch or beside the
+  tree, whose nodes are full except along the right border, one per ten entries plus
+  four.
 - A stable sort (`sort`, `sort_by`, `sort_by_key`) of `n` elements of `s` bytes
   allocates up to `max(⌈n/2⌉, min(n, 8 MB / s), 48)` elements of scratch while it runs
   (the standard driftsort; scratch of 4 KiB or less stays on the stack), so it costs
@@ -500,6 +503,9 @@ committed; then query and render.
   later phase through the session index, and of the query’s per-request working set,
   decode refuses as soon as the admitted records could not complete reconciliation, the
   session index and that working set, without reading the rest of the input.
+  The one exception is the scratch of the largest linked set, which no decode count
+  bounds: κ’s headroom over its grouping share covers it while that set holds up to a
+  fifth of the observations, and beyond that the `Order` checkpoint can refuse.
   Day and group rows and rendered bytes, which no decode count bounds, can still refuse
   at query, after both ingests.
 - **Checkpoints** run on the coordinating thread before each agent’s decode,
@@ -507,6 +513,12 @@ committed; then query and render.
   Each recomputes the phase estimate from exact counts, including the source and thread
   rows and the largest sort scratch the phase runs, replacing the forward charges, and
   refuses before the phase allocates.
+  Grouping has two: one before the key graph, which charges the graph, the grouping
+  order and the presized request vector, each within κ’s grouping share; and one at
+  `ReconcileStage::Order`, where the sorted order gives the linked sets and the largest
+  in one pass, which adds that set’s scratch once, since each group frees its scratch
+  before the next. Checkpoints inside reconciliation run in the `reconcile_with_stages`
+  callback, whose error stops reconciliation before the next allocation.
   Growth inside a single-threaded phase that counts cannot predict (split keys and the
   request vector’s growth past its presized capacity, the candidate graph, candidate
   sets and components a conflicting key leaves, an ambiguous request’s candidate owners,
@@ -943,8 +955,9 @@ user-visible behavior.
    minimum-capacity, table, node and sort-scratch terms; κ per dialect, including the
    query reserve and Claude’s eligibility sort; the `4 × C′` line need; phase estimates;
    deep size for metadata and source-result types; the counting-allocator test binary,
-   tracking live heap minus `E` at every allocation; and measured `F`, decoder and query
-   constants. It reports bound violations and wires nothing into ingestion.
+   tracking live heap minus `E` at every allocation; `F` from CI’s Linux scale
+   intercept, the measured decoder constants, and the query constants as guesses.
+   It reports bound violations and wires nothing into ingestion.
 4. **Readers and workers.** One decoder constructor taking the admission handle, used by
    the scan, `first_record_of` and `peek`; worker slots for the `try_read_in_parallel`
    callers and the coordinating slot; doubling line-buffer growth, with the permit past
@@ -985,8 +998,9 @@ user-visible behavior.
 8. **Calibration.** `measure-scale.py` and `check-scale.py` capture estimate lines
    beside measured peaks and check measured ≤ `F + H × estimate` on the CI synthetic
    workloads, with musl and Windows `scale` jobs beside the glibc and macOS ones.
-   `H` and `F` are set from that matrix, and the full matrix and representative runs
-   pass to `uro-z1h1` and `uro-erqo`.
+   `H`, `F` and the query constants are set from that matrix, `F` from a direct Linux
+   measurement, and the full matrix and representative runs pass to `uro-z1h1` and
+   `uro-erqo`.
 
 #### Implementation Notes
 
@@ -1096,8 +1110,9 @@ Choices made while implementing, where this design left room:
     entries of 1 to 3 bytes and the padding of the buckets to the 16-byte control
     alignment, plus the half-size table during a resize), `hash_with_capacity` for
     presized maps, `hash_churned` (twice the live entries) for maps with removals,
-    `btree_map`, and `btree_collected` for trees built by `collect()` (the collected
-    vector, its sort scratch and the per-entry rule).
+    `btree_map`, and `btree_bulk` and `btree_collected` for trees built by `collect()`
+    (the larger of the vector while it grows and the vector beside its sort scratch or
+    its bulk-built tree).
     Each states its precondition.
     The per-entry hash charge stays 3.5 × (entry + 1). Its once-per-map base is 128
     bytes plus 16 × (entry + 1), larger than the costing rule’s first base of 96 bytes
@@ -1105,27 +1120,58 @@ Choices made while implementing, where this design left room:
     The B-tree per-entry charge is the larger of 2.5 × entry and a fifth of a node,
     because 2.5 × alone undercounts entries under about 110 bytes.
   - **κ:** see [κ by dialect](#request-structure-by-dialect), pinned to the row sizes by
-    `kappa_is_pinned_to_the_row_sizes`. Codex construction adds 120 B per
-    request-bearing record for a parent-totals digest (`ParentEvidence::totals`, plus
-    the source’s own set while `counter_totals` builds it; two hash entries of 16 B),
-    the larger of that and the 18 B `own_responses` entry, since a record adds to at
-    most one; Claude’s construction adds the eligibility vector’s 16 B of stable-sort
-    scratch to its 386 B of owner state.
+    `kappa_is_pinned_to_the_row_sizes`, which compares every pinned value in one tuple
+    so that a row-size change reports them all at once.
+    `kappa_covers_the_grouping_and_finalize_estimates` checks κ’s composition against
+    the phase estimates the harness measures: at every count up to 3,000 and at 2^16,
+    2^20 and 2^30 observations, each phase’s share of κ is what its estimate charges per
+    observation, κ × observations plus `RECONCILE_RESERVE` (4,512 B) covers both
+    estimates’ request structure before `Order`, and with the largest linked set at a
+    fifth of the observations it also covers that set’s scratch beyond one member’s.
+    Codex construction adds 120 B per request-bearing record for a parent-totals digest
+    (`ParentEvidence::totals`, plus the source’s own set while `counter_totals` builds
+    it; two hash entries of 16 B), the larger of that and the 18 B `own_responses`
+    entry, since a record adds to at most one; Claude’s construction adds the
+    eligibility vector’s 16 B of stable-sort scratch to its 386 B of owner state.
     Finalize adds the canonical-ID map’s 106 B entry for each alias, so Claude’s is 868
     B, and the retained-and-query phase is 345 B for Codex and 443 B for Claude.
     The key bound is asserted on every path of every observation builder, Codex’s inline
     copy builder included (now `copied_counter_observation`), each maximal path with
-    equality and the others with `<`.
+    equality; Claude’s other paths assert `<`, and Codex’s `<=`, since a keyless Codex
+    observation’s artifact-local key reaches the bound.
   - **Other per-unit charges:** `decoded_record`; `CODEX_TURN_STATE` (196 B per Codex
     `turn_context`: its `root_turns` digest, its `KnownTurns` entry and its rollout’s
     turn map entry, a payload); `source_observations` (a Codex rollout’s own observation
     vector and the tail a contradicted inference splits off, a high-water term for
-    rollouts observed in `normalize`); `limit_row`; `diagnostic` (5 × the row, since
-    compaction iterates an input of up to twice the rows while it pushes into a doubling
-    vector, and the detail at its capacity); `name_intern` and `overflow_intern` with
-    their tables’ one-time bases, charged with the first insert; and the structures
-    grouping pushes: `split_growth`, `conflicting_key` (the candidate graph entry per
-    part, the retained candidate set and the components map) and `ambiguous_owners`.
+    rollouts observed in `normalize`); `limit_row`; `diagnostic`, the sum of
+    `DIAGNOSTIC_ROW` (5 × the row, since compaction iterates an input of up to twice the
+    rows while it pushes into a doubling vector), `diagnostic_detail` (the detail at its
+    capacity) and `diagnostic_evidence`; `name_intern` and `overflow_intern` with their
+    tables’ one-time bases, charged with the first insert; and the structures grouping
+    pushes: `split_growth`, `conflicting_key` (the candidate graph entry per part, the
+    retained candidate set and the components map) and `ambiguous_owners`.
+  - **Group scratch** is one group’s lists (`group_lists`: members, parts, part IDs, and
+    the filtered originals and revisions at twice their entries once grown; for Claude,
+    which splits on its model invariant, also the single-member parts, every part’s ID
+    and the part keys’ derivation) plus the largest of the steps that run one after
+    another and free what they allocate: `group_keys` (the ranked key set, then the
+    aliases beside it), `group_revisions`, `group_owners` (the proven-owner set and the
+    detail listing their IDs), `group_models` (the served-model set, then the detail
+    listing them), `group_records` and, for Claude, `group_fields`. A listed detail’s
+    transient (`listed_detail`: the item strings and their vector, the joined text and
+    `format!`’s first buffer) was not modeled before; the conflicting-group harness
+    input exercises it. Per member at 1,000 members it is 231 B for Codex (lists 40,
+    owners 191) and 389 B for Claude (lists 134, keys 255). `ReconcileCounts` gains
+    `model_text`, which bounds the model names a detail lists.
+  - **Thread reconciliation** is the sum of `thread_sort`, `thread_maps`, the group
+    vectors (`thread_groups`: at most four rows’ capacity per row, even while one
+    doubles, tightened from 3 × a minimum-capacity vector per row), `thread_clones` (2 ×
+    the heap) and `thread_merge`, one thread’s evidence collected, sorted and copied
+    out, which was not modeled before and grows with the most evidence one thread holds
+    (`largest_thread_evidence`, a new count; a Claude thread cites every record of its
+    session). Its precondition, which both adapters meet, is that each thread identity
+    appears once without aliases; merging several would also collect their aliases and
+    fields.
   - **Slots and the permit:** `worker_slot` is 19.0 MiB plain and 27.6 MiB with zstd:
     the read buffer and boxed reader, the retained line, `line_need` at 4 MiB (`4 × C′`,
     16 MiB), the 640 KiB `quotaLimits` allowance, the thread stack, the join’s `done`
@@ -1154,13 +1200,23 @@ Choices made while implementing, where this design left room:
     observations, the key graph, requests and their working sets under `kappa`, payloads
     and diagnostics under `payloads`, limit rows under `limits`, thread and source rows
     and their reconciliation under `sources`, and the query under `reserves`.
-    `grouping_estimate` counts key-graph nodes exactly and adds the largest stable sort
-    the phase runs (threads or lineage links) and the thread reconciliation structures.
-    Every estimate saturates.
+    `grouping_estimate` counts key-graph nodes exactly and adds the lineage links’ sort
+    and the thread reconciliation structures, which include the threads’ sort.
+    Its `largest_group` is 0 before `Order`, where no group is built, and the real
+    largest linked set from `Order` on; it was the observations before, which charged
+    one group of every observation and so about twice κ per record.
+    Every estimate and composite term saturates.
   - **Deep size** destructures every struct without `..` and adds every field’s heap, so
     a new field does not compile until it is sized.
+    Each type declared heap-free asserts at compile time that it needs no drop glue, so
+    a heap-owning field added to one fails there too.
   - **Hooks:** `reconcile_with_stages` calls back at each `ReconcileStage`, where slice
-    5’s reconciliation checkpoints run; `reconcile_with_capacity` passes a no-op.
+    5’s reconciliation checkpoints run.
+    `ReconcileStage::Order` carries the linked sets and the largest, counted in one pass
+    over the sorted order that also replaces the earlier count of sets, and the callback
+    returns a `Result`: an error stops reconciliation and is returned, so slice 5
+    refuses there without changing the signature.
+    `reconcile_with_capacity` passes a callback that never refuses.
 
 - **Harness (slice 3).** `crates/urollup-core/tests/memory_model.rs` counts live heap by
   the costing rule, counting every `realloc`, moved or not, as a new block made before
@@ -1173,29 +1229,52 @@ Choices made while implementing, where this design left room:
   fail nothing. It checks:
   - every primitive at every count up to a few thousand, growing one structure and
     checking the running peak, so each check is O(N);
-  - each composite term against its real structure: diagnostic compaction, a conflicting
-    key’s structures, ambiguous owners, the request sort (presized and shrunk), the
-    request vector’s split growth, one key derivation, the name table’s first node, a
-    fresh thread’s name cache, and cold name and overflow interning that no earlier code
-    has warmed;
-  - reconciliation of ten synthetic inputs of 4,000 observations, each shaped so that
-    one term dominates (one or two keys, shared and split keys, one group, payloads,
-    threads, limits), between each pair of stages, against the whole-phase estimates by
-    component, and against `E` at every allocation;
+  - each composite term against its real structure: diagnostic compaction without
+    evidence, where the rows and details are each necessary, and with 64 references
+    each, where the evidence is; a conflicting key’s structures, ambiguous owners, the
+    request sort (presized and shrunk), the request vector’s split growth, one key
+    derivation, the name table’s first node, a fresh thread’s name cache, and cold name
+    and overflow interning that no earlier code has warmed;
+  - reconciliation of twelve synthetic inputs of 4,000 observations, each shaped so that
+    one term dominates (one or two keys, shared and split keys, one group, one group
+    whose members each have their own proven owner and served model, payloads, light and
+    evidence-heavy threads, limits), between each pair of stages against the model
+    functions behind each stage, and as a whole phase against the larger phase
+    estimate’s components (`kappa`, `payloads`, `limits`, `sources`), each of which must
+    be necessary in some phase check, with what grouping pushed beside them.
+    Live heap is tracked at every allocation against each checkpoint’s `E`: grouping
+    without a group’s scratch from the start, with the largest linked set’s from
+    `Order`, then finalize;
   - each fixture and generated corpus’s ledger, discovery and session index against
     their deep heap, at one and eight workers;
   - query documents apart from their rendering, each decoder’s Rust heap (gzip with the
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
 
-  On aarch64 macOS at this head, all 306 bounds pass in 3 to 5 seconds of a debug build
-  (19 seconds under the parallel workspace run).
-  Primitives measure 43–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
-  43–81%, stable sorts 100%), retained ledgers 92–99% of their deep heap,
-  reconciliation’s retained output 85–99%, discovery 100% and session indexes 54–93%,
-  stages 3–100%, whole reconciliation phases 19–34%, queries 0–54% and rendering 38–96%;
-  live heap never passed `E`. Each ingest’s peak is reported beside the forward estimate
-  computable after the fact.
+  On aarch64 macOS at this head, all 325 bounds pass in 6 to 15 seconds of a debug build
+  on a heavily loaded machine.
+  Primitives measure 66–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
+  68–81%, stable sorts 100%), retained ledgers 92–99% of their deep heap,
+  reconciliation’s retained output 77–99%, discovery 100% and session indexes 54–93%,
+  diagnostics 42–99%, stages 3–100%, whole reconciliation phases 28–74% (19–34% before
+  the largest group’s scratch was charged only from `Order`), queries 0–54% and
+  rendering 38–96%; live heap never passed `E`. Each ingest’s peak is reported beside
+  the forward estimate computable after the fact.
+
+  Mutations of the model, each applied, run and reverted at this head:
+  - Diagnostic rows at 3 × instead of 5 × fail the diagnostics check (147%).
+  - Thread reconciliation without its copies fails the evidence-heavy threads’ phase
+    (150%) and their `E`.
+  - Halving the copies fails only `thread_reconcile_is_its_parts`.
+  - Removing group scratch’s owner and model step, the owners’ listed detail, or the
+    models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
+    which pins every part per member.
+    The conflicting group bounds the whole term at 40%, but the B-tree and vector rules
+    around those steps leave more slack than the steps themselves, so no realistic input
+    makes one necessary.
+  - Removing κ’s key-graph term or Codex’s construction state fails
+    `kappa_is_pinned_to_the_row_sizes` and
+    `kappa_covers_the_grouping_and_finalize_estimates`.
 
 - **Measured constants (slice 3).**
   - `F` is 7,175 KiB: 1.25 × 5.605 MiB, the upper end of the 5.60 MiB intercept that
@@ -1225,7 +1304,9 @@ Choices made while implementing, where this design left room:
   MiB and 63 MiB line tests, and the eight-worker join test against `JOIN_DONE`. Slices
   5 and 6: the decode charges, which make the reported ingest bound fail rather than
   report, on corpora where `E` is at least 10 × the slots’ Rust-heap term; the
-  construction checkpoint, which first measures `construction_estimate`; and Claude’s
+  construction checkpoint, which first measures `construction_estimate`; the grouping
+  checkpoints before the key graph and at `Order`, which return their refusal through
+  the stage callback, and a check of thread reconciliation’s precondition; and Claude’s
   thread graph, which uses `with_capacity` and removes entries, so it is charged by
   capacity and by cumulative inserts.
   Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`,
