@@ -1034,9 +1034,10 @@ const PRICING_DIMENSION_TEXT: u64 = {
     text
 };
 
-/// The most `format!`'s buffer for the conflicting-pricing detail holds beyond the text it
-/// lists before it grows into the detail: its first buffer is twice the detail's 64 bytes
-/// of literal text, and the next twice that.
+/// The most the buffer `format!` outgrows last while it writes the conflicting-pricing
+/// detail holds beyond the text the detail lists: its first buffer is twice the detail's
+/// 64 bytes of literal text, and the next twice that or, when larger, the text written so
+/// far.
 const PRICING_DETAIL_BUFFER: u64 = 256;
 
 /// Merging a request's pricing contexts from at most `members` originals, whose names
@@ -1048,9 +1049,9 @@ const PRICING_DETAIL_BUFFER: u64 = 256;
 /// Each conflict names its dimension and lists its distinct names two bytes apart: at most
 /// one per member, and at most one more than the dimension's text, since only one can be
 /// empty. `format!` doubles a conflict's string to at most twice its text while that
-/// dimension's joined names are live. The detail joins the conflicts beside them, and
-/// `format!`'s buffer for it holds at most that text and [`PRICING_DETAIL_BUFFER`] before
-/// it grows into the detail, which is charged with its diagnostic ([`diagnostic_detail`]).
+/// dimension's joined names are live. The detail joins the conflicts beside them, and the
+/// buffer `format!` outgrows last while it writes the detail holds at most that text and
+/// 256 bytes; the detail itself is charged with its diagnostic ([`diagnostic_detail`]).
 pub const fn group_pricing(members: u64, pricing_text: u64) -> u64 {
     if members == 0 {
         return 0;
