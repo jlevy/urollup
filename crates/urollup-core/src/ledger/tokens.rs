@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
+use std::sync::atomic::{self, AtomicU64};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Disjoint token categories. `None` means the source does not report the category.
@@ -112,6 +113,20 @@ struct OverflowRow {
 /// Distinct overflow patterns, interned for the process like [`super::names::Name`]s.
 static OVERFLOW: OnceLock<Mutex<HashMap<OverflowRow, u32>>> = OnceLock::new();
 static OVERFLOW_ROWS: Mutex<Vec<OverflowRow>> = Mutex::new(Vec::new());
+/// The admission model's charge for every overflow pattern interned so far.
+static OVERFLOW_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// The admission model's charge for every distinct overflow pattern this process has
+/// interned. Patterns live until exit.
+pub fn overflow_interned_bytes() -> u64 {
+    OVERFLOW_BYTES.load(atomic::Ordering::Relaxed)
+}
+
+/// The bytes of one overflow row, which the admission model charges per pattern.
+pub(crate) const OVERFLOW_ROW_BYTES: u64 = std::mem::size_of::<OverflowRow>() as u64;
+
+/// The bytes of one overflow map entry, its row and index.
+pub(crate) const OVERFLOW_ENTRY_BYTES: u64 = std::mem::size_of::<(OverflowRow, u32)>() as u64;
 
 impl Measures {
     fn fields(&self) -> [Option<u64>; 8] {
@@ -147,6 +162,13 @@ fn intern_overflow(row: OverflowRow) -> u32 {
     }
     let mut rows = OVERFLOW_ROWS.lock().unwrap_or_else(PoisonError::into_inner);
     let id = u32::try_from(rows.len()).expect("fewer than 2^32 overflow measure patterns");
+    // The first pattern also pays the tables' one-time base.
+    let base =
+        if rows.is_empty() { crate::ledger::admission::model::OVERFLOW_TABLE_BASE } else { 0 };
+    OVERFLOW_BYTES.fetch_add(
+        crate::ledger::admission::model::overflow_intern().saturating_add(base),
+        atomic::Ordering::Relaxed,
+    );
     rows.push(row);
     index.insert(row, id);
     id
