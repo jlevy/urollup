@@ -98,6 +98,32 @@ const _: () =
 /// observed (`ledger::admission::model::decoded_record`).
 pub(crate) const DECODED_RECORD_BYTES: u64 = size_of::<ParsedRecord>() as u64;
 
+/// Per request-bearing record while `normalize` builds observations, beside the observation:
+/// a counter-only parent root's token count adds its total's digest to
+/// `ParentEvidence::totals` while `counter_totals` builds the rollout's own set (two tables
+/// at once), or a usage record adds its response to its rollout's `own_responses`. A record
+/// adds to at most one, so the larger bounds both.
+pub(crate) const CONSTRUCTION_STATE_PER_RECORD: u64 = {
+    use crate::ledger::admission::model::hash_entry;
+    let digest = 2 * hash_entry(size_of::<TotalDigest>() as u64);
+    let response = hash_entry(size_of::<Sym>() as u64);
+    if digest > response { digest } else { response }
+};
+
+/// Per `turn_context` record while `normalize` builds observations: its digest in the root
+/// rollout's `root_turns` (collected, so 3 ×), its entry in `KnownTurns`, and its entry in
+/// its rollout's turn map.
+pub(crate) const TURN_STATE_PER_CONTEXT: u64 = {
+    use crate::ledger::admission::model::hash_entry;
+    3 * size_of::<TurnDigest>() as u64
+        + hash_entry(size_of::<TurnDigest>() as u64)
+        + hash_entry(size_of::<(Sym, TurnContext)>() as u64)
+};
+
+/// The `(index, result)` pair a worker of the parallel join holds per rollout.
+pub(crate) const JOIN_PAIR_BYTES: u64 =
+    size_of::<(usize, Option<Result<(ManifestEntry, DecodedRollout), AdapterError>>)>() as u64;
+
 /// Everything one rollout contributes before normalization.
 struct ParsedSource {
     /// The source ID every record of the rollout shares; `None` only without records.
@@ -2638,12 +2664,12 @@ mod tests {
         use std::collections::{BTreeMap, HashMap};
 
         use super::{
-            CounterObservation, RecordView, TurnContext, Turns, UsagePayload, counter_observation,
-            thread_identity, usage_observation,
+            CounterObservation, RecordView, TurnContext, Turns, UsagePayload,
+            copied_counter_observation, counter_observation, thread_identity, usage_observation,
         };
         use crate::ledger::admission::model::key_bound;
         use crate::ledger::names::Name;
-        use crate::ledger::reconcile::ObservationRole;
+        use crate::ledger::reconcile::{ObservationRole, RequestObservation};
         use crate::selection::Agent;
 
         let thread = "019f0000-0000-7000-8000-000000000001";
@@ -2656,40 +2682,72 @@ mod tests {
         let mut interner = Interner::default();
         let turn = interner.intern("turn");
         let turns: Turns = HashMap::from([(turn, context)]);
-        let payload = UsagePayload {
-            thread_id: Some(thread),
-            response_id: Some("resp"),
-            usage: Some(usage),
-            turn: Some(turn),
+        let direct = |response_id| {
+            let payload = UsagePayload {
+                thread_id: Some(thread),
+                response_id,
+                usage: Some(usage),
+                turn: Some(turn),
+            };
+            usage_observation(
+                &record,
+                &payload,
+                ObservationRole::Original,
+                thread,
+                &thread_ids,
+                &turns,
+            )
+            .unwrap()
         };
-        let direct = usage_observation(
-            &record,
-            &payload,
-            ObservationRole::Original,
-            thread,
-            &thread_ids,
-            &turns,
-        )
-        .unwrap();
-        let counter = counter_observation(
-            &record,
-            &usage,
-            &usage,
-            CounterObservation {
-                role: ObservationRole::Original,
-                owner: Some(thread),
-                thread_ids: &thread_ids,
-                context: Some(&context),
-                delta: None,
-            },
-        )
-        .unwrap();
-        for observation in [direct, counter] {
-            // Each key is a key-graph node, as is the artifact-local key a keyless
-            // observation gets; a revision-invariant field could split it and add one more.
-            let nodes =
-                observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty());
-            assert_eq!(u64::try_from(nodes).unwrap(), key_bound(Agent::Codex), "{observation:?}");
+        let counter = |owner| {
+            counter_observation(
+                &record,
+                &usage,
+                &usage,
+                CounterObservation {
+                    role: ObservationRole::Original,
+                    owner,
+                    thread_ids: &thread_ids,
+                    context: Some(&context),
+                    delta: None,
+                },
+            )
+            .unwrap()
+        };
+        let copy = |owner, response_id| {
+            copied_counter_observation(
+                &record,
+                &usage,
+                owner,
+                response_id,
+                &thread_ids,
+                Some(&context),
+            )
+            .unwrap()
+        };
+        // Each key is a key-graph node, as is the artifact-local key a keyless observation
+        // gets; a revision-invariant field could split it and add one more. No Codex builder
+        // sets an invariant, so a split never adds one.
+        let nodes = |observation: &RequestObservation| {
+            u64::try_from(
+                observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty()),
+            )
+            .unwrap()
+        };
+        // The maximal path of each builder: a direct usage record with its response ID, a
+        // counter whose owner has a thread ID, and an inherited copy keyed by its owner's
+        // latest response; each pushes one key and no invariant.
+        for maximal in
+            [direct(Some("resp")), counter(Some(thread)), copy(Some(thread), Some("resp"))]
+        {
+            assert_eq!(maximal.keys.len(), 1, "{maximal:?}");
+            assert!(maximal.invariants.is_empty(), "{maximal:?}");
+            assert_eq!(nodes(&maximal), key_bound(Agent::Codex), "{maximal:?}");
+        }
+        // The other paths push fewer keys and stay within the bound.
+        for other in [direct(None), counter(None), copy(None, None), copy(Some(thread), None)] {
+            assert!(other.keys.is_empty() && other.invariants.is_empty(), "{other:?}");
+            assert!(nodes(&other) <= key_bound(Agent::Codex), "{other:?}");
         }
     }
 

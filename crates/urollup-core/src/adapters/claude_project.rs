@@ -134,6 +134,14 @@ pub(crate) const OWNER_STATE_PER_RECORD: u64 = {
         + hash_entry(size_of::<Digest>() as u64)
 };
 
+/// One entry of the owner-eligible record list, which `Owners::new` stable-sorts, so its
+/// scratch adds one entry per record to the Claude construction charge in κ.
+pub(crate) const ELIGIBLE_ENTRY_BYTES: u64 = size_of::<(&AnalyticalId, &ParsedRecord)>() as u64;
+
+/// The `(index, result)` pair a worker of the parallel join holds per transcript.
+pub(crate) const JOIN_PAIR_BYTES: u64 =
+    size_of::<(usize, Option<Result<DecodedSource, AdapterError>>)>() as u64;
+
 /// A 128-bit SHA-256 digest of a native ID that only joins records, never appears in
 /// output, and so need not be kept as text.
 type Digest = [u8; 16];
@@ -1729,32 +1737,64 @@ mod tests {
     fn observations_stay_within_the_admission_key_bound() {
         use std::collections::{HashMap, HashSet};
 
-        use super::{Owners, observe};
+        use super::{Owners, digest, observe};
         use crate::ledger::admission::model::key_bound;
+        use crate::ledger::reconcile::{ObservationRole, RequestObservation};
         use crate::selection::Agent;
 
-        let bytes = br#"{"type":"assistant","sessionId":"s1","uuid":"u1","requestId":"req_1","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":3,"output_tokens":1}}}"#;
-        let evidence = source_evidence(0);
-        let mut decoder = SourceDecoder::new("project/s1.jsonl");
-        assert_eq!(
-            decoder.decode(&RawRecord { evidence: &evidence, bytes }),
-            RecordDisposition::Decoded
-        );
-        let owners = Owners { messages: HashMap::new(), uuids: HashMap::new() };
-        let observation = observe(
-            &decoder.records[0],
-            evidence,
-            &decoder.strings,
-            &owners,
+        let observe_line = |line: &str, ambiguous: &HashSet<[u8; 16]>| {
+            let evidence = source_evidence(0);
+            let mut decoder = SourceDecoder::new("project/s1.jsonl");
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            assert_eq!(decoder.decode(&raw), RecordDisposition::Decoded, "{line}");
+            let owners = Owners { messages: HashMap::new(), uuids: HashMap::new() };
+            observe(
+                &decoder.records[0],
+                evidence,
+                &decoder.strings,
+                &owners,
+                ambiguous,
+                &HashMap::new(),
+            )
+            .unwrap()
+        };
+        // Each key is a key-graph node, as is the artifact-local key a keyless observation
+        // gets; the model invariant can split the observation into an artifact-local part,
+        // one more node.
+        let nodes = |observation: &RequestObservation| {
+            u64::try_from(
+                observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty()),
+            )
+            .unwrap()
+        };
+        let full = r#"{"type":"assistant","sessionId":"s1","uuid":"u1","requestId":"req_1","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":3,"output_tokens":1}}}"#;
+        // The maximal path: an original with a message ID, a request ID and a model has two
+        // keys and the model invariant, whether its message key is provider-scoped or, for a
+        // message reused by conflicting responses, scoped to its session.
+        let ambiguous = HashSet::from([digest("msg_1")]);
+        for maximal in [observe_line(full, &HashSet::new()), observe_line(full, &ambiguous)] {
+            assert_eq!((maximal.keys.len(), maximal.invariants.len()), (2, 1), "{maximal:?}");
+            assert_eq!(nodes(&maximal), key_bound(Agent::Claude), "{maximal:?}");
+        }
+        // A nested copy keeps both keys but no invariant; a record without IDs gets an
+        // artifact-local key and may still split on its model.
+        let copy = observe_line(
+            r#"{"type":"progress","sessionId":"s1","data":{"message":{"type":"assistant","sessionId":"s1","uuid":"u2","requestId":"req_2","message":{"id":"msg_2","model":"claude-test","usage":{"output_tokens":4}}}}}"#,
             &HashSet::new(),
-            &HashMap::new(),
-        )
-        .unwrap();
-        assert_eq!((observation.keys.len(), observation.invariants.len()), (2, 1));
-        // Each key is a key-graph node; the model invariant can split the observation into
-        // an artifact-local part, one more node.
-        let nodes = observation.keys.len().max(1) + usize::from(!observation.invariants.is_empty());
-        assert_eq!(u64::try_from(nodes).unwrap(), key_bound(Agent::Claude));
+        );
+        assert_eq!(copy.role, ObservationRole::Copy);
+        let keyless = observe_line(
+            r#"{"type":"assistant","sessionId":"s1","uuid":"u3","message":{"model":"claude-test","usage":{"output_tokens":4}}}"#,
+            &HashSet::new(),
+        );
+        let unmodeled = observe_line(
+            r#"{"type":"assistant","sessionId":"s1","uuid":"u4","message":{"id":"msg_4","usage":{"output_tokens":4}}}"#,
+            &HashSet::new(),
+        );
+        for other in [copy, keyless, unmodeled] {
+            assert!(other.keys.len() <= 2 && other.invariants.len() <= 1, "{other:?}");
+            assert!(nodes(&other) < key_bound(Agent::Claude), "{other:?}");
+        }
     }
 
     #[test]

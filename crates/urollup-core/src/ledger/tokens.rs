@@ -122,9 +122,11 @@ pub fn overflow_interned_bytes() -> u64 {
     OVERFLOW_BYTES.load(atomic::Ordering::Relaxed)
 }
 
-// The admission model charges an overflow pattern as a 72-byte row and an 80-byte map entry.
-const _: () = assert!(std::mem::size_of::<OverflowRow>() == 72);
-const _: () = assert!(std::mem::size_of::<(OverflowRow, u32)>() <= 80);
+/// The bytes of one overflow row, which the admission model charges per pattern.
+pub(crate) const OVERFLOW_ROW_BYTES: u64 = std::mem::size_of::<OverflowRow>() as u64;
+
+/// The bytes of one overflow map entry, its row and index.
+pub(crate) const OVERFLOW_ENTRY_BYTES: u64 = std::mem::size_of::<(OverflowRow, u32)>() as u64;
 
 impl Measures {
     fn fields(&self) -> [Option<u64>; 8] {
@@ -160,10 +162,15 @@ fn intern_overflow(row: OverflowRow) -> u32 {
     }
     let mut rows = OVERFLOW_ROWS.lock().unwrap_or_else(PoisonError::into_inner);
     let id = u32::try_from(rows.len()).expect("fewer than 2^32 overflow measure patterns");
+    // The first pattern also pays the tables' one-time base.
+    let base =
+        if rows.is_empty() { crate::ledger::admission::model::OVERFLOW_TABLE_BASE } else { 0 };
+    OVERFLOW_BYTES.fetch_add(
+        crate::ledger::admission::model::overflow_intern().saturating_add(base),
+        atomic::Ordering::Relaxed,
+    );
     rows.push(row);
     index.insert(row, id);
-    OVERFLOW_BYTES
-        .fetch_add(crate::ledger::admission::model::overflow_intern(), atomic::Ordering::Relaxed);
     id
 }
 

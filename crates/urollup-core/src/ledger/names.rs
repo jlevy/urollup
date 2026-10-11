@@ -27,7 +27,7 @@ static TABLE: Mutex<BTreeMap<&'static str, Name>> = Mutex::new(BTreeMap::new());
 static INTERNED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Recently interned names per thread, so rows that repeat a name skip the shared lock.
-const RECENT_CAPACITY: usize = 8;
+pub(crate) const RECENT_CAPACITY: usize = 8;
 
 thread_local! {
     static RECENT: RefCell<Vec<Name>> = const { RefCell::new(Vec::new()) };
@@ -57,7 +57,9 @@ impl Name {
 }
 
 /// The admission model's charge for every distinct name this process has interned:
-/// each text, its leaked reference and its table entry. Interned names live until exit.
+/// each text, its leaked reference and its table entry, and the table's first node.
+/// Interned names live until exit. Each thread's cache of recent names is charged with its
+/// worker slot (`model::NAME_CACHE`).
 pub fn interned_bytes() -> u64 {
     INTERNED_BYTES.load(atomic::Ordering::Relaxed)
 }
@@ -67,8 +69,10 @@ fn intern(text: &str) -> Name {
     if let Some(name) = table.get(text) {
         return *name;
     }
+    // The first name also pays the table's one-time base, its first node.
+    let base = if table.is_empty() { crate::ledger::admission::model::NAME_TABLE_BASE } else { 0 };
     INTERNED_BYTES.fetch_add(
-        crate::ledger::admission::model::name_intern(text.len() as u64),
+        crate::ledger::admission::model::name_intern(text.len() as u64) + base,
         atomic::Ordering::Relaxed,
     );
     let text: &'static str = Box::leak(Box::<str>::from(text));
