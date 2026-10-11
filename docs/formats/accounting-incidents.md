@@ -75,7 +75,7 @@ adds no request ([Codex contract](codex.md#accounting-rules)). The
 
 **Tracking:** `uro-jqc3` (closed); fixed by
 [PR #32](https://github.com/jlevy/urollup/pull/32). The related migrated user-fork
-recount is open as `uro-p9ua`.
+recount (`uro-p9ua`) follows.
 
 **Trigger:** Codex’s legacy-to-paginated migration sets a child’s
 `subagent_history_start_ordinal` one past the last line it rewrote, so the child’s own
@@ -94,6 +94,30 @@ complete parent root recorded decide a counter-only child’s unassigned prefix,
 none of this decides is an unverified coverage gap
 ([Codex contract](codex.md#accounting-rules)). The `guardian-migrated-boundary` and
 `guardian-native-boundary` fixture cases and the migrated-child
+[paginated fork tests](../../crates/urollup-core/tests/paginated_forks.rs) pin it.
+
+## Codex Migrated User Forks Recounting Their Parent’s Prefix
+
+**Tracking:** `uro-p9ua`; fixed by [PR #33](https://github.com/jlevy/urollup/pull/33).
+
+**Trigger:** the same migration rewrites a legacy user fork as a paginated rollout that
+keeps its fork origin but declares no boundary and no `history_base`, and drops its
+copied prefix’s `session_meta`.
+
+**Wrong assumption:** a rollout with neither a declared boundary nor another thread’s
+header copied nothing, so every counter in it was its own.
+
+**Consequence:** a migrated counter-only user fork counted its parent’s copied counters
+again with complete coverage; the `migrated-user-fork` fixture reported 61,100 instead
+of 37,350 tokens.
+
+**Correction and prevention:** a counter-only paginated rollout with a parent link and
+no other thread’s `session_meta` is judged as if its boundary lay past its last line,
+unless a `history_base`, a subagent `thread_source` or `source`, or a seeded first
+counter shows it copied nothing; its parent root’s turns and totals then decide its
+lines, and what they cannot decide is an unverified gap
+([Codex contract](codex.md#accounting-rules)). The `migrated-user-fork` fixture case and
+the migrated-fork
 [paginated fork tests](../../crates/urollup-core/tests/paginated_forks.rs) pin it.
 
 ## Codex Cache-Write Double Counting
@@ -213,7 +237,7 @@ Whether it should also make coverage partial remains the open decision.
 
 | Issue | Consequence | Tracking |
 | --- | --- | --- |
-| Open Codex accounting fixes | Listed with their synthetic reproductions in the [release readiness record](../project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes) | `uro-r8si`, `uro-eh0d`, `uro-p9ua`, `uro-3b12` |
+| Open Codex accounting fixes | Listed with their synthetic reproductions in the [release readiness record](../project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes) | `uro-r8si`, `uro-eh0d`, `uro-3b12` |
 | Exact `--session` selection misses another session’s claim on a shared response | A single-session run counts a response that whole history reports as ambiguous | `uro-s71z` |
 | Missing rates, price matching and cost output | Token reports do not yet provide monetary rollups | `uro-wuby`, `uro-neii` |
 | Unexplained real-history comparator differences | Prevents claiming accounting acceptance solely from passing synthetic tests | `uro-d36a`, `uro-ky6c` |

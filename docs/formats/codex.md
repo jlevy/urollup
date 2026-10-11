@@ -38,7 +38,7 @@ Paths below `payload` are relative to that object unless stated otherwise.
 
 | Record | Fields relied on | Interpretation |
 | --- | --- | --- |
-| `session_meta` | `id`, `cli_version`, `source` (including `source.subagent.thread_spawn.parent_thread_id`), `thread_source`, `cwd`, `parent_thread_id`, `forked_from_id`, `subagent_history_start_ordinal`, `model_provider` | Thread, project, provider and ancestry evidence; the ordinal is where the child’s own history starts, and it places only lines that name no thread |
+| `session_meta` | `id`, `cli_version`, `source` (including `source.subagent.thread_spawn.parent_thread_id`), `thread_source`, `cwd`, `parent_thread_id`, `forked_from_id`, `history_mode`, `history_base` (whether declared), `subagent_history_start_ordinal`, `model_provider` | Thread, project, provider and ancestry evidence; the ordinal is where the child’s own history starts, and it places only lines that name no thread; `history_mode`, `history_base`, `thread_source` and a subagent `source` tell a migrated user fork from a rollout that copied nothing |
 | `turn_context` | `turn_id`, `model`, `effort` | Requested model and effort, not proof of the served model; turn identity for copied-prefix inference |
 | `token_usage_record` | `thread_id`, `response_id`, `turn_id`, `root_turn_id`, `usage` | One response, keyed by `response_id` and owned by its `thread_id` wherever it sits, before a declared boundary included; `turn_id`, else `root_turn_id`, selects the turn context |
 | `compacted` | `latest_token_usage_record` | Copy evidence, except when it names the rollout’s own thread and no usage record in the file reports its response: a bounded migration left it as the only record of that response, so it counts as the original, and any other original merges with it by response key |
@@ -115,7 +115,13 @@ A later parent turn, a parent counter total or a line naming another thread befo
 voids that inferred start; a line naming the child ends the window without voiding it.
 Guardian reviews follow the same rules: a migrated review owns its records before a
 boundary past its last line, and a native review’s inherited prefix stays copied.
-A known parent can own a copy; otherwise ownership stays unknown.
+The migration gives a legacy user fork no boundary and drops its copied header, so a
+counter-only paginated rollout with a parent link and no other thread’s `session_meta`
+is judged as if its boundary lay past its last line, unless it declares a
+`history_base`, has a subagent `thread_source` or `source`, or has a seeded first
+counter, whose total is neither its own last usage nor a total its parent root reported;
+its parent’s turns and totals then decide its lines from the first (`uro-p9ua`, fixed in
+PR #33). A known parent can own a copy; otherwise ownership stays unknown.
 Direct usage whose native owner differs from the file thread is a copy.
 [Design §3.4](../urollup-design.md#34-dialect-reconciliation-rules) states the
 precedence, including what makes a parent a complete root.
@@ -249,9 +255,9 @@ Rate-limit percentages are not token usage, invoices or list-price estimates.
 - [Fixture corpus](../../crates/urollup-core/tests/fixtures/README.md): legacy repeated
   counters, archives, zstd compression, identity cases, `token-usage-records`,
   `mixed-counter-direct`, `paginated-counter-prefix`, `unverified-fork-boundary`,
-  `guardian-migrated-boundary`, `guardian-native-boundary`, `compaction-lowered-total`,
-  `ambiguous-owner` and `cache-write-input`, with expected accounting and per-request
-  model and effort.
+  `guardian-migrated-boundary`, `guardian-native-boundary`, `migrated-user-fork`,
+  `compaction-lowered-total`, `ambiguous-owner` and `cache-write-input`, with expected
+  accounting and per-request model and effort.
 - [Process tests](../../crates/urollup/tests/cli_process.rs): gzip and zstd logs report
   exactly like plain logs, and damaged compressed rollouts and unverifiable fork
   boundaries do not stop a report.
@@ -271,8 +277,8 @@ Rate-limit percentages are not token usage, invoices or list-price estimates.
 - [ccusage parity ledger](../../tests/parity/ledger.toml): every fixture difference from
   pinned ccusage, with its cause and retirement condition.
 
-Merge status and the open Codex correctness fixes, including `uro-r8si`, `uro-eh0d`,
-`uro-p9ua` and `uro-3b12`, live in the
+Merge status and the open Codex correctness fixes, including `uro-r8si`, `uro-eh0d` and
+`uro-3b12`, live in the
 [release readiness record](../project/specs/active/plan-2026-09-16-first-release-publishing.md#open-correctness-fixes).
 A seeded child whose migration kept only the suffix from its own compaction reports its
 seed as an unverified gap even when no response was dropped (`uro-zq65`). Rates and
