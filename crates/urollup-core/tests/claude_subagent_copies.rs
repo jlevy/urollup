@@ -1,17 +1,18 @@
-//! Claude Code subagent transcripts copied under another session's directory (uro-wvgc).
+//! Claude Code subagent records copied under another thread (uro-wvgc).
 //!
 //! A resumed or forked session can hold a byte-identical copy of an earlier session's
 //! subagent transcript in its own `subagents/` directory, and every line of the copy
 //! still names the earlier session. The copy is that session's subagent: its responses
 //! count once, owned by one thread, on any worker count and in any discovery order, and
-//! still count once after the original is deleted.
+//! still count once after the original is deleted. A `progress` record's nested copy of a
+//! subagent record never decides a spawn either.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use urollup_core::accounting::totals::{
     Completeness, LedgerTotals, UsageTotals, ledger_totals, selection_totals,
 };
@@ -19,37 +20,49 @@ use urollup_core::adapters::{Ingested, claude_project};
 use urollup_core::ledger::entities::{Counting, Ownership, Relationship, RelationshipKind, Thread};
 use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::reconcile::Ledger;
-use urollup_core::selection::{Agent, agent_thread_identity};
+use urollup_core::selection::{Agent, SessionIndex, agent_thread_identity};
 use urollup_core::sources::roots::discover;
 
+const CASE: &str = "resumed-subagent-copy";
 const ORIGINAL: &str = "00000000-0000-4000-8000-001800000001";
 const RESUMED: &str = "00000000-0000-4000-8000-001800000002";
 const UNLINKED: &str = "00000000-0000-4000-8000-001800000009";
 const COPIED_AGENT: &str = "a0000000000180001";
 const NEW_AGENT: &str = "a0000000000180002";
+
+const WORKFLOW_CASE: &str = "workflow-subagents";
+const WORKFLOW: &str = "00000000-0000-4000-8000-001100000001";
+const WORKFLOW_RESUMED: &str = "00000000-0000-4000-8000-001100000009";
+const WORKFLOW_AGENT: &str = "a0000000000110001";
+const WORKFLOW_STEP: &str = "a0000000000110002";
+
+const SIDE_QUESTION_CASE: &str = "btw-side-question";
+const SIDE_QUESTION: &str = "00000000-0000-4000-8000-000400000001";
+const SIDE_QUESTION_RESUMED: &str = "00000000-0000-4000-8000-000400000009";
+
 const PROJECT: &str = "projects/-Users-example-project";
 
-fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-project/resumed-subagent-copy")
+fn fixture(case: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-project").join(case)
 }
 
-/// A writable copy of the fixture.
-fn fixture_copy() -> tempfile::TempDir {
-    fn copy_dir(from: &Path, to: &Path) {
-        fs::create_dir_all(to).expect("the copy's directory is created");
-        for entry in fs::read_dir(from).expect("the fixture directory is readable") {
-            let path = entry.expect("the fixture entry is readable").path();
-            let target = to.join(path.file_name().expect("a fixture entry has a name"));
-            if path.is_dir() {
-                copy_dir(&path, &target);
-            } else {
-                fs::copy(&path, &target).expect("the fixture file is copied");
-            }
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("the copy's directory is created");
+    for entry in fs::read_dir(from).expect("the directory is readable") {
+        let path = entry.expect("the directory entry is readable").path();
+        let target = to.join(path.file_name().expect("a directory entry has a name"));
+        if path.is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            fs::copy(&path, &target).expect("the file is copied");
         }
     }
+}
+
+/// A writable copy of a fixture case.
+fn case_copy(case: &str) -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("a temporary root");
-    copy_dir(&fixture(), root.path());
+    copy_dir(&fixture(case), root.path());
     root
 }
 
@@ -57,8 +70,28 @@ fn session_file(root: &Path, session: &str) -> PathBuf {
     root.join(PROJECT).join(format!("{session}.jsonl"))
 }
 
+fn session_dir(root: &Path, session: &str) -> PathBuf {
+    root.join(PROJECT).join(session)
+}
+
 fn subagent_file(root: &Path, session: &str, agent: &str) -> PathBuf {
-    root.join(PROJECT).join(session).join("subagents").join(format!("agent-{agent}.jsonl"))
+    session_dir(root, session).join("subagents").join(format!("agent-{agent}.jsonl"))
+}
+
+/// Resumes `session` as `resumed` the way a forking resume leaves it: the resumed file
+/// replays the session's transcript byte for byte, under its `sessionId`, and its
+/// `subagents/` directory holds byte copies of the session's subagent transcripts and
+/// sidecars.
+fn resume(root: &Path, session: &str, resumed: &str) {
+    fs::copy(session_file(root, session), session_file(root, resumed))
+        .expect("the resumed session replays the transcript");
+    copy_dir(&session_dir(root, session), &session_dir(root, resumed));
+}
+
+/// Removes a session's transcript and subagents, as Claude Code's cleanup does.
+fn delete_session(root: &Path, session: &str) {
+    fs::remove_file(session_file(root, session)).expect("the transcript is removed");
+    fs::remove_dir_all(session_dir(root, session)).expect("the subagents are removed");
 }
 
 /// Line `number` (1-based) of a transcript, as a document.
@@ -127,12 +160,18 @@ fn totals(ingested: &Ingested) -> LedgerTotals {
     ledger_totals(&ingested.ledger).expect("ledger totals")
 }
 
-fn has_edge(ingested: &Ingested, kind: &RelationshipKind, from: &str, to: &AnalyticalId) -> bool {
-    let from = thread_id(from);
+/// The parents of `child` through edges of `kind`.
+fn parents(
+    ingested: &Ingested,
+    kind: &RelationshipKind,
+    child: &AnalyticalId,
+) -> Vec<AnalyticalId> {
     ingested
         .relationships
         .iter()
-        .any(|edge| &edge.kind == kind && edge.from == from && &edge.to == to)
+        .filter(|edge| &edge.kind == kind && &edge.to == child)
+        .map(|edge| edge.from.clone())
+        .collect()
 }
 
 fn diagnostic_codes(ingested: &Ingested) -> BTreeMap<&'static str, u64> {
@@ -145,7 +184,7 @@ fn diagnostic_codes(ingested: &Ingested) -> BTreeMap<&'static str, u64> {
 
 #[test]
 fn a_copied_subagent_is_the_original_subagent_on_any_worker_count_and_order() {
-    let ingested = ingest_invariantly(&fixture());
+    let ingested = ingest_invariantly(&fixture(CASE));
     let copied = subagent_id(ORIGINAL, COPIED_AGENT);
     let new = subagent_id(RESUMED, NEW_AGENT);
 
@@ -175,17 +214,18 @@ fn a_copied_subagent_is_the_original_subagent_on_any_worker_count_and_order() {
     assert_eq!(owned_by(&ingested, &thread_id(RESUMED)).requests, 2);
 
     assert_eq!(ingested.relationships.len(), 3);
-    assert!(has_edge(&ingested, &RelationshipKind::Spawn, ORIGINAL, &copied));
-    assert!(has_edge(&ingested, &RelationshipKind::Spawn, RESUMED, &new));
-    assert!(has_edge(&ingested, &RelationshipKind::Fork, ORIGINAL, &thread_id(RESUMED)));
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &copied), [thread_id(ORIGINAL)]);
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &new), [thread_id(RESUMED)]);
+    assert_eq!(
+        parents(&ingested, &RelationshipKind::Fork, &thread_id(RESUMED)),
+        [thread_id(ORIGINAL)]
+    );
 }
 
 #[test]
 fn a_copy_still_counts_once_after_claude_code_deletes_the_original() {
-    let root = fixture_copy();
-    fs::remove_file(session_file(root.path(), ORIGINAL)).expect("the original is removed");
-    fs::remove_dir_all(root.path().join(PROJECT).join(ORIGINAL))
-        .expect("the original's subagents are removed");
+    let root = case_copy(CASE);
+    delete_session(root.path(), ORIGINAL);
     let ingested = ingest_invariantly(root.path());
     let copied = subagent_id(ORIGINAL, COPIED_AGENT);
 
@@ -198,7 +238,7 @@ fn a_copy_still_counts_once_after_claude_code_deletes_the_original() {
             assert_eq!(request.evidence().len(), 1);
         }
     }
-    assert!(has_edge(&ingested, &RelationshipKind::Spawn, ORIGINAL, &copied));
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &copied), [thread_id(ORIGINAL)]);
     assert!(!ingested.threads.contains_key(&subagent_id(RESUMED, COPIED_AGENT)));
 
     // The resumed session's replays of the deleted session's own responses stay copies,
@@ -214,7 +254,7 @@ fn a_copy_still_counts_once_after_claude_code_deletes_the_original() {
 
 #[test]
 fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
-    let root = fixture_copy();
+    let root = case_copy(CASE);
     let copy = subagent_file(root.path(), RESUMED, COPIED_AGENT);
     let mut continued = line(&copy, 3);
     continued["sessionId"] = RESUMED.into();
@@ -230,15 +270,23 @@ fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
     let continuation = subagent_id(RESUMED, COPIED_AGENT);
     assert_eq!(owned_by(&ingested, &copied).requests, 2, "the copied lines stay the original's");
     assert_eq!(owned_by(&ingested, &continuation).requests, 1, "the new line is the resumed's");
-    assert!(has_edge(&ingested, &RelationshipKind::Spawn, RESUMED, &continuation));
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &continuation), [thread_id(RESUMED)]);
     let totals = totals(&ingested);
     assert_eq!((totals.total.requests, totals.owned.requests), (8, 8));
     assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+
+    // The copy's path holds records of both threads and names the one its location
+    // implies, as a hook's transcript path does; the original's path names the original.
+    let mut index = SessionIndex::default();
+    index.add(Agent::Claude, &ingested).expect("the sessions index");
+    assert_eq!(index.resolve(copy.as_os_str()).expect("the copy's path resolves"), continuation);
+    let original = subagent_file(root.path(), ORIGINAL, COPIED_AGENT);
+    assert_eq!(index.resolve(original.as_os_str()).expect("the original resolves"), copied);
 }
 
 #[test]
 fn unlinked_sessions_claiming_one_response_stay_ambiguous_beside_a_copy() {
-    let root = fixture_copy();
+    let root = case_copy(CASE);
     let mut claim = line(&session_file(root.path(), RESUMED), 8);
     claim["sessionId"] = UNLINKED.into();
     claim["parentUuid"] = Value::Null;
@@ -263,4 +311,109 @@ fn unlinked_sessions_claiming_one_response_stay_ambiguous_beside_a_copy() {
     assert_eq!(ingested.ledger.diagnostics.len(), 1);
     assert_eq!(diagnostic_codes(&ingested), BTreeMap::from([("conflicting-owners", 2)]));
     assert_eq!(owned_by(&ingested, &subagent_id(ORIGINAL, COPIED_AGENT)).requests, 2);
+}
+
+#[test]
+fn a_divergent_copied_sidecar_never_gives_a_subagent_a_second_parent() {
+    let root = case_copy(CASE);
+    let sidecar = subagent_file(root.path(), RESUMED, COPIED_AGENT).with_extension("meta.json");
+    let mut meta: Value =
+        serde_json::from_slice(&fs::read(&sidecar).expect("the sidecar is readable"))
+            .expect("the sidecar is a document");
+    meta["toolUseId"] = "toolu_01Synthetic18SpawnY".into();
+    fs::write(&sidecar, format!("{meta}\n")).expect("the sidecar is writable");
+    let ingested = ingest_invariantly(root.path());
+
+    let copied = subagent_id(ORIGINAL, COPIED_AGENT);
+    assert_eq!(
+        parents(&ingested, &RelationshipKind::Spawn, &copied).len(),
+        1,
+        "the lowest-src- sidecar whose tool use has an issuer names the one parent"
+    );
+    assert_eq!(totals(&ingested).owned.requests, 7);
+}
+
+#[test]
+fn a_nested_copy_of_a_spawning_record_never_decides_the_spawn() {
+    let root = case_copy(WORKFLOW_CASE);
+    // The main transcript carries a progress copy of the subagent's spawning record.
+    let spawning = line(&subagent_file(root.path(), WORKFLOW, WORKFLOW_AGENT), 2);
+    let progress = json!({
+        "parentUuid": null,
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/example/project",
+        "sessionId": WORKFLOW,
+        "version": "2.1.214",
+        "gitBranch": "main",
+        "type": "progress",
+        "data": {"message": spawning},
+        "uuid": "00000000-0000-4000-a000-001100000090",
+        "timestamp": "2026-09-01T10:00:05.001Z"
+    });
+    append_line(&session_file(root.path(), WORKFLOW), &progress);
+    let ingested = ingest_invariantly(root.path());
+
+    let step = subagent_id(WORKFLOW, WORKFLOW_STEP);
+    assert_eq!(
+        parents(&ingested, &RelationshipKind::Spawn, &step),
+        [subagent_id(WORKFLOW, WORKFLOW_AGENT)],
+        "the subagent whose own transcript issued the tool use spawned the step"
+    );
+    assert_eq!(totals(&ingested).owned.requests, 5);
+}
+
+#[test]
+fn nested_subagents_copied_into_a_resumed_session_stay_one_tree() {
+    let root = case_copy(WORKFLOW_CASE);
+    resume(root.path(), WORKFLOW, WORKFLOW_RESUMED);
+    let agent = subagent_id(WORKFLOW, WORKFLOW_AGENT);
+    let step = subagent_id(WORKFLOW, WORKFLOW_STEP);
+    let tree = |ingested: &Ingested| {
+        assert_eq!(parents(ingested, &RelationshipKind::Spawn, &agent), [thread_id(WORKFLOW)]);
+        assert_eq!(
+            parents(ingested, &RelationshipKind::Spawn, &step),
+            std::slice::from_ref(&agent)
+        );
+        assert_eq!(owned_by(ingested, &agent).requests, 2);
+        assert_eq!(owned_by(ingested, &step).requests, 1);
+        assert!(!ingested.threads.contains_key(&subagent_id(WORKFLOW_RESUMED, WORKFLOW_AGENT)));
+        assert!(!ingested.threads.contains_key(&subagent_id(WORKFLOW_RESUMED, WORKFLOW_STEP)));
+        assert_eq!(totals(ingested).ambiguous.requests, 0);
+    };
+
+    let ingested = ingest_invariantly(root.path());
+    tree(&ingested);
+    let totals_present = totals(&ingested);
+    assert_eq!((totals_present.total.requests, totals_present.owned.requests), (5, 5));
+    assert!(ingested.ledger.diagnostics.is_empty(), "{:?}", ingested.ledger.diagnostics);
+
+    // After the original session is deleted, the copies still count each subagent once;
+    // its own responses survive only as the resumed session's replays.
+    delete_session(root.path(), WORKFLOW);
+    let ingested = ingest_invariantly(root.path());
+    tree(&ingested);
+    let totals_deleted = totals(&ingested);
+    assert_eq!((totals_deleted.total.requests, totals_deleted.owned.requests), (3, 3));
+    assert_eq!(totals_deleted.copy_only.requests, 2);
+}
+
+#[test]
+fn a_resumed_side_question_copy_keeps_one_owner_after_its_session_is_deleted() {
+    let root = case_copy(SIDE_QUESTION_CASE);
+    resume(root.path(), SIDE_QUESTION, SIDE_QUESTION_RESUMED);
+    delete_session(root.path(), SIDE_QUESTION);
+    let ingested = ingest_invariantly(root.path());
+
+    let totals = totals(&ingested);
+    assert_eq!(totals.ambiguous.requests, 0, "the replay takes the side question's owner");
+    assert_eq!((totals.total.requests, totals.owned.requests), (2, 2));
+    // The side question's record of the parent's response is now its only original.
+    assert_eq!(totals.total.tokens.cache_read, Some(50_700));
+    assert_eq!(totals.total.tokens.output, Some(40));
+    assert!(
+        !diagnostic_codes(&ingested).contains_key("conflicting-owners"),
+        "{:?}",
+        ingested.ledger.diagnostics
+    );
 }

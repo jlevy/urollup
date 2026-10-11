@@ -619,7 +619,9 @@ enum SourceFamily {
 #[derive(Clone, Debug)]
 struct CatalogSource {
     agent: Agent,
-    family: SourceFamily,
+    /// The families whose selection keeps the source: its own and, for a Claude subagent
+    /// transcript whose lines name another session, that session's.
+    families: Vec<SourceFamily>,
     native_selector: OsString,
     analytical_selector: String,
     paths: Vec<PathBuf>,
@@ -686,7 +688,7 @@ fn narrow_discoveries(
             .iter()
             .chain(&codex_catalog)
             .filter(|source| source.matches(selector, agent))
-            .map(|source| source.family.clone())
+            .flat_map(|source| source.families.iter().cloned())
             .collect();
         if matching.is_empty()
             && selector.to_str().is_some_and(|selector| selector.starts_with("thr-"))
@@ -720,7 +722,8 @@ fn retain_catalog_families(
         // A source whose header could not be read may belong to any family, so it is left
         // for ingest, which reads it or reports it as incomplete.
         .filter_map(|(source, catalog)| {
-            (catalog.unread || selected.contains(&catalog.family)).then_some(source)
+            (catalog.unread || catalog.families.iter().any(|family| selected.contains(family)))
+                .then_some(source)
         })
         .collect();
 }
@@ -730,7 +733,8 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
     let components: Vec<_> = locator.components().collect();
     let subagents =
         components.iter().position(|component| component.as_os_str() == OsStr::new("subagents"));
-    let (family_relative, native_selector, identity_native) = match subagents {
+    let mut unread = false;
+    let (families, native_selector, identity_native) = match subagents {
         Some(index) if index > 0 => {
             let family = components[..index].iter().fold(PathBuf::new(), |mut path, component| {
                 path.push(component.as_os_str());
@@ -740,13 +744,34 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
                 let stem = stem.to_string_lossy();
                 OsString::from(stem.strip_prefix("agent-").unwrap_or(&stem))
             });
-            let session = components[index.saturating_sub(1)].as_os_str().to_string_lossy();
+            let located = components[index.saturating_sub(1)].as_os_str().to_string_lossy();
+            // A subagent transcript is the subagent of the first session its lines name
+            // (design §3.4), so a copy under another session's directory joins that
+            // session's family as well as its own directory's.
+            let mut families = vec![family.clone()];
+            let session = match read_claude_named_session(source) {
+                NamedSession::Named(named) => {
+                    if named != located {
+                        families.push(family.with_file_name(&named));
+                    }
+                    named
+                }
+                NamedSession::None => located.into_owned(),
+                NamedSession::Unknown => {
+                    unread = true;
+                    located.into_owned()
+                }
+            };
             let identity_native = format!("{session}/{}", native.to_string_lossy());
-            (family, native, identity_native)
+            (families, native, identity_native)
         }
         _ => {
             let native = locator.file_stem().map_or_else(OsString::new, OsString::from);
-            (locator.with_extension(""), native.clone(), native.to_string_lossy().into_owned())
+            (
+                vec![locator.with_extension("")],
+                native.clone(),
+                native.to_string_lossy().into_owned(),
+            )
         }
     };
     let analytical_selector = derive_agent_thread_id(Agent::Claude, &identity_native)
@@ -754,12 +779,56 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
         .to_string();
     Ok(CatalogSource {
         agent: Agent::Claude,
-        family: SourceFamily::Claude(source.root.join(family_relative)),
+        families: families
+            .into_iter()
+            .map(|family| SourceFamily::Claude(source.root.join(family)))
+            .collect(),
         native_selector,
         analytical_selector,
         paths: source_paths(source),
-        unread: false,
+        unread,
     })
+}
+
+/// What a Claude subagent transcript's lines say about the session it belongs to.
+enum NamedSession {
+    /// The first session a line names.
+    Named(String),
+    /// No line names a session, so the transcript's directory decides.
+    None,
+    /// The window read ended before a line named a session, so the session is unknown.
+    Unknown,
+}
+
+/// The first session a Claude subagent transcript's lines name, as ingestion reads it:
+/// the `sessionId` string of the first complete line that has one, within one record's
+/// worth of bytes. A source no file of which can be read is left to its directory, as
+/// before this read existed; ingestion reports it.
+fn read_claude_named_session(source: &DiscoveredSource) -> NamedSession {
+    reader::peek(&source.files, |reader| {
+        let mut window = reader.take(MAX_CATALOG_HEADER_BYTES);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let read = window.read_until(b'\n', &mut line).ok()?;
+            if read == 0 || line.last() != Some(&b'\n') {
+                // The end of the file, or an unfinished last line, which is not a record
+                // yet, names nothing; the end of the window leaves the session unknown.
+                return Some(if window.limit() == 0 {
+                    NamedSession::Unknown
+                } else {
+                    NamedSession::None
+                });
+            }
+            let named = serde_json::from_slice::<serde_json::Value>(&line).ok().and_then(|value| {
+                value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned)
+            });
+            if let Some(named) = named {
+                return Some(NamedSession::Named(named));
+            }
+        }
+    })
+    .unwrap_or(NamedSession::None)
 }
 
 fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Failure> {
@@ -800,9 +869,9 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
                 .to_string();
             Ok(CatalogSource {
                 agent: Agent::Codex,
-                family: SourceFamily::Codex(
+                families: vec![SourceFamily::Codex(
                     component_by_thread.get(&thread).cloned().unwrap_or_else(|| thread.clone()),
-                ),
+                )],
                 native_selector: OsString::from(thread),
                 analytical_selector,
                 paths: source_paths(source),
@@ -1244,6 +1313,7 @@ mod tests {
         run, run_with_context, stats_requested,
     };
     use clap::Parser;
+    use urollup_core::accounting::totals::selection_totals;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
     use urollup_core::ledger::reconcile::ReconcileError;
     use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
@@ -1729,6 +1799,92 @@ mod tests {
         let selected = index.select(&query).unwrap();
         assert_eq!(selected.len(), 2, "the main session brings its child into scope");
         assert_eq!(ingested.ledger.requests.len(), 2);
+    }
+
+    #[test]
+    fn exact_selection_keeps_a_copied_subagent_with_the_session_its_lines_name() {
+        fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let path = entry.unwrap().path();
+                let target = to.join(path.file_name().unwrap());
+                if path.is_dir() {
+                    copy_dir(&path, &target);
+                } else {
+                    fs::copy(&path, &target).unwrap();
+                }
+            }
+        }
+        const ORIGINAL: &str = "00000000-0000-4000-8000-001800000001";
+        const RESUMED: &str = "00000000-0000-4000-8000-001800000002";
+        let root = tempfile::tempdir().unwrap();
+        copy_dir(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../urollup-core/tests/fixtures/claude-project/resumed-subagent-copy"),
+            root.path(),
+        );
+        // Cleanup took the original subagent transcript but left its session's transcript,
+        // so only the resumed session's directory still holds the subagent.
+        let project = root.path().join("projects/-Users-example-project");
+        fs::remove_dir_all(project.join(ORIGINAL)).unwrap();
+        let discovery = roots::discover(&[root.path().join("projects")]);
+        let whole = claude_project::ingest_discovery(discovery.clone(), false).unwrap();
+        let mut whole_index = SessionIndex::default();
+        whole_index.add(Agent::Claude, &whole).unwrap();
+
+        for (session, kept) in [
+            (
+                ORIGINAL,
+                vec![
+                    format!("{ORIGINAL}.jsonl"),
+                    format!("{RESUMED}/subagents/agent-a0000000000180001.jsonl"),
+                ],
+            ),
+            (
+                RESUMED,
+                vec![
+                    format!("{RESUMED}.jsonl"),
+                    format!("{RESUMED}/subagents/agent-a0000000000180001.jsonl"),
+                    format!("{RESUMED}/subagents/agent-a0000000000180002.jsonl"),
+                ],
+            ),
+        ] {
+            let query = SelectionQuery {
+                sessions: vec![OsString::from(session)],
+                scope: Some(Scope::Descendants),
+                ..SelectionQuery::default()
+            };
+            let mut claude = discovery.clone();
+            let mut codex = roots::Discovery::default();
+            assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+            let mut locators: Vec<_> =
+                claude.sources.iter().map(|source| source.locator.clone()).collect();
+            locators.sort();
+            let kept: Vec<_> =
+                kept.iter().map(|path| format!("-Users-example-project/{path}")).collect();
+            assert_eq!(locators, kept, "{session}");
+
+            let narrowed = claude_project::ingest_discovery(claude, false).unwrap();
+            let mut index = SessionIndex::default();
+            index.add(Agent::Claude, &narrowed).unwrap();
+            let selected = index.select(&query).unwrap();
+            assert_eq!(selected, whole_index.select(&query).unwrap(), "{session}");
+            assert_eq!(
+                selection_totals(&narrowed.ledger, &selected).unwrap(),
+                selection_totals(&whole.ledger, &selected).unwrap(),
+                "{session}: exact selection agrees with whole history"
+            );
+        }
+        let original = derive_agent_thread_id(Agent::Claude, ORIGINAL).unwrap();
+        let copied =
+            derive_agent_thread_id(Agent::Claude, &format!("{ORIGINAL}/a0000000000180001"))
+                .unwrap();
+        let query = SelectionQuery {
+            sessions: vec![OsString::from(ORIGINAL)],
+            scope: Some(Scope::Descendants),
+            ..SelectionQuery::default()
+        };
+        assert_eq!(whole_index.select(&query).unwrap(), [original, copied].into());
     }
 
     #[test]

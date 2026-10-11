@@ -2,8 +2,9 @@
 //!
 //! Every line contributes its record type, its sidechain flag and, until a source has
 //! them, its CLI version, working directory and, in a subagent transcript, the session it
-//! names; only a line that can bear a request needs the rest. [`LineHead::read`] reads those fields, and whether the line bears
-//! usage, without building a JSON document or allocating for the fields it ignores.
+//! names; only a line that can bear a request needs the rest. [`LineHead::read`] reads
+//! those fields, and whether the line bears usage, without building a JSON document or
+//! allocating for the fields it ignores.
 //!
 //! The pass is exact with respect to parsing a `serde_json::Value` document followed by
 //! the adapter's path helpers:

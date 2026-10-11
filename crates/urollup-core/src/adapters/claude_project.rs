@@ -773,8 +773,8 @@ impl SourceDecoder {
             return RecordDisposition::Stop;
         }
         // A subagent record belongs to the subagent of the session it names, or, when it
-        // names none, of the session an earlier line named, else the directory's, so the
-        // records of a copied transcript are the original subagent's.
+        // names none, of the first session an earlier line named, else the directory's, so
+        // the records of a copied transcript are the original subagent's.
         let record_thread = if subagent {
             let session =
                 session.map_or(self.facts.thread.session, |session| self.strings.intern(session));
@@ -845,10 +845,15 @@ impl SourceDecoder {
             counted,
             extras: record_extras(fields),
         };
-        // A resumed session's replay issued none of its tool uses: the session it names did,
-        // whichever file discovery reads first.
-        let issuer = record.native_owner();
-        self.tool_uses.extend(fields.message.tool_use_ids.iter().map(|id| (digest(id), issuer)));
+        // A tool use is issued by the thread that recorded it natively, whichever file
+        // discovery reads first: a resumed session's replay issued none of its tool uses, the
+        // session it names did. A nested copy issued none either: the nested agent's own
+        // transcript reports them, and without it the spawn falls back to its session.
+        if !forced_copy {
+            let issuer = record.native_owner();
+            self.tool_uses
+                .extend(fields.message.tool_use_ids.iter().map(|id| (digest(id), issuer)));
+        }
         record
     }
 }
@@ -1278,20 +1283,31 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
     let mut metas: Vec<&SubagentMeta> = corpus.subagent_meta.iter().collect();
     metas.sort_by(|left, right| left.source_id.cmp(&right.source_id));
     let mut purpose_by_thread: HashMap<NativeThread, &str> = HashMap::new();
-    for meta in metas {
+    for meta in &metas {
         if let Some(purpose) = meta.agent_type.as_deref() {
             purpose_by_thread.entry(meta.child).or_insert(purpose);
         }
     }
+    // One spawn edge per child, by the same rule: the lowest-`src-` sidecar whose tool use
+    // has an issuer names the parent, else the child's session does. It cites every sidecar
+    // that names the same parent, so a copied sidecar never gives a child a second parent.
+    let issuer = |meta: &SubagentMeta| {
+        meta.tool_use.and_then(|tool_use| corpus.tool_owners.get(&tool_use)).copied()
+    };
+    let mut sidecars: HashMap<NativeThread, Vec<&SubagentMeta>> = HashMap::new();
+    for meta in &metas {
+        sidecars.entry(meta.child).or_default().push(meta);
+    }
     let mut spawned = HashSet::new();
-    for meta in &corpus.subagent_meta {
-        let parent = meta
-            .tool_use
-            .and_then(|tool_use| corpus.tool_owners.get(&tool_use))
-            .copied()
-            .unwrap_or_else(|| NativeThread::main(meta.child.session));
-        spawned.insert(meta.child);
-        relationships.push((RelationshipKind::Spawn, parent, meta.child, meta.evidence));
+    for (child, sidecars) in sidecars {
+        let session = NativeThread::main(child.session);
+        let parent = sidecars.iter().find_map(|meta| issuer(meta)).unwrap_or(session);
+        spawned.insert(child);
+        for meta in sidecars {
+            if issuer(meta).unwrap_or(session) == parent {
+                relationships.push((RelationshipKind::Spawn, parent, child, meta.evidence));
+            }
+        }
     }
     // A subagent without a sidecar is spawned by its session, cited by its first record.
     let unspawned: Vec<NativeThread> = native_threads
@@ -1454,6 +1470,17 @@ fn observe(
                 .uuid
                 .and_then(|uuid| owners.uuids.get(&uuid))
                 .filter(|owner| **owner != record.thread)
+        })
+        .or_else(|| {
+            // A resumed replay whose session's own record is gone, as after Claude Code
+            // deletes that session's transcript, takes the thread of that session that now
+            // owns the message, such as a side question repeating it, so it never names a
+            // second owner.
+            record
+                .message
+                .as_ref()
+                .and_then(|message| owners.messages.get(&message.digest))
+                .filter(|owner| record.is_foreign_session() && owner.session == recorded_session)
         });
     let owner = replay_owner
         .and_then(|owner| ids.get(owner))
@@ -1694,22 +1721,43 @@ fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation
 /// The thread a transcript's location implies: the session of its file or directory,
 /// with the agent ID of a file under `subagents/`.
 fn thread_from_path(locator: &str, strings: &mut Strings) -> NativeThread {
-    let path = Path::new(locator);
+    let (session, agent) = location_ids(Path::new(locator));
+    NativeThread {
+        session: strings.intern(&session),
+        agent: agent.map(|agent| strings.intern(&agent)),
+        inline_digest: None,
+    }
+}
+
+/// The session and agent ID a transcript path's location implies, without any
+/// compression suffix.
+fn location_ids(path: &Path) -> (String, Option<String>) {
+    let path = match Representation::of_path(path) {
+        Some(Representation::Zstd | Representation::Gzip) => path.with_extension(""),
+        Some(Representation::Plain) | None => path.to_owned(),
+    };
     let components: Vec<Cow<'_, str>> =
         path.components().map(|component| component.as_os_str().to_string_lossy()).collect();
-    let subagents = components.iter().position(|component| component == "subagents");
-    match subagents {
-        Some(index) if index > 0 => {
-            let session = strings.intern(&components[index.saturating_sub(1)]);
-            let agent = path.file_stem().map(|stem| {
-                let stem = stem.to_string_lossy();
-                strings.intern(stem.strip_prefix("agent-").unwrap_or(&stem))
-            });
-            NativeThread { session, agent, inline_digest: None }
-        }
-        _ => NativeThread::main(strings.intern(
-            &path.file_stem().map_or(Cow::Borrowed(locator), |stem| stem.to_string_lossy()),
-        )),
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy());
+    match components.iter().position(|component| component == "subagents") {
+        Some(index) if index > 0 => (
+            components[index.saturating_sub(1)].clone().into_owned(),
+            stem.map(|stem| stem.strip_prefix("agent-").unwrap_or(&stem).to_owned()),
+        ),
+        _ => (stem.unwrap_or_else(|| path.as_os_str().to_string_lossy()).into_owned(), None),
+    }
+}
+
+/// The native thread ID a Claude transcript's location implies: `session`, or
+/// `session/agent` for a file under `subagents/`.
+///
+/// A file can hold records of more than one thread, as a copied subagent transcript
+/// continued under the session that holds it does; its path then names this thread, the
+/// one a hook's transcript path means.
+pub(crate) fn located_native_id(path: &Path) -> String {
+    match location_ids(path) {
+        (session, Some(agent)) => format!("{session}/{agent}"),
+        (session, None) => session,
     }
 }
 

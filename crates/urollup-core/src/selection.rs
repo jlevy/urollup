@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use super::adapters::Ingested;
+use super::adapters::claude_project::located_native_id;
 use super::ledger::entities::{Relationship, SourceArtifact, Thread};
 use super::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityError, IdentityKey, KeyComponent, StoredIdentity,
@@ -203,6 +204,7 @@ impl SessionIndex {
         let path = Path::new(selector);
         let canonical = std::fs::canonicalize(path).ok();
         let mut candidates = BTreeSet::new();
+        let mut by_path_only = true;
         for (id, session) in &self.sessions {
             if agent.is_some_and(|expected| session.agent != expected) {
                 continue;
@@ -217,6 +219,22 @@ impl SessionIndex {
             });
             if analytical || native || source_path {
                 candidates.insert(id.clone());
+                by_path_only &= !(analytical || native);
+            }
+        }
+        if candidates.len() > 1 && by_path_only {
+            // A Claude transcript can hold records of several threads, as a copied subagent
+            // transcript continued under the session that holds it does. Its path then names
+            // the thread its location implies, the one a hook's transcript path means.
+            let located = located_native_id(path);
+            let mut at_location = candidates.iter().filter(|id| {
+                self.sessions.get(*id).is_some_and(|session| {
+                    session.agent == Agent::Claude
+                        && session.native_id().as_deref() == Some(located.as_str())
+                })
+            });
+            if let (Some(id), None) = (at_location.next(), at_location.next()) {
+                return Ok(id.clone());
             }
         }
         match candidates.len() {

@@ -4,7 +4,7 @@
   "dialect": "claude-project",
   "summary": "A resumed session holds a byte-identical copy of the original session's subagent transcript and sidecar under its own subagents/ directory, beside a subagent of its own. The copy's lines still name the original session, so they belong to that session's subagent: its responses count once, owned by one thread, and the resumed session's own subagent counts for the resumed session.",
   "rules": [
-    "design §3.4 Dialect Reconciliation Rules (Claude Code subagent copies)",
+    "design §3.4 Dialect Reconciliation Rules (Claude Code subagent threads)",
     "design §3.4 Dialect Reconciliation Rules (Claude Code resumed sessions)",
     "design §3.2 Relationships and the Discovery Index",
     "design §4.2 Ownership and Totals"
