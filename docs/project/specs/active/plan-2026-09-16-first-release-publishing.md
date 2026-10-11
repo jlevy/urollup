@@ -146,8 +146,10 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   as ambiguous and 5 threads instead of 4.
   [PR #34](https://github.com/jlevy/urollup/pull/34) identifies a subagent thread by the
   session its lines name and the agent ID, so a copy is the original subagent and still
-  counts once after Claude Code deletes the original; exact session selection keeps a
-  copy with the session its lines name.
+  counts once after Claude Code deletes the original.
+  Exact session selection reads a copy whenever the session its lines name is selected,
+  by native or `thr-` ID, even after Claude Code deletes that session’s own files or
+  when they lie in another project directory or root.
   A real-history rerun must confirm it.
 
 ## Goals
