@@ -893,9 +893,12 @@ set these source-specific rules:
   A snapshot that names a thread sets that thread’s tier and provider wherever it sits,
   as a usage record’s `thread_id` decides its owner.
   One that names no thread sets the rollout’s own: anywhere in a rollout without a
-  declared `subagent_history_start_ordinal`, and otherwise only at or after the
+  declared `subagent_history_start_ordinal`, unless it is a migrated user fork judged as
+  if its boundary lay past its last line (below), and otherwise only at or after the
   boundary. Before it the setting may be the parent’s copied history, and a line without
   an ordinal, or any line under an invalid boundary, cannot be placed.
+  So a snapshot without a thread never sets the tier of such a fork, or of a migrated
+  child whose boundary lies past its end, even inside its own inferred start.
 - **Codex counters:** older files use cumulative `token_count` events.
   An update whose running total advances counts the advance as one request.
   A decrease in any cumulative component opens a new counter epoch with a diagnostic,

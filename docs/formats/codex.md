@@ -74,8 +74,11 @@ The pricing context of a turn is the provider and selected tier its thread had w
   provider override.
 - **Placement:** a snapshot that names a thread sets that thread’s tier and provider
   wherever it sits. One that names no thread sets the rollout’s own: anywhere in a
-  rollout without a declared boundary, and otherwise only at or after the boundary,
+  rollout without a declared boundary, unless it is a migrated user fork judged as if
+  its boundary lay past its last line, and otherwise only at or after the boundary,
   never before it, on a line without an ordinal, or under an invalid boundary.
+  So it never sets the tier of such a fork, or of a migrated child whose boundary lies
+  past its end.
 - **Basis:** the tier is the thread’s selected tier, kept with the basis
   `TierBasis::ThreadSetting`, not the tier a request was sent with.
   Codex filters the selected tier by its FastMode feature and model support

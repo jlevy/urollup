@@ -1966,11 +1966,13 @@ fn observe_parsed_source(
                 // A settings snapshot that names a thread sets that thread's tier and provider
                 // wherever it sits, as a usage record's name decides its owner: a migrated
                 // child's own settings precede its boundary. One that names no thread sets
-                // this rollout's own: anywhere in a rollout without a declared boundary, and
-                // otherwise only at or after the boundary. Before it, the setting may be the
-                // parent's copied history, and a turn-inferred start can still be voided; a
-                // line without an ordinal, or any line under an invalid boundary, cannot be
-                // placed.
+                // this rollout's own: anywhere in a rollout without a boundary, and otherwise
+                // only at or after the boundary. Before it, the setting may be the parent's
+                // copied history, and a turn-inferred start can still be voided; a line
+                // without an ordinal, or any line under an invalid boundary, cannot be
+                // placed. Every line of an unmarked (migrated user) fork, like every line of
+                // a migrated child whose boundary lies past its end, precedes its boundary,
+                // so such a snapshot never sets that fork's tier.
                 let settings_thread = match *thread_id {
                     Some(thread) => Some(thread),
                     None if before_boundary || native_boundary.cannot_place(record.ordinal) => None,

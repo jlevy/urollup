@@ -2302,6 +2302,69 @@ fn a_settings_event_without_a_thread_inside_an_open_start_keeps_the_childs_lines
     }
 }
 
+/// A `thread_settings_applied` snapshot selecting `tier`, naming `thread` when one is
+/// given, and with an `ordinal` when one is given.
+fn tier_settings(ordinal: Option<u64>, thread: Option<&str>, tier: &str) -> String {
+    let mut line = json!({"timestamp": "2026-01-01T00:00:01Z", "type": "event_msg",
+        "payload": {"type": "thread_settings_applied", "thread_settings": {"service_tier": tier}}});
+    if let Some(ordinal) = ordinal {
+        line["ordinal"] = json!(ordinal);
+    }
+    if let Some(thread) = thread {
+        line["payload"]["thread_id"] = json!(thread);
+    }
+    line.to_string()
+}
+
+/// The tiers of the counted requests `native` owns.
+fn owned_tiers(ingested: &Ingested, native: &str) -> Vec<Option<&'static str>> {
+    let owner = thread(native);
+    ingested
+        .ledger
+        .requests
+        .values()
+        .filter(|request| request.counting == Counting::Counted)
+        .filter(
+            |request| matches!(&request.ownership, Ownership::Owned { thread } if *thread == owner),
+        )
+        .map(|request| {
+            request.pricing.and_then(|pricing| pricing.service_tier.map(|tier| tier.name.as_str()))
+        })
+        .collect()
+}
+
+#[test]
+fn an_unmarked_forks_thread_less_settings_do_not_yet_set_its_tier() {
+    // Found merging PR #33 into PR #19. Every line of an unmarked fork falls before its
+    // boundary, as every line of a migrated subagent with a boundary past its end does, so
+    // a settings snapshot without a thread_id (written before 0.152) never sets the
+    // child's tier, even inside its own open start: the rule cannot yet tell it from the
+    // parent's copied settings. Nothing reads the tier yet. The child's own 20 and 15
+    // still count, 195 in all, and the parent keeps its own tier.
+    let own = [
+        fork_first_turn().to_vec(),
+        vec![
+            tier_settings(Some(7), None, "priority"),
+            turn(8, Some("f-turn-2")),
+            counter(9, 170, 25, 12, 3),
+        ],
+    ]
+    .concat();
+    let parent =
+        [vec![tier_settings(None, Some(PARENT), "flex")], parent_with_two_turns().to_vec()]
+            .concat();
+    for meta in [migrated_fork_meta(), migrated_meta(12)] {
+        let root = fork_root(Some(&parent), &[]);
+        write_child(&root, meta.clone(), &migrated_fork(&own));
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(35), Completeness::Complete), "{meta}");
+        assert_eq!(owned_tiers(&ingested, CHILD), [None, None], "{meta}");
+        assert_fork_parent_and_complete(&ingested);
+        assert_eq!(owned_tiers(&ingested, PARENT), [Some("flex"), Some("flex")], "{meta}");
+        assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 195);
+    }
+}
+
 #[test]
 fn a_migrated_forks_counters_before_every_turn_are_decided_only_by_the_parents_totals() {
     // The unmarked counterpart of
