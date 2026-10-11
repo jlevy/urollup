@@ -72,6 +72,78 @@ fn observed(src: u8, offset: u64, response: &str, output: u64) -> RequestObserva
     observation
 }
 
+#[test]
+fn pricing_context_survives_reconciliation_without_copy_contamination() {
+    use crate::ledger::entities::PricingContext;
+    use std::sync::Arc;
+    let context = Arc::new(PricingContext {
+        provider: Some(Name::new("openai")),
+        service_tier: Some(Name::new("fast")),
+        ..PricingContext::default()
+    });
+    let mut original = observed(0, 0, "priced", 10);
+    original.pricing = Some(Arc::clone(&context));
+    let mut copy = observed(1, 0, "priced", 10);
+    copy.role = ObservationRole::Copy;
+    copy.pricing = Some(Arc::new(PricingContext {
+        service_tier: Some(Name::new("wrong-copy-tier")),
+        ..PricingContext::default()
+    }));
+    let ledger = reconcile(
+        ReconcileInput {
+            requests: vec![copy, original],
+            source_table: test_sources(),
+            ..ReconcileInput::default()
+        },
+        &LatestRevision,
+    )
+    .unwrap();
+    let actual = ledger.requests.values().next().unwrap().pricing.as_ref().unwrap();
+    assert_eq!(actual, &context);
+    assert!(Arc::ptr_eq(actual, &context), "unchanged metadata stays shared");
+}
+
+#[test]
+fn pricing_context_fills_missing_fields_but_marks_conflicting_originals() {
+    use crate::ledger::entities::PricingContext;
+    use std::sync::Arc;
+    for conflict in [false, true] {
+        let mut first = observed(0, 0, "priced", 10);
+        first.pricing = Some(Arc::new(PricingContext {
+            provider: Some(Name::new("openai")),
+            service_tier: conflict.then(|| Name::new("standard")),
+            ..PricingContext::default()
+        }));
+        let mut second = observed(1, 0, "priced", 11);
+        second.pricing = Some(Arc::new(PricingContext {
+            service_tier: Some(Name::new("fast")),
+            ..PricingContext::default()
+        }));
+        let ledger = reconcile(
+            ReconcileInput {
+                requests: vec![second, first],
+                source_table: test_sources(),
+                ..ReconcileInput::default()
+            },
+            &LatestRevision,
+        )
+        .unwrap();
+        let context = ledger.requests.values().next().unwrap().pricing.as_ref().unwrap();
+        assert_eq!(context.provider, Some(Name::new("openai")));
+        assert_eq!(context.conflicted, conflict);
+        assert_eq!(
+            ledger
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::ConflictingPricingContext),
+            conflict
+        );
+        if !conflict {
+            assert_eq!(context.service_tier, Some(Name::new("fast")));
+        }
+    }
+}
+
 fn stored(prefix: IdPrefix, kind: &str, name: &str) -> StoredIdentity {
     StoredIdentity::derive(IdentityKey::new(prefix, kind, vec![KeyComponent::text(name)])).unwrap()
 }
@@ -161,7 +233,7 @@ fn native_sequence_preserves_boundaries_and_order() {
     assert_eq!(sequences.map(NativeSequence::get), values);
     assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(size_of::<Option<NativeSequence>>(), 9);
-    assert!(size_of::<RequestObservation>() <= 224);
+    assert!(size_of::<RequestObservation>() <= 232);
 }
 
 #[test]
