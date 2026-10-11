@@ -1270,15 +1270,14 @@ Choices made while implementing, where this design left room:
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
 
-  On aarch64 macOS at this head, all 325 bounds pass in 6 to 15 seconds of a debug build
-  on a heavily loaded machine.
+  On x86_64 Linux at this head, all 385 bounds pass in about 5 seconds of a debug build.
   Primitives measure 66–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
-  68–81%, stable sorts 100%), retained ledgers 92–99% of their deep heap,
-  reconciliation’s retained output 77–99%, discovery 100% and session indexes 54–93%,
-  diagnostics 42–99%, stages 3–100%, whole reconciliation phases 28–74% (19–34% before
-  the largest group’s scratch was charged only from `Order`), queries 0–54% and
-  rendering 38–96%; live heap never passed `E`. Each ingest’s peak is reported beside
-  the forward estimate computable after the fact.
+  68–81%, stable sorts 100%), retained ledgers 92–98% of their deep heap,
+  reconciliation’s retained output 77–99%, discovery 100%, session indexes 53–93% and
+  coordinating threads’ caches 0–16%, diagnostics 42–99%, stages 3–100%, whole
+  reconciliation phases 29–73% (19–34% before the largest group’s scratch was charged
+  only from `Order`), queries 0–54% and rendering 38–96%; live heap never passed `E`.
+  Each ingest’s peak is reported beside the forward estimate computable after the fact.
 
   Mutations of the model, each applied, run and reverted at this head:
   - Diagnostic rows at 3 × instead of 5 × fail the diagnostics check (147%).
@@ -1287,6 +1286,7 @@ Choices made while implementing, where this design left room:
   - Halving the copies fails only `thread_reconcile_is_its_parts`.
   - Removing the pricing step from group scratch fails the pricing group’s requests
     stage (142%) and `group_scratch_is_its_lists_and_largest_step`.
+  - Zeroing `COORDINATING_CACHES` fails 35 of the 44 coordinating-thread checks.
   - Removing group scratch’s owner and model step, the owners’ listed detail, or the
     models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
     which pins every part per member.
