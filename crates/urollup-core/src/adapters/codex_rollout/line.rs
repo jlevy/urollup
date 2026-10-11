@@ -21,7 +21,8 @@
 //!   made: a `usage`, `latest_token_usage_record`, `total_token_usage` or
 //!   `last_token_usage` key is present whatever its value, with no counts when the value
 //!   is not an object. An explicit history boundary preserves invalid values as a
-//!   distinct state, since treating them as absent would change request ownership.
+//!   distinct state, since treating them as absent would change request ownership, and
+//!   any `history_base` value but null declares one, for the same reason.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -108,11 +109,20 @@ pub(super) struct Payload<'a> {
     /// Whether `source.subagent.thread_spawn.parent_thread_id` is a string: before Codex
     /// wrote a top-level `parent_thread_id`, a spawned subagent named its parent only there.
     pub(super) spawn_parent: bool,
+    /// Whether `source` is an object whose `subagent` value is present and not
+    /// `memory_consolidation`: a subagent source as Codex's legacy-to-paginated migration
+    /// tests it.
+    pub(super) subagent_source: bool,
     pub(super) thread_source: Option<Cow<'a, str>>,
     pub(super) cwd: Option<Cow<'a, str>>,
     pub(super) parent_thread_id: Option<Cow<'a, str>>,
     pub(super) forked_from_id: Option<Cow<'a, str>>,
     pub(super) subagent_history_start_ordinal: HistoryBoundary,
+    /// A `session_meta`'s `history_mode`: `legacy` (Codex's default) or `paginated`.
+    pub(super) history_mode: Option<Cow<'a, str>>,
+    /// Whether a `session_meta` declares a `history_base`, with any value but null: a
+    /// paginated rollout that references an earlier rollout's prefix instead of copying it.
+    pub(super) history_base: bool,
     pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) model: Option<Cow<'a, str>>,
     pub(super) model_provider: Option<Cow<'a, str>>,
@@ -314,6 +324,8 @@ enum PayloadField {
     ParentThreadId,
     ForkedFromId,
     SubagentHistoryStartOrdinal,
+    HistoryMode,
+    HistoryBase,
     TurnId,
     Model,
     ModelProvider,
@@ -338,6 +350,8 @@ impl PayloadField {
             "parent_thread_id" => Self::ParentThreadId,
             "forked_from_id" => Self::ForkedFromId,
             "subagent_history_start_ordinal" => Self::SubagentHistoryStartOrdinal,
+            "history_mode" => Self::HistoryMode,
+            "history_base" => Self::HistoryBase,
             "turn_id" => Self::TurnId,
             "model" => Self::Model,
             "model_provider" => Self::ModelProvider,
@@ -379,7 +393,8 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 PayloadField::Id => payload.id = map.next_value_seed(Text)?,
                 PayloadField::CliVersion => payload.cli_version = map.next_value_seed(Text)?,
                 PayloadField::Source => {
-                    (payload.source, payload.spawn_parent) = map.next_value_seed(SourceSeed)?;
+                    (payload.source, payload.spawn_parent, payload.subagent_source) =
+                        map.next_value_seed(SourceSeed)?;
                 }
                 PayloadField::ThreadSource => payload.thread_source = map.next_value_seed(Text)?,
                 PayloadField::Cwd => payload.cwd = map.next_value_seed(Text)?,
@@ -390,6 +405,10 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 PayloadField::SubagentHistoryStartOrdinal => {
                     payload.subagent_history_start_ordinal =
                         map.next_value_seed(HistoryBoundarySeed)?;
+                }
+                PayloadField::HistoryMode => payload.history_mode = map.next_value_seed(Text)?,
+                PayloadField::HistoryBase => {
+                    payload.history_base = map.next_value_seed(Declared)?;
                 }
                 PayloadField::TurnId => payload.turn_id = map.next_value_seed(Text)?,
                 PayloadField::Model => payload.model = map.next_value_seed(Text)?,
@@ -796,41 +815,70 @@ impl<'de> Visitor<'de> for Text {
     }
 }
 
-/// Reads a `session_meta` `source`: its text when it is a string, and whether an object
-/// names a parent in `subagent.thread_spawn.parent_thread_id`. A repeated key keeps its
-/// last value, as a document does.
+/// Reads a `session_meta` `source`: its text when it is a string, whether an object names
+/// a parent in `subagent.thread_spawn.parent_thread_id`, and whether it is a subagent
+/// source ([`Payload::subagent_source`]). A repeated key keeps its last value, as a document
+/// does.
 struct SourceSeed;
 
 any_value_seed!(SourceSeed);
 
 impl<'de> Visitor<'de> for SourceSeed {
-    type Value = (Option<Cow<'de, str>>, bool);
+    type Value = (Option<Cow<'de, str>>, bool, bool);
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("any JSON value")
     }
 
-    lenient_visits!((None, false), [bool, numbers, unit]);
+    lenient_visits!((None, false, false), [bool, numbers, unit]);
 
     fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<Self::Value, E> {
-        Ok((Some(Cow::Borrowed(value)), false))
+        Ok((Some(Cow::Borrowed(value)), false, false))
     }
 
     fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
-        Ok((Some(Cow::Owned(value.to_owned())), false))
+        Ok((Some(Cow::Owned(value.to_owned())), false, false))
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut spawn_parent = false;
+        let (mut subagent, mut spawn_parent) = (false, false);
         while let Some(key) = map.next_key_seed(KeyIs("subagent"))? {
             if key {
-                spawn_parent =
-                    map.next_value_seed(NestedText(&["thread_spawn", "parent_thread_id"]))?;
+                (subagent, spawn_parent) = map.next_value_seed(SubagentSeed)?;
             } else {
                 map.next_value_seed(Skip)?;
             }
         }
-        Ok((None, spawn_parent))
+        Ok((None, spawn_parent, subagent))
+    }
+}
+
+/// Reads a `source` object's `subagent` value: whether it is a subagent source, any value
+/// but null or `memory_consolidation`, and whether it names a parent in
+/// `thread_spawn.parent_thread_id`.
+struct SubagentSeed;
+
+any_value_seed!(SubagentSeed);
+
+impl<'de> Visitor<'de> for SubagentSeed {
+    type Value = (bool, bool);
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!((true, false), [bool, numbers]);
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok((false, false))
+    }
+
+    fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+        Ok((value != "memory_consolidation", false))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        Ok((true, NestedText(&["thread_spawn", "parent_thread_id"]).visit_map(map)?))
     }
 }
 
@@ -896,6 +944,25 @@ impl<'de> Visitor<'de> for NestedText {
             }
         }
         Ok(found)
+    }
+}
+
+/// Reads whether a value is present at all: anything but null.
+struct Declared;
+
+any_value_seed!(Declared);
+
+impl<'de> Visitor<'de> for Declared {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(true, [bool, numbers, str, map]);
+
+    fn visit_unit<E: Error>(self) -> Result<bool, E> {
+        Ok(false)
     }
 }
 
@@ -1032,6 +1099,12 @@ mod tests {
                     &["source", "subagent", "thread_spawn", "parent_thread_id"],
                 )
                 .is_some(),
+                subagent_source: payload
+                    .get("source")
+                    .and_then(|source| source.get("subagent"))
+                    .is_some_and(|subagent| {
+                        !subagent.is_null() && subagent.as_str() != Some("memory_consolidation")
+                    }),
                 thread_source: owned(payload, "thread_source"),
                 cwd: owned(payload, "cwd"),
                 parent_thread_id: owned(payload, "parent_thread_id"),
@@ -1043,6 +1116,8 @@ mod tests {
                         value.as_u64().map_or(HistoryBoundary::Invalid, HistoryBoundary::Ordinal)
                     }
                 },
+                history_mode: owned(payload, "history_mode"),
+                history_base: payload.get("history_base").is_some_and(|value| !value.is_null()),
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
                 model_provider: owned(payload, "model_provider"),
@@ -1143,21 +1218,36 @@ mod tests {
         let spawned = read(
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p"}}}}}"#,
         );
-        assert!(spawned.spawn_parent);
+        assert!(spawned.spawn_parent && spawned.subagent_source);
         assert_eq!(spawned.source, None);
         let cli = read(r#"{"type":"session_meta","payload":{"source":"cli"}}"#);
-        assert!(!cli.spawn_parent);
+        assert!(!cli.spawn_parent && !cli.subagent_source);
         assert_eq!(cli.source.as_deref(), Some("cli"));
         let guardian = read(
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
         );
-        assert!(!guardian.spawn_parent);
+        assert!(!guardian.spawn_parent && guardian.subagent_source);
+        let review = read(r#"{"type":"session_meta","payload":{"source":{"subagent":"review"}}}"#);
+        assert!(review.subagent_source);
+        // Codex's migration gives memory consolidation no subagent boundary.
+        let memory = read(
+            r#"{"type":"session_meta","payload":{"source":{"subagent":"memory_consolidation"}}}"#,
+        );
+        assert!(!memory.subagent_source);
     }
 
     #[test]
     fn fields_read_as_a_document_reads_them() {
         for line in [
             r#"{"timestamp":"2026-09-16T12:00:00Z","type":"session_meta","ordinal":4,"payload":{"id":"t","cli_version":"0.1","source":"cli","thread_source":"user","cwd":"/work/app","parent_thread_id":"p","forked_from_id":"f","subagent_history_start_ordinal":3}}"#,
+            r#"{"type":"session_meta","ordinal":5,"payload":{"id":"t","forked_from_id":"f","history_mode":"paginated","history_base":{"thread_id":"f","end_ordinal_exclusive":5,"end_byte_offset":900}}}"#,
+            r#"{"type":"session_meta","payload":{"history_mode":null,"history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"history_mode":["paginated"],"history_base":0,"history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"history_base":null,"history_base":"r"}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":null}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":"memory_consolidation","subagent":"review"}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":"review","subagent":"memory_consolidation"}}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":["review"],"other":1}}}"#,
             r#"{"type":"session_meta","payload":{"id":"t","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}}}"#,
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p"},"thread_spawn":{}}}}}"#,
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}},"source":"cli"}}"#,
@@ -1281,6 +1371,8 @@ mod tests {
                 Just("\"event_msg\""),
                 Just("\"token_count\""),
                 Just("\"thread_settings_applied\""),
+                Just("\"paginated\""),
+                Just("\"memory_consolidation\""),
                 Just("\"t\\u006fken_count\""),
                 Just("\"t1\""),
                 Just("\"/work/app\""),
@@ -1368,6 +1460,8 @@ mod tests {
             Just("cwd"),
             Just("parent_thread_id"),
             Just("forked_from_id"),
+            Just("history_mode"),
+            Just("history_base"),
             Just("turn_id"),
             Just("model"),
             Just("model_provider"),
@@ -1381,6 +1475,7 @@ mod tests {
         let entries = prop_oneof![
             6 => (text_key, leaf()),
             1 => count().prop_map(|value| ("subagent_history_start_ordinal", value)),
+            1 => usage_object().prop_map(|value| ("history_base", value)),
             2 => usage_object().prop_map(|value| ("usage", value)),
             2 => usage_record_object().prop_map(|value| ("latest_token_usage_record", value)),
             2 => info_object().prop_map(|value| ("info", value)),

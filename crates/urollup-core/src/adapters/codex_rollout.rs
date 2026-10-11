@@ -290,6 +290,15 @@ struct SessionMeta {
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
     subagent_history_start_ordinal: HistoryBoundary,
+    /// Whether `history_mode` is `paginated`: a native paginated thread, or a legacy
+    /// rollout that Codex's legacy-to-paginated migration rewrote.
+    paginated: bool,
+    /// Whether a `history_base` is declared: the rollout references another rollout's
+    /// prefix instead of copying it.
+    history_base: bool,
+    /// Whether `source` is a subagent source other than memory consolidation, which Codex's
+    /// legacy-to-paginated migration, like a `subagent` `thread_source`, always bounds.
+    subagent_source: bool,
 }
 
 impl SessionMeta {
@@ -978,6 +987,9 @@ impl SourceDecoder {
                 parent_thread_id: payload.parent_thread_id.map(Cow::into_owned),
                 forked_from_id: payload.forked_from_id.map(Cow::into_owned),
                 subagent_history_start_ordinal: payload.subagent_history_start_ordinal,
+                paginated: payload.history_mode.as_deref() == Some("paginated"),
+                history_base: payload.history_base,
+                subagent_source: payload.subagent_source,
             };
             metas.own = Some(Box::new((meta, *evidence)));
         }
@@ -1240,7 +1252,8 @@ fn decode_rollout(
     }
 }
 
-/// Where a rollout's own records start, from its own `subagent_history_start_ordinal`.
+/// Where a rollout's own records start, from its own `subagent_history_start_ordinal`, or,
+/// in a migrated fork that declares none, from turn evidence alone.
 ///
 /// The boundary places only lines that name no thread: a usage record names the thread
 /// that made its request, and that decides its owner wherever it sits.
@@ -1255,6 +1268,12 @@ enum NativeBoundary {
     At(u64),
     /// The declared value is not an ordinal, so it cannot place any record.
     Invalid,
+    /// None is declared, but the rollout may be a legacy user fork whose copied prefix
+    /// Codex's legacy-to-paginated migration left unmarked ([`may_be_unmarked_fork`]).
+    /// Every line is before an end that no ordinal and no line reaches, so turns, the
+    /// parent's totals and lines naming a thread decide where the rollout's own lines
+    /// start.
+    Unmarked,
 }
 
 impl NativeBoundary {
@@ -1266,14 +1285,36 @@ impl NativeBoundary {
         }
     }
 
+    /// The boundary a rollout's lines are judged against: the one its own `session_meta`
+    /// declares, or [`Self::Unmarked`] for a possible migrated fork whose first counter
+    /// `seeded` does not find seeded. Normalization asks before any parent's totals are
+    /// known, with a `seeded` that is always false, so it over-approximates the forks whose
+    /// parents' totals it collects.
+    fn of_rollout(source: &ParsedSource, seeded: impl FnOnce() -> bool) -> Self {
+        let meta = source.metas.own.as_deref().map(|(meta, _)| meta);
+        match Self::of(meta) {
+            Self::Absent
+                if meta.is_some_and(|meta| may_be_unmarked_fork(source, meta)) && !seeded() =>
+            {
+                Self::Unmarked
+            }
+            boundary @ (Self::Absent | Self::At(_) | Self::Invalid | Self::Unmarked) => boundary,
+        }
+    }
+
+    /// Whether the rollout's own `session_meta` declares a boundary, valid or not.
     fn is_declared(self) -> bool {
-        self != Self::Absent
+        match self {
+            Self::At(_) | Self::Invalid => true,
+            Self::Absent | Self::Unmarked => false,
+        }
     }
 
     /// Whether a record at `ordinal` is inherited history before the boundary.
     fn precedes(self, ordinal: Option<u64>) -> bool {
         match self {
             Self::At(boundary) => ordinal.is_some_and(|ordinal| ordinal < boundary),
+            Self::Unmarked => true,
             Self::Absent | Self::Invalid => false,
         }
     }
@@ -1281,11 +1322,63 @@ impl NativeBoundary {
     /// Whether a declared boundary leaves a record at `ordinal` on neither side of it.
     fn cannot_place(self, ordinal: Option<u64>) -> bool {
         match self {
-            Self::Absent => false,
+            Self::Absent | Self::Unmarked => false,
             Self::At(_) => ordinal.is_none(),
             Self::Invalid => true,
         }
     }
+}
+
+/// Whether a rollout whose own `session_meta` declares no boundary may still hold a copied
+/// prefix that nothing marks: a legacy user fork that Codex's legacy-to-paginated
+/// migration (from 0.155) rewrote. The migration keeps the fork origin, rewrites the head
+/// as paginated with no `history_base` and no boundary, and drops every later
+/// `session_meta`, including the copied prefix's header. So it is a counter-only,
+/// paginated rollout with a parent link, without another thread's `session_meta`, and
+/// without either mark of a rollout that copied nothing:
+///
+/// - a `history_base`, which a native paginated fork declares when it references its
+///   parent's prefix instead of copying it;
+/// - a subagent: a `thread_source` of `subagent` or `guardian_review`, or a subagent
+///   `source` other than memory consolidation. Codex gives a native paginated subagent
+///   that inherits context a boundary, and its migration gives one to every rollout with
+///   a subagent `source` or `thread_source`, so such a rollout without one inherited
+///   nothing.
+///
+/// A seeded first counter ([`first_counter_seeded`]) is the third mark; it needs the
+/// parent's totals, so [`NativeBoundary::of_rollout`] checks it.
+fn may_be_unmarked_fork(source: &ParsedSource, meta: &SessionMeta) -> bool {
+    source.counter_scope == CounterScope::All
+        && !source.metas.foreign
+        && meta.paginated
+        && meta.parent().is_some()
+        && !meta.history_base
+        && !meta.subagent_source
+        && !matches!(meta.thread_source.as_deref(), Some("subagent" | "guardian_review"))
+}
+
+/// Whether the rollout's first counter that reports both a total and a last usage
+/// continues a running total from before the rollout's first line: neither its own last
+/// usage nor a cumulative total its parent root reported accounts for its total, reading a
+/// missing count as 0. A copied prefix starts with a copy of one of its parent's counters,
+/// which a root writes from zero, or which a migrated root's rollback planning left
+/// carrying a dropped first turn's usage; a native fork's first counter continues the
+/// running total Codex seeds from its parent.
+fn first_counter_seeded(
+    source: &ParsedSource,
+    parent_totals: Option<&HashSet<TotalDigest>>,
+) -> bool {
+    let mut counts = CountReader::new(&source.counts);
+    for record in &source.records {
+        let [total, last] = counts.record(&record.kind);
+        if let (RecordKind::TokenCount { .. }, Some(total), Some(last)) =
+            (&record.kind, total, last)
+        {
+            return !same_counts(&total, &last)
+                && !parent_totals.is_some_and(|totals| totals.contains(&total_digest(&total)));
+        }
+    }
+    false
 }
 
 /// What the turns before a declared boundary show about the unnamed lines that no earlier
@@ -1313,15 +1406,17 @@ struct InferredStart {
     baseline: Option<TokenMeasures>,
 }
 
-/// Whether a rollout decides the unassigned lines before its declared boundary by their
-/// turns: a counter-only rollout that holds no other thread's `session_meta`. A native
-/// subagent's inherited prefix keeps its parent's header, and Codex's migration drops
-/// every one but the rollout's own.
-fn infers_prefix_turns(source: &ParsedSource) -> bool {
-    let meta = source.metas.own.as_deref().map(|(meta, _)| meta);
+/// Whether a rollout decides the unassigned lines before `boundary` by their turns: a
+/// counter-only rollout that holds no other thread's `session_meta`, with a declared
+/// ordinal boundary or an unmarked fork's. A native subagent's inherited prefix keeps its
+/// parent's header, and Codex's migration drops every one but the rollout's own.
+fn infers_prefix_turns(source: &ParsedSource, boundary: NativeBoundary) -> bool {
     source.counter_scope == CounterScope::All
         && !source.metas.foreign
-        && matches!(NativeBoundary::of(meta), NativeBoundary::At(_))
+        && match boundary {
+            NativeBoundary::At(_) | NativeBoundary::Unmarked => true,
+            NativeBoundary::Absent | NativeBoundary::Invalid => false,
+        }
 }
 
 /// Whether two usage objects report the same counts, reading a missing count as 0.
@@ -1514,22 +1609,25 @@ fn observe_parsed_source(
     let scope = source.counter_scope;
     let own_meta = source.metas.own.as_deref().map(|(meta, _)| meta);
     let parent_thread = own_meta.and_then(SessionMeta::parent);
-    let native_boundary = NativeBoundary::of(own_meta);
+    let complete_parent = parent_thread.filter(|parent| parents.complete.contains(*parent));
+    let parent_turns = complete_parent.and_then(|parent| parents.turns.get(parent));
+    let parent_totals = complete_parent.and_then(|parent| parents.totals.get(parent));
+    let native_boundary =
+        NativeBoundary::of_rollout(source, || first_counter_seeded(source, parent_totals));
     let has_foreign_meta = source.metas.foreign;
     // A natively created child writes its own settings event at the boundary, while Codex's
     // migration puts the boundary one past the last line it migrated, so no line of a
-    // migrated rollout that was never resumed reaches it.
+    // migrated rollout that was never resumed reaches it. An unmarked fork's end is past
+    // every line.
     let boundary_unreached = match native_boundary {
         NativeBoundary::At(boundary) => !source
             .records
             .iter()
             .any(|record| record.ordinal.is_some_and(|ordinal| ordinal >= boundary)),
+        NativeBoundary::Unmarked => true,
         NativeBoundary::Absent | NativeBoundary::Invalid => false,
     };
-    let infers_turns = infers_prefix_turns(source);
-    let complete_parent = parent_thread.filter(|parent| parents.complete.contains(*parent));
-    let parent_turns = complete_parent.and_then(|parent| parents.turns.get(parent));
-    let parent_totals = complete_parent.and_then(|parent| parents.totals.get(parent));
+    let infers_turns = infers_prefix_turns(source, native_boundary);
     // The responses this rollout's own usage records report: a `compacted` line naming this
     // rollout's thread copies one of them, or else keeps the only record of its response,
     // as when a bounded migration dropped every line before the compaction.
@@ -1650,11 +1748,14 @@ fn observe_parsed_source(
         if let Some(start) = inferred.take() {
             // The window stays open until a line at or past the boundary, or a line naming
             // this rollout's own thread, after which the lines are the child's by name. A
-            // line without an ordinal does not say which side of the boundary it is on.
+            // line without an ordinal does not say which side of the boundary it is on, and
+            // no line reaches an unmarked fork's end, so its window stays open to the end of
+            // the file unless a line names the fork.
             let past_boundary = match native_boundary {
                 NativeBoundary::At(boundary) => {
                     record.ordinal.is_some_and(|ordinal| ordinal >= boundary)
                 }
+                NativeBoundary::Unmarked => false,
                 NativeBoundary::Absent | NativeBoundary::Invalid => true,
             };
             // A line naming another thread is copied history, which never follows the
@@ -1772,7 +1873,7 @@ fn observe_parsed_source(
         copied_prefix |= can_emit_observation(&record.kind)
             && match native_boundary {
                 NativeBoundary::Absent => false,
-                NativeBoundary::At(_) => before_boundary,
+                NativeBoundary::At(_) | NativeBoundary::Unmarked => before_boundary,
                 NativeBoundary::Invalid => true,
             }
             && match &record.kind {
@@ -1853,7 +1954,12 @@ fn observe_parsed_source(
             }
             RecordKind::ThreadSettingsApplied { thread_id, settings } => {
                 active_thread = thread_id.unwrap_or(file_thread);
-                named_own = *thread_id == Some(file_thread);
+                // A settings event without a thread ID (before 0.152) names no owner, so
+                // while a turn-inferred start is open the lines after it stay the child's,
+                // as the start's evidence says; only a line naming a thread ends the window.
+                if thread_id.is_some() || inferred.is_none() {
+                    named_own = *thread_id == Some(file_thread);
+                }
                 if thread_id.is_some() {
                     inferred = None;
                 }
@@ -2103,9 +2209,14 @@ fn observe_parsed_source(
                             }
                         }
                     }
+                    // An unmarked fork's first own step is checked as a declared boundary's
+                    // is, even before any copied counter gives it an inherited total.
                     let needs_baseline = check_next
                         || inherited_total.is_some()
-                        || matches!(native_boundary, NativeBoundary::At(_));
+                        || matches!(
+                            native_boundary,
+                            NativeBoundary::At(_) | NativeBoundary::Unmarked
+                        );
                     if copy_owner.is_none() && counter.is_none() && needs_baseline {
                         // Only a twin's last usage can be unreadable here, and it adds nothing.
                         let last_usage =
@@ -2533,10 +2644,14 @@ fn normalize(
         .collect();
     // Only the counter-only complete roots that a child deciding its prefix by turns names
     // as its parent need their totals, and only counter-only rollouts still hold records.
+    // Whether a possible migrated fork's first counter is seeded depends on these totals,
+    // so every such fork counts here.
     let inferring_parents: HashSet<&str> = rollouts
         .iter()
         .filter_map(|rollout| match rollout {
-            DecodedRollout::Pending(source) if infers_prefix_turns(source) => {
+            DecodedRollout::Pending(source)
+                if infers_prefix_turns(source, NativeBoundary::of_rollout(source, || false)) =>
+            {
                 source.metas.own.as_deref().and_then(|(meta, _)| meta.parent())
             }
             DecodedRollout::Pending(_) | DecodedRollout::Observed(_) => None,
