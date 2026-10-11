@@ -5,13 +5,13 @@ title: Codex child counts a rolled-back parent turn's usage again
 kind: bug
 status: open
 priority: 2
-version: 3
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels: []
 dependencies: []
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-10-10T18:47:36.940Z
-updated_at: 2026-10-11T18:52:42.103Z
+updated_at: 2026-10-11T20:28:44.698Z
 ---
 Found in PR #32 review C (C2). When a Codex root rolls back a turn that spawned a subagent, Codex's rollback plan drops that turn's turn_context and counters (including the estimate counter before the marker) from the root, while the root's next counter step still includes the dropped usage. A child that copied the dropped turn then cannot match it against the parent's turns, so turn-ID copied-history inference treats it as the child's own and counts it twice (synthetic: 380 against 330; two siblings 460 against 360), coverage complete. Pre-existing on main for unmigrated legacy children; PR #32 extends the inference to migrated children. A local real-history check found no inferred-own totals inside a parent rollback window. Fix direction: detect the parent's rollback signature (a counter step whose delta exceeds its last usage) and report a gap for child regions whose totals fall inside it.
 
@@ -20,3 +20,5 @@ Found in PR #32 review C (C2). When a Codex root rolls back a turn that spawned 
 PR #32 review E (E3): the rollback double count also survives in a counter-only child whose fork settings event names it (Codex 0.152+ writes that settings event right after the copied prefix), because a line naming the child ends the inferred-start window without voiding it; any inferred start before that settings event is a turn the parent lost. Synthetic: r2n plus settings(CHILD) before c1 gives 380 against a real 330. A fix likely needs gating on the child's creating cli_version, or treating an inferred start before the child's own fork settings event as unverifiable.
 
 2026-10-11, PR #33 review A (A1): the same rollback double count also reaches migrated user forks under PR #33's Unmarked rule (a fork is taken, then the parent rolls back a turn the fork copied; synthetic 280 against a real 220). A local real-history check found no migrated user fork with own totals inside a parent rollback window. PR #33 pins the shape in a test and names this bead.
+
+2026-10-11 (PR #33 review A2 / review B S2): also reaches migrated user forks whose parent rolled back its first turn when the parent is absent, holds usage records or has lineage, so no counter-only root supplies the totals the seeded check compares. Synthetic: fork 180, all 350, complete, against a real 190 (main the same). Pinned by a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_twice (rename to _until_uro_eh0d rides on PR #19).
