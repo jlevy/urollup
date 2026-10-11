@@ -45,13 +45,13 @@ This section is the project’s single record of release readiness.
 The README, `AGENTS.md`, the product plan and the governing review link here rather than
 restating blockers, so a status change is one edit.
 
-As of 2026-10-10 UTC, readiness is divided into four gates so a locally testable alpha
+As of 2026-10-11 UTC, readiness is divided into four gates so a locally testable alpha
 is not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). `main` still has the [open correctness fixes](#open-correctness-fixes) below. The CLI and local-QA corrections `uro-oz6w` and `uro-qg1a` merged in PRs #25 and #24 on 2026-10-10 |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on the remaining [open correctness fixes](#open-correctness-fixes), a real-history rerun after them, and process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). The CLI and local-QA corrections `uro-oz6w` and `uro-qg1a` merged in PRs #25 and #24 on 2026-10-10. Every [correctness fix](#open-correctness-fixes) the 2026-10-10 real-history rerun found has merged: PR #32 on 2026-10-10 and PRs #33, #34 and #19 on 2026-10-11. The residual shapes listed there stay on `main`, each with a bead. Process-wide admission has its design, ledger and cost model (PRs #27–#29, `uro-6pi8` slices 1–3) but is not yet wired into ingestion |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on a real-history rerun now that the [correctness fixes](#open-correctness-fixes) have merged (`uro-mxv0`), and on process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
@@ -72,11 +72,12 @@ valuation must not be advertised as completed 0.1 features.
 ### Open Correctness Fixes
 
 This list records the correctness defects found on `main` and their state as of the date
-above. PRs #16 and #18 merged on 2026-10-09, PRs #26 and #32 on 2026-10-10 and PR #33 on
-2026-10-11. A local real-history rerun on 2026-10-10 found the migrated Guardian and
-subagent defect (`uro-jqc3`), and review of its fix found the related migrated-fork
-defect (`uro-p9ua`). Codex totals stay provisional until the open fixes land and the
-comparison is rerun.
+above. PRs #16 and #18 merged on 2026-10-09, PRs #26 and #32 on 2026-10-10, and PRs #33,
+#34 and #19 on 2026-10-11. A local real-history rerun on 2026-10-10 found the migrated
+Guardian and subagent defect (`uro-jqc3`) and the copied Claude subagent defect
+(`uro-wvgc`), and review of the `uro-jqc3` fix found the related migrated-fork defect
+(`uro-p9ua`). Codex and Claude totals stay provisional until the comparison is rerun on
+`main` with these fixes (`uro-mxv0`).
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
@@ -157,10 +158,10 @@ comparison is rerun.
     seeded it with, as on `main` (`uro-p12c`).
   - A fork’s own step that repeats a parent total in every count is dropped as the
     parent’s copy, as PR #32’s rule does for a migrated subagent (`uro-uwv0`).
-- **Copied Claude subagent transcripts make their responses ambiguous (`uro-wvgc`,
-  open):** a resumed or forked Claude Code session can hold a byte-identical copy of an
-  earlier session’s subagent transcript in its own `subagents/` directory, whose lines
-  still name the earlier session.
+- **Copied Claude subagent transcripts make their responses ambiguous (`uro-wvgc`, fixed
+  in PR #34, merged 2026-10-11):** a resumed or forked Claude Code session can hold a
+  byte-identical copy of an earlier session’s subagent transcript in its own
+  `subagents/` directory, whose lines still name the earlier session.
   `main` takes a subagent’s thread from the directory, so the original and the copy both
   prove ownership of the same responses: whenever the copy’s `src-` ID sorts first, each
   response lands on Claude Code’s unowned row with a `conflicting-owners` diagnostic,
@@ -176,7 +177,21 @@ comparison is rerun.
   Exact session selection reads a copy whenever the session its lines name is selected,
   by native or `thr-` ID, even after Claude Code deletes that session’s own files or
   when they lie in another project directory or root.
-  A real-history rerun must confirm it.
+  Two residual shapes remain: across project directories and roots, the session
+  transcript’s path and the copy’s own selectors still miss each other (`uro-4v0g`), and
+  once a session’s transcript is deleted another fork’s replay can still decide a spawn
+  (`uro-x146`). A real-history rerun must confirm the fix (`uro-mxv0`).
+- **Codex cache writes counted twice, and inconsistent usage aborting runs (`uro-381f`,
+  fixed in PR #19, merged 2026-10-11):** Codex normalization subtracted only cache reads
+  from inclusive input, so every cache-write token was also counted as ordinary input.
+  That writes sit inside `input_tokens` is an inference from Codex’s Responses mapping,
+  and no observed record has had cache writes
+  ([incident](../../../formats/accounting-incidents.md#codex-cache-write-double-counting)).
+  One Codex usage object whose input was below its cache reads stopped every
+  whole-history command for both agents.
+  Such usage, now also input below reads plus writes, is excluded with one
+  `codex-inclusive-input-underflow` diagnostic and an `InconsistentUsage` coverage gap
+  per rollout, and the run continues.
 
 ## Goals
 
