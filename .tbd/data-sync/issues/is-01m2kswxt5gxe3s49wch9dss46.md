@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 15
+version: 16
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -23,7 +23,7 @@ dependencies:
     target: is-01m3jzhnnk1xk472z6y6gfj5be
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-10-11T07:16:46.923Z
+updated_at: 2026-10-11T21:24:57.665Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 
@@ -40,3 +40,5 @@ Acceptance:
 Current uncommitted pricing foundation on codex/alpha-pricing-context: exact Decimal/string-only serde, disjoint token category pricing and unknown coverage, validated offline exact-key matching with dates/context bands, request-level model components/default labels/counterfactual date, and currency-separated additive cost totals. Synthetic tests cover advisor usage priced once, custom providers unmatched, missing dates/usage, context conflicts, overlap rejection, missing rates, reasoning subset and arithmetic overflow. On 2026-09-28 the full current cargo test --workspace run passed (external results/pricing-current-workspace-tests.log); all-target all-feature clippy also passed on this code. PR16 remains review-ready with all 15 hosted checks green, verified live. Pricing is still uncommitted and has no PR. Remaining: reviewed real rate table/provenance and override parser, documented default-policy data and cache-lifetime assumption labels, malformed dimensions and no-turn Codex cases, source-reported costs and CLI report integration, cache metrics, full make check, process-wide memory safety/scale proofs and accepted-head private end-to-end QA. Do not claim alpha readiness or full cost rollups yet.
 
 2026-10-11: branch feat/pricing-engine (7d9a242) no longer builds on PR #19's round-2 head a665e64; rebase it onto the interned Pricing and ServiceTier types before resuming the engine.
+
+2026-10-11: PR #19 merged to main (11b6eec) with the final interned Pricing, ServiceTier { name, basis: TierBasis } and PricingContext types. feat/pricing-engine (7d9a242, no PR) is based on PR #19's pre-round-2 head and must be rebased onto main before resuming. uro-1uy7 (migrated forks' thread-less settings tier) now blocks this bead: fix it before the matcher reads ThreadSetting tiers.
