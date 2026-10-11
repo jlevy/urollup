@@ -19,6 +19,8 @@ pub enum DiagnosticCode {
     ConflictingAccounts,
     /// Observations of one request name different served models.
     ConflictingModels,
+    /// Original observations disagree on a dimension required to choose a price.
+    ConflictingPricingContext,
     /// A revision selector reported that revisions disagree beyond the value it selected.
     RevisionDisagreement,
     /// A request was observed only as copies, whose usage never counts.
@@ -73,6 +75,7 @@ impl DiagnosticCode {
             Self::ConflictingOwners => "conflicting-owners",
             Self::ConflictingAccounts => "conflicting-accounts",
             Self::ConflictingModels => "conflicting-models",
+            Self::ConflictingPricingContext => "conflicting-pricing-context",
             Self::RevisionDisagreement => "revision-disagreement",
             Self::CopyWithoutOriginal => "copy-without-original",
             Self::UnresolvedCandidate => "unresolved-candidate",

@@ -471,10 +471,19 @@ pub(super) struct MessageFields<'a> {
     pub id: Option<Cow<'a, str>>,
     pub model: Option<Cow<'a, str>>,
     pub usage: UsageCounts,
+    pub pricing: PricingFields<'a>,
     pub tool_use_ids: Vec<Cow<'a, str>>,
     /// `message.content[0].text`, used only for the usage-limit error string.
     pub first_text: Option<Cow<'a, str>>,
     pub advisors: Vec<AdvisorFields<'a>>,
+}
+
+/// Native usage dimensions needed to select a price, without guessing defaults.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct PricingFields<'a> {
+    pub speed: Option<Cow<'a, str>>,
+    pub service_tier: Option<Cow<'a, str>>,
+    pub inference_geo: Option<Cow<'a, str>>,
 }
 
 /// Token counts a usage object may report.
@@ -726,6 +735,7 @@ impl<'de> Visitor<'de> for MessageSeed {
                 MessageField::Usage => {
                     let extra = map.next_value_seed(UsageSeed)?;
                     message.usage = extra.counts;
+                    message.pricing = extra.pricing;
                     message.advisors = extra.advisors;
                 }
                 MessageField::Content => {
@@ -780,6 +790,7 @@ impl Visitor<'_> for MessageKey {
 #[derive(Default)]
 struct UsageExtra<'a> {
     counts: UsageCounts,
+    pricing: PricingFields<'a>,
     advisors: Vec<AdvisorFields<'a>>,
 }
 
@@ -815,6 +826,13 @@ impl<'de> Visitor<'de> for UsageSeed {
                     extra.counts.reasoning = map.next_value_seed(ThinkingSeed)?;
                 }
                 UsageField::Iterations => extra.advisors = map.next_value_seed(IterationsSeed)?,
+                UsageField::Speed => extra.pricing.speed = map.next_value_seed(Text)?,
+                UsageField::ServiceTier => {
+                    extra.pricing.service_tier = map.next_value_seed(Text)?;
+                }
+                UsageField::InferenceGeo => {
+                    extra.pricing.inference_geo = map.next_value_seed(Text)?;
+                }
                 UsageField::Other => map.next_value_seed(Skip)?,
             }
         }
@@ -831,6 +849,9 @@ enum UsageField {
     CacheCreation,
     OutputDetails,
     Iterations,
+    Speed,
+    ServiceTier,
+    InferenceGeo,
     Other,
 }
 
@@ -860,6 +881,9 @@ impl Visitor<'_> for UsageKey {
             "cache_creation" => UsageField::CacheCreation,
             "output_tokens_details" => UsageField::OutputDetails,
             "iterations" => UsageField::Iterations,
+            "speed" => UsageField::Speed,
+            "service_tier" => UsageField::ServiceTier,
+            "inference_geo" => UsageField::InferenceGeo,
             _ => UsageField::Other,
         })
     }
@@ -1224,8 +1248,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        AdvisorFields, LineHead, LineType, MessageFields, RecordFields, SubagentMetadata,
-        UsageBody, UsageCounts,
+        AdvisorFields, LineHead, LineType, MessageFields, PricingFields, RecordFields,
+        SubagentMetadata, UsageBody, UsageCounts,
     };
     use crate::sources::decode::{parse_record, text, unsigned};
 
@@ -1354,6 +1378,11 @@ mod tests {
         MessageFields {
             id: owned_text(value, &["message", "id"]),
             model: owned_text(value, &["message", "model"]),
+            pricing: PricingFields {
+                speed: owned_text(value, &["message", "usage", "speed"]),
+                service_tier: owned_text(value, &["message", "usage", "service_tier"]),
+                inference_geo: owned_text(value, &["message", "usage", "inference_geo"]),
+            },
             usage: UsageCounts {
                 input: unsigned(value, &["message", "usage", "input_tokens"]),
                 cache_read: unsigned(value, &["message", "usage", "cache_read_input_tokens"]),
@@ -1442,6 +1471,9 @@ mod tests {
             r#"{"type":"progress","sessionId":"outer","data":{"message":{"sessionId":"inner","message":{"id":"m2","usage":{"output_tokens":4}}}}}"#,
             r#"{"type":"assistant","message":{"usage":{"output_tokens":3}},"message":{"usage":{}}}"#,
             r#"{"type":"assistant","quotaLimits":"none","message":{"usage":{"output_tokens":1}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":1,"speed":"fast","service_tier":"standard","inference_geo":"us"}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"speed":"fast","speed":null,"service_tier":2,"inference_geo":false}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"speed":"fast"},"usage":{"output_tokens":1}}}"#,
         ] {
             assert_body_matches_document(line.as_bytes());
         }
@@ -1510,6 +1542,9 @@ mod tests {
             6 => count().prop_map(|value| ("output_tokens", value)),
             1 => count().prop_map(|value| ("output_t\\u006fkens", value)),
             1 => count().prop_map(|value| ("input_tokens", value)),
+            1 => leaf().prop_map(|value| ("speed", value)),
+            1 => leaf().prop_map(|value| ("service_tier", value)),
+            1 => leaf().prop_map(|value| ("inference_geo", value)),
         ];
         prop_oneof![1 => leaf(), 6 => object(entries.boxed(), 0..3)].boxed()
     }
