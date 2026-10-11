@@ -192,6 +192,8 @@ struct ParsedRecord {
     length: u64,
     /// Lines skipped since the previous record.
     skipped_before: u64,
+    /// The record's 1-based line in the decoded stream, which diagnostics name.
+    line: u32,
     ordinal: Option<u64>,
     timestamp: Option<CompactTimestamp>,
     kind: RecordKind,
@@ -873,6 +875,7 @@ impl SourceDecoder {
             offset: raw.evidence.offset,
             length: u64::from(raw.evidence.length),
             skipped_before: std::mem::take(&mut self.skipped),
+            line: u32::try_from(raw.line).unwrap_or(u32::MAX),
             ordinal: line.ordinal,
             timestamp: line
                 .timestamp
@@ -1357,23 +1360,46 @@ struct InconsistentUsage {
     /// The first few records, as diagnostic and gap samples.
     evidence: Vec<EvidenceRef>,
     occurrences: u64,
-    /// The first such line and its counts, which the diagnostic names.
-    first: Option<(u64, InputBelowCache)>,
+    /// The first excluded line, with its counts when its own usage was inconsistent, which
+    /// the diagnostic names.
+    first: Option<(u64, Option<InputBelowCache>)>,
 }
 
 impl InconsistentUsage {
+    /// Excludes a record or step whose own usage is inconsistent.
     fn add(&mut self, evidence: EvidenceRef, line: u64, error: InputBelowCache) {
-        self.exclude(evidence);
-        self.first.get_or_insert((line, error));
+        self.count(evidence);
+        self.first.get_or_insert((line, Some(error)));
     }
 
-    /// Excludes a step that an inconsistent one before it left uncheckable.
-    fn exclude(&mut self, evidence: EvidenceRef) {
+    /// Excludes a step that an inconsistent total before it left uncheckable.
+    fn exclude(&mut self, evidence: EvidenceRef, line: u64) {
+        self.count(evidence);
+        self.first.get_or_insert((line, None));
+    }
+
+    fn count(&mut self, evidence: EvidenceRef) {
         if self.evidence.len() < SAMPLE_EVIDENCE_LIMIT {
             self.evidence.push(evidence);
         }
         self.occurrences = self.occurrences.saturating_add(1);
     }
+}
+
+/// Ends the counter epoch at a step whose usage cannot be read: the next own step is
+/// checked as a first step against `readable`, the step's total when that can be read, or
+/// else the total the counter had reached, so usage before the step never counts again.
+fn break_epoch(
+    readable: Option<TokenMeasures>,
+    counter: &mut Option<RunningTotal>,
+    inherited_total: &mut Option<TokenMeasures>,
+    check_next: &mut bool,
+) {
+    if let Some(baseline) = readable.or_else(|| counter.as_ref().map(RunningTotal::total)) {
+        *inherited_total = Some(baseline);
+    }
+    *counter = None;
+    *check_next = true;
 }
 
 /// Usage records whose ownership a declared fork boundary could not establish.
@@ -1584,13 +1610,18 @@ fn observe_parsed_source(
     // counter step must be checked as a first step because such a step broke the epoch.
     let mut inconsistent = InconsistentUsage::default();
     let mut check_next = false;
-    let mut line: u64 = 0;
+    // The raw total and last usage of the latest inconsistent counter step, which a
+    // rate-limit refresh repeats without new usage.
+    let mut inconsistent_step: Option<(CodexUsage, Option<CodexUsage>)> = None;
+    // A rollout without a parent, boundary or other thread's header inherits no total, so
+    // after an inconsistent step its counter rules may still read a decrease as a reset.
+    let restarts = parent_thread.is_none() && !native_boundary.is_declared() && !has_foreign_meta;
     let mut previous_limits = BTreeMap::new();
     let mut counts = CountReader::new(&source.counts);
     for record in &source.records {
         let [first_usage, second_usage] = counts.record(&record.kind);
         let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
-        line = line.saturating_add(record.skipped_before).saturating_add(1);
+        let line = u64::from(record.line);
         // A usage object whose input is below its cache categories cannot be normalized.
         // Where the rollout would count it, its record or counter step adds no usage and
         // the rollout reports a gap; a copy keeps its evidence without the usage.
@@ -1929,14 +1960,18 @@ fn observe_parsed_source(
                             )?);
                         }
                     }
-                    if original && underflow.is_none() {
-                        if let Some(usage) = &first_usage {
-                            accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                    if original {
+                        if underflow.is_none() {
+                            if let Some(usage) = &first_usage {
+                                accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                            }
+                            // A migration that kept only the suffix from this compaction
+                            // dropped every earlier line, so a later running total beyond what
+                            // this rollout's own records report shows responses it dropped.
+                            check_dropped |= before_boundary && scope == CounterScope::Direct;
                         }
-                        // A migration that kept only the suffix from this compaction dropped
-                        // every earlier line, so a later running total beyond what this
-                        // rollout's own records report shows responses it dropped.
-                        check_dropped |= before_boundary && scope == CounterScope::Direct;
+                        // Its counter adds nothing, whether its usage counted or was
+                        // excluded.
                         if scope == CounterScope::All {
                             compacted_twin = first_usage;
                         }
@@ -1968,7 +2003,8 @@ fn observe_parsed_source(
                 }
                 if let Some(total) = total.as_ref().filter(|_| check_dropped) {
                     check_dropped = false;
-                    if codex_measures(total).is_ok_and(|total| exceeds(&total, &accounted)) {
+                    // A total that cannot be read cannot show that nothing was dropped.
+                    if codex_measures(total).map_or(true, |total| exceeds(&total, &accounted)) {
                         unverified.add(view.evidence);
                     }
                 }
@@ -1982,33 +2018,6 @@ fn observe_parsed_source(
                         &mut limit_observations,
                     );
                 }
-                // The usage the counter rules read: a counted step's total and last usage,
-                // or the running total a twin of a root rollout moves.
-                let unreadable = if cumulative {
-                    underflow
-                } else if scope == CounterScope::Mixed && owner == Some(file_thread_text) {
-                    total.as_ref().and_then(|total| codex_measures(total).err())
-                } else {
-                    None
-                };
-                if let Some(error) = unreadable {
-                    inconsistent.add(view.evidence, line, error);
-                    // The step breaks the counter epoch: the next own step is checked as a
-                    // first step against the last total this rollout could read, so usage
-                    // before this step never counts again.
-                    let readable = total.as_ref().and_then(|total| codex_measures(total).ok());
-                    if cumulative && readable.is_some() {
-                        last_total = readable;
-                    }
-                    if let Some(baseline) =
-                        readable.or_else(|| counter.as_ref().map(RunningTotal::total))
-                    {
-                        inherited_total = Some(baseline);
-                    }
-                    counter = None;
-                    check_next = true;
-                    continue;
-                }
                 if !cumulative && owner != Some(file_thread_text) {
                     if let Some(usage) = &last {
                         let response = owner
@@ -2021,8 +2030,6 @@ fn observe_parsed_source(
                     }
                 } else if cumulative {
                     let Some(total) = &total else { continue };
-                    let total_usage = codex_usage(total)?;
-                    last_total = Some(total_usage);
                     let last = last.as_ref();
                     let silent = last.is_some_and(|last| {
                         last.input.unwrap_or(0) == 0 && last.output.unwrap_or(0) == 0
@@ -2035,12 +2042,74 @@ fn observe_parsed_source(
                     }
                     let mut copy_owner =
                         (usage_owner != Some(file_thread_text)).then_some(usage_owner);
+                    let readable_total = codex_measures(total);
+                    if copy_owner.is_none() {
+                        // An own step reads its total, and its last usage unless it is an
+                        // estimate or the twin of a compacted original, which add none.
+                        let last_error = last
+                            .filter(|_| !estimated && !twin)
+                            .and_then(|last| codex_measures(last).err());
+                        if let Some(error) = readable_total.err().or(last_error) {
+                            // A rate-limit refresh repeats an inconsistent step's total and
+                            // last usage without new usage, and a twin adds none.
+                            let step = (*total, last.copied());
+                            if inconsistent_step != Some(step) && !twin {
+                                inconsistent.add(view.evidence, line, error);
+                            }
+                            inconsistent_step = Some(step);
+                            if let Ok(total) = readable_total {
+                                last_total = Some(total);
+                            }
+                            break_epoch(
+                                readable_total.ok(),
+                                &mut counter,
+                                &mut inherited_total,
+                                &mut check_next,
+                            );
+                            continue;
+                        }
+                    }
+                    let Ok(total_usage) = readable_total else {
+                        // A copied total that cannot be read is no baseline: the copy keeps
+                        // its evidence, and the next own step is checked.
+                        check_next = true;
+                        if let (Some(copy_owner), Some(last)) = (copy_owner, last) {
+                            observations.push(counter_observation(
+                                &view,
+                                last,
+                                total,
+                                CounterObservation {
+                                    role: ObservationRole::Copy,
+                                    owner: copy_owner,
+                                    thread_ids,
+                                    context: current_turn.and_then(|turn| turns.get(&turn)),
+                                    delta: None,
+                                },
+                            )?);
+                        }
+                        continue;
+                    };
+                    last_total = Some(total_usage);
+                    // Without an inherited total, a decrease after an inconsistent step is
+                    // the counter rules' own reset, which counts the step's last usage.
+                    if check_next && restarts && copy_owner.is_none() && counter.is_none() {
+                        if let Some(baseline) = inherited_total {
+                            let tracker = RunningTotal::inheriting(baseline);
+                            if tracker.clone().observe(&total_usage, None)?.event
+                                == CounterEvent::Reset
+                            {
+                                counter = Some(tracker);
+                                check_next = false;
+                            }
+                        }
+                    }
                     let needs_baseline = check_next
                         || inherited_total.is_some()
                         || matches!(native_boundary, NativeBoundary::At(_));
                     if copy_owner.is_none() && counter.is_none() && needs_baseline {
+                        // Only a twin's last usage can be unreadable here, and it adds nothing.
                         let last_usage =
-                            last.filter(|_| !estimated).map(codex_usage).transpose()?;
+                            last.filter(|_| !estimated).and_then(|last| codex_measures(last).ok());
                         match first_step(inherited_total, &total_usage, last_usage.as_ref())? {
                             FirstStep::Continues(tracker) => {
                                 counter = Some(tracker);
@@ -2071,7 +2140,7 @@ fn observe_parsed_source(
                                 // After an inconsistent step, a step that cannot be checked
                                 // against it is excluded with it.
                                 if check_next {
-                                    inconsistent.exclude(view.evidence);
+                                    inconsistent.exclude(view.evidence, line);
                                 } else {
                                     unverified.add(view.evidence);
                                 }
@@ -2158,11 +2227,21 @@ fn observe_parsed_source(
                     // it adds no usage; it still moves the running total a later counted
                     // counter continues, as a counted step would, or that counter's delta
                     // would include it.
-                    counter
-                        .get_or_insert_with(|| {
-                            inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
-                        })
-                        .observe(&codex_usage(total)?, None)?;
+                    match codex_measures(total) {
+                        Ok(total) => {
+                            counter
+                                .get_or_insert_with(|| {
+                                    inherited_total
+                                        .map_or_else(RunningTotal::new, RunningTotal::inheriting)
+                                })
+                                .observe(&total, None)?;
+                        }
+                        // Its usage is its record's, so a total that cannot be read excludes
+                        // nothing; the next counted step is checked instead.
+                        Err(_) => {
+                            break_epoch(None, &mut counter, &mut inherited_total, &mut check_next);
+                        }
+                    }
                 }
             }
         }
@@ -2194,14 +2273,23 @@ fn observe_parsed_source(
             0 | 1 => String::new(),
             steps => format!("; {steps} records or counter steps of this rollout are excluded"),
         };
+        let what = match error {
+            Some(error) => format!(
+                "Codex input_tokens {} is below its {} cached and {} cache-write tokens",
+                error.input, error.cache_read, error.cache_write
+            ),
+            None => "Codex cumulative usage cannot be checked against an inconsistent total \
+                     before it"
+                .to_owned(),
+        };
         diagnostics.push(
             Diagnostic::new(
                 DiagnosticCode::CodexInclusiveInputUnderflow,
                 subject.clone(),
                 inconsistent.evidence.iter().copied(),
                 format!(
-                    "Codex input_tokens {} is below its {} cached and {} cache-write tokens at {}:{first_line}, so that usage is excluded as a coverage gap{more}",
-                    error.input, error.cache_read, error.cache_write, source.locator,
+                    "{what} at {}:{first_line}, so that usage is excluded as a coverage gap{more}",
+                    source.locator,
                 ),
             )
             .with_occurrences(inconsistent.occurrences),
@@ -2619,11 +2707,12 @@ fn counter_observation(
                 .derive()?,
         );
     }
-    let mut usage = codex_usage(last)?;
-    if let Some(delta) = counter.delta {
-        usage = delta;
-    }
-    observation.usage = Some(usage.into());
+    // A copy keeps its evidence even when its usage cannot be read.
+    let usage = match counter.delta {
+        Some(delta) => Some(delta),
+        None => codex_measures(last).ok(),
+    };
+    observation.usage = usage.map(Into::into);
     observation.timestamp = record.timestamp;
     if let Some(context) = counter.context {
         apply_context(&mut observation, context);
@@ -2864,7 +2953,7 @@ mod tests {
     /// Decodes one line as the next line of `decoder`'s rollout.
     fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
         let evidence = EvidenceRef::new(0, 0, u64::try_from(line.len()).unwrap());
-        decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+        decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 })
     }
 
     #[test]
@@ -2969,7 +3058,7 @@ mod tests {
             r#"{"type":"compacted","payload":{}}"#,
             r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}"#,
         ] {
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             assert_eq!(
                 decoder.decode_with_admission(&raw, Some(&budget)),
                 RecordDisposition::Decoded
@@ -2988,7 +3077,7 @@ mod tests {
             let budget = crate::ledger::admission::MemoryAdmission::unlimited()
                 .with_row_ceiling(crate::ledger::capacity::ObservationCapacity::from_rows(1));
             let evidence = EvidenceRef::new(0, 0, 1);
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             let mut first = SourceDecoder::new("one");
             let mut second = SourceDecoder::new("two");
             assert_eq!(
@@ -2998,7 +3087,7 @@ mod tests {
             assert_eq!(second.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Stop);
             assert_eq!(first.records.len(), 1);
             assert!(second.records.is_empty());
-            let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+            let skipped = RawRecord { evidence: &evidence, bytes: b"{}", line: 2 };
             assert_eq!(
                 first.decode_with_admission(&skipped, Some(&budget)),
                 RecordDisposition::Stop

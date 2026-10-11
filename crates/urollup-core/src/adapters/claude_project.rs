@@ -1751,7 +1751,7 @@ mod tests {
         let bytes =
             br#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#;
         let evidence = source_evidence(0);
-        let raw = RawRecord { evidence: &evidence, bytes };
+        let raw = RawRecord { evidence: &evidence, bytes, line: 1 };
         let mut first = SourceDecoder::new("project/one.jsonl");
         let mut second = SourceDecoder::new("project/two.jsonl");
         assert_eq!(first.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Decoded);
@@ -1759,7 +1759,7 @@ mod tests {
         assert_eq!(first.records.len(), 1);
         assert!(second.records.is_empty());
         // Once any worker exhausts the budget, even content-only records cancel.
-        let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+        let skipped = RawRecord { evidence: &evidence, bytes: b"{}", line: 2 };
         assert_eq!(first.decode_with_admission(&skipped, Some(&budget)), RecordDisposition::Stop);
     }
 
@@ -1902,7 +1902,7 @@ mod tests {
                 let bytes = serde_json::to_vec(line).unwrap();
                 let evidence = source_evidence(offset);
                 offset += 1;
-                decoder.decode(&RawRecord { evidence: &evidence, bytes: &bytes })
+                decoder.decode(&RawRecord { evidence: &evidence, bytes: &bytes, line: 1 })
             })
             .collect();
         (decoder, dispositions)
@@ -2067,6 +2067,7 @@ mod tests {
         let disposition = decoder.decode(&RawRecord {
             evidence: &evidence,
             bytes: b"{\"type\":\"assistant\",\"n\":1e400}",
+            line: 1,
         });
         assert_eq!(disposition, RecordDisposition::Malformed);
         assert_eq!(decoder.facts.evidence, Some(evidence));

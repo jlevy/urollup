@@ -1487,6 +1487,18 @@ fn a_compacted_record_naming_its_own_thread_counts_once_when_its_line_is_gone() 
         assert_eq!(own_usage(&ingested, CHILD).1, Some(64));
         assert_excluded_as_gap(&ingested, CHILD);
         assert_eq!(undecided_steps(&ingested), 1);
+        // A total that cannot be read cannot show that nothing was dropped either.
+        let mut records = compaction_child((158, 16));
+        let mut total: serde_json::Value =
+            serde_json::from_str(&records[3]).expect("synthetic counter");
+        total["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(200);
+        records[3] = total.to_string();
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(&root, guardian_meta(5), &records);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).1, Some(64));
+        assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(undecided_steps(&ingested), 1);
     }
 }
 
