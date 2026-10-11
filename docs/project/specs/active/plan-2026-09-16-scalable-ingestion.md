@@ -274,8 +274,8 @@ The original proposal used 72 B measures and observation/request bounds of 256 B
 | --- | --- | ---: |
 | `EvidenceRef` | source index, length and offset | 16 B |
 | `Measures` | eight compact counters and presence mask; full-width overflow values interned | 36 B, including `Option` |
-| `RequestObservation` | compact observations with optional owned payloads | ≤ 224 B |
-| `Request` | compact request and evidence references | ≤ 216 B |
+| `RequestObservation` | compact observations with optional owned payloads and a shared pricing-context pointer | ≤ 232 B |
+| `Request` | compact request, evidence references and a shared pricing-context pointer | ≤ 224 B |
 | `ProviderLimitObservation` | compact fields and references to interned native text | ≤ 128 B |
 | `Option<NativeSequence>` | presence tag and eight big-endian bytes, preserving all `u64` values | 9 B |
 
@@ -318,8 +318,8 @@ Explicit byte/row limits avoid host probing.
 An explicitly requested percentage fails if physical RAM is unknown; only the default
 uses the fallback. Native RAM queries do not impose a container allowance.
 
-The byte budget is divided by `size_of::<RequestObservation>()`. At 224 B, 8 GiB admits
-about 38 million row shells, but that arithmetic says nothing about whether their
+The byte budget is divided by `size_of::<RequestObservation>()`. At 232 B, 8 GiB admits
+about 37 million row shells, but that arithmetic says nothing about whether their
 payloads and final ledger fit in memory.
 Payloads, intern tables, request construction, source/thread tables and the other
 agent’s retained ledger are additional.
@@ -653,7 +653,7 @@ committed; then query and render.
   usage error when `M` is unknown.
   The value now means the whole-process estimated peak rather than per-agent row shells,
   so the same value admits several times fewer observations (indicatively 1.5–4.2 KB per
-  request-bearing record with payloads at `H` = 1.5, against 224 B; see
+  request-bearing record with payloads at `H` = 1.5, against 232 B; see
   [Indicative Estimates](#indicative-estimates)). No version has been published, so the
   change lands in slice 7, with every description of the row ceiling that slice lists,
   without an alias.
