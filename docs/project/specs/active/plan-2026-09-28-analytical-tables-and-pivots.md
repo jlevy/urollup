@@ -7,14 +7,9 @@ status: Draft; planning only, outside the frozen alpha delivery slice
 ---
 # Feature: Analytical Tables and Thin HTML Pivot Views
 
-**Date:** 2026-09-28 (last updated 2026-09-28)
-
-**Author:** Joshua Levy with LLM assistance
-
-**Status:** Draft. This request authorizes design, not implementation or a new alpha
-release gate. Accounting bug fixes and full-history acceptance remain first.
-
-**Tracking:** `uro-ah7a`, under the usage-analysis epic `uro-6kwn`.
+This plan covers design only: it adds no implementation and no alpha release gate, and
+accounting fixes and full-history acceptance come first.
+Tracking: `uro-ah7a`, under the usage-analysis epic `uro-6kwn`.
 
 ## Overview
 
@@ -331,8 +326,8 @@ Bound pivot column cardinality and rendered cells.
 On excess, offer narrower filters, fewer axes, column paging, or a streamed long-form
 export. Distinguish the full filtered total from the displayed window.
 Apply backpressure and cancellation; stale UI responses must not replace a newer query’s
-result. Scratch follows the repository’s external-volume policy, and unavailable scratch
-fails explicitly.
+result. Query scratch goes to a configurable location, and unavailable or exhausted
+scratch fails explicitly.
 
 ### Components and API changes
 

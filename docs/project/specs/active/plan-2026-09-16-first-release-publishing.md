@@ -72,7 +72,7 @@ valuation must not be advertised as completed 0.1 features.
 ### Open Correctness Fixes
 
 This list records the correctness defects found on `main` and their state as of the date
-above. PRs #16 and #18 merged on 2026-10-09 and PR #26 on 2026-10-10. A local
+above. PRs #16 and #18 merged on 2026-10-09 and PRs #26 and #32 on 2026-10-10. A local
 real-history rerun on 2026-10-10 found the migrated Guardian and subagent defect
 (`uro-jqc3`), and review of its fix found the related migrated-fork defect (`uro-p9ua`).
 Codex totals stay provisional until the open fixes land and the comparison is rerun.
@@ -83,11 +83,12 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   100-token prefix and adds 20 tokens reports 220 instead of 120, with
   `coverage.complete: true` and no diagnostic.
   Fixed in [PR #16](https://github.com/jlevy/urollup/pull/16), merged 2026-10-09.
-- **Codex counter-only usage beside usage records (`uro-h2sf`):** any
-  `token_usage_record` in a Codex rollout made every cumulative `token_count` in it
-  count nothing. A session that Codex before 0.153 started and a later release resumed
-  loses its pre-upgrade usage, and a rollout that an older release appended counter-only
-  turns to loses those turns, with `coverage.complete: true` and no diagnostic.
+- **Codex counter-only usage beside usage records (`uro-h2sf`, fixed for root rollouts
+  in PR #26, merged 2026-10-10):** any `token_usage_record` in a Codex rollout made
+  every cumulative `token_count` in it count nothing.
+  A session that Codex before 0.153 started and a later release resumed loses its
+  pre-upgrade usage, and a rollout that an older release appended counter-only turns to
+  loses those turns, with `coverage.complete: true` and no diagnostic.
   In the `codex-rollout/mixed-counter-direct` fixture the history reports 90,000 instead
   of 139,700 tokens. [PR #26](https://github.com/jlevy/urollup/pull/26), merged
   2026-10-10, fixes root rollouts (no parent, fork origin or history boundary), which
@@ -101,20 +102,20 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   totals while coverage stays complete (`uro-1h5s`); Codex subagent requests report an
   `unknown` model and effort (`uro-5nkv`); and a lowered Codex cumulative total is
   charged to one request (`uro-v1c9`).
-- **Codex Guardian and subagent usage excluded as copied history (`uro-jqc3`, open):**
-  Codex’s legacy-to-paginated rollout migration sets a child’s
-  `subagent_history_start_ordinal` past the file’s last line, so every line, including
-  the child’s own `token_usage_record` lines, falls before the boundary and is excluded
-  as the parent’s copied history, with `coverage.complete: true` and no diagnostic.
-  The rerun found this in many migrated Guardian-review and subagent rollouts
+- **Codex Guardian and subagent usage excluded as copied history (`uro-jqc3`, fixed in
+  PR #32, merged 2026-10-10):** Codex’s legacy-to-paginated rollout migration sets a
+  child’s `subagent_history_start_ordinal` past the file’s last line, so every line,
+  including the child’s own `token_usage_record` lines, falls before the boundary and is
+  excluded as the parent’s copied history, with `coverage.complete: true` and no
+  diagnostic. The rerun found this in many migrated Guardian-review and subagent rollouts
   ([research](../../research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
   In the `codex-rollout/guardian-migrated-boundary` fixture `main` reports 9,600 instead
-  of 21,190 tokens. [PR #32](https://github.com/jlevy/urollup/pull/32) owns a usage
-  record by the thread it names, decides a migrated counter-only child’s unassigned
-  lines by the turns its parent root recorded and by the parent’s counter totals, and
-  counts a `compacted` record that is the only record of its response.
-  Only a root with neither lineage nor an old-format subagent’s nested `thread_spawn`
-  parent (`uro-3b12`) decides a child’s turns.
+  of 21,190 tokens. [PR #32](https://github.com/jlevy/urollup/pull/32), merged
+  2026-10-10, owns a usage record by the thread it names, decides a migrated
+  counter-only child’s unassigned lines by the turns its parent root recorded and by the
+  parent’s counter totals, and counts a `compacted` record that is the only record of
+  its response. Only a root with neither lineage nor an old-format subagent’s nested
+  `thread_spawn` parent (`uro-3b12`) decides a child’s turns.
   Until the boundary, or a line naming the child, a later turn or total the parent
   recorded, or a line naming another thread, voids an inferred start.
   What it still cannot place is a `codex-history-boundary-unverified` coverage gap, so
@@ -124,8 +125,8 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   One shape still counts twice: a subagent spawned in a turn that a migrated root’s
   rollback planning dropped (`uro-eh0d`, also on `main` for unmigrated children); a
   local real-history check found none.
-  It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
-  (`uro-aakb`).
+  A real-history rerun after the fix still gates G1 (`uro-d36a`), milestone 0.1
+  (`uro-n8h5`) and the core CLI delivery slice (`uro-aakb`).
 - **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
   open):** the same migration drops a legacy fork’s copied `session_meta`, so a migrated
   counter-only user fork counts its parent’s copied counters as its own.

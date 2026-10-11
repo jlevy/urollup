@@ -708,10 +708,12 @@ such as Codex `codex-auto-review` and Claude `<synthetic>`, stay as observed.
 Each request also keeps the pricing context its original records report: provider,
 service tier, speed and inference geography, each as recorded, including values no price
 table knows. Claude Code records speed, service tier and inference geography in
-`message.usage` and no provider; Codex records the provider in `session_meta` and the
-tier in `thread_settings_applied` ([§3.4](#34-dialect-reconciliation-rules)). No
-dimension is inferred from a model or agent name, agent configuration or the machine’s
-location, and absent stays unknown.
+`message.usage` and no provider, so its tier is the one the request was served at.
+Codex records the provider in `session_meta` and its settings snapshots, and its tier is
+the thread’s selected tier from `thread_settings_applied`, which a request can be sent
+without; the tier keeps that basis, so a rate chosen from a Codex tier is an assumption
+([§3.4](#34-dialect-reconciliation-rules)). No dimension is inferred from a model or
+agent name, agent configuration or the machine’s location, and absent stays unknown.
 Copies never contribute.
 Originals of one request fill each other’s missing fields; originals that record
 different values mark the context conflicted with a `conflicting-pricing-context`
@@ -881,14 +883,19 @@ set these source-specific rules:
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
   the root would attribute the parent’s model to the subagent.
-  Its pricing context comes from the same turn: the `model_provider` of its thread’s
-  `session_meta`, and the service tier of that thread’s latest `thread_settings_applied`
-  before the turn’s `turn_context`. A settings event that names a thread sets that
-  thread’s tier wherever it sits, as a usage record’s `thread_id` decides its owner.
-  One that names no thread sets the rollout’s own tier only at or after a declared
-  `subagent_history_start_ordinal`: before it the setting may be the parent’s copied
-  history, and a line without an ordinal, or any line under an invalid boundary, cannot
-  be placed.
+  Its pricing context comes from the same turn: the provider and selected tier its
+  thread had when the turn’s `turn_context` was written.
+  A `thread_settings_applied` event records the thread’s complete settings snapshot,
+  which omits `service_tier` when no tier is selected, so a snapshot without one clears
+  the tier, while an event without a snapshot changes nothing.
+  The provider is the `model_provider` of the thread’s `session_meta` until a snapshot’s
+  `model_provider_id` replaces it.
+  A snapshot that names a thread sets that thread’s tier and provider wherever it sits,
+  as a usage record’s `thread_id` decides its owner.
+  One that names no thread sets the rollout’s own: anywhere in a rollout without a
+  declared `subagent_history_start_ordinal`, and otherwise only at or after the
+  boundary. Before it the setting may be the parent’s copied history, and a line without
+  an ordinal, or any line under an invalid boundary, cannot be placed.
 - **Codex counters:** older files use cumulative `token_count` events.
   An update whose running total advances counts the advance as one request.
   A decrease in any cumulative component opens a new counter epoch with a diagnostic,
@@ -1258,8 +1265,15 @@ Counting rules that adapters must normalize explicitly:
   shows per dialect. Codex `input_tokens` is read as including both `cached_input_tokens`
   and `cache_write_input_tokens`, an inference the
   [incident record](formats/accounting-incidents.md#codex-cache-write-double-counting)
-  supports, so uncached input is the native value minus both, and a native input below
-  their sum is an error that stops ingestion rather than a silent zero.
+  supports, so uncached input is the native value minus both.
+  A usage object whose input is below their sum, a missing count read as 0, is never a
+  silent zero: where the rollout would count it, its record or counter step is excluded
+  with a `codex-inclusive-input-underflow` diagnostic that names the rollout and line,
+  the rollout’s thread gets a coverage gap, and the run continues; a copy with such
+  usage keeps only its evidence.
+  A cumulative step excluded this way ends its counter epoch, so the next step is
+  checked as a first step against the last total the rollout could read and earlier
+  usage never counts again.
   Claude Code’s `input_tokens` excludes both.
 - When a Claude Code record has `iterations`, its top-level `message.usage` equals the
   sum of the `message` iterations and excludes `advisor_message` iterations, which
@@ -1466,6 +1480,8 @@ Matching and coverage:
   matched row with no rate for a token category.
 - Codex records service tier only in `thread_settings_applied` events, which short
   rollouts can lack; pricing never takes a tier from an agent’s configuration files.
+  That tier is the thread’s selected tier, not proof of the tier a request was sent
+  with; how a rate match treats that basis is decided under `uro-wuby`.
 
 Updates and overrides:
 
@@ -2596,7 +2612,7 @@ records how the engine reached this shape, with dated whole-history measurements
   128-bit digests, model and effort names are interned once per process, usage stores
   eight `u32` counters with a presence mask and interns full-width overflow patterns,
   and timestamps are compact.
-  Observation shells are at most 224 B; this excludes owned payloads.
+  Observation shells are at most 232 B; this excludes owned payloads.
   Name, limit-text and overflow-pattern intern tables live until process exit; their
   distinct-value cardinality must be measured before repeated library/server ingestion.
   Each source’s records are freed as soon as its observations are built, and maps needed

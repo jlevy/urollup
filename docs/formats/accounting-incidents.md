@@ -2,8 +2,9 @@
 
 All numbers and identifiers in these explanations are synthetic.
 Private comparisons motivated investigation but are not reproduced here.
-This log records confirmed causes; an unexplained difference against another tool is not
-automatically a urollup bug.
+This log records confirmed causes, and one latent defect corrected on an inference,
+labeled as such; an unexplained difference against another tool is not automatically a
+urollup bug.
 
 ## Codex Inherited-Prefix Double Counting
 
@@ -101,6 +102,10 @@ none of this decides is an unverified coverage gap
 [PR #19](https://github.com/jlevy/urollup/pull/19). Before it, Codex normalization
 subtracted cache reads only.
 
+**Status:** a latent defect corrected on an inference, with no observed occurrence:
+every Codex fixture before this correction recorded zero cache writes, and a local
+real-history check found none either.
+
 **Wrong assumption:** inclusive native input was normalized by subtracting cache reads
 only, leaving cache-write tokens in ordinary input while also recording them as writes.
 
@@ -108,9 +113,13 @@ only, leaving cache-write tokens in ordinary input while also recording them as 
 same 10 writes. The correct ordinary input is 70; inclusive input remains 100. The error
 affects both totals and any estimate applying separate cache-write rates.
 
-**Evidence:** Codex copies `input_tokens` and both cache counts from the Responses API
-usage verbatim, the cache counts from `input_tokens_details`, and already treats the
-cached count as a subset of `input_tokens`
+**Evidence:** Codex’s Responses parser declares one input breakdown,
+`ResponseCompletedInputTokensDetails`, with `cached_tokens` and `cache_write_tokens`,
+and maps them to `cached_input_tokens` and `cache_write_input_tokens` beside a verbatim
+`input_tokens`
+([`responses.rs`](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/codex-api/src/sse/responses.rs#L138-L166)).
+Writes are therefore reported as a detail of input, like the cached count, which Codex
+treats as a subset of `input_tokens`
 ([source review](../project/research/research-2026-09-14-agent-tool-source-reviews.md#codex-token-usage)).
 Pi’s Responses mapping subtracts both cached and cache-write tokens from `input_tokens`
 ([Pi facts](../project/research/research-2026-09-14-agent-tool-source-reviews.md#pi-session-dialect-facts)),
@@ -127,9 +136,14 @@ nonzero writes, underflow and maximum counters in
 coverage in [pricing context tests](../../crates/urollup-core/tests/pricing_context.rs),
 and the `cache-write-input` fixture case, whose results check and CLI golden fail under
 the old rule by its 1,000 cache-write tokens.
-An input below the two cache categories stops ingestion, as one below cache reads
-already did, so if the inference is wrong for some producer the run fails instead of
-miscounting. Zero-write fixtures could not expose this defect.
+A usage object whose input is below the two cache categories is excluded with a
+`codex-inclusive-input-underflow` diagnostic and a coverage gap, while the run continues
+([inconsistent usage tests](../../crates/urollup-core/tests/codex_inconsistent_usage.rs));
+before the correction, one below its cache reads stopped the run.
+That check catches a wrong inference only when writes exceed input minus reads: a
+producer that reported writes outside `input_tokens` and below that margin would have
+its uncached input undercounted silently.
+Zero-write fixtures could not expose this defect.
 Every separately billed category needs a nonzero conservation test, not just a parsing
 assertion.
 
@@ -173,8 +187,8 @@ Token totals were unchanged, but any per-model view or list-price estimate would
 misattribute those requests.
 
 **Correction and prevention:** a record takes its context from its own `turn_id`, and
-from `root_turn_id` only when it has no `turn_id`; its retained provider and service
-tier come from the same turn.
+from `root_turn_id` only when it has no `turn_id`. The pricing context that requests
+later retained rides on the same turn context.
 The e2e results check compares per-request model and effort buckets, so the
 `archived-rename` and `auto-review-model` cases fail under the old lookup (`uro-dp4x`).
 

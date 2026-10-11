@@ -42,7 +42,7 @@ Transcript framing follows the
 | `progress` with `data.message.message.usage.output_tokens` | Nested assistant copy, not additional usage |
 | `sessionId`, `uuid`, `requestId`, `message.id` | Distinct session, record, request and response evidence; do not deduplicate solely by file or timestamp |
 | `message.model`, recorded effort | Served-model and effort evidence |
-| `apiBlockIndex`, timestamp, evidence position | Revision selection inputs for repeated response blocks |
+| `output_tokens`, `apiBlockIndex`, evidence position | Revision selection inputs for repeated response blocks; the timestamp decides only owner precedence |
 | `isSidechain`, subagent paths, tool-use IDs and sidecar metadata | Ownership and relationship evidence, not additive usage |
 | `message.usage.iterations` entries of type `advisor_message` | Additional model-specific usage components |
 | `quotaLimits`, synthetic limit messages | Provider-limit evidence, not token charges |
@@ -51,8 +51,9 @@ The typed parser reads all JSON values for validity, discards irrelevant payload
 keeps only accounting fields.
 Repeated keys follow document semantics: the last value wins.
 Each request retains `message.usage.speed`, `service_tier` and `inference_geo` as its
-recorded pricing context, including values no price table knows.
-A missing field in one request does not inherit the previous request’s value.
+recorded pricing context, including values no price table knows; the tier is the one the
+request was served at (`TierBasis::Request`). A missing field in one request does not
+inherit the previous request’s value.
 The agent name alone does not prove provider, billing channel or subscription cost, so
 no provider is recorded.
 
@@ -64,9 +65,12 @@ last in file order, then lowest source ID. Do not sum the blocks or take a field
 maximum. Input/cache disagreements produce diagnostics.
 
 Nested progress is always a copy.
-Cross-thread `message.id` and `uuid` replays are copies of the established owner’s
-request. Main-session records naming another `sessionId` are resumed replays and cannot
-take ownership from the original.
+A record is a copy when another thread owns its `uuid`. A subagent record is a copy when
+another thread owns its `message.id`, as with a `/btw` side question; two unlinked main
+sessions that record one `message.id` are both originals, so the request is ambiguous
+(the `ambiguous-owner` case).
+Main-session records naming another `sessionId` are resumed replays and cannot take
+ownership from the original.
 Ownership is established in canonical order, not discovery or worker order.
 Conflicting models under a reused message ID narrow that identity to the recorded
 session and produce an identity diagnostic.

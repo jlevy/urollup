@@ -12,8 +12,8 @@ failure behavior, and regression coverage.
 | Claude stream and Codex exec stream | Researched; not current runtime adapters | [Design source rules](../urollup-design.md#34-dialect-reconciliation-rules) and [source review](../project/research/research-2026-09-14-agent-tool-source-reviews.md) |
 | Pi and Gemini CLI | Planned for Phase 2, outside the frozen Codex/Claude alpha | [Product plan](../project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) |
 
-[Accounting incidents](accounting-incidents.md) explains the confirmed bugs, their
-causes, and the tests that prevent recurrence.
+[Accounting incidents](accounting-incidents.md) explains the confirmed bugs and one
+inferred correction, their causes, and the tests that prevent recurrence.
 It distinguishes bugs in urollup from format hazards and incomplete features.
 
 ## Evidence and Support Boundaries
@@ -52,13 +52,16 @@ Malformed records, pending unterminated tails, oversized records, truncation,
 replacement and missing files are distinct conditions.
 Preserve their manifest/coverage behavior; do not reinterpret a failed read as an empty
 successful history. See the reader tests for the exact disposition of each condition.
-A source whose read failed or that changed under the snapshot (an oversized record, a
-damaged or truncated compressed stream, an unreadable or mismatched twin, an I/O error,
-or a file that vanished, was replaced, truncated or rewritten) makes coverage partial
-and is counted once in its agent’s `source-incomplete` diagnostic, whose detail names
-each kind of loss; one unreadable file does not stop the report.
-Interior malformed lines and an unterminated tail are reported as `malformed-line` and
-`pending-tail` and leave coverage complete.
+A source file that exists but cannot be opened, as with a permission error, stops the
+command with exit 1 ([design Decision 14](../urollup-design.md#decision-14-exit-codes)).
+A source whose scan failed or that changed under the snapshot (an oversized record, a
+damaged or truncated compressed stream, an unreadable or mismatched twin, an I/O error
+during the scan, or a file that vanished, was replaced, truncated or rewritten) makes
+coverage partial and is counted once in its agent’s `source-incomplete` diagnostic,
+whose detail names each kind of loss; such a file does not stop the report.
+Interior malformed lines and an unterminated tail leave coverage complete.
+The Codex adapter reports them as `malformed-line` and `pending-tail`; the Claude Code
+adapter does not report them yet.
 Unknown native counters remain unknown, not observed zeros.
 
 Thread identity, source identity and request identity are different.

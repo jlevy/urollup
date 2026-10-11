@@ -26,8 +26,11 @@ refines the reusable data projections, query semantics, and thin local HTML view
 It is a draft follow-up, not an additional alpha release gate.
 
 The current CLI delivers uncached token reports.
-The maintainer’s frozen alpha scope also requires supported cost rollups, accounting
-fixes, and memory/scale acceptance; those requirements are not all implemented yet.
+The maintainer’s frozen alpha scope (`uro-aakb`) puts supported cost rollups in the core
+CLI delivery slice below, beside the accounting fixes and memory/scale acceptance.
+Until they land, list-price valuation is not advertised as a 0.1 feature; the
+[release readiness record](plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
+owns which gates have passed.
 Whole-history analysis across every facet is accepted only when G5 passes; a green 0.1
 gate does not imply it.
 Persistent caching and the web UI retain their existing phase boundaries.
@@ -219,8 +222,10 @@ Build time and postprocessing time stay separate.
 
 The maintainer requested a reliable, landable Claude Code and Codex CLI with per-session
 and whole-machine usage and supported cost rollups.
-The subsequent scope freeze defers the reporting skill, reusable artifacts, joint-query
-expansion, and web UI while accounting and safety stabilize.
+The subsequent scope freeze (`uro-aakb`) defers the reporting skill, reusable artifacts,
+joint-query expansion, and web UI while accounting and safety stabilize.
+Their owners (`uro-qvp1`, `uro-ni7m`, `uro-vgea`, `uro-cye3`, `uro-x8r8` and `uro-jpmf`)
+keep those scopes outside this slice.
 This delivery slice crosses existing milestone boundaries without declaring the full G5
 pricing, tool and time workflow complete.
 Existing artifact and accounting owners retain their contracts.
@@ -321,7 +326,7 @@ Fix current CLI honesty and local QA defects in the 0.1 workstream.
 Reusable artifacts retain their milestone 0.2 owners, and the complete CLI analysis
 surface and G5 belong to 0.5. Existing pricing owners retain their historical 0.4
 labels, but supported cost rollups are required by the maintainer’s alpha scope freeze
-above. Implementation sequencing does not declare G5 complete early.
+(`uro-aakb`) above. Implementation sequencing does not declare G5 complete early.
 No pending maintainer policy is silently accepted by this plan.
 Pricing-policy details in design §4.5 and unknown-cache-lifetime policy retain their
 recorded review status.

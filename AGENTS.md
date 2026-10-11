@@ -113,6 +113,9 @@ Planning docs live under `docs/project/`:
 - `reviews/`: governing reviews, including the
   [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).
 
+Per-agent log format contracts live in [docs/formats/](docs/formats/README.md); an
+adapter change follows its maintenance checklist.
+
 The product epic is `uro-2pp9`; current stabilization is `uro-28fc`. The revised scale
 gate is owned by `uro-zrr0`. Run `tbd list --specs` to see beads grouped by linked spec.
 The complete usage-analysis workflow is `uro-6kwn`, accepted by G5 (`uro-i6xb`): joint

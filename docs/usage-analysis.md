@@ -116,7 +116,9 @@ Tables show at most one cache-write total, and the `sessions` table folds every 
 category into one column; the write lifetimes appear only in JSON.
 
 Claude input counters exclude cache reads and writes.
-Codex input counters include cache reads and cache writes.
+Codex input counters are read as including cache reads and cache writes, an inference
+the [incident record](formats/accounting-incidents.md#codex-cache-write-double-counting)
+explains; a record whose input is below the two is excluded as a coverage gap.
 The adapter subtracts each of those splits that a record reports to derive uncached
 input; a record without either split keeps its whole input as uncached input, which the
 [workflow plan](project/specs/active/plan-2026-09-20-usage-analysis-workflow.md#cache-accounting-and-list-price-estimates)

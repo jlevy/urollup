@@ -2,8 +2,9 @@
 
 Tests the `rust-v0.153.0` and later request rule: each `token_usage_record` is one
 response keyed by `response_id` and owned by its `thread_id`, a record whose `thread_id`
-differs from the file’s is a copy, and `compacted.latest_token_usage_record` is never an
-observation (design §3.4).
+differs from the file’s is a copy, and a `compacted.latest_token_usage_record` is copy
+evidence (design §3.4): it counts as the original only when it names the file’s thread
+and no usage record in the file reports its response, which is not the case here.
 
 - **Parent:** records `p1` and `p2` in turn 1, then a resumed turn 2 two hours later in
   the same file with compaction response `p3`, whose `turn_token_usage` restarts while
