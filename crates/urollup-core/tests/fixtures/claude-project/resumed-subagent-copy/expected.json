@@ -1,0 +1,405 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "resumed-subagent-copy",
+  "dialect": "claude-project",
+  "summary": "A resumed session holds a byte-identical copy of the original session's subagent transcript and sidecar under its own subagents/ directory, beside a subagent of its own. The copy's lines still name the original session, so they belong to that session's subagent: its responses count once, owned by one thread, and the resumed session's own subagent counts for the resumed session.",
+  "rules": [
+    "design §3.4 Dialect Reconciliation Rules (Claude Code subagent threads)",
+    "design §3.4 Dialect Reconciliation Rules (Claude Code resumed sessions)",
+    "design §3.2 Relationships and the Discovery Index",
+    "design §4.2 Ownership and Totals"
+  ],
+  "agent": {
+    "name": "Claude Code",
+    "versions": "2.1.x transcripts; records carry version 2.1.214. A local real-history check found byte-identical copies of subagent transcripts under resumed or forked sessions' subagents/ directories; the release that started writing them is unverified, and the copy here is synthetic."
+  },
+  "files": [
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl",
+      "lines": 4,
+      "thread": "00000000-0000-4000-8000-001800000001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-001800000001/a0000000000180001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.meta.json",
+      "thread": "00000000-0000-4000-8000-001800000001/a0000000000180001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl",
+      "lines": 8,
+      "thread": "00000000-0000-4000-8000-001800000002"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl",
+      "lines": 3,
+      "thread": "00000000-0000-4000-8000-001800000001/a0000000000180001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.meta.json",
+      "thread": "00000000-0000-4000-8000-001800000001/a0000000000180001"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.jsonl",
+      "lines": 2,
+      "thread": "00000000-0000-4000-8000-001800000002/a0000000000180002"
+    },
+    {
+      "path": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.meta.json",
+      "thread": "00000000-0000-4000-8000-001800000002/a0000000000180002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "00000000-0000-4000-8000-001800000001",
+      "kind": "session",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 12,
+          "cache_read": 2600,
+          "cache_write": 590,
+          "output": 110,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 4,
+        "tokens": {
+          "uncached_input": 27,
+          "cache_read": 3400,
+          "cache_write": 1590,
+          "output": 175,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001800000001/a0000000000180001",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-001800000001",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:2"
+      ],
+      "agent_type": "general-purpose",
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 15,
+          "cache_read": 800,
+          "cache_write": 1000,
+          "output": 65,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001800000002",
+      "kind": "session",
+      "parent": "00000000-0000-4000-8000-001800000001",
+      "relationship": "fork",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:4"
+      ],
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 10,
+          "cache_read": 3700,
+          "cache_write": 360,
+          "output": 90,
+          "reasoning": null
+        }
+      },
+      "descendants": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 19,
+          "cache_read": 3700,
+          "cache_write": 960,
+          "output": 123,
+          "reasoning": null
+        }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-001800000002/a0000000000180002",
+      "kind": "subagent",
+      "parent": "00000000-0000-4000-8000-001800000002",
+      "relationship": "spawn",
+      "relationship_evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.meta.json:1",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:6"
+      ],
+      "agent_type": "Explore",
+      "own": {
+        "requests": 1,
+        "tokens": {
+          "uncached_input": 9,
+          "cache_read": 0,
+          "cache_write": 600,
+          "output": 33,
+          "reasoning": null
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18A",
+        "request_id": "req_011Synthetic18A"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T10:00:02.000Z",
+      "tokens": {
+        "uncached_input": 10,
+        "cache_read": 1000,
+        "cache_write": 500,
+        "output": 80,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18X1",
+        "request_id": "req_011Synthetic18X1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000001/a0000000000180001",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T10:00:05.000Z",
+      "tokens": {
+        "uncached_input": 12,
+        "cache_read": 0,
+        "cache_write": 800,
+        "output": 40,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl:2",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18X2",
+        "request_id": "req_011Synthetic18X2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000001/a0000000000180001",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T10:00:09.000Z",
+      "tokens": {
+        "uncached_input": 3,
+        "cache_read": 800,
+        "cache_write": 200,
+        "output": 25,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl:3",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl:3"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl:3",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl:3"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18B",
+        "request_id": "req_011Synthetic18B"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000001",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T10:00:32.000Z",
+      "tokens": {
+        "uncached_input": 2,
+        "cache_read": 1600,
+        "cache_write": 90,
+        "output": 30,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:4"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:4",
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:4"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18C",
+        "request_id": "req_011Synthetic18C"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000002",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T11:00:02.000Z",
+      "tokens": {
+        "uncached_input": 6,
+        "cache_read": 1700,
+        "cache_write": 300,
+        "output": 70,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:6"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:6"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18Y1",
+        "request_id": "req_011Synthetic18Y1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000002/a0000000000180002",
+      "owner_candidates": [],
+      "model": "claude-haiku-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T11:00:05.000Z",
+      "tokens": {
+        "uncached_input": 9,
+        "cache_read": 0,
+        "cache_write": 600,
+        "output": 33,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.jsonl:2"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.jsonl:2"
+      ]
+    },
+    {
+      "key": {
+        "message_id": "msg_01Synthetic18D",
+        "request_id": "req_011Synthetic18D"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "00000000-0000-4000-8000-001800000002",
+      "owner_candidates": [],
+      "model": "claude-sonnet-4-5",
+      "model_basis": "served",
+      "timestamp": "2026-09-06T11:00:22.000Z",
+      "tokens": {
+        "uncached_input": 4,
+        "cache_read": 2000,
+        "cache_write": 60,
+        "output": 20,
+        "reasoning": null
+      },
+      "selected": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:8"
+      ],
+      "evidence": [
+        "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:8"
+      ]
+    }
+  ],
+  "copies": [
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:2",
+      "kind": "resume-replay",
+      "copy_of": "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:2",
+      "owner_thread": "00000000-0000-4000-8000-001800000001"
+    },
+    {
+      "ref": "projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:4",
+      "kind": "resume-replay",
+      "copy_of": "projects/-Users-example-project/00000000-0000-4000-8000-001800000001.jsonl:4",
+      "owner_thread": "00000000-0000-4000-8000-001800000001"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "unique": 7,
+      "owned": 7,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 46,
+      "cache_read": 7100,
+      "cache_write": 2550,
+      "output": 298,
+      "reasoning": null
+    }
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Sum message.usage over every assistant record",
+      "requests": 11,
+      "tokens": {
+        "uncached_input": 73,
+        "cache_read": 10500,
+        "cache_write": 4140,
+        "output": 473,
+        "reasoning": null
+      }
+    }
+  ],
+  "notes": [
+    "Before uro-wvgc, urollup took a subagent's thread from the directory holding its file, so 00000000-0000-4000-8000-001800000001/a0000000000180001 and 00000000-0000-4000-8000-001800000002/a0000000000180001 both proved ownership of the subagent's two responses. Whenever the copy's src- ID sorted before the original's, each response became ambiguous, landed on Claude Code's unowned row and raised conflicting-owners, and the copy always added an empty 00000000-0000-4000-8000-001800000002/a0000000000180001 thread. Totals were unchanged.",
+    "The copy projects/-Users-example-project/00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl is byte-identical to projects/-Users-example-project/00000000-0000-4000-8000-001800000001/subagents/agent-a0000000000180001.jsonl; every line names session 00000000-0000-4000-8000-001800000001 and agent a0000000000180001. Its records belong to thread 00000000-0000-4000-8000-001800000001/a0000000000180001, the subagent of the session they name, not to the session whose directory holds the file, so the copies are one thread and each response is one request with two identical original records. Either record may be the selected one.",
+    "Both sidecars name the same toolUseId, so both cite the one spawn edge from 00000000-0000-4000-8000-001800000001. The resumed session also replays the spawning record (projects/-Users-example-project/00000000-0000-4000-8000-001800000002.jsonl:2) under 00000000-0000-4000-8000-001800000001's sessionId; a replayed tool use is issued by the session it names, so the spawn edge never moves to 00000000-0000-4000-8000-001800000002, whichever file discovery reads first.",
+    "00000000-0000-4000-8000-001800000002's replays of 00000000-0000-4000-8000-001800000001's responses are resume-replay copies owned by 00000000-0000-4000-8000-001800000001 (design §3.4), and they add the fork edge from 00000000-0000-4000-8000-001800000001 to 00000000-0000-4000-8000-001800000002.",
+    "00000000-0000-4000-8000-001800000002's own subagent a0000000000180002 names 00000000-0000-4000-8000-001800000002, so it is 00000000-0000-4000-8000-001800000002's child and counts in 00000000-0000-4000-8000-001800000002's descendants.",
+    "If Claude Code's cleanup deletes 00000000-0000-4000-8000-001800000001's files, the copy alone still counts the subagent's two responses once, owned by 00000000-0000-4000-8000-001800000001/a0000000000180001; 00000000-0000-4000-8000-001800000001's own responses then survive only as 00000000-0000-4000-8000-001800000002's replays, which are copies and are not counted (design §3.4)."
+  ]
+}
