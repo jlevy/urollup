@@ -1821,30 +1821,13 @@ fn observe_parsed_source(
                 }
                 if !cumulative && owner != Some(file_thread_text) {
                     if let Some(usage) = &last {
-                        let mut observation = RequestObservation::new(view.evidence);
-                        observation.role = ObservationRole::Copy;
-                        observation.owner = owner
-                            .and_then(|owner| thread_ids.get(owner))
-                            .cloned()
-                            .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-                        observation.usage = Some(codex_usage(usage)?.into());
-                        if let Some(response_id) =
-                            owner.and_then(|owner| last_response_by_thread.get(owner))
-                        {
-                            observation.keys.push(
-                                RESPONSE_KEY
-                                    .key(vec![
-                                        KeyComponent::text(PROVIDER_NAMESPACE),
-                                        KeyComponent::text(strings.resolve(*response_id)),
-                                    ])?
-                                    .derive()?,
-                            );
-                        }
-                        observation.timestamp = view.timestamp;
-                        if let Some(context) = current_turn.and_then(|turn| turns.get(&turn)) {
-                            apply_context(&mut observation, context);
-                        }
-                        observations.push(observation);
+                        let response = owner
+                            .and_then(|owner| last_response_by_thread.get(owner))
+                            .map(|response| strings.resolve(*response));
+                        let context = current_turn.and_then(|turn| turns.get(&turn));
+                        observations.push(copied_counter_observation(
+                            &view, usage, owner, response, thread_ids, context,
+                        )?);
                     }
                 } else if cumulative {
                     let Some(total) = &total else { continue };
@@ -2516,6 +2499,37 @@ fn counter_signature(total: &CodexUsage) -> String {
     ]
     .map(|count| count.map_or_else(|| "?".to_owned(), |value| value.to_string()))
     .join(":")
+}
+
+/// A copy observation of the usage another thread's counter repeats in this rollout, keyed
+/// by that thread's latest response when one is known.
+fn copied_counter_observation(
+    view: &RecordView,
+    usage: &CodexUsage,
+    owner: Option<&str>,
+    response_id: Option<&str>,
+    thread_ids: &BTreeMap<String, AnalyticalId>,
+    context: Option<&TurnContext>,
+) -> Result<RequestObservation, AdapterError> {
+    let mut observation = RequestObservation::new(view.evidence);
+    observation.role = ObservationRole::Copy;
+    observation.owner = owner
+        .and_then(|owner| thread_ids.get(owner))
+        .cloned()
+        .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
+    observation.usage = Some(codex_usage(usage)?.into());
+    if let Some(response_id) = response_id {
+        observation.keys.push(
+            RESPONSE_KEY
+                .key(vec![KeyComponent::text(PROVIDER_NAMESPACE), KeyComponent::text(response_id)])?
+                .derive()?,
+        );
+    }
+    observation.timestamp = view.timestamp;
+    if let Some(context) = context {
+        apply_context(&mut observation, context);
+    }
+    Ok(observation)
 }
 
 fn usage_observation(

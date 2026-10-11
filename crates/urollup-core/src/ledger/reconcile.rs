@@ -506,6 +506,40 @@ pub fn reconcile_with_capacity(
     selector: &dyn RevisionSelector,
     capacity: &super::capacity::ObservationCapacity,
 ) -> Result<Ledger, ReconcileError> {
+    reconcile_with_stages(input, selector, capacity, &mut |_| {})
+}
+
+/// A point inside reconciliation, in the order reconciliation passes them: where slice 5's
+/// admission checkpoints run, and where the model-bound harness measures each structure the
+/// cost model charges.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReconcileStage {
+    /// The input is unpacked and nothing is built yet.
+    Start,
+    /// Threads and relationships are reconciled and observations are in canonical order.
+    Canonical,
+    /// The key graph holds every key and lineage link.
+    KeyGraph,
+    /// The grouping order is sorted, and the first-key list is freed.
+    Order,
+    /// Every request is built; observations, the order and the key graph are still held.
+    Requests,
+    /// Observations, the order and the key graph are freed.
+    Released,
+    /// Requests are sorted by ID.
+    Sorted,
+    /// Limits, tool actions and diagnostics are finalized, just before the ledger returns.
+    Finalized,
+}
+
+/// [`reconcile_with_capacity`], calling `stage` at each [`ReconcileStage`]. Output is the
+/// same whatever `stage` does.
+pub fn reconcile_with_stages(
+    input: ReconcileInput,
+    selector: &dyn RevisionSelector,
+    capacity: &super::capacity::ObservationCapacity,
+    stage: &mut dyn FnMut(ReconcileStage),
+) -> Result<Ledger, ReconcileError> {
     ensure_capacity(input.requests.len(), capacity)?;
     let ReconcileInput {
         threads,
@@ -520,6 +554,7 @@ pub fn reconcile_with_capacity(
     } = input;
     let mut coverage =
         ReconcileCoverage { observations: count(requests.len()), ..ReconcileCoverage::default() };
+    stage(ReconcileStage::Start);
 
     let mut registry = IdentityRegistry::new();
     let threads = reconcile_threads(threads, &mut registry, &mut diagnostics)?;
@@ -527,6 +562,7 @@ pub fn reconcile_with_capacity(
     let relationships = reconcile_relationships(relationships, &thread_ids)?;
     let mut observations = canonicalize_request_owners(requests, &thread_ids);
     dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
+    stage(ReconcileStage::Canonical);
 
     // Register every key, linking keys that share an observation, then lineage links.
     let mut graph = KeyGraph::with_capacity(observations.len());
@@ -539,6 +575,7 @@ pub fn reconcile_with_capacity(
         let (a, b) = (graph.node(&link.a), graph.node(&link.b));
         graph.link(a, b);
     }
+    stage(ReconcileStage::KeyGraph);
 
     // Group observations by linked set: sets in order of their lowest ID, members in
     // canonical order.
@@ -549,6 +586,7 @@ pub fn reconcile_with_capacity(
     order.sort_unstable_by(|(left_root, left), (right_root, right)| {
         graph.id(*left_root).cmp(graph.id(*right_root)).then(left.cmp(right))
     });
+    stage(ReconcileStage::Order);
 
     // One request per set, plus rare extra parts from conflicting keys; sizing up front
     // avoids doubling the widest vector of the run.
@@ -614,11 +652,14 @@ pub fn reconcile_with_capacity(
         }
         start = end;
     }
+    stage(ReconcileStage::Requests);
     drop(order);
     drop(observations);
     drop(graph);
+    stage(ReconcileStage::Released);
 
     let mut requests = Requests::from_unsorted(requests);
+    stage(ReconcileStage::Sorted);
     let candidate_sets = resolve_candidate_sets(&candidates, &mut requests, &mut diagnostics);
     coverage.candidate_sets = count(candidate_sets.len());
     coverage.requests = count(requests.len());
@@ -639,6 +680,7 @@ pub fn reconcile_with_capacity(
     let diagnostics = super::diagnostics::compact(diagnostics);
     gaps.sort();
     gaps.dedup();
+    stage(ReconcileStage::Finalized);
     Ok(Ledger {
         threads,
         relationships,
