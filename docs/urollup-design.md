@@ -737,9 +737,10 @@ reserved resource observation entity.
 **Status:** Confirmed.
 
 Session hierarchy comes from a **discovery index**, built before reconciliation from
-only thread-identifying data: Claude transcript paths and subagent `.meta.json` files,
-including those under `subagents/workflows/`, each Codex rollout’s first `session_meta`
-record, and each Pi session header.
+only thread-identifying data: Claude transcript paths, the session a subagent
+transcript’s lines name ([§3.4](#34-dialect-reconciliation-rules)) and subagent
+`.meta.json` files, including those under `subagents/workflows/`, each Codex rollout’s
+first `session_meta` record, and each Pi session header.
 It covers every root and date, because Codex subagents can start in later date
 directories and descendants can have usage outside the interval.
 
@@ -823,6 +824,23 @@ set these source-specific rules:
   `output_tokens`, so reconciliation selects one whole record (largest `output_tokens`,
   then highest block index, then last in file order, then lowest `src-` ID), adds a
   diagnostic when input or cache fields differ, and never merges fields.
+- **Claude Code subagent threads:** a subagent thread is the session its lines’
+  `sessionId` names plus the agent ID in its file name, not the directory that holds the
+  file. A record belongs to the session it names, or, when it names none, to the first
+  session an earlier line of its file named.
+  The file’s `.meta.json` sidecar belongs to the first session any of its lines name.
+  Without a named session, either falls back to the session whose directory holds the
+  file. A resumed or forked session can hold a byte-identical copy of an earlier
+  session’s subagent transcript and sidecar in its own `subagents/` directory, and the
+  copy’s lines still name the earlier session.
+  The copy is therefore that session’s subagent: each response it repeats is one request
+  with identical original records and one owner, and the copy alone still counts it once
+  after Claude Code deletes the original.
+  A line that names the holding session belongs to that session’s subagent with the same
+  agent ID. A tool use is issued by the thread that recorded it natively, so a resumed
+  session’s replay of a spawning record never moves the spawn edge, and where several
+  files describe one thread, the one with the lowest `src-` ID gives its purpose and
+  project.
 - **Claude Code copies:** a record that replays another thread’s record is a copy owned
   by that thread, never counted and never an ambiguous key.
   A `progress` record nesting a subagent’s assistant message is always a copy.

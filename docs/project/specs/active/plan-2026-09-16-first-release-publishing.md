@@ -131,6 +131,23 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   counter-only user fork counts its parent’s copied counters as its own.
   In a synthetic case the fork reports 340 instead of 180, with
   `coverage.complete: true`.
+- **Copied Claude subagent transcripts make their responses ambiguous (`uro-wvgc`,
+  open):** a resumed or forked Claude Code session can hold a byte-identical copy of an
+  earlier session’s subagent transcript in its own `subagents/` directory, whose lines
+  still name the earlier session.
+  `main` takes a subagent’s thread from the directory, so the original and the copy both
+  prove ownership of the same responses: whenever the copy’s `src-` ID sorts first, each
+  response lands on Claude Code’s unowned row with a `conflicting-owners` diagnostic,
+  and every copy adds an empty subagent thread.
+  Totals are unchanged.
+  A local real-history check on 2026-10-10 found a handful of such copies causing every
+  ambiguous Claude request.
+  In the `claude-project/resumed-subagent-copy` fixture `main` reports 2 of 7 requests
+  as ambiguous and 5 threads instead of 4.
+  [PR #34](https://github.com/jlevy/urollup/pull/34) identifies a subagent thread by the
+  session its lines name and the agent ID, so a copy is the original subagent and still
+  counts once after Claude Code deletes the original.
+  A real-history rerun must confirm it.
 
 ## Goals
 
