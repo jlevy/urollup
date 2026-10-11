@@ -837,10 +837,13 @@ set these source-specific rules:
   with identical original records and one owner, and the copy alone still counts it once
   after Claude Code deletes the original.
   A line that names the holding session belongs to that session’s subagent with the same
-  agent ID. A tool use is issued by the thread that recorded it natively, so a resumed
-  session’s replay of a spawning record never moves the spawn edge, and where several
-  files describe one thread, the one with the lowest `src-` ID gives its purpose and
-  project.
+  agent ID. A tool use is issued by the thread that recorded it natively, whichever file
+  discovery reads first: a resumed session’s replay of a spawning record issues it for
+  the session it names, and a nested copy, such as a `progress` record’s, issues none,
+  since the nested agent’s own transcript reports it.
+  Where several files describe one thread, the one with the lowest `src-` ID gives its
+  purpose and project, and one spawn edge: from the issuer of the lowest-`src-` sidecar
+  whose tool use has one, else from the thread’s session.
 - **Claude Code copies:** a record that replays another thread’s record is a copy owned
   by that thread, never counted and never an ambiguous key.
   A `progress` record nesting a subagent’s assistant message is always a copy.
@@ -859,9 +862,11 @@ set these source-specific rules:
   which derives from the root-relative path, breaks the tie.
 - **Claude Code resumed sessions:** a main-session record whose `sessionId` names
   another session is a resumed replay.
-  It is a copy, owned by the thread that owns its `uuid`, or else by the session it
-  names, and it adds a fork edge from that session to the resuming one, with a thread
-  for the named session even when its file was not discovered.
+  It is a copy, owned by the thread that owns its `uuid`, or else by the thread of the
+  named session that owns its `message.id`, as a side question repeating it does once
+  that session’s own transcript is deleted, or else by the session it names.
+  It adds a fork edge from that session to the resuming one, with a thread for the named
+  session even when its file was not discovered.
   A replay never claims ownership, so a resuming session whose file sorts before the
   original cannot take the original’s usage.
 - **Claude Code shared message IDs:** when records that are not replays report one
@@ -2048,6 +2053,11 @@ Every reading command accepts these flags, which compile into the `QuerySpec`:
 - Session hierarchy comes from the
   [discovery index](#32-relationships-and-the-discovery-index), and `sources` reports
   each root’s earliest retained record ([§2.1](#21-dialects-and-discovery)).
+- A transcript path selects the thread whose records the file holds.
+  A Claude transcript can hold records of several threads, as a copied subagent
+  transcript continued under the session that holds it does
+  ([§3.4](#34-dialect-reconciliation-rules)); its path then selects the thread its
+  location implies, the one a hook’s `agent_transcript_path` means.
 
 ### 6.2 Current-Session Detection
 
@@ -2568,7 +2578,13 @@ records how the engine reached this shape, with dated whole-history measurements
   narrowed selection, so ingest reads it or reports it as incomplete; a complete first
   line that is not valid JSON or not a `session_meta` record links nothing, and its
   rollout is narrowed by its own thread.
-  Identifying the dialect of a `--source` directory likewise skips files it cannot read.
+  A Claude family is a session’s transcript and directory, and a subagent transcript
+  whose lines first name another session joins that session’s family too
+  ([§3.4](#34-dialect-reconciliation-rules)), so selecting either session reads it.
+  That session is read from the transcript’s first complete lines, within one record’s
+  worth of bytes; a transcript whose window ends before a line names one stays in every
+  narrowed selection. Identifying the dialect of a `--source` directory likewise skips
+  files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
   weighting compressed files by an assumed expansion.
