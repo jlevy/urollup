@@ -277,6 +277,9 @@ struct SessionMeta {
     /// Whether a `history_base` is declared: the rollout references another rollout's
     /// prefix instead of copying it.
     history_base: bool,
+    /// Whether `source` is a subagent source other than memory consolidation, which Codex's
+    /// legacy-to-paginated migration, like a `subagent` `thread_source`, always bounds.
+    subagent_source: bool,
 }
 
 impl SessionMeta {
@@ -956,6 +959,7 @@ impl SourceDecoder {
                 subagent_history_start_ordinal: payload.subagent_history_start_ordinal,
                 paginated: payload.history_mode.as_deref() == Some("paginated"),
                 history_base: payload.history_base,
+                subagent_source: payload.subagent_source,
             };
             metas.own = Some(Box::new((meta, *evidence)));
         }
@@ -1305,9 +1309,11 @@ impl NativeBoundary {
 ///
 /// - a `history_base`, which a native paginated fork declares when it references its
 ///   parent's prefix instead of copying it;
-/// - a `thread_source` of `subagent` or `guardian_review`: Codex gives a native paginated
-///   subagent that inherits context a boundary, and its migration gives every subagent
-///   one, so such a rollout without one inherited nothing.
+/// - a subagent: a `thread_source` of `subagent` or `guardian_review`, or a subagent
+///   `source` other than memory consolidation. Codex gives a native paginated subagent
+///   that inherits context a boundary, and its migration gives one to every rollout with
+///   a subagent `source` or `thread_source`, so such a rollout without one inherited
+///   nothing.
 ///
 /// A seeded first counter ([`first_counter_seeded`]) is the third mark; it needs the
 /// parent's totals, so [`NativeBoundary::of_rollout`] checks it.
@@ -1317,6 +1323,7 @@ fn may_be_unmarked_fork(source: &ParsedSource, meta: &SessionMeta) -> bool {
         && meta.paginated
         && meta.parent().is_some()
         && !meta.history_base
+        && !meta.subagent_source
         && !matches!(meta.thread_source.as_deref(), Some("subagent" | "guardian_review"))
 }
 
@@ -1831,7 +1838,12 @@ fn observe_parsed_source(
             }
             RecordKind::ThreadSettingsApplied { thread_id } => {
                 active_thread = thread_id.unwrap_or(file_thread);
-                named_own = *thread_id == Some(file_thread);
+                // A settings event without a thread ID (before 0.152) names no owner, so
+                // while a turn-inferred start is open the lines after it stay the child's,
+                // as the start's evidence says; only a line naming a thread ends the window.
+                if thread_id.is_some() || inferred.is_none() {
+                    named_own = *thread_id == Some(file_thread);
+                }
                 if thread_id.is_some() {
                     inferred = None;
                 }
@@ -1965,6 +1977,8 @@ fn observe_parsed_source(
                     }
                     let mut copy_owner =
                         (usage_owner != Some(file_thread_text)).then_some(usage_owner);
+                    // An unmarked fork's first own step is checked as a declared boundary's
+                    // is, even before any copied counter gives it an inherited total.
                     let needs_baseline = inherited_total.is_some()
                         || matches!(
                             native_boundary,
