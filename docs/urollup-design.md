@@ -1268,12 +1268,14 @@ Counting rules that adapters must normalize explicitly:
   supports, so uncached input is the native value minus both.
   A usage object whose input is below their sum, a missing count read as 0, is never a
   silent zero: where the rollout would count it, its record or counter step is excluded
-  with a `codex-inclusive-input-underflow` diagnostic that names the rollout and line,
-  the rollout’s thread gets a coverage gap, and the run continues; a copy with such
-  usage keeps only its evidence.
+  with a `codex-inclusive-input-underflow` diagnostic that names the rollout and the
+  physical line, the rollout’s thread gets a coverage gap, and the run continues; a copy
+  with such usage, a copied counter step included, keeps only its evidence.
   A cumulative step excluded this way ends its counter epoch, so the next step is
   checked as a first step against the last total the rollout could read and earlier
-  usage never counts again.
+  usage never counts again; in a rollout that inherits no total, a step that lowers the
+  total still counts its own last usage, as the counter reset rule does.
+  The [Codex contract](formats/codex.md#failure-and-coverage-behavior) gives the cases.
   Claude Code’s `input_tokens` excludes both.
 - When a Claude Code record has `iterations`, its top-level `message.usage` equals the
   sum of the `message` iterations and excludes `advisor_message` iterations, which
@@ -2613,10 +2615,13 @@ records how the engine reached this shape, with dated whole-history measurements
   eight `u32` counters with a presence mask and interns full-width overflow patterns,
   and timestamps are compact.
   Observation shells are at most 232 B; this excludes owned payloads.
-  Name, limit-text and overflow-pattern intern tables live until process exit; their
-  distinct-value cardinality must be measured before repeated library/server ingestion.
-  Each source’s records are freed as soon as its observations are built, and maps needed
-  only to build observations are dropped before reconciliation.
+  Name, limit-text, overflow-pattern and pricing-context intern tables live until
+  process exit. The pricing-context table holds one entry per distinct combination of
+  provider, service tier and its basis, speed, inference geography and the conflict
+  flag, each value itself an interned name.
+  Their distinct-value cardinality must be measured before repeated library/server
+  ingestion. Each source’s records are freed as soon as its observations are built, and
+  maps needed only to build observations are dropped before reconciliation.
 - **Request grouping:** reconciliation sorts observations into canonical order in place
   and removes re-reads.
   An index-based union-find over request key IDs, whose set root is always the lowest

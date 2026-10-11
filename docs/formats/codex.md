@@ -198,16 +198,28 @@ thread, so that thread and the whole history report partial coverage; the run co
 and every other session still reports.
 
 A usage object whose `input_tokens` is below its cache reads plus writes is excluded the
-same way wherever the rollout would count it, as an original record or `compacted`
-record, a counter step the counter rules read, or the running total a root rollout’s
-twin moves; a copy with such usage keeps only its evidence.
+same way where the rollout would count it: an original record or `compacted` record, or
+the total or last usage of an own step the counter rules read.
 The excluded record or step adds no usage, and the rollout gets one
-`codex-inclusive-input-underflow` diagnostic, whose detail names the counts and the
-rollout’s path and line of the first such object and whose occurrences count the
-excluded records and steps, plus a coverage gap for its thread.
+`codex-inclusive-input-underflow` diagnostic and a coverage gap for its thread.
+The diagnostic’s detail names the rollout’s path, the physical line of the first
+excluded record or step, counting blank and malformed lines, and that line’s counts.
+Its occurrences count the records and steps whose usage is excluded; a rate-limit
+refresh that repeats an excluded step, or the counter of an excluded `compacted`
+original, adds none.
+A copy with such usage, including a copied counter step before a boundary, keeps only
+its evidence and gives the child no gap; a step the boundary cannot place is excluded
+once, as unverified.
+
 An inconsistent cumulative step ends its counter epoch: the next own step is checked as
 a first step against the last total the rollout could read, and a step that cannot be
 checked is excluded with it, so usage before the inconsistent step never counts again.
+The same holds after an unreadable copied total, or an unreadable total of a root
+rollout’s twin, whose usage is its record’s. In a rollout with no parent, boundary or
+other thread’s header, a step after an inconsistent one that lowers the total counts its
+own `last_token_usage`, as the counter rules’ reset does.
+A total that cannot be read never shows that a migration dropped nothing, so the
+dropped-response check excludes it as unverified.
 
 A copy without its original is excluded from counted totals; the Codex adapter emits no
 diagnostic for it, and it does not change completeness.
@@ -241,9 +253,12 @@ Rate-limit percentages are not token usage, invoices or list-price estimates.
   exactly like plain logs, and damaged compressed rollouts and unverifiable fork
   boundaries do not stop a report.
 - [Inconsistent usage](../../crates/urollup-core/tests/codex_inconsistent_usage.rs):
-  records and counter steps below their cache categories are excluded without counting
-  earlier usage again, and a [process test](../../crates/urollup/tests/cli_process.rs)
-  reports a Claude session beside one.
+  records, counter steps, refreshes, twins, compacted originals, copied and unplaced
+  steps below their cache categories, across worker counts and discovery orders; the
+  [paginated fork tests](../../crates/urollup-core/tests/paginated_forks.rs) cover an
+  unreadable total at the dropped-response check, and a
+  [process test](../../crates/urollup/tests/cli_process.rs) reports a Claude session
+  beside an inconsistent record.
 - [Pricing context](../../crates/urollup-core/tests/pricing_context.rs): recorded
   provider and tier per turn, complete snapshots and provider updates, which settings
   events set a child’s tier, conflicts that leave totals unchanged, and cache categories
