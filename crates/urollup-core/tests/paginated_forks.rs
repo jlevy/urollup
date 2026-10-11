@@ -2222,7 +2222,8 @@ fn a_parent_rollback_after_a_fork_is_still_counted_twice_until_uro_eh0d() {
 }
 
 #[test]
-fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_twice() {
+fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_twice_until_uro_eh0d()
+ {
     // Review A2 on PR #33 (probe P3b). The parent rolled back its first turn, so its first
     // migrated counter carries that turn's usage (160 on a last usage of 60), and a fork
     // copied that counter. Then a release from 0.153 resumed the parent, so it holds usage
@@ -2255,7 +2256,7 @@ fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_t
 }
 
 #[test]
-fn a_forks_own_step_that_repeats_a_parent_total_is_still_dropped_as_a_copy() {
+fn a_forks_own_step_that_repeats_a_parent_total_is_still_dropped_as_a_copy_until_uro_uwv0() {
     // Review A4 on PR #33 (probes P4b and P4c). The fork, taken after p-turn-1, retries the
     // parent's next prompt, and its response repeats the parent's p-turn-2 in every count.
     // Its total is then one the parent reported, which voids the inferred start, and that

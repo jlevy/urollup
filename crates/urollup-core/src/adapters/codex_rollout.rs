@@ -1923,8 +1923,9 @@ fn observe_parsed_source(
                                 // rollout's own lines; its first counter step is still
                                 // checked against the copied total.
                                 named_own = true;
-                                // A later unrecorded turn, as after a thread-less settings
-                                // event, never moves an open start.
+                                // An open start keeps `named_own` set, through a settings
+                                // event without a thread ID too, so none is open here; the
+                                // guard keeps a later unrecorded turn from ever moving one.
                                 if inferred.is_none() {
                                     inferred = Some(InferredStart {
                                         observations: observations.len(),

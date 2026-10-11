@@ -1002,12 +1002,12 @@ set these source-specific rules:
   leaves an open start’s lines the child’s; a later unrecorded turn never moves the
   start, and a line without an ordinal never closes the window.
   The counter that voids a start by repeating a total the parent reported is the
-  parent’s copy, so a child’s own step that repeats one in every count is dropped.
-  One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
-  dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
-  spawned in that turn, or a user fork taken before the rollback, holds its copy, so the
-  root’s next counter step and the child both count that turn; `main` already does this
-  for an unmigrated child.
+  parent’s copy, so a child’s own step that repeats one in every count is dropped
+  (`uro-uwv0`). One case still counts twice (`uro-eh0d`): a migrated root whose rollback
+  planning dropped a rolled-back turn, and its usage, from the root’s counters, while a
+  subagent spawned in that turn, or a user fork taken before the rollback, holds its
+  copy, so the root’s next counter step and the child both count that turn; `main`
+  already does this for an unmigrated child.
   Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
   is excluded as unverified, as below, when the region shows migrated content: a turn
   the parent’s turns cannot place, because it has no ID or the parent is not a
@@ -1027,10 +1027,11 @@ set these source-specific rules:
   seeded first counter, whose total neither its own `last_token_usage` nor a total its
   parent root reported accounts for, as a native fork’s continues the total Codex seeds
   it with. Only a counter-only parent root supplies those totals, so when a parent that
-  rolled back its first turn also holds usage records, a fork’s copy of its first
-  counter looks seeded and still counts again (`uro-eh0d`). Turns, totals and lines
-  naming a thread then decide its lines from the first, as above, and an inferred start
-  stays voidable to the end of the file unless a line names the fork.
+  rolled back its first turn is absent, holds usage records or has lineage, a fork’s
+  copy of its first counter looks seeded and still counts as the fork’s own, twice when
+  the parent is present (`uro-eh0d`). Turns, totals and lines naming a thread then
+  decide its lines from the first, as above, and an inferred start stays voidable to the
+  end of the file unless a line names the fork.
   A migration that kept only the suffix from the child’s own compaction dropped every
   earlier line, so in a rollout with usage records, when a `compacted` record naming the
   child is the only record of its response before the boundary, a first running total
