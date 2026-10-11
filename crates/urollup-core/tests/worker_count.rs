@@ -104,6 +104,7 @@ fn every_codex_fixture_ingests_identically_on_any_worker_count() {
         "archived-rename",
         "legacy-subagent-prefix",
         "legacy-user-fork-counters",
+        "migrated-user-fork",
         "paginated-subagent",
     ] {
         assert!(multi_source.iter().any(|name| name == expected), "{expected} has several sources");
