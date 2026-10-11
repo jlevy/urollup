@@ -5,7 +5,8 @@
 //! still names the earlier session. The copy is that session's subagent: its responses
 //! count once, owned by one thread, on any worker count and in any discovery order, and
 //! still count once after the original is deleted. A `progress` record's nested copy of a
-//! subagent record never decides a spawn either.
+//! subagent record never decides a spawn either, nor does a fork's replay of the record
+//! that spawned it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,7 +21,7 @@ use urollup_core::adapters::{Ingested, claude_project};
 use urollup_core::ledger::entities::{Counting, Ownership, Relationship, RelationshipKind, Thread};
 use urollup_core::ledger::identity::AnalyticalId;
 use urollup_core::ledger::reconcile::Ledger;
-use urollup_core::selection::{Agent, SessionIndex, agent_thread_identity};
+use urollup_core::selection::{Agent, SelectionQuery, SessionIndex, agent_thread_identity};
 use urollup_core::sources::roots::discover;
 
 const CASE: &str = "resumed-subagent-copy";
@@ -39,6 +40,10 @@ const WORKFLOW_STEP: &str = "a0000000000110002";
 const SIDE_QUESTION_CASE: &str = "btw-side-question";
 const SIDE_QUESTION: &str = "00000000-0000-4000-8000-000400000001";
 const SIDE_QUESTION_RESUMED: &str = "00000000-0000-4000-8000-000400000009";
+
+const FORK_CASE: &str = "fork-subagent-uuid-replay";
+const FORK_SESSION: &str = "00000000-0000-4000-8000-000500000001";
+const FORK_AGENT: &str = "a0000000000050001";
 
 const PROJECT: &str = "projects/-Users-example-project";
 
@@ -252,10 +257,10 @@ fn a_copy_still_counts_once_after_claude_code_deletes_the_original() {
     );
 }
 
-#[test]
-fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
-    let root = case_copy(CASE);
-    let copy = subagent_file(root.path(), RESUMED, COPIED_AGENT);
+/// Continues the resumed session's copy of the subagent transcript with one line that
+/// names the resumed session, and returns the copy's path.
+fn continue_copy(root: &Path) -> PathBuf {
+    let copy = subagent_file(root, RESUMED, COPIED_AGENT);
     let mut continued = line(&copy, 3);
     continued["sessionId"] = RESUMED.into();
     continued["parentUuid"] = continued["uuid"].clone();
@@ -264,6 +269,13 @@ fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
     continued["requestId"] = "req_011Synthetic18X3".into();
     continued["message"]["id"] = "msg_01Synthetic18X3".into();
     append_line(&copy, &continued);
+    copy
+}
+
+#[test]
+fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
+    let root = case_copy(CASE);
+    let copy = continue_copy(root.path());
     let ingested = ingest_invariantly(root.path());
 
     let copied = subagent_id(ORIGINAL, COPIED_AGENT);
@@ -282,6 +294,24 @@ fn a_continued_copy_belongs_line_by_line_to_the_session_each_line_names() {
     assert_eq!(index.resolve(copy.as_os_str()).expect("the copy's path resolves"), continuation);
     let original = subagent_file(root.path(), ORIGINAL, COPIED_AGENT);
     assert_eq!(index.resolve(original.as_os_str()).expect("the original resolves"), copied);
+}
+
+#[test]
+fn a_transcript_path_names_its_location_below_a_directory_named_subagents() {
+    // The root lies below a directory named `subagents`, which is not the `subagents/`
+    // directory of a session.
+    let parent = tempfile::tempdir().expect("a temporary directory");
+    let root = parent.path().join("subagents/claude");
+    copy_dir(&fixture(CASE), &root);
+    let copy = continue_copy(&root);
+    let ingested = ingest(&root, 1, false);
+
+    let mut index = SessionIndex::default();
+    index.add(Agent::Claude, &ingested).expect("the sessions index");
+    assert_eq!(
+        index.resolve(copy.as_os_str()).expect("the copy's path resolves"),
+        subagent_id(RESUMED, COPIED_AGENT)
+    );
 }
 
 #[test]
@@ -416,4 +446,34 @@ fn a_resumed_side_question_copy_keeps_one_owner_after_its_session_is_deleted() {
         "{:?}",
         ingested.ledger.diagnostics
     );
+}
+
+#[test]
+fn a_fork_replaying_the_record_that_spawned_it_never_spawns_itself() {
+    let root = case_copy(FORK_CASE);
+    let sidecar = subagent_file(root.path(), FORK_SESSION, FORK_AGENT).with_extension("meta.json");
+    let meta = json!({"agentType": "fork", "toolUseId": "toolu_01Synthetic05Fork"});
+    fs::write(&sidecar, format!("{meta}\n")).expect("the sidecar is writable");
+    let fork = subagent_id(FORK_SESSION, FORK_AGENT);
+    let session = thread_id(FORK_SESSION);
+
+    // The fork replays its parent's records by `uuid`, including the one that issued the
+    // fork's tool use; the session's own record of it, first by owner precedence, decides
+    // the spawn in every discovery order.
+    let ingested = ingest_invariantly(root.path());
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &fork), std::slice::from_ref(&session));
+    assert_eq!(totals(&ingested).owned.requests, 3);
+    let mut index = SessionIndex::default();
+    index.add(Agent::Claude, &ingested).expect("the sessions index");
+    let query = SelectionQuery { sessions: vec![FORK_SESSION.into()], ..SelectionQuery::default() };
+    assert_eq!(
+        index.select(&query).expect("the session selects"),
+        [session.clone(), fork.clone()].into()
+    );
+
+    // Once the session's transcript is deleted, the fork's replay is the only record of
+    // the tool use, and a thread never spawns itself: its session does.
+    fs::remove_file(session_file(root.path(), FORK_SESSION)).expect("the transcript is removed");
+    let ingested = ingest_invariantly(root.path());
+    assert_eq!(parents(&ingested, &RelationshipKind::Spawn, &fork), [session]);
 }

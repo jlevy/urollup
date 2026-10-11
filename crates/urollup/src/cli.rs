@@ -624,6 +624,11 @@ struct CatalogSource {
     families: Vec<SourceFamily>,
     native_selector: OsString,
     analytical_selector: String,
+    /// For a Claude subagent transcript, the native and analytical IDs of the session it
+    /// belongs to, which select it too: a copy is then read with that session even when
+    /// the session's own transcript and directory are gone or lie in another project
+    /// directory or root.
+    session_selectors: Option<(OsString, String)>,
     paths: Vec<PathBuf>,
     /// Whether no file of the source had a readable header, so its family is unknown.
     unread: bool,
@@ -634,8 +639,14 @@ impl CatalogSource {
         if agent.is_some_and(|expected| self.agent != expected) {
             return false;
         }
-        if selector == self.native_selector
-            || selector.to_str() == Some(self.analytical_selector.as_str())
+        let named = |native: &OsStr, analytical: &str| {
+            selector == native || selector.to_str() == Some(analytical)
+        };
+        if named(&self.native_selector, &self.analytical_selector)
+            || self
+                .session_selectors
+                .as_ref()
+                .is_some_and(|(native, analytical)| named(native, analytical))
         {
             return true;
         }
@@ -734,7 +745,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
     let subagents =
         components.iter().position(|component| component.as_os_str() == OsStr::new("subagents"));
     let mut unread = false;
-    let (families, native_selector, identity_native) = match subagents {
+    let (families, native_selector, identity_native, session) = match subagents {
         Some(index) if index > 0 => {
             let family = components[..index].iter().fold(PathBuf::new(), |mut path, component| {
                 path.push(component.as_os_str());
@@ -763,7 +774,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
                 }
             };
             let identity_native = format!("{session}/{}", native.to_string_lossy());
-            (families, native, identity_native)
+            (families, native, identity_native, Some(session))
         }
         _ => {
             let native = locator.file_stem().map_or_else(OsString::new, OsString::from);
@@ -771,12 +782,23 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
                 vec![locator.with_extension("")],
                 native.clone(),
                 native.to_string_lossy().into_owned(),
+                None,
             )
         }
     };
-    let analytical_selector = derive_agent_thread_id(Agent::Claude, &identity_native)
-        .map_err(|error| Failure::runtime(error.to_string()))?
-        .to_string();
+    let analytical_id = |native: &str| {
+        derive_agent_thread_id(Agent::Claude, native)
+            .map(|id| id.to_string())
+            .map_err(|error| Failure::runtime(error.to_string()))
+    };
+    let analytical_selector = analytical_id(&identity_native)?;
+    let session_selectors = match session {
+        Some(session) => {
+            let analytical = analytical_id(&session)?;
+            Some((OsString::from(session), analytical))
+        }
+        None => None,
+    };
     Ok(CatalogSource {
         agent: Agent::Claude,
         families: families
@@ -785,6 +807,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
             .collect(),
         native_selector,
         analytical_selector,
+        session_selectors,
         paths: source_paths(source),
         unread,
     })
@@ -800,10 +823,10 @@ enum NamedSession {
     Unknown,
 }
 
-/// The first session a Claude subagent transcript's lines name, as ingestion reads it:
-/// the `sessionId` string of the first complete line that has one, within one record's
-/// worth of bytes. A source no file of which can be read is left to its directory, as
-/// before this read existed; ingestion reports it.
+/// The first session a Claude subagent transcript's lines name, by the adapter's own line
+/// rule ([`claude_project::line_session`]): the `sessionId` of the first complete line that
+/// names one, within one record's worth of bytes. A source no file of which can be read is
+/// left to its directory, as before this read existed; ingestion reports it.
 fn read_claude_named_session(source: &DiscoveredSource) -> NamedSession {
     reader::peek(&source.files, |reader| {
         let mut window = reader.take(MAX_CATALOG_HEADER_BYTES);
@@ -820,10 +843,7 @@ fn read_claude_named_session(source: &DiscoveredSource) -> NamedSession {
                     NamedSession::None
                 });
             }
-            let named = serde_json::from_slice::<serde_json::Value>(&line).ok().and_then(|value| {
-                value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned)
-            });
-            if let Some(named) = named {
+            if let Some(named) = claude_project::line_session(&line) {
                 return Some(NamedSession::Named(named));
             }
         }
@@ -874,6 +894,7 @@ fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Fa
                 )],
                 native_selector: OsString::from(thread),
                 analytical_selector,
+                session_selectors: None,
                 paths: source_paths(source),
                 unread,
             })
@@ -1313,7 +1334,6 @@ mod tests {
         run, run_with_context, stats_requested,
     };
     use clap::Parser;
-    use urollup_core::accounting::totals::selection_totals;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
     use urollup_core::ledger::reconcile::ReconcileError;
     use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
@@ -1801,9 +1821,31 @@ mod tests {
         assert_eq!(ingested.ledger.requests.len(), 2);
     }
 
-    #[test]
-    fn exact_selection_keeps_a_copied_subagent_with_the_session_its_lines_name() {
-        fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    /// The `claude-project/resumed-subagent-copy` case: `ORIGINAL` has a subagent, and
+    /// `RESUMED` resumes it, holds a byte-identical copy of that subagent's transcript
+    /// (`COPY`) and has a subagent of its own (`NEW`).
+    mod subagent_copy {
+        use std::ffi::OsString;
+        use std::fs;
+        use std::path::{Path, PathBuf};
+
+        use urollup_core::accounting::totals::selection_totals;
+        use urollup_core::adapters::claude_project;
+        use urollup_core::ledger::identity::AnalyticalId;
+        use urollup_core::selection::{Scope, SelectionQuery, SessionIndex};
+        use urollup_core::sources::roots;
+
+        use super::super::{Agent, derive_agent_thread_id, narrow_discoveries};
+
+        pub(super) const ORIGINAL: &str = "00000000-0000-4000-8000-001800000001";
+        pub(super) const RESUMED: &str = "00000000-0000-4000-8000-001800000002";
+        pub(super) const PROJECT: &str = "projects/-Users-example-project";
+        pub(super) const COPY: &str =
+            "00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180001.jsonl";
+        pub(super) const NEW: &str =
+            "00000000-0000-4000-8000-001800000002/subagents/agent-a0000000000180002.jsonl";
+
+        pub(super) fn copy_dir(from: &Path, to: &Path) {
             fs::create_dir_all(to).unwrap();
             for entry in fs::read_dir(from).unwrap() {
                 let path = entry.unwrap().path();
@@ -1815,76 +1857,188 @@ mod tests {
                 }
             }
         }
-        const ORIGINAL: &str = "00000000-0000-4000-8000-001800000001";
-        const RESUMED: &str = "00000000-0000-4000-8000-001800000002";
-        let root = tempfile::tempdir().unwrap();
-        copy_dir(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../urollup-core/tests/fixtures/claude-project/resumed-subagent-copy"),
-            root.path(),
-        );
-        // Cleanup took the original subagent transcript but left its session's transcript,
-        // so only the resumed session's directory still holds the subagent.
-        let project = root.path().join("projects/-Users-example-project");
-        fs::remove_dir_all(project.join(ORIGINAL)).unwrap();
-        let discovery = roots::discover(&[root.path().join("projects")]);
-        let whole = claude_project::ingest_discovery(discovery.clone(), false).unwrap();
-        let mut whole_index = SessionIndex::default();
-        whole_index.add(Agent::Claude, &whole).unwrap();
 
-        for (session, kept) in [
-            (
-                ORIGINAL,
-                vec![
-                    format!("{ORIGINAL}.jsonl"),
-                    format!("{RESUMED}/subagents/agent-a0000000000180001.jsonl"),
-                ],
-            ),
-            (
-                RESUMED,
-                vec![
-                    format!("{RESUMED}.jsonl"),
-                    format!("{RESUMED}/subagents/agent-a0000000000180001.jsonl"),
-                    format!("{RESUMED}/subagents/agent-a0000000000180002.jsonl"),
-                ],
-            ),
-        ] {
+        pub(super) fn fixture() -> PathBuf {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../urollup-core/tests/fixtures/claude-project/resumed-subagent-copy")
+        }
+
+        /// A writable copy of the case.
+        pub(super) fn case() -> tempfile::TempDir {
+            let root = tempfile::tempdir().unwrap();
+            copy_dir(&fixture(), root.path());
+            root
+        }
+
+        pub(super) fn thread(native: &str) -> AnalyticalId {
+            derive_agent_thread_id(Agent::Claude, native).unwrap()
+        }
+
+        /// The original session and its copied subagent.
+        pub(super) fn original_subtree() -> std::collections::BTreeSet<AnalyticalId> {
+            [thread(ORIGINAL), thread(&format!("{ORIGINAL}/a0000000000180001"))].into()
+        }
+
+        /// Narrows discovery of `roots` to `selector` and requires that it keeps the files
+        /// `kept`, given relative to `base`, and that the selected threads and their totals
+        /// equal whole history's. Returns the selected threads.
+        pub(super) fn narrowed_selection(
+            base: &Path,
+            roots: &[PathBuf],
+            selector: &str,
+            kept: &[String],
+        ) -> std::collections::BTreeSet<AnalyticalId> {
+            let discovery = roots::discover(roots);
+            let whole = claude_project::ingest_discovery(discovery.clone(), false).unwrap();
+            let mut whole_index = SessionIndex::default();
+            whole_index.add(Agent::Claude, &whole).unwrap();
+
             let query = SelectionQuery {
-                sessions: vec![OsString::from(session)],
+                sessions: vec![OsString::from(selector)],
                 scope: Some(Scope::Descendants),
                 ..SelectionQuery::default()
             };
-            let mut claude = discovery.clone();
+            let mut claude = discovery;
             let mut codex = roots::Discovery::default();
-            assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
-            let mut locators: Vec<_> =
-                claude.sources.iter().map(|source| source.locator.clone()).collect();
-            locators.sort();
-            let kept: Vec<_> =
-                kept.iter().map(|path| format!("-Users-example-project/{path}")).collect();
-            assert_eq!(locators, kept, "{session}");
+            assert!(
+                narrow_discoveries(&mut claude, &mut codex, &query).unwrap(),
+                "{selector} narrows discovery"
+            );
+            let mut files: Vec<_> = claude
+                .sources
+                .iter()
+                .map(|source| {
+                    source.root.join(&source.locator).strip_prefix(base).unwrap().to_owned()
+                })
+                .collect();
+            files.sort();
+            let mut kept: Vec<_> = kept.iter().map(PathBuf::from).collect();
+            kept.sort();
+            assert_eq!(files, kept, "{selector}");
 
             let narrowed = claude_project::ingest_discovery(claude, false).unwrap();
             let mut index = SessionIndex::default();
             index.add(Agent::Claude, &narrowed).unwrap();
             let selected = index.select(&query).unwrap();
-            assert_eq!(selected, whole_index.select(&query).unwrap(), "{session}");
+            assert_eq!(selected, whole_index.select(&query).unwrap(), "{selector}");
             assert_eq!(
                 selection_totals(&narrowed.ledger, &selected).unwrap(),
                 selection_totals(&whole.ledger, &selected).unwrap(),
-                "{session}: exact selection agrees with whole history"
+                "{selector}: exact selection agrees with whole history"
             );
+            selected
         }
-        let original = derive_agent_thread_id(Agent::Claude, ORIGINAL).unwrap();
-        let copied =
-            derive_agent_thread_id(Agent::Claude, &format!("{ORIGINAL}/a0000000000180001"))
+    }
+
+    #[test]
+    fn exact_selection_keeps_a_copied_subagent_with_the_session_its_lines_name() {
+        use subagent_copy::{COPY, NEW, ORIGINAL, PROJECT, RESUMED};
+
+        let root = subagent_copy::case();
+        // Cleanup took the original subagent transcript but left its session's transcript,
+        // so only the resumed session's directory still holds the subagent.
+        fs::remove_dir_all(root.path().join(PROJECT).join(ORIGINAL)).unwrap();
+        let roots = [root.path().join("projects")];
+        let in_project = |path: &str| format!("{PROJECT}/{path}");
+
+        // The copy names the original session, so selecting that session reads it, and its
+        // directory's family with the resumed session's replay of the spawning record.
+        let selected = subagent_copy::narrowed_selection(
+            root.path(),
+            &roots,
+            ORIGINAL,
+            &[
+                in_project(&format!("{ORIGINAL}.jsonl")),
+                in_project(&format!("{RESUMED}.jsonl")),
+                in_project(COPY),
+                in_project(NEW),
+            ],
+        );
+        assert_eq!(selected, subagent_copy::original_subtree());
+        subagent_copy::narrowed_selection(
+            root.path(),
+            &roots,
+            RESUMED,
+            &[in_project(&format!("{RESUMED}.jsonl")), in_project(COPY), in_project(NEW)],
+        );
+    }
+
+    #[test]
+    fn exact_selection_reads_a_copied_subagent_after_its_session_is_deleted() {
+        use subagent_copy::{COPY, NEW, ORIGINAL, PROJECT, RESUMED};
+
+        let root = subagent_copy::case();
+        // Cleanup deleted the whole original session, which the newer resumed session and
+        // its copy of the subagent outlive.
+        let project = root.path().join(PROJECT);
+        fs::remove_file(project.join(format!("{ORIGINAL}.jsonl"))).unwrap();
+        fs::remove_dir_all(project.join(ORIGINAL)).unwrap();
+        let roots = [root.path().join("projects")];
+        let kept = [
+            format!("{PROJECT}/{RESUMED}.jsonl"),
+            format!("{PROJECT}/{COPY}"),
+            format!("{PROJECT}/{NEW}"),
+        ];
+
+        // The native and analytical IDs of the deleted session select the same subtree.
+        let analytical = subagent_copy::thread(ORIGINAL).to_string();
+        for selector in [ORIGINAL, analytical.as_str()] {
+            let selected = subagent_copy::narrowed_selection(root.path(), &roots, selector, &kept);
+            assert_eq!(selected, subagent_copy::original_subtree(), "{selector}");
+        }
+    }
+
+    #[test]
+    fn exact_selection_reads_a_copied_subagent_whose_session_lies_elsewhere() {
+        use subagent_copy::{COPY, NEW, ORIGINAL, PROJECT, RESUMED};
+
+        // The resumed session lies in another project directory, and cleanup took the
+        // original subagent transcript.
+        let root = subagent_copy::case();
+        let other = "projects/-Users-example-other";
+        fs::create_dir_all(root.path().join(other)).unwrap();
+        for name in [format!("{RESUMED}.jsonl"), RESUMED.to_owned()] {
+            fs::rename(root.path().join(PROJECT).join(&name), root.path().join(other).join(&name))
                 .unwrap();
-        let query = SelectionQuery {
-            sessions: vec![OsString::from(ORIGINAL)],
-            scope: Some(Scope::Descendants),
-            ..SelectionQuery::default()
-        };
-        assert_eq!(whole_index.select(&query).unwrap(), [original, copied].into());
+        }
+        fs::remove_dir_all(root.path().join(PROJECT).join(ORIGINAL)).unwrap();
+        let selected = subagent_copy::narrowed_selection(
+            root.path(),
+            &[root.path().join("projects")],
+            ORIGINAL,
+            &[
+                format!("{PROJECT}/{ORIGINAL}.jsonl"),
+                format!("{other}/{RESUMED}.jsonl"),
+                format!("{other}/{COPY}"),
+                format!("{other}/{NEW}"),
+            ],
+        );
+        assert_eq!(selected, subagent_copy::original_subtree());
+
+        // The two sessions lie under different roots, as the two default roots allow: the
+        // first holds only the original session's transcript, the second only the resumed
+        // session.
+        let base = tempfile::tempdir().unwrap();
+        let (first, second) = (base.path().join("first"), base.path().join("second"));
+        subagent_copy::copy_dir(&subagent_copy::fixture(), &first);
+        subagent_copy::copy_dir(&subagent_copy::fixture(), &second);
+        fs::remove_dir_all(first.join(PROJECT).join(ORIGINAL)).unwrap();
+        fs::remove_file(first.join(PROJECT).join(format!("{RESUMED}.jsonl"))).unwrap();
+        fs::remove_dir_all(first.join(PROJECT).join(RESUMED)).unwrap();
+        fs::remove_file(second.join(PROJECT).join(format!("{ORIGINAL}.jsonl"))).unwrap();
+        fs::remove_dir_all(second.join(PROJECT).join(ORIGINAL)).unwrap();
+        let selected = subagent_copy::narrowed_selection(
+            base.path(),
+            &[first.join("projects"), second.join("projects")],
+            ORIGINAL,
+            &[
+                format!("first/{PROJECT}/{ORIGINAL}.jsonl"),
+                format!("second/{PROJECT}/{RESUMED}.jsonl"),
+                format!("second/{PROJECT}/{COPY}"),
+                format!("second/{PROJECT}/{NEW}"),
+            ],
+        );
+        assert_eq!(selected, subagent_copy::original_subtree());
     }
 
     #[test]
