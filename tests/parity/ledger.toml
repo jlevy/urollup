@@ -852,3 +852,31 @@ expected_matches = 10
 metric = "uncached_input"
 expected_delta = 3000
 expected_matches = 10
+
+[[entry]]
+id = "codex-cache-write-input"
+case = "codex-rollout/cache-write-input"
+cause = "ccusage-bug"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-dialect-facts"
+design = "docs/urollup-design.md#41-measure-contracts"
+retirement = "Remove when the pinned ccusage release reads cache_write_input_tokens and subtracts it from input_tokens, as ccusage commit 15b3bef does after 20.0.20; it now leaves the case's 1,000 cache-write tokens in uncached input and reports no cache writes."
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = 1000
+expected_matches = 6
+
+[[entry.difference]]
+metric = "cache_write"
+expected_delta = 500
+expected_matches = 8
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -1000
+expected_matches = 6
+
+[[entry.difference]]
+metric = "uncached_input"
+expected_delta = -500
+expected_matches = 8
