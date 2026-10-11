@@ -2045,7 +2045,7 @@ fn evidence_against_a_migrated_forks_inferred_start_turns_the_rest_into_a_gap() 
 fn a_native_user_fork_with_usage_records_is_untouched() {
     // Codex 0.153 and later write a referenced paginated fork: a session_meta at its
     // history_base end, its own settings event, then its own records and counters
-    // (codex-rs/core/src/session/mod.rs:1693-1703 at rust-v0.162.1). Its first counter is
+    // (codex-rs/core/src/session/mod.rs:1692-1703 at rust-v0.162.1). Its first counter is
     // seeded with the parent's 160, and its record names it.
     let root = fork_root(Some(&parent_with_two_turns()), &[]);
     let meta = json!({"ordinal": 5, "type": "session_meta", "payload": {

@@ -126,11 +126,22 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   local real-history check found none.
   It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
   (`uro-aakb`).
-- **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
-  open):** the same migration drops a legacy fork’s copied `session_meta`, so a migrated
-  counter-only user fork counts its parent’s copied counters as its own.
+- **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`, fix
+  in review):** the same migration drops a legacy fork’s copied `session_meta` and gives
+  it no boundary, so a migrated counter-only user fork counts its parent’s copied
+  counters as its own.
   In a synthetic case the fork reports 340 instead of 180, with
-  `coverage.complete: true`.
+  `coverage.complete: true`; in the `codex-rollout/migrated-user-fork` fixture `main`
+  reports 61,100 instead of 37,350 tokens.
+  The fix in review judges a counter-only paginated rollout with a parent link, and no
+  boundary, `history_base`, subagent `thread_source`, seeded first counter or other
+  thread’s header, as if its boundary lay past its last line.
+  PR #32’s turn, total and contradiction rules then decide its lines from the first.
+  A fork whose parent is absent, has lineage or recorded no turn IDs reports its
+  undecided steps as a `codex-history-boundary-unverified` gap, never a count.
+  A native counter-only fork written before 0.153 still counts the parent total Codex
+  seeded it with, as on `main`
+  ([research](../../research/research-2026-10-10-codex-paginated-subagent-boundary.md#residual-risks)).
 
 ## Goals
 

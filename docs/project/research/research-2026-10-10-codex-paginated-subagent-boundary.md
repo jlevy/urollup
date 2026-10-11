@@ -1,6 +1,6 @@
 ---
 title: Codex Paginated Subagent History Boundaries
-description: What subagent_history_start_ordinal means in Codex rust-v0.155.0 through rust-v0.162.1, read from source, including the legacy-to-paginated migration that puts the boundary past a rollout's last line, and the ownership rule urollup takes from it.
+description: What subagent_history_start_ordinal means in Codex rust-v0.155.0 through rust-v0.162.1, read from source, including the legacy-to-paginated migration that puts the boundary past a rollout's last line and leaves a legacy user fork's copied prefix unmarked, and the ownership rules urollup takes from it.
 date: 2026-10-10
 author: Joshua Levy (github.com/jlevy) with LLM assistance
 status: Complete for rust-v0.155.0 through rust-v0.162.1; the residual risks below need a real-history check
@@ -14,15 +14,17 @@ PR #16 (`uro-kpbp`) treated every line before a Codex child rollout’s
 A local scan of real history then found Guardian review and subagent rollouts whose
 declared boundary lies past their last line, with the child’s own `token_usage_record`
 lines before it, so their usage was excluded as copies while coverage stayed complete
-(`uro-jqc3`).
+(`uro-jqc3`). Review of that fix found the opposite error in migrated legacy user forks,
+which declare no boundary: their copied counters counted again (`uro-p9ua`).
 
 This note reads the public Codex source to settle what the ordinal indexes, what a
 paginated child file holds before it, and how urollup should assign ownership.
 It was read from shallow, sparse fetches of `rust-v0.162.1` (commit `092d3ac`, the
 newest release) and `rust-v0.155.0` (commit `f0a1b8f`); the code cited below is the same
 in both unless noted.
-Codex is Apache-2.0; this note paraphrases rather than quotes it.
-The earlier survey is in
+The user-fork findings were read at `rust-v0.162.1` only, with the referenced fork also
+checked at `rust-v0.150.0`. Codex is Apache-2.0; this note paraphrases rather than
+quotes it. The earlier survey is in
 [research-2026-09-14-agent-tool-source-reviews.md](research-2026-09-14-agent-tool-source-reviews.md#subagents-forks-and-resume).
 
 ## Findings
@@ -112,6 +114,45 @@ This matches the scanned shape: a paginated Guardian rollout that numbers its li
 0, starts with a compaction and a settings event naming itself, holds its own records,
 and declares a boundary past its end.
 
+### Migrated Legacy User Forks
+
+- A legacy user fork copies its parent’s rollout, `session_meta` and `token_count`
+  events included
+  ([survey](research-2026-09-14-agent-tool-source-reviews.md#subagents-forks-and-resume)).
+  The migration treats it as an ordinary rollout, since only a subagent source or a
+  `subagent` `thread_source` makes a subagent
+  ([`rollout_migration.rs:458-473`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration.rs#L458-L473)),
+  and only a subagent gets a boundary
+  ([`729-731`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration.rs#L729-L731)).
+- So a migrated fork keeps its `forked_from_id`, its head becomes paginated with no
+  `history_base` and no boundary
+  ([`canonicalizer.rs:82-100`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration/canonicalizer.rs#L82-L100)),
+  and the copied prefix’s `session_meta` is dropped
+  ([`117`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/rollout_migration/canonicalizer.rs#L117)).
+  Nothing marks the copied lines any more, and their `turn_context` lines keep the
+  parent’s turn IDs.
+- A native paginated user fork copies nothing: it references its parent’s prefix
+  ([`core/src/thread_manager.rs:1502-1517`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/thread_manager.rs#L1502-L1517)),
+  writes its own settings event first and then its own lines
+  ([`core/src/session/mod.rs:1692-1703`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/session/mod.rs#L1692-L1703)),
+  and declares a `history_base`, unless it forks at the start of its parent’s first
+  rollout. There the history base is none
+  ([`thread-store/src/local/paginated_fork.rs:170-178`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/paginated_fork.rs#L170-L178)),
+  and the inherited context is only the parent’s header
+  ([`model_context.rs:149-155`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/local/model_context.rs#L149-L155)).
+- **A native fork’s first counter is seeded.** Codex seeds a fork’s running total from
+  the last `token_count` in its inherited context
+  ([`core/src/session/mod.rs:1683-1688`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/session/mod.rs#L1683-L1688)),
+  so a native fork with a history base starts at its parent’s latest total when its
+  inherited context holds a counter.
+  Referenced forks are present at `rust-v0.150.0` (`3b3b4f8`), so one written before
+  0.153 holds counters only.
+  A migrated fork’s first counter instead copies one of its parent’s.
+- A native paginated subagent gets a boundary exactly when it inherits context
+  ([`thread-store/src/live_thread.rs:151-177`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/thread-store/src/live_thread.rs#L151-L177),
+  [`core/src/session/session.rs:862-868`](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/session/session.rs#L862-L868)),
+  so a paginated subagent without one inherited nothing.
+
 ### Usage Records Name Their Thread
 
 - Codex writes the recording thread into each `token_usage_record` when the response
@@ -166,6 +207,19 @@ urollup applies this as of `uro-jqc3` (design §3.4):
    what the child’s own records report shows responses the migration dropped, which is a
    gap. In a counter-only rollout, a counter that reports the same response is its twin
    and adds no usage.
+7. As of `uro-p9ua`, a rollout that declares no boundary but may be a migrated user fork
+   is judged by rules 4 and 5 as if its boundary lay past its last line: a counter-only
+   paginated rollout with a parent link and no other thread’s `session_meta`, without a
+   mark of a rollout that copied nothing.
+   The marks are a `history_base`, a `thread_source` of `subagent` or `guardian_review`,
+   and a seeded first counter, whose total neither its own last usage nor a total its
+   parent root reported accounts for.
+   The parent’s totals keep a copied counter in the rule when a migrated root’s rollback
+   planning dropped its first turn and left that turn’s usage in the next counter.
+   So its lines are the parent root’s copy from the first line until the first turn the
+   parent never recorded, whose first step is checked against the copied total.
+   No line reaches the boundary, so an inferred start stays voidable to the end of the
+   file unless a line names the fork, and what nothing decides is a gap.
 
 PR #16’s other protections are unchanged: a foreign `session_meta`, records naming the
 parent, the first-step check against the inherited total, and the exclusion of unnamed
@@ -203,11 +257,26 @@ usage under an invalid or unpositioned boundary.
   with usage records is accounted from its records alone, so counter-only turns before
   them are not counted (`uro-r8si`).
 
-- **Migrated user forks.** A legacy user fork migrates as an ordinary rollout: it keeps
-  no boundary and loses the foreign header of its copied prefix.
-  Copied records still name the parent, but in a counter-only fork the copied counters
-  count as the fork’s own (`uro-p9ua`). The turn and total evidence of rule 4 would
-  decide them too, from the first line, but this is unchanged by `uro-jqc3`.
+- **Undecidable migrated forks.** Rule 7 decides a migrated counter-only user fork only
+  against a parent root without lineage.
+  Without it, a fork of a fork or of a subagent, or one whose turns have no IDs, reports
+  every unnamed step as a coverage gap, and so does every step after evidence voids an
+  inferred start. A native fork from a thread’s start, written before 0.152 (no
+  `history_base` and no settings event naming it), is indistinguishable from a migrated
+  fork, so it is a gap when its parent is absent although it copied nothing.
+  When a migrated parent’s rollback planning dropped its first turn and the parent is
+  absent, the fork’s first counter looks seeded, so the fork counts that copy as its own
+  usage, as before `uro-p9ua`.
+
+- **Native counter-only forks count their seed.** A referenced fork written before 0.153
+  has no usage records, and its first counter continues the parent’s total that Codex
+  seeded it with. urollup starts a fork that has neither a boundary nor copied counters
+  from zero, so that step counts the parent’s total again, with complete coverage.
+  Rule 7 deliberately leaves such a fork, marked by its `history_base` and seeded first
+  counter, unchanged (`paginated_forks.rs` pins it); checking the seed against the
+  parent’s totals would fix it.
+  A migrated fork resumed by 0.153 or later falls out of rule 7 once it has usage
+  records, and its counter-only turns are not counted (`uro-r8si`).
 
 - **Usage dropped by migration.** A bounded subagent migration drops the child’s lines
   before its newest compaction.
