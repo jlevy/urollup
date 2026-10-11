@@ -45,13 +45,13 @@ This section is the project’s single record of release readiness.
 The README, `AGENTS.md`, the product plan and the governing review link here rather than
 restating blockers, so a status change is one edit.
 
-As of 2026-10-10 UTC, readiness is divided into four gates so a locally testable alpha
+As of 2026-10-11 UTC, readiness is divided into four gates so a locally testable alpha
 is not confused with a publishable release:
 
 | Gate | Exit condition | Current state |
 | --- | --- | --- |
-| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). `main` still has the [open correctness fixes](#open-correctness-fixes) below. The CLI and local-QA corrections `uro-oz6w` and `uro-qg1a` merged in PRs #25 and #24 on 2026-10-10 |
-| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on the remaining [open correctness fixes](#open-correctness-fixes), a real-history rerun after them, and process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
+| Automated 0.1 product | The uncached Claude Code and Codex adapters, exact session selection, `report`, `daily`, `sessions`, JSON and table output, terminal-aware color, stderr-only interactive progress, plain machine streams, sanitized fixture parity, goldens and repository gates pass | Implementation stack merged at main `4c55617`; all 15 jobs passed in [CI run 35492922611](https://github.com/jlevy/urollup/actions/runs/35492922611). The CLI and local-QA corrections `uro-oz6w` and `uro-qg1a` merged in PRs #25 and #24 on 2026-10-10. Every [correctness fix](#open-correctness-fixes) the 2026-10-10 real-history rerun found has merged: PR #32 on 2026-10-10 and PRs #33, #34 and #19 on 2026-10-11. The residual shapes listed there stay on `main`, each with a bead. Process-wide admission has its design, ledger and cost model (PRs #27–#29, `uro-6pi8` slices 1–3) but is not yet wired into ingestion |
+| Local alpha acceptance | The privacy-tested local aggregate mode and pinned-ccusage diff run against consented logs; G1 passes; unobserved Claude record shapes and remaining maintainer decisions are resolved or explicitly deferred | G1 (`uro-d36a`) and full-history QA (`uro-ky6c`) remain open. G1 waits on a real-history rerun now that the [correctness fixes](#open-correctness-fixes) have merged (`uro-mxv0`), and on process-wide safety and scale evidence (`uro-zrr0`). A successful exploratory live run does not close these gates |
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Not started; this plan defines the implementation and acceptance contract |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
@@ -72,10 +72,12 @@ valuation must not be advertised as completed 0.1 features.
 ### Open Correctness Fixes
 
 This list records the correctness defects found on `main` and their state as of the date
-above. PRs #16 and #18 merged on 2026-10-09 and PR #26 on 2026-10-10. A local
-real-history rerun on 2026-10-10 found the migrated Guardian and subagent defect
-(`uro-jqc3`), and review of its fix found the related migrated-fork defect (`uro-p9ua`).
-Codex totals stay provisional until the open fixes land and the comparison is rerun.
+above. PRs #16 and #18 merged on 2026-10-09, PRs #26 and #32 on 2026-10-10, and PRs #33,
+#34 and #19 on 2026-10-11. A local real-history rerun on 2026-10-10 found the migrated
+Guardian and subagent defect (`uro-jqc3`) and the copied Claude subagent defect
+(`uro-wvgc`), and review of the `uro-jqc3` fix found the related migrated-fork defect
+(`uro-p9ua`). Codex and Claude totals stay provisional until the comparison is rerun on
+`main` with these fixes (`uro-mxv0`).
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
@@ -83,11 +85,12 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   100-token prefix and adds 20 tokens reports 220 instead of 120, with
   `coverage.complete: true` and no diagnostic.
   Fixed in [PR #16](https://github.com/jlevy/urollup/pull/16), merged 2026-10-09.
-- **Codex counter-only usage beside usage records (`uro-h2sf`):** any
-  `token_usage_record` in a Codex rollout made every cumulative `token_count` in it
-  count nothing. A session that Codex before 0.153 started and a later release resumed
-  loses its pre-upgrade usage, and a rollout that an older release appended counter-only
-  turns to loses those turns, with `coverage.complete: true` and no diagnostic.
+- **Codex counter-only usage beside usage records (`uro-h2sf`, fixed for root rollouts
+  in PR #26, merged 2026-10-10):** any `token_usage_record` in a Codex rollout made
+  every cumulative `token_count` in it count nothing.
+  A session that Codex before 0.153 started and a later release resumed loses its
+  pre-upgrade usage, and a rollout that an older release appended counter-only turns to
+  loses those turns, with `coverage.complete: true` and no diagnostic.
   In the `codex-rollout/mixed-counter-direct` fixture the history reports 90,000 instead
   of 139,700 tokens. [PR #26](https://github.com/jlevy/urollup/pull/26), merged
   2026-10-10, fixes root rollouts (no parent, fork origin or history boundary), which
@@ -101,20 +104,20 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   totals while coverage stays complete (`uro-1h5s`); Codex subagent requests report an
   `unknown` model and effort (`uro-5nkv`); and a lowered Codex cumulative total is
   charged to one request (`uro-v1c9`).
-- **Codex Guardian and subagent usage excluded as copied history (`uro-jqc3`, open):**
-  Codex’s legacy-to-paginated rollout migration sets a child’s
-  `subagent_history_start_ordinal` past the file’s last line, so every line, including
-  the child’s own `token_usage_record` lines, falls before the boundary and is excluded
-  as the parent’s copied history, with `coverage.complete: true` and no diagnostic.
-  The rerun found this in many migrated Guardian-review and subagent rollouts
+- **Codex Guardian and subagent usage excluded as copied history (`uro-jqc3`, fixed in
+  PR #32, merged 2026-10-10):** Codex’s legacy-to-paginated rollout migration sets a
+  child’s `subagent_history_start_ordinal` past the file’s last line, so every line,
+  including the child’s own `token_usage_record` lines, falls before the boundary and is
+  excluded as the parent’s copied history, with `coverage.complete: true` and no
+  diagnostic. The rerun found this in many migrated Guardian-review and subagent rollouts
   ([research](../../research/research-2026-10-10-codex-paginated-subagent-boundary.md)).
   In the `codex-rollout/guardian-migrated-boundary` fixture `main` reports 9,600 instead
-  of 21,190 tokens. [PR #32](https://github.com/jlevy/urollup/pull/32) owns a usage
-  record by the thread it names, decides a migrated counter-only child’s unassigned
-  lines by the turns its parent root recorded and by the parent’s counter totals, and
-  counts a `compacted` record that is the only record of its response.
-  Only a root with neither lineage nor an old-format subagent’s nested `thread_spawn`
-  parent (`uro-3b12`) decides a child’s turns.
+  of 21,190 tokens. [PR #32](https://github.com/jlevy/urollup/pull/32), merged
+  2026-10-10, owns a usage record by the thread it names, decides a migrated
+  counter-only child’s unassigned lines by the turns its parent root recorded and by the
+  parent’s counter totals, and counts a `compacted` record that is the only record of
+  its response. Only a root with neither lineage nor an old-format subagent’s nested
+  `thread_spawn` parent (`uro-3b12`) decides a child’s turns.
   Until the boundary, or a line naming the child, a later turn or total the parent
   recorded, or a line naming another thread, voids an inferred start.
   What it still cannot place is a `codex-history-boundary-unverified` coverage gap, so
@@ -124,12 +127,12 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   One shape still counts twice: a subagent spawned in a turn that a migrated root’s
   rollback planning dropped (`uro-eh0d`, also on `main` for unmigrated children); a
   local real-history check found none.
-  It blocks G1 (`uro-d36a`), milestone 0.1 (`uro-n8h5`) and the core CLI delivery slice
-  (`uro-aakb`).
-- **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`, fix
-  in review):** the same migration drops a legacy fork’s copied `session_meta` and gives
-  it no boundary, so a migrated counter-only user fork counts its parent’s copied
-  counters as its own.
+  A real-history rerun after the fix still gates G1 (`uro-d36a`), milestone 0.1
+  (`uro-n8h5`) and the core CLI delivery slice (`uro-aakb`).
+- **Migrated legacy Codex user forks count their parent’s prefix again (`uro-p9ua`,
+  fixed in PR #33, merged 2026-10-11):** the same migration drops a legacy fork’s copied
+  `session_meta` and gives it no boundary, so a migrated counter-only user fork counts
+  its parent’s copied counters as its own.
   In a synthetic case the fork reports 340 instead of 180, with
   `coverage.complete: true`; in the `codex-rollout/migrated-user-fork` fixture `main`
   reports 61,100 instead of 37,350 tokens.
@@ -145,18 +148,20 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   ([research](../../research/research-2026-10-10-codex-paginated-subagent-boundary.md#residual-risks)):
   - The `uro-eh0d` rollback double count also reaches migrated user forks: a fork taken
     before its parent rolled back a turn the fork copied (synthetic: 280 against a real
-    220), or a fork whose parent rolled back its first turn and holds usage records, so
-    that no counter-only root supplies the totals the seeded check compares (350 against
-    190). A local real-history check found no migrated user fork with own totals inside
-    a parent rollback window.
+    220), or a fork whose parent rolled back its first turn and is absent, holds usage
+    records or has lineage, so that no counter-only root supplies the totals the seeded
+    check compares and the fork counts its copy of that first counter as its own (350
+    against 190 when a parent with usage records is present).
+    A local real-history check found no migrated user fork with own totals inside a
+    parent rollback window.
   - A native counter-only fork written before 0.153 still counts the parent total Codex
     seeded it with, as on `main` (`uro-p12c`).
   - A fork’s own step that repeats a parent total in every count is dropped as the
-    parent’s copy, as PR #32’s rule does for a migrated subagent.
-- **Copied Claude subagent transcripts make their responses ambiguous (`uro-wvgc`,
-  open):** a resumed or forked Claude Code session can hold a byte-identical copy of an
-  earlier session’s subagent transcript in its own `subagents/` directory, whose lines
-  still name the earlier session.
+    parent’s copy, as PR #32’s rule does for a migrated subagent (`uro-uwv0`).
+- **Copied Claude subagent transcripts make their responses ambiguous (`uro-wvgc`, fixed
+  in PR #34, merged 2026-10-11):** a resumed or forked Claude Code session can hold a
+  byte-identical copy of an earlier session’s subagent transcript in its own
+  `subagents/` directory, whose lines still name the earlier session.
   `main` takes a subagent’s thread from the directory, so the original and the copy both
   prove ownership of the same responses: whenever the copy’s `src-` ID sorts first, each
   response lands on Claude Code’s unowned row with a `conflicting-owners` diagnostic,
@@ -172,7 +177,21 @@ Codex totals stay provisional until the open fixes land and the comparison is re
   Exact session selection reads a copy whenever the session its lines name is selected,
   by native or `thr-` ID, even after Claude Code deletes that session’s own files or
   when they lie in another project directory or root.
-  A real-history rerun must confirm it.
+  Two residual shapes remain: across project directories and roots, the session
+  transcript’s path and the copy’s own selectors still miss each other (`uro-4v0g`), and
+  once a session’s transcript is deleted another fork’s replay can still decide a spawn
+  (`uro-x146`). A real-history rerun must confirm the fix (`uro-mxv0`).
+- **Codex cache writes counted twice, and inconsistent usage aborting runs (`uro-381f`,
+  fixed in PR #19, merged 2026-10-11):** Codex normalization subtracted only cache reads
+  from inclusive input, so every cache-write token was also counted as ordinary input.
+  That writes sit inside `input_tokens` is an inference from Codex’s Responses mapping,
+  and no observed record has had cache writes
+  ([incident](../../../formats/accounting-incidents.md#codex-cache-write-double-counting)).
+  One Codex usage object whose input was below its cache reads stopped every
+  whole-history command for both agents.
+  Such usage, now also input below reads plus writes, is excluded with one
+  `codex-inclusive-input-underflow` diagnostic and an `InconsistentUsage` coverage gap
+  per rollout, and the run continues.
 
 ## Goals
 

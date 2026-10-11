@@ -31,8 +31,9 @@ use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
-    RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, Confidence, ModelBasis, ModelName, ModelUsage, Pricing, PricingContext,
+    ProviderLimitObservation, Relationship, RelationshipKind, ServiceTier, SourceArtifact,
+    SourceCapability, Thread, TierBasis,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -110,11 +111,11 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 /// The largest a decoded record may be.
 ///
 /// One record is held for every usage line of a whole history until its observation is
-/// built, so this size bounds that phase: the 381,000 records of a 2.8 GB corpus take
-/// 73 MiB inline. The layout is exactly 200 bytes: 16 of evidence position, a 12-byte
-/// thread, four 4-byte symbols, a 32-byte message ID with its digest, a 16-byte request
-/// ID, a 16-byte timestamp, 64 bytes of counts with a 1-byte presence mask, a 17-byte
-/// optional uuid digest, two flags and an 8-byte pointer to rare fields.
+/// built, so this size bounds that phase: at this budget the 381,000 records of a 2.8 GB
+/// corpus take at most 73 MiB inline. A record holds its evidence position, thread,
+/// interned symbols, message ID with its digest, request ID, timestamp, counts with a
+/// presence mask, optional uuid digest and flags, plus pointers to its rare fields and to
+/// its shared pricing context; `a_decoded_record_is_compact` pins its size.
 const _: () =
     assert!(size_of::<ParsedRecord>() <= 200, "a decoded Claude record outgrew its size budget");
 
@@ -300,6 +301,7 @@ struct ParsedRecord {
     project: Option<Sym>,
     model: Option<Sym>,
     effort: Option<Sym>,
+    pricing: Option<Pricing>,
     forced_copy: bool,
     request_record: bool,
     /// The digest of `uuid`, which only joins replays to originals.
@@ -859,6 +861,7 @@ impl SourceDecoder {
                 .map(|project| strings.intern(&project)),
             model: fields.message.model.as_deref().map(|model| strings.intern(model)),
             effort: fields.effort.as_deref().map(|effort| strings.intern(effort)),
+            pricing: pricing_context(&fields.message.pricing),
             forced_copy,
             request_record,
             uuid: fields.uuid.as_deref().map(digest),
@@ -887,6 +890,21 @@ impl SourceDecoder {
         }
         record
     }
+}
+
+/// A request's recorded pricing context, interned so identical contexts share storage.
+/// A field the record omits stays unknown; it never comes from an earlier request.
+fn pricing_context(fields: &line::PricingFields<'_>) -> Option<Pricing> {
+    let context = PricingContext {
+        speed: fields.speed.as_deref().map(Name::new),
+        service_tier: fields
+            .service_tier
+            .as_deref()
+            .map(|tier| ServiceTier { name: Name::new(tier), basis: TierBasis::Request }),
+        inference_geo: fields.inference_geo.as_deref().map(Name::new),
+        ..PricingContext::default()
+    };
+    (context != PricingContext::default()).then(|| Pricing::new(context))
 }
 
 /// The project name a working directory implies: its last component.
@@ -1110,6 +1128,7 @@ fn normalize(
             | DiagnosticCode::ConflictingOwners
             | DiagnosticCode::ConflictingAccounts
             | DiagnosticCode::ConflictingModels
+            | DiagnosticCode::ConflictingPricingContext
             | DiagnosticCode::UnresolvedCandidate
             | DiagnosticCode::CounterReset
             | DiagnosticCode::CounterGap
@@ -1122,6 +1141,7 @@ fn normalize(
             | DiagnosticCode::CodexEstimateCompaction
             | DiagnosticCode::CodexEstimateContextWindowFill
             | DiagnosticCode::CodexHistoryBoundaryUnverified
+            | DiagnosticCode::CodexInclusiveInputUnderflow
             | DiagnosticCode::CodexRolloutDuplicateLocation
             | DiagnosticCode::MalformedLine
             | DiagnosticCode::PendingTail
@@ -1195,7 +1215,7 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
     drop((facts, subagent_meta, tool_records));
 
     // Reserve per chunk after earlier record vectors have dropped. A single reserve for
-    // every record would allocate the observation table (~224 B each) while the corpus
+    // every record would allocate the observation table (~232 B each) while the corpus
     // is still fully resident beside the Codex ledger.
     let mut observations = Vec::new();
     let mut limit_observations = Vec::new();
@@ -1548,6 +1568,7 @@ fn observe(
             basis: ModelBasis::Served,
         });
         observation.effort = record.effort.map(|effort| strings.resolve(effort).into());
+        observation.pricing = record.pricing;
         observation.timestamp = record.timestamp.map(|time| time.get().into());
         if let Some(model) = observation.model.as_ref() {
             observation.invariants.push((MODEL_INVARIANT, model.name));
@@ -1843,7 +1864,7 @@ mod tests {
         let bytes =
             br#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#;
         let evidence = source_evidence(0);
-        let raw = RawRecord { evidence: &evidence, bytes };
+        let raw = RawRecord { evidence: &evidence, bytes, line: 1 };
         let mut first = SourceDecoder::new("project/one.jsonl");
         let mut second = SourceDecoder::new("project/two.jsonl");
         assert_eq!(first.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Decoded);
@@ -1851,7 +1872,7 @@ mod tests {
         assert_eq!(first.records.len(), 1);
         assert!(second.records.is_empty());
         // Once any worker exhausts the budget, even content-only records cancel.
-        let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+        let skipped = RawRecord { evidence: &evidence, bytes: b"{}", line: 2 };
         assert_eq!(first.decode_with_admission(&skipped, Some(&budget)), RecordDisposition::Stop);
     }
 
@@ -1867,7 +1888,7 @@ mod tests {
         let observe_line = |line: &str, ambiguous: &HashSet<[u8; 16]>| {
             let evidence = source_evidence(0);
             let mut decoder = SourceDecoder::new("project/s1.jsonl");
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             assert_eq!(decoder.decode(&raw), RecordDisposition::Decoded, "{line}");
             let owners = Owners { messages: HashMap::new(), uuids: HashMap::new() };
             observe(
@@ -1994,7 +2015,7 @@ mod tests {
                 let bytes = serde_json::to_vec(line).unwrap();
                 let evidence = source_evidence(offset);
                 offset += 1;
-                decoder.decode(&RawRecord { evidence: &evidence, bytes: &bytes })
+                decoder.decode(&RawRecord { evidence: &evidence, bytes: &bytes, line: 1 })
             })
             .collect();
         (decoder, dispositions)
@@ -2172,6 +2193,7 @@ mod tests {
         let disposition = decoder.decode(&RawRecord {
             evidence: &evidence,
             bytes: b"{\"type\":\"assistant\",\"n\":1e400}",
+            line: 1,
         });
         assert_eq!(disposition, RecordDisposition::Malformed);
         assert_eq!(decoder.facts.evidence, Some(evidence));
@@ -2189,6 +2211,11 @@ mod tests {
             assert_eq!(RecordTime::new(timestamp).get(), timestamp);
         }
         assert_eq!(size_of::<Option<RecordTime>>(), 16);
+    }
+
+    #[test]
+    fn a_decoded_record_is_compact() {
+        assert_eq!(size_of::<super::ParsedRecord>(), 184);
     }
 
     #[test]

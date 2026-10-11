@@ -5,9 +5,12 @@
 //! recorded as a subset of output that is never added again. Each category is `None` when
 //! the source does not report it, which is different from a reported zero.
 //!
-//! Dialects disagree on what "input" means: Codex and other Responses API clients report
-//! input that includes cache reads, while Claude reports input that excludes cache reads
-//! and writes. [`InputSemantics`] makes that explicit, so no report has to guess.
+//! Dialects disagree on what "input" means: Codex input is read as including cache reads
+//! and cache writes, while Claude reports input that excludes both. Codex source states
+//! that cache reads are inside its input and reports writes beside them in the same input
+//! breakdown, but does not state that writes are inside it, so that part is an inference
+//! (docs/formats/accounting-incidents.md). [`InputSemantics`] makes the choice explicit,
+//! so no report has to guess.
 //!
 //! All arithmetic is checked; `clippy::arithmetic_side_effects` is denied in this module.
 
@@ -338,9 +341,9 @@ impl TokenMeasures {
 /// What a dialect's native input count includes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InputSemantics {
-    /// Native input includes cache reads (Codex and the Responses API): uncached input is
-    /// the native value minus cache reads.
-    IncludesCacheRead,
+    /// Native input is read as including cache reads and writes (Codex). That writes are
+    /// included is an inference from Codex's Responses API mapping, not a stated contract.
+    IncludesCache,
     /// Native input excludes cache reads and writes (Claude): it is the uncached input.
     ExcludesCache,
 }
@@ -356,30 +359,41 @@ pub struct NativeInput {
     pub cache_write: Option<u64>,
 }
 
-/// A native input count smaller than the cache reads it claims to include.
+/// A native input count smaller than the cache categories it claims to include.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("native input {input} is smaller than the {cache_read} cache reads it includes")]
-pub struct InputBelowCacheRead {
+#[error(
+    "native input {input} is smaller than the {cache_read} cache reads and {cache_write} cache writes it includes"
+)]
+pub struct InputBelowCache {
     /// The native input count.
     pub input: u64,
     /// The native cache reads.
     pub cache_read: u64,
+    /// The native cache-write count.
+    pub cache_write: u64,
 }
 
 /// Derives disjoint input categories from native counters.
 ///
-/// With [`InputSemantics::IncludesCacheRead`], an input smaller than its cache reads is an
-/// error rather than a silent zero, so the caller records a diagnostic and keeps the native
-/// values.
+/// With [`InputSemantics::IncludesCache`], a missing cache category reads as 0, and an input
+/// smaller than the cache categories is an error rather than a silent zero; the Codex
+/// adapter excludes that usage as inconsistent and reports a coverage gap.
 pub fn normalize_input(
     semantics: InputSemantics,
     native: NativeInput,
-) -> Result<TokenMeasures, InputBelowCacheRead> {
-    let uncached_input = match (semantics, native.input, native.cache_read) {
-        (InputSemantics::IncludesCacheRead, Some(input), Some(cache_read)) => {
-            Some(input.checked_sub(cache_read).ok_or(InputBelowCacheRead { input, cache_read })?)
+) -> Result<TokenMeasures, InputBelowCache> {
+    let uncached_input = match (semantics, native.input) {
+        (InputSemantics::IncludesCache, Some(input)) => {
+            let cache_read = native.cache_read.unwrap_or(0);
+            let cache_write = native.cache_write.unwrap_or(0);
+            Some(
+                input
+                    .checked_sub(cache_read)
+                    .and_then(|remaining| remaining.checked_sub(cache_write))
+                    .ok_or(InputBelowCache { input, cache_read, cache_write })?,
+            )
         }
-        (InputSemantics::IncludesCacheRead | InputSemantics::ExcludesCache, input, _) => input,
+        (InputSemantics::IncludesCache | InputSemantics::ExcludesCache, input) => input,
     };
     Ok(TokenMeasures {
         uncached_input,
@@ -408,7 +422,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        InputBelowCacheRead, InputSemantics, Measures, NativeInput, TokenMeasures, TokenOverflow,
+        InputBelowCache, InputSemantics, Measures, NativeInput, TokenMeasures, TokenOverflow,
         normalize_input,
     };
 
@@ -469,7 +483,7 @@ mod tests {
         // The same logical usage as the two dialects record it (qm's mixed-semantics defect:
         // adding cache reads to Codex input counts them twice).
         let codex = normalize_input(
-            InputSemantics::IncludesCacheRead,
+            InputSemantics::IncludesCache,
             NativeInput { input: Some(1_000), cache_read: Some(800), cache_write: None },
         )
         .unwrap();
@@ -484,13 +498,114 @@ mod tests {
     }
 
     #[test]
+    fn codex_cache_writes_are_part_of_inclusive_input() {
+        let normalized = normalize_input(
+            InputSemantics::IncludesCache,
+            NativeInput { input: Some(100), cache_read: Some(20), cache_write: Some(10) },
+        )
+        .unwrap();
+        assert_eq!(normalized.uncached_input, Some(70));
+        assert_eq!(normalized.inclusive_input().unwrap(), Some(100));
+        assert_eq!(normalized.cache_write_unspecified, Some(10));
+    }
+
+    /// Every combination of present and missing counts in a small range: an error exactly
+    /// when input is below reads plus writes, a missing count reading as 0, and otherwise
+    /// categories that add back up to the native input.
+    #[test]
+    fn inclusive_input_normalizes_exhaustively() {
+        let values = || std::iter::once(None).chain((0..8_u64).map(Some));
+        for input in values() {
+            for cache_read in values() {
+                for cache_write in values() {
+                    let native = NativeInput { input, cache_read, cache_write };
+                    let result = normalize_input(InputSemantics::IncludesCache, native);
+                    let read = cache_read.unwrap_or(0);
+                    let write = cache_write.unwrap_or(0);
+                    let cached = read.checked_add(write).unwrap();
+                    match input {
+                        Some(input) if input < cached => assert_eq!(
+                            result,
+                            Err(InputBelowCache { input, cache_read: read, cache_write: write }),
+                            "{native:?}"
+                        ),
+                        Some(input) => {
+                            let measures = result.unwrap();
+                            assert_eq!(
+                                measures.uncached_input,
+                                input.checked_sub(cached),
+                                "{native:?}"
+                            );
+                            assert_eq!(measures.cache_read, cache_read, "{native:?}");
+                            assert_eq!(measures.cache_write_unspecified, cache_write, "{native:?}");
+                            assert_eq!(measures.inclusive_input().unwrap(), Some(input));
+                        }
+                        None => {
+                            let measures = result.unwrap();
+                            assert_eq!(measures.uncached_input, None, "{native:?}");
+                            assert_eq!(measures.cache_read, cache_read, "{native:?}");
+                            assert_eq!(measures.cache_write_unspecified, cache_write, "{native:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proptest! {
+        /// Normalization is linear on consistent usage, so a counter delta of normalized
+        /// running totals equals the normalized usage of the request it adds.
+        #[test]
+        fn counter_deltas_equal_per_request_normalization(
+            first in (0_u64..1_000, 0_u64..1_000, 0_u64..1_000),
+            second in (0_u64..1_000, 0_u64..1_000, 0_u64..1_000),
+        ) {
+            let native = |(read, write, uncached): (u64, u64, u64)| NativeInput {
+                input: Some(read.checked_add(write).unwrap().checked_add(uncached).unwrap()),
+                cache_read: Some(read),
+                cache_write: Some(write),
+            };
+            let total = |(a, b, c): (u64, u64, u64), (x, y, z): (u64, u64, u64)| {
+                (a.checked_add(x).unwrap(), b.checked_add(y).unwrap(), c.checked_add(z).unwrap())
+            };
+            let normalize =
+                |usage| normalize_input(InputSemantics::IncludesCache, native(usage)).unwrap();
+            let mut counter = crate::ledger::counters::RunningTotal::new();
+            let opening = counter.observe(&normalize(first), None).unwrap();
+            prop_assert_eq!(opening.delta, normalize(first));
+            let step = counter.observe(&normalize(total(first, second)), None).unwrap();
+            if step.event == crate::ledger::counters::CounterEvent::Repeated {
+                prop_assert_eq!(second, (0, 0, 0));
+            } else {
+                prop_assert_eq!(step.delta, normalize(second));
+            }
+        }
+    }
+
+    #[test]
+    fn cache_categories_cannot_exceed_inclusive_input() {
+        for (input, read, write) in [(10, 6, 5), (10, 0, 11), (u64::MAX, u64::MAX, 1)] {
+            let error = normalize_input(
+                InputSemantics::IncludesCache,
+                NativeInput {
+                    input: Some(input),
+                    cache_read: Some(read),
+                    cache_write: Some(write),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, InputBelowCache { input, cache_read: read, cache_write: write });
+        }
+    }
+
+    #[test]
     fn inclusive_input_below_its_cache_reads_is_an_error_not_zero() {
         let error = normalize_input(
-            InputSemantics::IncludesCacheRead,
+            InputSemantics::IncludesCache,
             NativeInput { input: Some(10), cache_read: Some(11), cache_write: None },
         )
         .unwrap_err();
-        assert_eq!(error, InputBelowCacheRead { input: 10, cache_read: 11 });
+        assert_eq!(error, InputBelowCache { input: 10, cache_read: 11, cache_write: 0 });
     }
 
     #[test]

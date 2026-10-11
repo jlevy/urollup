@@ -72,6 +72,95 @@ fn observed(src: u8, offset: u64, response: &str, output: u64) -> RequestObserva
     observation
 }
 
+fn tier(name: &str) -> crate::ledger::entities::ServiceTier {
+    crate::ledger::entities::ServiceTier {
+        name: Name::new(name),
+        basis: crate::ledger::entities::TierBasis::ThreadSetting,
+    }
+}
+
+#[test]
+fn pricing_context_survives_reconciliation_without_copy_contamination() {
+    use crate::ledger::entities::{Pricing, PricingContext};
+    let context = Pricing::new(PricingContext {
+        provider: Some(Name::new("openai")),
+        service_tier: Some(tier("fast")),
+        ..PricingContext::default()
+    });
+    let mut original = observed(0, 0, "priced", 10);
+    original.pricing = Some(context);
+    let mut copy = observed(1, 0, "priced", 10);
+    copy.role = ObservationRole::Copy;
+    copy.pricing = Some(Pricing::new(PricingContext {
+        service_tier: Some(tier("wrong-copy-tier")),
+        ..PricingContext::default()
+    }));
+    let ledger = reconcile(
+        ReconcileInput {
+            requests: vec![copy, original],
+            source_table: test_sources(),
+            ..ReconcileInput::default()
+        },
+        &LatestRevision,
+    )
+    .unwrap();
+    let actual = ledger.requests.values().next().unwrap().pricing.unwrap();
+    assert_eq!(actual, context, "an interned context is shared, not copied");
+    assert!(std::ptr::eq(actual.context(), context.context()));
+    assert!(ledger.diagnostics.is_empty(), "a copy's context never conflicts");
+}
+
+#[test]
+fn pricing_context_fills_missing_fields_but_marks_conflicting_originals() {
+    use crate::ledger::entities::{Pricing, PricingContext};
+    for conflict in [false, true] {
+        let mut first = observed(0, 0, "priced", 10);
+        first.pricing = Some(Pricing::new(PricingContext {
+            provider: Some(Name::new("openai")),
+            service_tier: conflict.then(|| tier("standard")),
+            ..PricingContext::default()
+        }));
+        let mut second = observed(1, 0, "priced", 11);
+        second.pricing = Some(Pricing::new(PricingContext {
+            service_tier: Some(tier("fast")),
+            speed: Some(Name::new("fast")),
+            ..PricingContext::default()
+        }));
+        // An original without a context neither fills nor counts as evidence.
+        let third = observed(2, 0, "priced", 12);
+        let ledger = reconcile(
+            ReconcileInput {
+                requests: vec![second, third, first],
+                source_table: test_sources(),
+                ..ReconcileInput::default()
+            },
+            &LatestRevision,
+        )
+        .unwrap();
+        let context = ledger.requests.values().next().unwrap().pricing.unwrap();
+        assert_eq!(context.provider, Some(Name::new("openai")));
+        assert_eq!(context.speed, Some(Name::new("fast")));
+        assert_eq!(context.conflicted, conflict);
+        let conflicts: Vec<_> = ledger
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::ConflictingPricingContext)
+            .collect();
+        if conflict {
+            assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+            let diagnostic = conflicts[0];
+            assert_eq!(
+                diagnostic.detail,
+                "original records disagree on service_tier (fast, standard), so none of them can choose a rate"
+            );
+            assert_eq!(diagnostic.evidence.len(), 2, "only originals with a context are cited");
+        } else {
+            assert!(conflicts.is_empty());
+            assert_eq!(context.service_tier, Some(tier("fast")));
+        }
+    }
+}
+
 fn stored(prefix: IdPrefix, kind: &str, name: &str) -> StoredIdentity {
     StoredIdentity::derive(IdentityKey::new(prefix, kind, vec![KeyComponent::text(name)])).unwrap()
 }
@@ -219,7 +308,7 @@ fn native_sequence_preserves_boundaries_and_order() {
     assert_eq!(sequences.map(NativeSequence::get), values);
     assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(size_of::<Option<NativeSequence>>(), 9);
-    assert!(size_of::<RequestObservation>() <= 224);
+    assert!(size_of::<RequestObservation>() <= 232);
 }
 
 #[test]

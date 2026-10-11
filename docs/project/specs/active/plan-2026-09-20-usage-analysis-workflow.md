@@ -21,7 +21,16 @@ summary, bundle and pricing work; it does not introduce another storage format o
 accounting engine. The [usage guide](../../../usage-analysis.md) owns user-facing
 instructions.
 
-The narrower 0.1 alpha still delivers uncached token reports.
+The [analytical tables and pivots plan](plan-2026-09-28-analytical-tables-and-pivots.md)
+refines the reusable data projections, query semantics, and thin local HTML viewer.
+It is a draft follow-up, not an additional alpha release gate.
+
+The current CLI delivers uncached token reports.
+The maintainer’s frozen alpha scope (`uro-aakb`) puts supported cost rollups in the core
+CLI delivery slice below, beside the accounting fixes and memory/scale acceptance.
+Until they land, list-price valuation is not advertised as a 0.1 feature; the
+[release readiness record](plan-2026-09-16-first-release-publishing.md#current-readiness-and-critical-path)
+owns which gates have passed.
 Whole-history analysis across every facet is accepted only when G5 passes; a green 0.1
 gate does not imply it.
 Persistent caching and the web UI retain their existing phase boundaries.
@@ -211,9 +220,13 @@ Build time and postprocessing time stay separate.
 
 ### Core CLI delivery slice: 2026-09-27
 
-The maintainer requested a reliable, landable Claude Code and Codex CLI, with clean
-rollups and an agent reporting skill, before additional adapters or a full web UI. This
-delivery slice crosses existing milestone boundaries without declaring the full G5
+The maintainer requested a reliable, landable Claude Code and Codex CLI with per-session
+and whole-machine usage and supported cost rollups.
+The subsequent scope freeze (`uro-aakb`) defers the reporting skill, reusable artifacts,
+joint-query expansion, and web UI while accounting and safety stabilize.
+Their owners (`uro-qvp1`, `uro-ni7m`, `uro-vgea`, `uro-cye3`, `uro-x8r8` and `uro-jpmf`)
+keep those scopes outside this slice.
+This delivery slice crosses existing milestone boundaries without declaring the full G5
 pricing, tool and time workflow complete.
 Existing artifact and accounting owners retain their contracts.
 
@@ -222,8 +235,8 @@ Existing artifact and accounting owners retain their contracts.
 | Plan | Current PR inventory, explicit scope and dependency order; no private usage evidence published | `uro-aakb`, PR #15 |
 | Accounting | Paginated Codex fork prefixes count once; unknown ownership preserves known agent; unsupported grouping fails clearly | `uro-kpbp`, `uro-gop8`, `uro-oz6w` |
 | Safety | Invocation-wide conservative admission, safe dense-history refusal, raw input larger than RAM, measured density scaling | `uro-6pi8`, `uro-z1h1`, `uro-erqo` |
-| Queries and artifacts | Joint calendar, agent, provider, model and project views over one reconciliation; reusable summaries/bundles; explicit unavailable dimensions and metric coverage | `uro-qvp1`, `uro-ni7m`, `uro-vgea`, `uro-cye3`, `uro-x8r8` |
-| Reporting and acceptance | Bounded local QA workflow and a CLI-backed skill; text and optional pivot/hierarchy presentations consume the same query results | `uro-qg1a`, `uro-jpmf`, `uro-d36a`, `uro-ky6c` |
+| Pricing | Retained pricing context, reviewed rates and exact matching; supported cost rollups with explicit unpriced and assumed coverage | `uro-381f`, `uro-wuby`, `uro-neii` |
+| Acceptance | Bounded local QA workflow and controlled full-history evidence for existing CLI views | `uro-qg1a`, `uro-d36a`, `uro-ky6c` |
 
 Create implementation PRs in dependency order above PR #15, splitting a layer when its
 independently testable concerns warrant separate review.
@@ -234,14 +247,16 @@ Keep the broader compare/check requirements in `uro-jpmf` distinct from the init
 reporting skill.
 
 Acceptance requires exact synthetic fork and mixed-agent totals, worker-order
-determinism, cross-view consistency, artifact-only queries without live roots, and an
+determinism, cross-view consistency on controlled input, supported cost coverage, and an
 explained private-history comparison after the accounting fix.
 Green existing fixtures alone do not establish trustworthy Codex totals.
 Unknown metrics remain unknown; token classes retain cache lifetimes and reasoning
 subset semantics.
 
-Additional adapters, a web server, persistent caching, hybrid spill and advanced
-pricing/tool/time analysis are outside this delivery slice.
+Reusable analytical artifacts, joint pivots, the reporting skill, additional adapters, a
+web server, persistent caching, hybrid spill and advanced tool/time analysis are outside
+this delivery slice.
+They retain the existing broader workflow owners.
 Release publication and PR merges remain separate maintainer actions.
 Pending accounting-policy choices require recorded decisions, not inferred acceptance.
 
@@ -308,9 +323,11 @@ then on explicitly consented local input:
 ## Rollout Plan
 
 Fix current CLI honesty and local QA defects in the 0.1 workstream.
-Reusable artifacts remain milestone 0.2; prices remain 0.4; the complete CLI analysis
-surface and G5 belong to 0.5. Implementation sequencing can be refined without declaring
-G5 complete early. No pending maintainer policy is silently accepted by this plan.
+Reusable artifacts retain their milestone 0.2 owners, and the complete CLI analysis
+surface and G5 belong to 0.5. Existing pricing owners retain their historical 0.4
+labels, but supported cost rollups are required by the maintainer’s alpha scope freeze
+(`uro-aakb`) above. Implementation sequencing does not declare G5 complete early.
+No pending maintainer policy is silently accepted by this plan.
 Pricing-policy details in design §4.5 and unknown-cache-lifetime policy retain their
 recorded review status.
 

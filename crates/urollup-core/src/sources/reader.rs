@@ -122,6 +122,9 @@ pub struct RawRecord<'a> {
     pub evidence: &'a EvidenceRef,
     /// The record's bytes, without its line terminator.
     pub bytes: &'a [u8],
+    /// The record's 1-based line in the decoded stream, counting every line before it:
+    /// blank, oversized, malformed and skipped ones included.
+    pub line: u64,
 }
 
 /// The files of one logical source: a plain file, compressed files, or several while a
@@ -395,6 +398,7 @@ where
         fingerprint: None,
         source: None,
         offset: 0,
+        lines: 0,
         pending: None,
     };
     let mut reader = reader_for(&opened, snapshot_len, representation);
@@ -576,6 +580,8 @@ struct Scan {
     fingerprint: Option<Fingerprint>,
     source: Option<StoredIdentity>,
     offset: u64,
+    /// Lines read so far, whatever their disposition.
+    lines: u64,
     pending: Option<PendingTail>,
 }
 
@@ -622,11 +628,13 @@ impl Scan {
                     return Ok(());
                 }
                 Line::Oversized { length } => {
+                    self.lines = self.lines.saturating_add(1);
                     self.counters.oversized = self.counters.oversized.saturating_add(1);
                     self.failures.push(CoverageFailure::Oversized { offset: self.offset, length });
                     self.advance(length);
                 }
                 Line::Complete { length } => {
+                    self.lines = self.lines.saturating_add(1);
                     if buffer.iter().all(u8::is_ascii_whitespace) {
                         self.counters.blank_lines = self.counters.blank_lines.saturating_add(1);
                         self.advance(length);
@@ -641,7 +649,8 @@ impl Scan {
                         return Ok(());
                     }
                     let evidence = EvidenceRef::new(0, self.offset, length);
-                    let disposition = visit(&RawRecord { evidence: &evidence, bytes: &buffer });
+                    let disposition =
+                        visit(&RawRecord { evidence: &evidence, bytes: &buffer, line: self.lines });
                     self.counters.records = self.counters.records.saturating_add(1);
                     match disposition {
                         RecordDisposition::Stop => return Err(SourceReadError::VisitorStopped),

@@ -7,11 +7,14 @@
 //! Provider charges, resource observations and annotations are later entities and are not
 //! defined yet.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::slice;
+use std::sync::atomic::{self, AtomicU64};
+use std::sync::{Mutex, PoisonError};
 
 use jiff::Timestamp;
 
@@ -200,6 +203,158 @@ pub struct ModelName {
     pub name: Name,
     /// Served or requested.
     pub basis: ModelBasis,
+}
+
+/// Where a recorded service tier comes from, which decides how far a rate may rely on it.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TierBasis {
+    /// The request's own usage reports it, as Claude Code's `message.usage.service_tier`
+    /// does.
+    Request,
+    /// The thread's selected tier when the turn began, from Codex
+    /// `thread_settings_applied`. Codex can send a request with another tier: a feature or
+    /// model filter, a per-turn override, a subagent that uses its root's tier, or a
+    /// turn-scoped update. A rate chosen from it is an assumption.
+    ThreadSetting,
+}
+
+/// A recorded service tier and its basis. Unrecognized values stay as recorded.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ServiceTier {
+    /// The native tier name.
+    pub name: Name,
+    /// Whether the request or its thread recorded it.
+    pub basis: TierBasis,
+}
+
+/// Recorded dimensions needed to choose a request's rate without guessing from model names.
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PricingContext {
+    /// Recorded provider identifier; absent is unknown, not a first-party guarantee.
+    pub provider: Option<Name>,
+    /// Recorded service tier, including unrecognized values.
+    pub service_tier: Option<ServiceTier>,
+    /// Recorded inference speed, such as Claude fast mode.
+    pub speed: Option<Name>,
+    /// Recorded inference geography, never inferred from the machine's location.
+    pub inference_geo: Option<Name>,
+    /// Original observations disagree; rates must not be chosen from this context.
+    pub conflicted: bool,
+}
+
+/// A [`PricingContext`] interned for the process, so rows that share a context hold one
+/// 8-byte reference to it.
+///
+/// Each distinct context is stored once and never freed; a history has a handful of them.
+/// Equality is identity, which interning makes equal to value equality; ordering, hashing
+/// and formatting are the context's.
+#[derive(Clone, Copy)]
+pub struct Pricing(&'static PricingContext);
+
+const _: () = assert!(std::mem::size_of::<Option<Pricing>>() == 8);
+
+/// Every interned context.
+static PRICING_TABLE: Mutex<BTreeSet<&'static PricingContext>> = Mutex::new(BTreeSet::new());
+
+/// The admission model's charge for every distinct context interned so far.
+static PRICING_INTERNED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Recently interned contexts per thread, so records that repeat one skip the shared lock.
+pub(crate) const RECENT_PRICING_CAPACITY: usize = 8;
+
+thread_local! {
+    static RECENT_PRICING: RefCell<Vec<Pricing>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Pricing {
+    /// The interned context equal to `context`.
+    pub fn new(context: PricingContext) -> Self {
+        RECENT_PRICING.with(|recent| {
+            let mut recent = recent.borrow_mut();
+            if let Some(pricing) = recent.iter().find(|pricing| *pricing.0 == context) {
+                return *pricing;
+            }
+            let pricing = intern_pricing(context);
+            if recent.len() == RECENT_PRICING_CAPACITY {
+                recent.remove(0);
+            }
+            recent.push(pricing);
+            pricing
+        })
+    }
+
+    /// The interned context.
+    pub const fn context(self) -> &'static PricingContext {
+        self.0
+    }
+}
+
+/// The admission model's charge for every distinct pricing context this process has
+/// interned: each context's allocation and table entry, and the table's first node.
+/// Interned contexts live until exit. Each worker thread's cache of recent contexts is
+/// charged with its worker slot (`model::PRICING_CACHE`), and the coordinating thread's,
+/// where Codex observes its rollouts and reconciliation merges contexts, until exit
+/// (`model::COORDINATING_CACHES`).
+pub fn interned_pricing_bytes() -> u64 {
+    PRICING_INTERNED_BYTES.load(atomic::Ordering::Relaxed)
+}
+
+fn intern_pricing(context: PricingContext) -> Pricing {
+    let mut table = PRICING_TABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(interned) = table.get(&context) {
+        return Pricing(interned);
+    }
+    // The first context also pays the table's one-time base, its first node.
+    let base =
+        if table.is_empty() { crate::ledger::admission::model::PRICING_TABLE_BASE } else { 0 };
+    PRICING_INTERNED_BYTES.fetch_add(
+        crate::ledger::admission::model::pricing_intern() + base,
+        atomic::Ordering::Relaxed,
+    );
+    let interned: &'static PricingContext = Box::leak(Box::new(context));
+    table.insert(interned);
+    Pricing(interned)
+}
+
+impl std::ops::Deref for Pricing {
+    type Target = PricingContext;
+
+    fn deref(&self) -> &PricingContext {
+        self.0
+    }
+}
+
+impl PartialEq for Pricing {
+    fn eq(&self, other: &Self) -> bool {
+        // One reference per distinct context, so equal contexts share their reference.
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for Pricing {}
+
+impl Ord for Pricing {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self == other { Ordering::Equal } else { self.0.cmp(other.0) }
+    }
+}
+
+impl PartialOrd for Pricing {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for Pricing {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl fmt::Debug for Pricing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.0, f)
+    }
 }
 
 /// One model's contribution to a request's usage.
@@ -403,6 +558,8 @@ pub struct Request {
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
     pub effort: Option<Name>,
+    /// Recorded pricing dimensions, interned and shared by requests with the same context.
+    pub pricing: Option<Pricing>,
     /// The counted usage revision; `None` when no original record carries usage.
     pub usage: Option<SelectedUsage>,
     /// Every original record in canonical order, then every copy in canonical order.
@@ -414,7 +571,7 @@ pub struct Request {
 }
 
 // Compact Measures shrinks the selected-usage revision.
-const _: () = assert!(std::mem::size_of::<Request>() <= 216);
+const _: () = assert!(std::mem::size_of::<Request>() <= 224);
 
 impl Request {
     /// The canonical ID.
@@ -619,7 +776,7 @@ mod tests {
         assert_eq!(RecordRefs::One(a).split(0), (&[][..], &[a][..]));
         assert_eq!(RecordRefs::from_iter([a, b, c]).split(1), (&[a][..], &[b, c][..]));
         assert!(std::mem::size_of::<RecordRefs>() <= 24);
-        assert!(std::mem::size_of::<super::Request>() <= 216);
+        assert!(std::mem::size_of::<super::Request>() <= 224);
     }
 
     proptest! {

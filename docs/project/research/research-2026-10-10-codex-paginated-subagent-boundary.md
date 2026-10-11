@@ -281,7 +281,7 @@ usage under an invalid or unpositioned boundary.
   own step that repeats a total its parent reported, in every count, as a retried prompt
   can, voids its inferred start and is decided as the parent’s copy, so it is dropped
   with complete coverage; PR #32’s rule does the same for a migrated subagent
-  (`paginated_forks.rs` pins both).
+  (`uro-uwv0`; `paginated_forks.rs` pins both).
 
 - **Native counter-only forks count their seed.** A referenced fork written before 0.153
   has no usage records, and its first counter continues the parent’s total that Codex

@@ -110,6 +110,7 @@ The complete analysis workflow is tracked separately as G5 in the
 | Doc | Purpose |
 | --- | --- |
 | [Usage analysis guide](docs/usage-analysis.md) | Current commands, cache accounting, list-price semantics and supported versus planned analysis |
+| [Agent format contracts](docs/formats/README.md) | Supported Codex and Claude Code records, accounting semantics, evidence, regression coverage and known miscount causes |
 | [Whole-history workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md) | Shared snapshots, joint grouping, cache/pricing evidence, tools/time and G5 acceptance |
 | [Design specification](docs/urollup-design.md) | Goals, layers, interfaces, decisions, glossary and CLI flag index |
 | [Implementation plan](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Product phases, milestones, tests, performance targets and rollout |

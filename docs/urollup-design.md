@@ -705,6 +705,20 @@ Codex rollouts save only the requested model (`turn_context.model`), never the m
 server reroute served, so Codex request models are `requested`. Placeholder model names,
 such as Codex `codex-auto-review` and Claude `<synthetic>`, stay as observed.
 
+Each request also keeps the pricing context its original records report: provider,
+service tier, speed and inference geography, each as recorded, including values no price
+table knows. Claude Code records speed, service tier and inference geography in
+`message.usage` and no provider, so its tier is the one the request was served at.
+Codex records the provider in `session_meta` and its settings snapshots, and its tier is
+the thread’s selected tier from `thread_settings_applied`, which a request can be sent
+without; the tier keeps that basis, so a rate chosen from a Codex tier is an assumption
+([§3.4](#34-dialect-reconciliation-rules)). No dimension is inferred from a model or
+agent name, agent configuration or the machine’s location, and absent stays unknown.
+Copies never contribute.
+Originals of one request fill each other’s missing fields; originals that record
+different values mark the context conflicted with a `conflicting-pricing-context`
+diagnostic, so no rate is chosen from it ([§4.5](#45-price-table)).
+
 Provider limit observations feed the Phase 2 `windows` report
 ([§4.4](#44-usage-windows)) and need dialect care:
 
@@ -815,8 +829,8 @@ set these source-specific rules:
 - **Claude Code decoding:** a first pass reads each line’s type, `isSidechain` flag, CLI
   version, working directory and whether it bears usage without building a JSON
   document. Only an `assistant` line with an unsigned `message.usage.output_tokens`, or a
-  `progress` line whose nested message has one, is parsed into a document, and only its
-  accounting fields are kept.
+  `progress` line whose nested message has one, receives a typed usage-body parse, and
+  only its accounting fields are kept.
   The first pass reads every value as a document parse would, so a line is malformed
   exactly when it is not valid JSON, a repeated key keeps its last value, and a null or
   mistyped field reads as missing.
@@ -899,6 +913,23 @@ set these source-specific rules:
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
   the root would attribute the parent’s model to the subagent.
+  Its pricing context comes from the same turn: the provider and selected tier its
+  thread had when the turn’s `turn_context` was written.
+  A `thread_settings_applied` event records the thread’s complete settings snapshot,
+  which omits `service_tier` when no tier is selected, so a snapshot without one clears
+  the tier, while an event without a snapshot changes nothing.
+  The provider is the `model_provider` of the thread’s `session_meta` until a snapshot’s
+  `model_provider_id` replaces it.
+  A snapshot that names a thread sets that thread’s tier and provider wherever it sits,
+  as a usage record’s `thread_id` decides its owner.
+  One that names no thread sets the rollout’s own: anywhere in a rollout without a
+  declared `subagent_history_start_ordinal`, unless it is a migrated user fork judged as
+  if its boundary lay past its last line (below), and otherwise only at or after the
+  boundary. Before it the setting may be the parent’s copied history, and a line without
+  an ordinal, or any line under an invalid boundary, cannot be placed.
+  So a snapshot without a thread never sets the tier of such a fork, or of a migrated
+  child whose boundary lies past its end, even inside its own inferred start, until
+  `uro-1uy7` lands.
 - **Codex counters:** older files use cumulative `token_count` events.
   An update whose running total advances counts the advance as one request.
   A decrease in any cumulative component opens a new counter epoch with a diagnostic,
@@ -1002,12 +1033,12 @@ set these source-specific rules:
   leaves an open start’s lines the child’s; a later unrecorded turn never moves the
   start, and a line without an ordinal never closes the window.
   The counter that voids a start by repeating a total the parent reported is the
-  parent’s copy, so a child’s own step that repeats one in every count is dropped.
-  One case still counts twice (`uro-eh0d`): a migrated root whose rollback planning
-  dropped a rolled-back turn, and its usage, from the root’s counters, while a subagent
-  spawned in that turn, or a user fork taken before the rollback, holds its copy, so the
-  root’s next counter step and the child both count that turn; `main` already does this
-  for an unmigrated child.
+  parent’s copy, so a child’s own step that repeats one in every count is dropped
+  (`uro-uwv0`). One case still counts twice (`uro-eh0d`): a migrated root whose rollback
+  planning dropped a rolled-back turn, and its usage, from the root’s counters, while a
+  subagent spawned in that turn, or a user fork taken before the rollback, holds its
+  copy, so the root’s next counter step and the child both count that turn; `main`
+  already does this for an unmigrated child.
   Unnamed usage that none of this decides (a counter, or a record without a `thread_id`)
   is excluded as unverified, as below, when the region shows migrated content: a turn
   the parent’s turns cannot place, because it has no ID or the parent is not a
@@ -1027,10 +1058,11 @@ set these source-specific rules:
   seeded first counter, whose total neither its own `last_token_usage` nor a total its
   parent root reported accounts for, as a native fork’s continues the total Codex seeds
   it with. Only a counter-only parent root supplies those totals, so when a parent that
-  rolled back its first turn also holds usage records, a fork’s copy of its first
-  counter looks seeded and still counts again (`uro-eh0d`). Turns, totals and lines
-  naming a thread then decide its lines from the first, as above, and an inferred start
-  stays voidable to the end of the file unless a line names the fork.
+  rolled back its first turn is absent, holds usage records or has lineage, a fork’s
+  copy of its first counter looks seeded and still counts as the fork’s own, twice when
+  the parent is present (`uro-eh0d`). Turns, totals and lines naming a thread then
+  decide its lines from the first, as above, and an inferred start stays voidable to the
+  end of the file unless a line names the fork.
   A migration that kept only the suffix from the child’s own compaction dropped every
   earlier line, so in a rollout with usage records, when a `compacted` record naming the
   child is the only record of its response before the boundary, a first running total
@@ -1285,10 +1317,24 @@ Tokens, calls, money, time, resources and sizes stay separate measures:
 Counting rules that adapters must normalize explicitly:
 
 - Reasoning output is often a subset of output; total tokens never add both.
-- Cache-read input may be included within a dialect’s native input or reported
-  separately, as the research brief’s
+- Cache-read and cache-write input may be included within a dialect’s native input or
+  reported separately, as the research brief’s
   [usage table](project/research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage)
-  shows per dialect.
+  shows per dialect. Codex `input_tokens` is read as including both `cached_input_tokens`
+  and `cache_write_input_tokens`, an inference the
+  [incident record](formats/accounting-incidents.md#codex-cache-write-double-counting)
+  supports, so uncached input is the native value minus both.
+  A usage object whose input is below their sum, a missing count read as 0, is never a
+  silent zero: where the rollout would count it, its record or counter step is excluded
+  with a `codex-inclusive-input-underflow` diagnostic that names the rollout and the
+  physical line, the rollout’s thread gets a coverage gap, and the run continues; a copy
+  with such usage, a copied counter step included, keeps only its evidence.
+  A cumulative step excluded this way ends its counter epoch, so the next step is
+  checked as a first step against the last total the rollout could read and earlier
+  usage never counts again; in a rollout that inherits no total, a step that lowers the
+  total still counts its own last usage, as the counter reset rule does.
+  The [Codex contract](formats/codex.md#failure-and-coverage-behavior) gives the cases.
+  Claude Code’s `input_tokens` excludes both.
 - When a Claude Code record has `iterations`, its top-level `message.usage` equals the
   sum of the `message` iterations and excludes `advisor_message` iterations, which
   record their own model; an advisor iteration is further model usage within the same
@@ -1494,6 +1540,8 @@ Matching and coverage:
   matched row with no rate for a token category.
 - Codex records service tier only in `thread_settings_applied` events, which short
   rollouts can lack; pricing never takes a tier from an agent’s configuration files.
+  That tier is the thread’s selected tier, not proof of the tier a request was sent
+  with; how a rate match treats that basis is decided under `uro-wuby`.
 
 Updates and overrides:
 
@@ -2643,11 +2691,14 @@ records how the engine reached this shape, with dated whole-history measurements
   128-bit digests, model and effort names are interned once per process, usage stores
   eight `u32` counters with a presence mask and interns full-width overflow patterns,
   and timestamps are compact.
-  Observation shells are at most 224 B; this excludes owned payloads.
-  Name, limit-text and overflow-pattern intern tables live until process exit; their
-  distinct-value cardinality must be measured before repeated library/server ingestion.
-  Each source’s records are freed as soon as its observations are built, and maps needed
-  only to build observations are dropped before reconciliation.
+  Observation shells are at most 232 B; this excludes owned payloads.
+  Name, limit-text, overflow-pattern and pricing-context intern tables live until
+  process exit. The pricing-context table holds one entry per distinct combination of
+  provider, service tier and its basis, speed, inference geography and the conflict
+  flag, each value itself an interned name.
+  Their distinct-value cardinality must be measured before repeated library/server
+  ingestion. Each source’s records are freed as soon as its observations are built, and
+  maps needed only to build observations are dropped before reconciliation.
 - **Request grouping:** reconciliation sorts observations into canonical order in place
   and removes re-reads.
   An index-based union-find over request key IDs, whose set root is always the lowest

@@ -76,6 +76,11 @@ impl RunningTotal {
         Self { last: inherited, last_sequence: None, epoch: 0 }
     }
 
+    /// The running total so far: the inherited total until a total is observed.
+    pub const fn total(&self) -> TokenMeasures {
+        self.last
+    }
+
     /// Records the next running total, optionally with its native sequence number, and
     /// returns its delta.
     pub fn observe(

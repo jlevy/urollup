@@ -274,8 +274,8 @@ The original proposal used 72 B measures and observation/request bounds of 256 B
 | --- | --- | ---: |
 | `EvidenceRef` | source index, length and offset | 16 B |
 | `Measures` | eight compact counters and presence mask; full-width overflow values interned | 36 B, including `Option` |
-| `RequestObservation` | compact observations with optional owned payloads | ≤ 224 B |
-| `Request` | compact request and evidence references | ≤ 216 B |
+| `RequestObservation` | compact observations with optional owned payloads and a shared pricing-context pointer | ≤ 232 B |
+| `Request` | compact request, evidence references and a shared pricing-context pointer | ≤ 224 B |
 | `ProviderLimitObservation` | compact fields and references to interned native text | ≤ 128 B |
 | `Option<NativeSequence>` | presence tag and eight big-endian bytes, preserving all `u64` values | 9 B |
 
@@ -318,8 +318,8 @@ Explicit byte/row limits avoid host probing.
 An explicitly requested percentage fails if physical RAM is unknown; only the default
 uses the fallback. Native RAM queries do not impose a container allowance.
 
-The byte budget is divided by `size_of::<RequestObservation>()`. At 224 B, 8 GiB admits
-about 38 million row shells, but that arithmetic says nothing about whether their
+The byte budget is divided by `size_of::<RequestObservation>()`. At 232 B, 8 GiB admits
+about 37 million row shells, but that arithmetic says nothing about whether their
 payloads and final ledger fit in memory.
 Payloads, intern tables, request construction, source/thread tables and the other
 agent’s retained ledger are additional.
@@ -438,7 +438,8 @@ for every count up to a few thousand:
 | Baseline `F` | invocation | measured | measured constant | exit |
 | Discovery metadata | discovered source, catalog entry, Codex locator thread | struct plus owned path and string bytes of `DiscoveredSource`, `CatalogSource` and the thread-ID map | derived | that agent’s ingest returns |
 | Coordinating slot | invocation | one worker slot `b` for the peeks that read sources on the coordinating thread: Codex catalog links for `--session` and `--source` classification | derived | the discovery checkpoint |
-| Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`); 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`); 16 MiB for line-buffer capacity up to 4 MiB, the line need `4 × C′` ([line buffers](#admission-determinism)), which also covers each Claude subagent’s `.meta.json` sidecar (read with `read_to_end` up to 1 MiB and parsed after the scan drops its line buffer); a 640 KiB document allowance for a `quotaLimits` document; 2 MiB thread stack; the join’s `done` vector at its minimum capacity, 12 × the larger adapter’s `(index, result)` pair plus two allocations; the thread’s cache of recently interned names and its destructor’s registration; when discovery found a `.zst` source, the frame loop’s decoder for an 8 MiB window (zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula) plus its `ZSTD_DStreamInSize()` input buffer of 131,075 B, about 8.6 MiB; when it found a gzip source, flate2’s 32 KiB input buffer and miniz_oxide’s `InflateState` (a 32 KiB dictionary and decoding tables), charged as 80 KiB, plus the header fields flate2 keeps for a member, up to 65,535 B each (`extra` sized exactly, `filename` and `comment` grown byte by byte) | derived; the 4 MiB, 8 MiB and 640 KiB thresholds are *guesses* | the agent’s decode ends |
+| Coordinating caches | invocation | the coordinating thread’s caches of recently interned names and pricing contexts (`COORDINATING_CACHES`, 768 B), which Codex `normalize` and reconciliation’s pricing merge fill on that thread after workers join | derived | exit, charged from the discovery checkpoint |
+| Worker slot (`A_workers`) | slot | 128 KiB read buffer (`sources::reader::decode`); 256 KiB retained line (`ReadOptions::RETAINED_LINE_CAPACITY`); 16 MiB for line-buffer capacity up to 4 MiB, the line need `4 × C′` ([line buffers](#admission-determinism)), which also covers each Claude subagent’s `.meta.json` sidecar (read with `read_to_end` up to 1 MiB and parsed after the scan drops its line buffer); a 640 KiB document allowance for a `quotaLimits` document; 2 MiB thread stack; the join’s `done` vector at its minimum capacity, 12 × the larger adapter’s `(index, result)` pair plus two allocations; the thread’s cache of recently interned names and its destructor’s registration, and its cache of recently interned pricing contexts; when discovery found a `.zst` source, the frame loop’s decoder for an 8 MiB window (zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula) plus its `ZSTD_DStreamInSize()` input buffer of 131,075 B, about 8.6 MiB; when it found a gzip source, flate2’s 32 KiB input buffer and miniz_oxide’s `InflateState` (a 32 KiB dictionary and decoding tables), charged as 80 KiB, plus the header fields flate2 keeps for a member, up to 65,535 B each (`extra` sized exactly, `filename` and `comment` grown byte by byte) | derived; the 4 MiB, 8 MiB and 640 KiB thresholds are *guesses* | the agent’s decode ends |
 | Large-record permit (`A_large`) | invocation | the largest need its holder has held at once: `4 × C′` for a line buffer whose capacity `C′` passes 4 MiB (256 MiB at `ReadOptions::DEFAULT_MAX_RECORD_BYTES`), plus the decoder for a zstd window above 8 MiB (about 129 MiB at zstd’s default limit, `ZSTD_WINDOWLOG_LIMIT_DEFAULT`), plus the running cost of a `quotaLimits` document past 640 KiB | derived | the agent’s decode ends |
 | Decoded record | every retained record, request-bearing or not, including Codex rollouts pending for `normalize` and Claude copies and replays | 3 × its size: Claude ≤ 200 B, Codex 80 B (size assertions) | derived | Codex: its rollout is observed; Claude: its chunk is consumed by `reconcile_input` |
 | Request structure (κ) | request-bearing record | the dialect’s largest per-record total over its later phases ([κ by dialect](#request-structure-by-dialect)) | derived | the retained ledger is committed |
@@ -446,7 +447,7 @@ for every count up to a few thousand:
 | Record payloads | allocation | exact bytes by the costing rule: per-source strings (Claude `Arc<str>`, vector slot and map entry; Codex 3 × text, 8 B end offset and map entry), Claude extras and tool-use digests, Codex usage counts, distinct rate-limit snapshots and session metadata, spilled keys, `model_usage` and invariants | derived | construction ends, or with the retained ledger |
 | Limit row | provider limit observation | 3 × 128 B as built, or 128 B input plus its sort-cache tuple plus 128 B output during limit reconciliation, whichever is larger | derived | retained ledger |
 | Diagnostic | occurrence | 5 × `Diagnostic` (compaction holds its input, of up to twice the rows, beside a doubling output), its detail text at its capacity and 16 B per evidence reference at 3 × | derived | compaction; retained ones stay |
-| Process interns | new distinct `Name`; new overflow `Measures` pattern | text allocation, leaked reference and B-tree entry, and with the first name the table’s first node; 72 B row in a doubling vector plus its map entry, and with the first pattern the vector’s minimum capacity and the map’s base | derived from `names.rs` and `tokens.rs` | exit |
+| Process interns | new distinct `Name`; new overflow `Measures` pattern; new distinct `PricingContext` | text allocation, leaked reference and B-tree entry, and with the first name the table’s first node; 72 B row in a doubling vector plus its map entry, and with the first pattern the vector’s minimum capacity and the map’s base; the context’s leaked allocation and B-tree set entry (`pricing_intern`), and with the first context the set’s first node (`PRICING_TABLE_BASE`) | derived from `names.rs`, `tokens.rs` and `entities.rs` | exit |
 | Retained ledger | agent | deep size of `Ingested` after finalize, which replaces that agent’s decode and construction charges | computed | exit; discovery tables leave at `release_discovery` |
 | Query reserve | request in a retained ledger | 48 B: at most one selected-request item and one request-size value per counted request, which a query may collect (`report` collects both), each 8 B at 3 × | derived | the query checkpoint |
 | Session index | indexed thread | deep size of its `IndexedSession` | derived | exit |
@@ -473,11 +474,11 @@ asserts it.
 
 | Phase | Per request-bearing record | Codex | Claude |
 | --- | --- | --- | --- |
-| Construction | the observation (224 B) at 3 × while `normalize` or `reconcile_input` appends it; for Codex, a parent-totals digest or an own-response entry, whichever is larger (two 16 B hash entries while `counter_totals` builds a parent root’s set); for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map, 386 B) and the eligibility vector’s stable-sort scratch (16 B per record) | 792 B | 1,074 B |
-| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (216 B) × 33/32 as presized; one evidence reference | 654 B, key bound 1 | 980 B, key bound 3 |
-| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation, and the canonical-ID map’s entry for each alias (106 B) | 656 B | 868 B |
-| Retained and query | the retained request (216 B and its references) plus the 48 B query reserve | 345 B | 443 B |
-| κ | the largest phase | 792 B | 1,074 B |
+| Construction | the observation (232 B) at 3 × while `normalize` or `reconcile_input` appends it; for Codex, a parent-totals digest or an own-response entry, whichever is larger (two 16 B hash entries while `counter_totals` builds a parent root’s set); for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map, 386 B) and the eligibility vector’s stable-sort scratch (16 B per record) | 816 B | 1,098 B |
+| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (224 B) × 33/32 as presized; one evidence reference | 670 B, key bound 1 | 996 B, key bound 3 |
+| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation, and the canonical-ID map’s entry for each alias (106 B) | 680 B | 892 B |
+| Retained and query | the retained request (224 B and its references) plus the 48 B query reserve | 353 B | 451 B |
+| κ | the largest phase | 816 B | 1,098 B |
 
 The model closes two gaps in today’s admission, which retains but never charges Claude
 `<synthetic>` records without a request ID and Codex session-meta, turn-context,
@@ -493,7 +494,8 @@ session index and `release_discovery`; the same for Claude, with the Codex ledge
 committed; then query and render.
 
 - **Discovery checkpoint:** before each agent’s decode, a checkpoint charges that
-  agent’s worker slots; before Codex decode it also releases the coordinating slot.
+  agent’s worker slots; before Codex decode it also releases the coordinating slot and
+  charges the coordinating thread’s caches until exit.
 - **Decode** runs on parallel workers.
   Before a record is pushed, it is charged its decoded size, κ when it bears a request,
   its payload allocations, its limit rows and any new process intern.
@@ -506,6 +508,9 @@ committed; then query and render.
   The one exception is the scratch of the largest linked set, which no decode count
   bounds: κ’s headroom over its grouping share covers it while that set holds up to a
   fifth of the observations, and beyond that the `Order` checkpoint can refuse.
+  The parts of that scratch proportional to model and pricing text (`group_models` and
+  `group_pricing`) are not per record, so κ does not cover them and only the `Order`
+  checkpoint charges them.
   Day and group rows and rendered bytes, which no decode count bounds, can still refuse
   at query, after both ingests.
 - **Checkpoints** run on the coordinating thread before each agent’s decode,
@@ -653,7 +658,7 @@ committed; then query and render.
   usage error when `M` is unknown.
   The value now means the whole-process estimated peak rather than per-agent row shells,
   so the same value admits several times fewer observations (indicatively 1.5–4.2 KB per
-  request-bearing record with payloads at `H` = 1.5, against 224 B; see
+  request-bearing record with payloads at `H` = 1.5, against 232 B; see
   [Indicative Estimates](#indicative-estimates)). No version has been published, so the
   change lands in slice 7, with every description of the row ceiling that slice lists,
   without an alias.
@@ -834,7 +839,7 @@ This is arithmetic on derived charges and *guessed* inputs, not a measurement;
 The inputs, per request-bearing record and before `H`, are:
 
 - **Codex during decode:** 1.0–1.55 KB: the decoded record (240 B), κ (about 0.7 KB when
-  this table was computed; 792 B as derived, see below), 0.1–0.4 KB of other payloads
+  this table was computed; 816 B as derived, see below), 0.1–0.4 KB of other payloads
   and source and thread rows (*guess*), and 0–1 retained records that bear no request,
   such as turn contexts and zero-usage token counts, at 240 B each (*guess*).
 - **Distinct limit snapshots:** 0 or 1 per Codex request-bearing record.
@@ -876,12 +881,13 @@ means the break-even `H` is below the 1.1 floor, so no calibration result fits.
 With the Codex ledger held, Claude decode is the peak unless Codex alone grows or
 snapshots are dense.
 
-Slice 3 derived Codex κ at 792 B, 120 B per record above the 0.7 KB used here, and
-measured `F` at 7 MiB. The κ change raises each Codex decode figure by about 0.1 GiB on
-the historical corpus and 0.5–0.6 GiB at 100 GiB, at `H` = 1.5, and `F` lowers every
-figure by 9 MiB. No row changes which phase is larger, and only the rows where Codex
-decode is the peak lose break-even `H`, by up to about 0.25; `uro-z1h1` replaces these
-figures in any case.
+Codex κ is now 816 B as derived, 144 B per record above the 0.7 KB used here, after
+slice 3 derived 792 B and the shared pricing-context pointer added 8 B to each
+observation and request; slice 3 measured `F` at 7 MiB. The κ change raises each Codex
+decode figure by about 0.1 GiB on the historical corpus and 0.6–0.7 GiB at 100 GiB, at
+`H` = 1.5, and `F` lowers every figure by 9 MiB. No row changes which phase is larger,
+and only the rows where Codex decode is the peak lose break-even `H`, by up to about
+0.3; `uro-z1h1` replaces these figures in any case.
 
 **The 100 GiB policy risk.** The accepted policy’s 100 GiB envelope is at risk from the
 model’s conservatism, not from measured memory.
@@ -1127,14 +1133,15 @@ Choices made while implementing, where this design left room:
     2^20 and 2^30 observations, each phase’s share of κ is what its estimate charges per
     observation, κ × observations plus `RECONCILE_RESERVE` (4,512 B) covers both
     estimates’ request structure before `Order`, and with the largest linked set at a
-    fifth of the observations it also covers that set’s scratch beyond one member’s.
+    fifth of the observations it also covers that set’s scratch beyond one member’s,
+    with no model or pricing text, whose parts only the `Order` checkpoint charges.
     Codex construction adds 120 B per request-bearing record for a parent-totals digest
     (`ParentEvidence::totals`, plus the source’s own set while `counter_totals` builds
     it; two hash entries of 16 B), the larger of that and the 18 B `own_responses`
     entry, since a record adds to at most one; Claude’s construction adds the
     eligibility vector’s 16 B of stable-sort scratch to its 386 B of owner state.
-    Finalize adds the canonical-ID map’s 106 B entry for each alias, so Claude’s is 868
-    B, and the retained-and-query phase is 345 B for Codex and 443 B for Claude.
+    Finalize adds the canonical-ID map’s 106 B entry for each alias, so Claude’s is 892
+    B, and the retained-and-query phase is 353 B for Codex and 451 B for Claude.
     The key bound is asserted on every path of every observation builder, Codex’s inline
     copy builder included (now `copied_counter_observation`), each maximal path with
     equality; Claude’s other paths assert `<`, and Codex’s `<=`, since a keyless Codex
@@ -1157,12 +1164,19 @@ Choices made while implementing, where this design left room:
     another and free what they allocate: `group_keys` (the ranked key set, then the
     aliases beside it), `group_revisions`, `group_owners` (the proven-owner set and the
     detail listing their IDs), `group_models` (the served-model set, then the detail
-    listing them), `group_records` and, for Claude, `group_fields`. A listed detail’s
-    transient (`listed_detail`: the item strings and their vector, the joined text and
-    `format!`’s first buffer) was not modeled before; the conflicting-group harness
-    input exercises it. Per member at 1,000 members it is 231 B for Codex (lists 40,
-    owners 191) and 389 B for Claude (lists 134, keys 255). `ReconcileCounts` gains
-    `model_text`, which bounds the model names a detail lists.
+    listing them), `group_pricing` (the pricing merge: the originals that carry a
+    context and their contexts, the merged dimension’s value and name sets, and the
+    conflicts, which `format!` doubles to at most twice their text, beside the detail’s
+    joined text and the buffer `format!` outgrows), `group_records` and, for Claude,
+    `group_fields`. A listed detail’s transient (`listed_detail`: the item strings and
+    their vector, the joined text and `format!`’s first buffer) was not modeled before;
+    the conflicting-group harness input exercises it.
+    Per member at 1,000 members it is 231 B for Codex (lists 40, owners 191) and 389 B
+    for Claude (lists 134, keys 255). `ReconcileCounts` gains `model_text`, which bounds
+    the model names a detail lists, and `pricing_text`, which bounds the pricing names a
+    conflict lists, counted per dimension.
+    Without pricing names the pricing step is 182 B per member, below the owners’ step,
+    so neither total changes; it grows with the names its conflicts list.
   - **Thread reconciliation** is the sum of `thread_sort`, `thread_maps`, the group
     vectors (`thread_groups`: at most four rows’ capacity per row, even while one
     doubles, tightened from 3 × a minimum-capacity vector per row), `thread_clones` (2 ×
@@ -1176,8 +1190,11 @@ Choices made while implementing, where this design left room:
     the read buffer and boxed reader, the retained line, `line_need` at 4 MiB (`4 × C′`,
     16 MiB), the 640 KiB `quotaLimits` allowance, the thread stack, the join’s `done`
     vector at its minimum capacity (9,856 B for the larger adapter pair, 816 B), the
-    thread’s name cache (512 B), and the zstd (`zstd_stream(8 MiB)` plus the frame
-    loop’s input buffer) or gzip decoder.
+    thread’s name cache (512 B) and pricing-context cache (256 B), and the zstd
+    (`zstd_stream(8 MiB)` plus the frame loop’s input buffer) or gzip decoder.
+    The coordinating thread’s two caches outlive its slot, since Codex `normalize` and
+    reconciliation’s pricing merge intern on it after workers join, so
+    `COORDINATING_CACHES` (768 B) charges them until exit.
     `GZIP_DECODER` is 80 KiB of decoder state plus flate2’s header fields, `extra` sized
     exactly and `filename` and `comment` grown byte by byte, each up to 65,535 bytes:
     528 KiB in all. `large_record` charges `line_need` past 4 MiB, `zstd_stream` of a
@@ -1192,9 +1209,9 @@ Choices made while implementing, where this design left room:
     `Records` for `decoded_record`; `Kappa` for κ, `source_observations`, the group
     scratch, the split growth, a conflicting key’s structures and ambiguous owners;
     `Payloads` for payload terms, `CODEX_TURN_STATE` and `diagnostic`; `Limits` for
-    `limit_row`; `Interns` for the intern charges and table bases; `Sources` for source
-    and thread rows; `Reserves` for the query and index reserves; and `Slots` for
-    `worker_slot` and `large_record`.
+    `limit_row`; `Interns` for the intern charges and table bases and
+    `COORDINATING_CACHES`; `Sources` for source and thread rows; `Reserves` for the
+    query and index reserves; and `Slots` for `worker_slot` and `large_record`.
   - **Phase estimates** return a `PhaseEstimate` with one field per ledger `Component`
     and a `total()`, for slice 7’s statistics line: decoded records under `records`,
     observations, the key graph, requests and their working sets under `kappa`, payloads
@@ -1233,39 +1250,47 @@ Choices made while implementing, where this design left room:
     evidence, where the rows and details are each necessary, and with 64 references
     each, where the evidence is; a conflicting key’s structures, ambiguous owners, the
     request sort (presized and shrunk), the request vector’s split growth, one key
-    derivation, the name table’s first node, a fresh thread’s name cache, and cold name
-    and overflow interning that no earlier code has warmed;
-  - reconciliation of twelve synthetic inputs of 4,000 observations, each shaped so that
-    one term dominates (one or two keys, shared and split keys, one group, one group
-    whose members each have their own proven owner and served model, payloads, light and
-    evidence-heavy threads, limits), between each pair of stages against the model
-    functions behind each stage, and as a whole phase against the larger phase
+    derivation, the name and pricing tables’ first nodes, a fresh thread’s name and
+    pricing caches, and cold name, overflow and pricing-context interning that no
+    earlier code has warmed;
+  - reconciliation of thirteen synthetic inputs of 4,000 observations, each shaped so
+    that one term dominates (one or two keys, shared and split keys, one group, one
+    group whose members each have their own proven owner and served model, one group
+    whose originals each record their own pricing context in every dimension, payloads,
+    light and evidence-heavy threads, limits), between each pair of stages against the
+    model functions behind each stage, and as a whole phase against the larger phase
     estimate’s components (`kappa`, `payloads`, `limits`, `sources`), each of which must
     be necessary in some phase check, with what grouping pushed beside them.
+    Group scratch’s pricing step is named apart, as `group_pricing`: its share is what
+    group scratch holds above its lists and largest other step, which only the pricing
+    group makes necessary.
     Live heap is tracked at every allocation against each checkpoint’s `E`: grouping
     without a group’s scratch from the start, with the largest linked set’s from
     `Order`, then finalize;
   - each fixture and generated corpus’s ledger, discovery and session index against
-    their deep heap, at one and eight workers;
+    their deep heap, at one and eight workers, and what a fresh thread that coordinates
+    its ingest keeps afterwards against `COORDINATING_CACHES`;
   - query documents apart from their rendering, each decoder’s Rust heap (gzip with the
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
 
-  On aarch64 macOS at this head, all 325 bounds pass in 6 to 15 seconds of a debug build
-  on a heavily loaded machine.
+  On x86_64 Linux at this head, all 393 bounds pass in about 5 seconds of a debug build.
   Primitives measure 66–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
   68–81%, stable sorts 100%), retained ledgers 92–99% of their deep heap,
-  reconciliation’s retained output 77–99%, discovery 100% and session indexes 54–93%,
-  diagnostics 42–99%, stages 3–100%, whole reconciliation phases 28–74% (19–34% before
-  the largest group’s scratch was charged only from `Order`), queries 0–54% and
-  rendering 38–96%; live heap never passed `E`. Each ingest’s peak is reported beside
-  the forward estimate computable after the fact.
+  reconciliation’s retained output 77–99%, discovery 100%, session indexes 53–93% and
+  coordinating threads’ caches 0–16%, diagnostics 42–99%, stages 3–100%, whole
+  reconciliation phases 29–73% (19–34% before the largest group’s scratch was charged
+  only from `Order`), queries 0–54% and rendering 38–96%; live heap never passed `E`.
+  Each ingest’s peak is reported beside the forward estimate computable after the fact.
 
   Mutations of the model, each applied, run and reverted at this head:
   - Diagnostic rows at 3 × instead of 5 × fail the diagnostics check (147%).
   - Thread reconciliation without its copies fails the evidence-heavy threads’ phase
     (150%) and their `E`.
   - Halving the copies fails only `thread_reconcile_is_its_parts`.
+  - Removing the pricing step from group scratch fails the pricing group’s requests
+    stage (142%) and `group_scratch_is_its_lists_and_largest_step`.
+  - Zeroing `COORDINATING_CACHES` fails 37 of the 46 coordinating-thread checks.
   - Removing group scratch’s owner and model step, the owners’ listed detail, or the
     models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
     which pins every part per member.
@@ -1295,7 +1320,9 @@ Choices made while implementing, where this design left room:
     `GZIP_DECODER`.
   - A key derivation measures 688 bytes, within `KEY_DERIVATION`’s 4 KiB allowance; a
     fresh thread’s name cache 48 bytes on macOS, which runs thread-local destructors
-    itself, within `NAME_CACHE`’s 512.
+    itself, within `NAME_CACHE`’s 512, and its pricing-context cache 48 bytes, within
+    `PRICING_CACHE`’s 256. A fresh thread that coordinates an ingest keeps 0 to 128
+    bytes of caches on x86_64 Linux, within `COORDINATING_CACHES`’ 768.
   - `QUERY_PER_ROW` (1 KiB) and `QUERY_FIXED` (64 KiB) stay *guesses*: the harness’s
     sessions document of 201 rows holds about 650 bytes per row beyond its per-request
     lists, its fixed part included, and an empty report holds under 1 KiB.

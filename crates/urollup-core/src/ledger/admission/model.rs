@@ -27,7 +27,9 @@ use std::mem::size_of;
 
 use super::Component;
 use crate::ledger::diagnostics::Diagnostic;
-use crate::ledger::entities::{ProviderLimitObservation, Request, Thread};
+use crate::ledger::entities::{
+    PricingContext, ProviderLimitObservation, Request, ServiceTier, Thread,
+};
 use crate::ledger::identity::{AnalyticalId, IdentityKey};
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{LineageLink, RequestObservation};
@@ -88,6 +90,10 @@ const fn minimum_capacity(element: u64) -> u64 {
 
 const fn max(left: u64, right: u64) -> u64 {
     if left > right { left } else { right }
+}
+
+const fn min(left: u64, right: u64) -> u64 {
+    if left < right { left } else { right }
 }
 
 /// A vector of `len` elements of `element` bytes that grew by doubling or will shrink to
@@ -250,7 +256,8 @@ pub const fn btree_collected(entries: u64, key: u64, value: u64) -> u64 {
 pub mod sizes {
     use super::{
         AnalyticalId, DerivedKey, Diagnostic, EvidenceRef, IdentityBasis, IdentityKey, LineageLink,
-        Name, ProviderLimitObservation, Request, RequestObservation, Thread, size_of,
+        Name, PricingContext, ProviderLimitObservation, Request, RequestObservation, Thread,
+        size_of,
     };
 
     /// A request observation row.
@@ -292,6 +299,8 @@ pub mod sizes {
     pub const PERMUTATION: u64 = size_of::<usize>() as u64;
     /// An interned name, as rows and per-thread caches hold it.
     pub const NAME: u64 = size_of::<Name>() as u64;
+    /// An interned pricing context, as its table leaks it.
+    pub const PRICING_CONTEXT: u64 = size_of::<PricingContext>() as u64;
     /// A `BTreeSet` or `Vec` header, as a candidate-set list holds it.
     pub const SET_HEADER: u64 = size_of::<std::collections::BTreeSet<AnalyticalId>>() as u64;
     /// A string slice, as the sets of served models and field values hold them.
@@ -496,6 +505,16 @@ pub const fn name_intern(text: u64) -> u64 {
 /// The name table's one-time base, charged with the first name: its first B-tree node.
 pub const NAME_TABLE_BASE: u64 = btree_node(size_of::<&str>() as u64, sizes::NAME);
 
+/// A new process-interned [`PricingContext`]: its leaked allocation and its entry in the
+/// pricing table, a set of references. Its names are interned and charged on their own.
+pub const fn pricing_intern() -> u64 {
+    allocation(sizes::PRICING_CONTEXT).saturating_add(btree_entry(sizes::POINTER, 0))
+}
+
+/// The pricing table's one-time base, charged with the first context: its first B-tree
+/// node.
+pub const PRICING_TABLE_BASE: u64 = btree_node(sizes::POINTER, 0);
+
 /// A new interned overflow [`Measures`](crate::ledger::tokens::Measures) pattern: its row
 /// in a doubling vector and its hash-map entry.
 pub const fn overflow_intern() -> u64 {
@@ -515,6 +534,21 @@ pub const OVERFLOW_TABLE_BASE: u64 = grown_vec(1, crate::ledger::tokens::OVERFLO
 /// a per-thread vector where the platform does not run thread-local destructors itself.
 pub const NAME_CACHE: u64 = grown_vec(crate::ledger::names::RECENT_CAPACITY as u64, sizes::NAME)
     + grown_vec(1, 2 * sizes::POINTER);
+
+/// A thread's cache of recently interned pricing contexts (`Pricing::new`'s
+/// `RECENT_PRICING`), up to eight references in a doubling vector. Its destructor's
+/// registration shares the vector [`NAME_CACHE`] charges, which holds four entries before it
+/// grows.
+pub const PRICING_CACHE: u64 = grown_vec(
+    crate::ledger::entities::RECENT_PRICING_CAPACITY as u64,
+    size_of::<crate::ledger::entities::Pricing>() as u64,
+);
+
+/// The coordinating thread's name and pricing caches, which the discovery checkpoint
+/// charges until exit when it releases the coordinating slot: that thread still interns
+/// after workers join, as Codex observes its rollouts and reconciliation merges pricing
+/// contexts, and its caches live until the process exits.
+pub const COORDINATING_CACHES: u64 = NAME_CACHE + PRICING_CACHE;
 
 /// Line-buffer capacity up to this decodes inside a worker slot; a larger line buffer
 /// needs the large-record permit.
@@ -631,8 +665,8 @@ pub const fn join_copies() -> u64 {
 /// One worker slot `b`: the read buffer and boxed reader, the retained line, the line need
 /// at the slot's 4 MiB capacity (16 MiB, which also covers a Claude subagent's sidecar,
 /// read up to 1 MiB and parsed after the scan drops its line buffer), the `quotaLimits`
-/// allowance, the thread stack, the join's `done` vector, the thread's name cache, and the
-/// zstd or gzip decoder when discovery found such a source.
+/// allowance, the thread stack, the join's `done` vector, the thread's name and pricing
+/// caches, and the zstd or gzip decoder when discovery found such a source.
 pub const fn worker_slot(zstd: bool, gzip: bool) -> u64 {
     let mut slot = allocation(READ_BUFFER)
         + allocation(READER_STATE)
@@ -641,7 +675,8 @@ pub const fn worker_slot(zstd: bool, gzip: bool) -> u64 {
         + QUOTA_DOCUMENT_ALLOWANCE
         + WORKER_STACK
         + JOIN_DONE
-        + NAME_CACHE;
+        + NAME_CACHE
+        + PRICING_CACHE;
     if zstd {
         slot += ZSTD_DECODER;
     }
@@ -845,6 +880,10 @@ pub struct ReconcileCounts {
     /// The text of the distinct served-model names the observations carry, which bounds
     /// the names one conflicting-models detail lists. The interned names' bytes bound it.
     pub model_text: u64,
+    /// The text of the distinct names the observations' pricing contexts record, counted
+    /// once per dimension that records them, which bounds the values one
+    /// conflicting-pricing detail lists.
+    pub pricing_text: u64,
     /// Provider limit observations.
     pub limit_rows: u64,
     /// Thread observations, which reconciliation sorts, registers, groups and merges.
@@ -981,18 +1020,74 @@ pub const fn group_fields(agent: Agent, members: u64) -> u64 {
         .saturating_add(listed_detail(1, text))
 }
 
+/// The text a pricing conflict detail adds around the values it lists, in all: each
+/// dimension's name, the ` (` and `)` around its values, and the `; ` that joins it to the
+/// conflict before it.
+const PRICING_DIMENSION_TEXT: u64 = {
+    let dimensions = &crate::ledger::reconcile::PRICING_DIMENSIONS;
+    let mut text = 0;
+    let mut index = 0;
+    while index < dimensions.len() {
+        text += dimensions[index].len() as u64 + 5;
+        index += 1;
+    }
+    text
+};
+
+/// The most the buffer `format!` outgrows last while it writes the conflicting-pricing
+/// detail holds beyond the text the detail lists: its first buffer is twice the detail's
+/// 64 bytes of literal text, and the next twice that or, when larger, the text written so
+/// far.
+const PRICING_DETAIL_BUFFER: u64 = 256;
+
+/// Merging a request's pricing contexts from at most `members` originals, whose names
+/// hold at most `pricing_text` bytes ([`ReconcileCounts::pricing_text`]): the originals
+/// that carry a context and their contexts, filtered into two vectors that grow by
+/// doubling; the dimension being merged, its set of values and, when they differ, the set
+/// of their names and then their vector; and the conflicts' text.
+///
+/// Each conflict names its dimension and lists its distinct names two bytes apart: at most
+/// one per member, and at most one more than the dimension's text, since only one can be
+/// empty. `format!` doubles a conflict's string to at most twice its text while that
+/// dimension's joined names are live. The detail joins the conflicts beside them, and the
+/// buffer `format!` outgrows last while it writes the detail holds at most that text and
+/// 256 bytes; the detail itself is charged with its diagnostic ([`diagnostic_detail`]).
+pub const fn group_pricing(members: u64, pricing_text: u64) -> u64 {
+    if members == 0 {
+        return 0;
+    }
+    let dimensions = crate::ledger::reconcile::PRICING_DIMENSIONS.len() as u64;
+    let names = min(dimensions.saturating_mul(members), pricing_text.saturating_add(dimensions));
+    let listed =
+        PRICING_DIMENSION_TEXT.saturating_add(pricing_text).saturating_add(names.saturating_mul(2));
+    let conflicts = sized_vec(dimensions, sizes::STRING)
+        .saturating_add(listed.saturating_mul(2))
+        .saturating_add(dimensions.saturating_mul(ALLOCATION_COST));
+    grown_vec(members, sizes::POINTER)
+        .saturating_mul(2)
+        .saturating_add(btree_collected(members, size_of::<ServiceTier>() as u64, 0))
+        .saturating_add(btree_collected(members, sizes::STR, 0))
+        .saturating_add(conflicts)
+        .saturating_add(allocation(listed))
+        .saturating_add(allocation(listed.saturating_add(PRICING_DETAIL_BUFFER)))
+}
+
 /// The scratch one group of `members` observations allocates while its requests are built:
 /// its lists ([`group_lists`]) and the largest of the steps that run one after another,
 /// each freeing what it allocated: resolving its keys, selecting revisions, collecting its
-/// owners and its models, gathering records, and finding the fields its members disagree
-/// on. `model_text` bounds the served-model names a detail can list.
-pub const fn group_scratch(agent: Agent, members: u64, model_text: u64) -> u64 {
+/// owners and its models, merging pricing contexts, gathering records, and finding the
+/// fields its members disagree on. `model_text` bounds the served-model names a detail can
+/// list, and `pricing_text` the pricing names.
+pub const fn group_scratch(agent: Agent, members: u64, model_text: u64, pricing_text: u64) -> u64 {
     if members == 0 {
         return 0;
     }
     let keys = members.saturating_mul(key_bound(agent));
     let identity = max(group_keys(keys), group_revisions(members));
-    let sets = max(group_owners(members), group_models(members, model_text));
+    let sets = max(
+        max(group_owners(members), group_models(members, model_text)),
+        group_pricing(members, pricing_text),
+    );
     let rest = max(group_records(members), group_fields(agent, members));
     group_lists(agent, members).saturating_add(max(identity, max(sets, rest)))
 }
@@ -1136,7 +1231,12 @@ pub const fn grouping_estimate(agent: Agent, counts: &ReconcileCounts) -> PhaseE
             .saturating_add(key_graph(counts.key_nodes, observations))
             .saturating_add(grouping_order(observations))
             .saturating_add(request_vector(observations, observations, key_bound(agent)))
-            .saturating_add(group_scratch(agent, counts.largest_group, counts.model_text)),
+            .saturating_add(group_scratch(
+                agent,
+                counts.largest_group,
+                counts.model_text,
+                counts.pricing_text,
+            )),
         payloads: counts.observation_payload.saturating_mul(2),
         limits: counts.limit_rows.saturating_mul(limit_row()),
         sources: counts
@@ -1259,11 +1359,11 @@ mod tests {
                 (kappa(Agent::Codex), kappa(Agent::Claude)),
             ),
             (
-                (224, 216, 17, 30, 16),
-                (240, 528),
-                (792, 654, 656, 345),
-                (1074, 980, 868, 443),
-                (792, 1074)
+                (232, 224, 17, 30, 16),
+                (240, 552),
+                (816, 670, 680, 353),
+                (1098, 996, 892, 451),
+                (816, 1098)
             )
         );
         for structure in [codex, claude] {
@@ -1284,7 +1384,9 @@ mod tests {
     /// against the estimates the model harness measures. From `Order`, the largest linked
     /// set's scratch is added: beyond one member's, κ's headroom over grouping covers it
     /// while that set holds up to a fifth of the observations, and the `Order` checkpoint
-    /// charges any more.
+    /// charges any more. The parts proportional to model and pricing text are not per
+    /// record, so κ does not cover them: the checks run with no text, and only `Order`
+    /// charges them.
     #[test]
     fn kappa_covers_the_grouping_and_finalize_estimates() {
         for agent in [Agent::Codex, Agent::Claude] {
@@ -1313,7 +1415,7 @@ mod tests {
                     "{case}"
                 );
                 // Beyond one member's scratch, which the `Order` checkpoint charges.
-                let one = group_scratch(agent, 1, 0);
+                let one = group_scratch(agent, 1, 0, 0);
                 let order = ReconcileCounts { largest_group: observations / 5, ..counts };
                 let grouping = grouping_estimate(agent, &order).kappa;
                 assert!(
@@ -1326,8 +1428,9 @@ mod tests {
 
     /// Group scratch is its lists and the largest of its steps, and each part is pinned per
     /// member at 1,000 members: the model harness's one-group inputs bound the whole term,
-    /// but no realistic input makes a single step necessary there, because the B-tree and
-    /// vector rules around it leave more slack than the step itself.
+    /// and its pricing group makes the pricing step necessary, but no realistic input makes
+    /// another single step necessary there, because the B-tree and vector rules around it
+    /// leave more slack than the step itself.
     #[test]
     fn group_scratch_is_its_lists_and_largest_step() {
         let members = 1_000;
@@ -1339,29 +1442,31 @@ mod tests {
                 per_member(group_revisions(members)),
                 per_member(group_owners(members)),
                 per_member(group_models(members, 0)),
+                per_member(group_pricing(members, 0)),
                 per_member(group_records(members)),
                 per_member(group_fields(agent, members)),
             )
         };
         assert_eq!(
             (parts(Agent::Codex), parts(Agent::Claude)),
-            ((40, 86, 24, 191, 93, 48, 0), (134, 255, 24, 191, 93, 48, 68))
+            ((40, 86, 24, 191, 93, 182, 48, 0), (134, 255, 24, 191, 93, 182, 48, 68))
         );
         for agent in [Agent::Codex, Agent::Claude] {
             for members in [0, 1, 2, 7, 100, 1_000, 100_000] {
-                for model_text in [0, 10 * members, 1 << 20] {
+                for text in [0, 10 * members, 1 << 20] {
                     let steps = [
                         group_keys(members * key_bound(agent)),
                         group_revisions(members),
                         group_owners(members),
-                        group_models(members, model_text),
+                        group_models(members, text),
+                        group_pricing(members, text),
                         group_records(members),
                         group_fields(agent, members),
                     ];
                     let largest = steps.into_iter().max().unwrap_or(0);
                     let expected =
                         if members == 0 { 0 } else { group_lists(agent, members) + largest };
-                    assert_eq!(group_scratch(agent, members, model_text), expected);
+                    assert_eq!(group_scratch(agent, members, text, text), expected);
                 }
             }
         }
@@ -1428,7 +1533,8 @@ mod tests {
             + (640 << 10)
             + (2 << 20)
             + JOIN_DONE
-            + NAME_CACHE;
+            + NAME_CACHE
+            + PRICING_CACHE;
         assert_eq!(plain, expected_plain);
         assert!((19 << 20..20 << 20).contains(&plain), "{plain}");
         let zstd = worker_slot(true, false) - plain;
@@ -1451,6 +1557,7 @@ mod tests {
             observation_payload: 4_000,
             largest_group: 3,
             model_text: 30,
+            pricing_text: 40,
             limit_rows: 10,
             threads: 4,
             thread_heap: 400,

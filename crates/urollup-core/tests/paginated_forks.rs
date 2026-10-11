@@ -1487,6 +1487,18 @@ fn a_compacted_record_naming_its_own_thread_counts_once_when_its_line_is_gone() 
         assert_eq!(own_usage(&ingested, CHILD).1, Some(64));
         assert_excluded_as_gap(&ingested, CHILD);
         assert_eq!(undecided_steps(&ingested), 1);
+        // A total that cannot be read cannot show that nothing was dropped either.
+        let mut records = compaction_child((158, 16));
+        let mut total: serde_json::Value =
+            serde_json::from_str(&records[3]).expect("synthetic counter");
+        total["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(200);
+        records[3] = total.to_string();
+        let root = fork_root(parent_present.then_some(&parent_records()[..]), &[]);
+        write_child(&root, guardian_meta(5), &records);
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).1, Some(64));
+        assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(undecided_steps(&ingested), 1);
     }
 }
 
@@ -2210,7 +2222,8 @@ fn a_parent_rollback_after_a_fork_is_still_counted_twice_until_uro_eh0d() {
 }
 
 #[test]
-fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_twice() {
+fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_twice_until_uro_eh0d()
+ {
     // Review A2 on PR #33 (probe P3b). The parent rolled back its first turn, so its first
     // migrated counter carries that turn's usage (160 on a last usage of 60), and a fork
     // copied that counter. Then a release from 0.153 resumed the parent, so it holds usage
@@ -2243,7 +2256,7 @@ fn a_rolled_back_first_turn_under_a_parent_with_usage_records_is_still_counted_t
 }
 
 #[test]
-fn a_forks_own_step_that_repeats_a_parent_total_is_still_dropped_as_a_copy() {
+fn a_forks_own_step_that_repeats_a_parent_total_is_still_dropped_as_a_copy_until_uro_uwv0() {
     // Review A4 on PR #33 (probes P4b and P4c). The fork, taken after p-turn-1, retries the
     // parent's next prompt, and its response repeats the parent's p-turn-2 in every count.
     // Its total is then one the parent reported, which voids the inferred start, and that
@@ -2286,6 +2299,81 @@ fn a_settings_event_without_a_thread_inside_an_open_start_keeps_the_childs_lines
         let ingested = ingest_every_way(&root);
         assert_eq!(own_usage(&ingested, CHILD), (2, Some(35), Completeness::Complete), "{meta}");
         assert_fork_parent_and_complete(&ingested);
+        assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 195);
+    }
+}
+
+/// A `thread_settings_applied` snapshot selecting `tier`, naming `thread` when one is
+/// given, and with an `ordinal` when one is given.
+fn tier_settings(ordinal: Option<u64>, thread: Option<&str>, tier: &str) -> String {
+    let mut line = json!({"timestamp": "2026-01-01T00:00:01Z", "type": "event_msg",
+        "payload": {"type": "thread_settings_applied", "thread_settings": {"service_tier": tier}}});
+    if let Some(ordinal) = ordinal {
+        line["ordinal"] = json!(ordinal);
+    }
+    if let Some(thread) = thread {
+        line["payload"]["thread_id"] = json!(thread);
+    }
+    line.to_string()
+}
+
+/// The tiers of the counted requests `native` owns.
+fn owned_tiers(ingested: &Ingested, native: &str) -> Vec<Option<&'static str>> {
+    let owner = thread(native);
+    ingested
+        .ledger
+        .requests
+        .values()
+        .filter(|request| request.counting == Counting::Counted)
+        .filter(
+            |request| matches!(&request.ownership, Ownership::Owned { thread } if *thread == owner),
+        )
+        .map(|request| {
+            request.pricing.and_then(|pricing| pricing.service_tier.map(|tier| tier.name.as_str()))
+        })
+        .collect()
+}
+
+#[test]
+fn an_unmarked_forks_thread_less_settings_do_not_set_its_tier_until_uro_1uy7() {
+    // Found merging PR #33 into PR #19. Every line of an unmarked fork falls before its
+    // boundary, as every line of a migrated subagent with a boundary past its end does, so
+    // a settings snapshot without a thread_id (written before 0.152) never sets the
+    // child's tier, even inside its own open start: the rule cannot yet tell it from the
+    // parent's copied settings. Nothing reads the tier yet. The child's own 20 and 15
+    // still count, 195 in all, and the parent keeps its own tier. Both placements
+    // uro-1uy7 will change are pinned: inside the open start, and before the fork's
+    // first own turn, where no start is open yet.
+    let inside = [
+        fork_first_turn().to_vec(),
+        vec![
+            tier_settings(Some(7), None, "priority"),
+            turn(8, Some("f-turn-2")),
+            counter(9, 170, 25, 12, 3),
+        ],
+    ]
+    .concat();
+    let before = vec![
+        tier_settings(Some(5), None, "priority"),
+        turn(6, Some("f-turn-1")),
+        counter(7, 158, 22, 18, 2),
+        turn(8, Some("f-turn-2")),
+        counter(9, 170, 25, 12, 3),
+    ];
+    let parent =
+        [vec![tier_settings(None, Some(PARENT), "flex")], parent_with_two_turns().to_vec()]
+            .concat();
+    for (own, meta) in [&inside, &before]
+        .into_iter()
+        .flat_map(|own| [migrated_fork_meta(), migrated_meta(12)].map(|meta| (own, meta)))
+    {
+        let root = fork_root(Some(&parent), &[]);
+        write_child(&root, meta.clone(), &migrated_fork(own));
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD), (2, Some(35), Completeness::Complete), "{meta}");
+        assert_eq!(owned_tiers(&ingested, CHILD), [None, None], "{meta}");
+        assert_fork_parent_and_complete(&ingested);
+        assert_eq!(owned_tiers(&ingested, PARENT), [Some("flex"), Some("flex")], "{meta}");
         assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 195);
     }
 }

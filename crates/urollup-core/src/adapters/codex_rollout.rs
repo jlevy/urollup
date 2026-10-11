@@ -31,8 +31,9 @@ use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode, SAMPLE_EVIDENCE_LIMIT};
 use crate::ledger::entities::{
-    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, ProviderLimitObservation,
-    Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, Pricing, PricingContext,
+    ProviderLimitObservation, Relationship, RelationshipKind, ServiceTier, SourceArtifact,
+    SourceCapability, Thread, TierBasis,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -41,7 +42,9 @@ use crate::ledger::reconcile::{
     reconcile_with_capacity,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
-use crate::ledger::tokens::{InputSemantics, NativeInput, TokenMeasures, normalize_input};
+use crate::ledger::tokens::{
+    InputBelowCache, InputSemantics, NativeInput, TokenMeasures, normalize_input,
+};
 use crate::selection::{Agent, agent_thread_identity};
 use crate::sources::decode::{parse_timestamp, validate_record};
 use crate::sources::evidence::{EvidenceRef, SourceTable};
@@ -130,6 +133,8 @@ struct ParsedSource {
     id: Option<AnalyticalId>,
     /// The thread the rollout's file name records.
     file_thread: Sym,
+    /// The rollout's path below its root, which diagnostics name.
+    locator: String,
     /// The table that this rollout's symbols index.
     strings: Strings,
     /// The usage counts of this rollout's records, packed in record order.
@@ -187,6 +192,8 @@ struct ParsedRecord {
     length: u64,
     /// Lines skipped since the previous record.
     skipped_before: u64,
+    /// The record's 1-based line in the decoded stream, which diagnostics name.
+    line: u32,
     ordinal: Option<u64>,
     timestamp: Option<CompactTimestamp>,
     kind: RecordKind,
@@ -196,6 +203,7 @@ struct ParsedRecord {
 enum RecordKind {
     SessionMeta {
         id: Option<Sym>,
+        provider: Option<Name>,
     },
     TurnContext {
         turn_id: Option<Sym>,
@@ -214,7 +222,18 @@ enum RecordKind {
     },
     ThreadSettingsApplied {
         thread_id: Option<Sym>,
+        /// The event's settings snapshot, when `thread_settings` is an object.
+        settings: Option<Box<SettingsSnapshot>>,
     },
+}
+
+/// The pricing fields of a `thread_settings_applied` snapshot, which Codex writes whole
+/// with every settings update.
+struct SettingsSnapshot {
+    /// The thread's selected tier; a snapshot without one has cleared it.
+    service_tier: Option<Name>,
+    /// The thread's provider, when the snapshot records one.
+    provider: Option<Name>,
 }
 
 impl ParsedRecord {
@@ -442,11 +461,12 @@ struct RateLimits {
     native: String,
 }
 
-/// A turn's model and reasoning effort.
+/// A turn's model, reasoning effort and pricing context.
 #[derive(Clone, Copy, Debug, Default)]
 struct TurnContext {
     model: Option<Name>,
     effort: Option<Name>,
+    pricing: Option<Pricing>,
 }
 
 /// The turn contexts of one rollout, by turn ID.
@@ -725,6 +745,7 @@ fn decode_source(
     .map_err(|source| AdapterError::Read { path, source })?;
     let mut parsed = decoder.finish();
     parsed.id = entry.source.as_ref().map(|source| source.id.clone());
+    parsed.locator.clone_from(&source.locator);
     Ok((entry, parsed))
 }
 
@@ -799,6 +820,7 @@ impl SourceDecoder {
         ParsedSource {
             id,
             file_thread,
+            locator: String::new(),
             strings,
             counts,
             records,
@@ -862,6 +884,7 @@ impl SourceDecoder {
             offset: raw.evidence.offset,
             length: u64::from(raw.evidence.length),
             skipped_before: std::mem::take(&mut self.skipped),
+            line: u32::try_from(raw.line).unwrap_or(u32::MAX),
             ordinal: line.ordinal,
             timestamp: line
                 .timestamp
@@ -899,6 +922,12 @@ impl SourceDecoder {
             RecordType::EventMsg => match payload.event_type {
                 EventType::ThreadSettingsApplied => Some(RecordKind::ThreadSettingsApplied {
                     thread_id: self.interner.intern_some(payload.usage_record.thread_id.as_deref()),
+                    settings: payload.thread_settings.as_ref().map(|settings| {
+                        Box::new(SettingsSnapshot {
+                            service_tier: settings.service_tier.as_deref().map(Name::new),
+                            provider: settings.model_provider_id.as_deref().map(Name::new),
+                        })
+                    }),
                 }),
                 EventType::TokenCount => {
                     let mut usage = UsageMask::default();
@@ -929,6 +958,7 @@ impl SourceDecoder {
 
     fn session_meta(&mut self, payload: Payload<'_>, evidence: &EvidenceRef) -> RecordKind {
         let id = self.interner.intern_some(payload.id.as_deref());
+        let provider = payload.model_provider.as_deref().map(Name::new);
         let metas = &mut self.metas;
         if metas.cli_version.is_none() {
             metas.cli_version = payload.cli_version.map(Cow::into_owned);
@@ -963,7 +993,7 @@ impl SourceDecoder {
             };
             metas.own = Some(Box::new((meta, *evidence)));
         }
-        RecordKind::SessionMeta { id }
+        RecordKind::SessionMeta { id, provider }
     }
 }
 
@@ -1094,7 +1124,7 @@ fn is_usage_event(
 fn is_root_rollout(metas: &SourceMetas, records: &[ParsedRecord], file_thread: Sym) -> bool {
     !metas.lineage
         && records.iter().all(|record| match record.kind {
-            RecordKind::ThreadSettingsApplied { thread_id } => {
+            RecordKind::ThreadSettingsApplied { thread_id, .. } => {
                 thread_id.is_none_or(|thread| thread == file_thread)
             }
             RecordKind::UsageRecord(usage) => {
@@ -1419,6 +1449,54 @@ const UNVERIFIED_BOUNDARY_DETAIL: &str = concat!(
 const UNSEEDED_COUNTER_DETAIL: &str =
     "Codex cumulative usage did not continue the inherited total and opened a new counter epoch";
 
+/// Usage objects whose input is below their cache categories, which the rollout excludes.
+#[derive(Default)]
+struct InconsistentUsage {
+    /// The first few records, as diagnostic and gap samples.
+    evidence: Vec<EvidenceRef>,
+    occurrences: u64,
+    /// The first excluded line, with its counts when its own usage was inconsistent, which
+    /// the diagnostic names.
+    first: Option<(u64, Option<InputBelowCache>)>,
+}
+
+impl InconsistentUsage {
+    /// Excludes a record or step whose own usage is inconsistent.
+    fn add(&mut self, evidence: EvidenceRef, line: u64, error: InputBelowCache) {
+        self.count(evidence);
+        self.first.get_or_insert((line, Some(error)));
+    }
+
+    /// Excludes a step that an inconsistent total before it left uncheckable.
+    fn exclude(&mut self, evidence: EvidenceRef, line: u64) {
+        self.count(evidence);
+        self.first.get_or_insert((line, None));
+    }
+
+    fn count(&mut self, evidence: EvidenceRef) {
+        if self.evidence.len() < SAMPLE_EVIDENCE_LIMIT {
+            self.evidence.push(evidence);
+        }
+        self.occurrences = self.occurrences.saturating_add(1);
+    }
+}
+
+/// Ends the counter epoch at a step whose usage cannot be read: the next own step is
+/// checked as a first step against `readable`, the step's total when that can be read, or
+/// else the total the counter had reached, so usage before the step never counts again.
+fn break_epoch(
+    readable: Option<TokenMeasures>,
+    counter: &mut Option<RunningTotal>,
+    inherited_total: &mut Option<TokenMeasures>,
+    check_next: &mut bool,
+) {
+    if let Some(baseline) = readable.or_else(|| counter.as_ref().map(RunningTotal::total)) {
+        *inherited_total = Some(baseline);
+    }
+    *counter = None;
+    *check_next = true;
+}
+
 /// Usage records whose ownership a declared fork boundary could not establish.
 #[derive(Default)]
 struct UnverifiedUsage {
@@ -1620,16 +1698,35 @@ fn observe_parsed_source(
     // Whether the declared boundary leaves usage-bearing lines to another thread or to none.
     let mut copied_prefix = false;
     let mut turns = Turns::new();
+    let mut pricing_by_thread: HashMap<Sym, PricingContext> = HashMap::new();
     let mut current_turn: Option<Sym> = None;
     let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
     let mut inherited_total = None;
     let mut counter = None;
     let mut unverified = UnverifiedUsage::default();
+    // Usage objects whose input is below their cache categories, and whether the next own
+    // counter step must be checked as a first step because such a step broke the epoch.
+    let mut inconsistent = InconsistentUsage::default();
+    let mut check_next = false;
+    // The raw total and last usage of the latest inconsistent counter step, which a
+    // rate-limit refresh repeats without new usage.
+    let mut inconsistent_step: Option<(CodexUsage, Option<CodexUsage>)> = None;
+    // A rollout without a parent, boundary or other thread's header inherits no total, so
+    // after an inconsistent step its counter rules may still read a decrease as a reset.
+    let restarts = parent_thread.is_none() && !native_boundary.is_declared() && !has_foreign_meta;
     let mut previous_limits = BTreeMap::new();
     let mut counts = CountReader::new(&source.counts);
     for record in &source.records {
         let [first_usage, second_usage] = counts.record(&record.kind);
         let view = RecordView { evidence: record.evidence(0), timestamp: record.timestamp };
+        let line = u64::from(record.line);
+        // A usage object whose input is below its cache categories cannot be normalized.
+        // Where the rollout would count it, its record or counter step adds no usage and
+        // the rollout reports a gap; a copy keeps its evidence without the usage.
+        let underflow = [first_usage.as_ref(), second_usage.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|usage| codex_measures(usage).err());
         // Whether the counter rules count this record: any `token_count` of a rollout without
         // usage records, and a counted one of a root rollout with them.
         let cumulative = matches!(
@@ -1664,8 +1761,10 @@ fn observe_parsed_source(
             // A line naming another thread is copied history, which never follows the
             // child's own lines.
             let names_other = match &record.kind {
-                RecordKind::SessionMeta { id } => id.is_some_and(|thread| thread != file_thread),
-                RecordKind::ThreadSettingsApplied { thread_id } => {
+                RecordKind::SessionMeta { id, .. } => {
+                    id.is_some_and(|thread| thread != file_thread)
+                }
+                RecordKind::ThreadSettingsApplied { thread_id, .. } => {
                     thread_id.is_some_and(|thread| thread != file_thread)
                 }
                 RecordKind::UsageRecord(usage) | RecordKind::Compacted(Some(usage)) => {
@@ -1678,7 +1777,9 @@ fn observe_parsed_source(
             let reported_total = match (&record.kind, first_usage.as_ref()) {
                 (RecordKind::TokenCount { .. }, Some(total)) => {
                     let repeats_baseline = match &start.baseline {
-                        Some(baseline) => same_usage(&codex_usage(total)?, baseline),
+                        Some(baseline) => {
+                            codex_measures(total).is_ok_and(|total| same_usage(&total, baseline))
+                        }
                         None => false,
                     };
                     !repeats_baseline
@@ -1748,11 +1849,13 @@ fn observe_parsed_source(
                 }
                 RecordKind::TokenCount { .. } => match &first_usage {
                     Some(total) if cumulative && active_thread == file_thread => {
-                        changes_running_total(
-                            counter.as_ref(),
-                            inherited_total,
-                            &codex_usage(total)?,
-                        )?
+                        // An inconsistent total is excluded on its own, below.
+                        match codex_measures(total) {
+                            Ok(total) => {
+                                changes_running_total(counter.as_ref(), inherited_total, &total)?
+                            }
+                            Err(_) => false,
+                        }
                     }
                     Some(_) | None => false,
                 },
@@ -1786,11 +1889,14 @@ fn observe_parsed_source(
                 | RecordKind::ThreadSettingsApplied { .. } => false,
             };
         match &record.kind {
-            RecordKind::SessionMeta { id } => {
+            RecordKind::SessionMeta { id, provider } => {
                 if let Some(thread_id) = *id {
                     active_thread = thread_id;
                     named_own = false;
                     inferred = None;
+                    if let Some(provider) = provider {
+                        pricing_by_thread.entry(thread_id).or_default().provider = Some(*provider);
+                    }
                 }
             }
             RecordKind::TurnContext { turn_id, model, effort } => {
@@ -1817,8 +1923,9 @@ fn observe_parsed_source(
                                 // rollout's own lines; its first counter step is still
                                 // checked against the copied total.
                                 named_own = true;
-                                // A later unrecorded turn, as after a thread-less settings
-                                // event, never moves an open start.
+                                // An open start keeps `named_own` set, through a settings
+                                // event without a thread ID too, so none is open here; the
+                                // guard keeps a later unrecorded turn from ever moving one.
                                 if inferred.is_none() {
                                     inferred = Some(InferredStart {
                                         observations: observations.len(),
@@ -1832,11 +1939,21 @@ fn observe_parsed_source(
                     }
                 }
                 if let Some(turn_id) = *turn_id {
-                    turns.insert(turn_id, TurnContext { model: *model, effort: *effort });
+                    turns.insert(
+                        turn_id,
+                        TurnContext {
+                            model: *model,
+                            effort: *effort,
+                            pricing: pricing_by_thread
+                                .get(&active_thread)
+                                .filter(|context| **context != PricingContext::default())
+                                .map(|context| Pricing::new(context.clone())),
+                        },
+                    );
                 }
                 current_turn = *turn_id;
             }
-            RecordKind::ThreadSettingsApplied { thread_id } => {
+            RecordKind::ThreadSettingsApplied { thread_id, settings } => {
                 active_thread = thread_id.unwrap_or(file_thread);
                 // A settings event without a thread ID (before 0.152) names no owner, so
                 // while a turn-inferred start is open the lines after it stay the child's,
@@ -1847,6 +1964,32 @@ fn observe_parsed_source(
                 if thread_id.is_some() {
                     inferred = None;
                 }
+                // A settings snapshot that names a thread sets that thread's tier and provider
+                // wherever it sits, as a usage record's name decides its owner: a migrated
+                // child's own settings precede its boundary. One that names no thread sets
+                // this rollout's own: anywhere in a rollout without a boundary, and otherwise
+                // only at or after the boundary. Before it, the setting may be the parent's
+                // copied history, and a turn-inferred start can still be voided; a line
+                // without an ordinal, or any line under an invalid boundary, cannot be
+                // placed. Every line of an unmarked (migrated user) fork, like every line of
+                // a migrated child whose boundary lies past its end, precedes its boundary,
+                // so such a snapshot never sets that fork's tier.
+                let settings_thread = match *thread_id {
+                    Some(thread) => Some(thread),
+                    None if before_boundary || native_boundary.cannot_place(record.ordinal) => None,
+                    None => Some(file_thread),
+                };
+                if let (Some(thread), Some(settings)) = (settings_thread, settings) {
+                    let context = pricing_by_thread.entry(thread).or_default();
+                    // Codex writes the whole snapshot and omits the tier when none is
+                    // selected, so a snapshot without one clears it.
+                    context.service_tier = settings
+                        .service_tier
+                        .map(|name| ServiceTier { name, basis: TierBasis::ThreadSetting });
+                    if let Some(provider) = settings.provider {
+                        context.provider = Some(provider);
+                    }
+                }
             }
             RecordKind::UsageRecord(usage_record) => {
                 // Codex writes the thread that made the request into its record, and a copy
@@ -1855,20 +1998,36 @@ fn observe_parsed_source(
                 // An unnamed record takes the owner its position gives it.
                 let mut payload = usage_record.payload(strings, first_usage);
                 payload.thread_id = payload.thread_id.or(usage_owner);
-                let role = if unplaced { ObservationRole::Copy } else { ObservationRole::Original };
-                let observation =
-                    usage_observation(&view, &payload, role, file_thread_text, thread_ids, &turns)?;
                 if let (Some(response_id), Some(owner)) =
                     (usage_record.response_id, payload.thread_id)
                 {
                     last_response_by_thread.insert(owner, response_id);
                 }
-                if observation.role == ObservationRole::Original {
-                    if let Some(usage) = &first_usage {
-                        accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                let role = if unplaced { ObservationRole::Copy } else { ObservationRole::Original };
+                let original = role == ObservationRole::Original
+                    && payload.thread_id == Some(file_thread_text);
+                match underflow {
+                    Some(error) if original => inconsistent.add(view.evidence, line, error),
+                    _ => {
+                        if underflow.is_some() {
+                            payload.usage = None;
+                        }
+                        let observation = usage_observation(
+                            &view,
+                            &payload,
+                            role,
+                            file_thread_text,
+                            thread_ids,
+                            &turns,
+                        )?;
+                        if observation.role == ObservationRole::Original {
+                            if let Some(usage) = &payload.usage {
+                                accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                            }
+                        }
+                        observations.push(observation);
                     }
                 }
-                observations.push(observation);
                 // The counter Codex writes after a record reports the same response, so the
                 // lines after a record follow its thread.
                 if let Some(thread) = usage_record.thread_id {
@@ -1890,22 +2049,38 @@ fn observe_parsed_source(
                         && latest
                             .response_id
                             .is_some_and(|response| !own_responses.contains(&response));
-                    observations.push(usage_observation(
-                        &view,
-                        &payload,
-                        if original { ObservationRole::Original } else { ObservationRole::Copy },
-                        file_thread_text,
-                        thread_ids,
-                        &turns,
-                    )?);
-                    if original {
-                        if let Some(usage) = &first_usage {
-                            accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                    match underflow {
+                        Some(error) if original => inconsistent.add(view.evidence, line, error),
+                        _ => {
+                            if underflow.is_some() {
+                                payload.usage = None;
+                            }
+                            observations.push(usage_observation(
+                                &view,
+                                &payload,
+                                if original {
+                                    ObservationRole::Original
+                                } else {
+                                    ObservationRole::Copy
+                                },
+                                file_thread_text,
+                                thread_ids,
+                                &turns,
+                            )?);
                         }
-                        // A migration that kept only the suffix from this compaction dropped
-                        // every earlier line, so a later running total beyond what this
-                        // rollout's own records report shows responses it dropped.
-                        check_dropped |= before_boundary && scope == CounterScope::Direct;
+                    }
+                    if original {
+                        if underflow.is_none() {
+                            if let Some(usage) = &first_usage {
+                                accounted = accounted.checked_add(&codex_usage(usage)?)?;
+                            }
+                            // A migration that kept only the suffix from this compaction
+                            // dropped every earlier line, so a later running total beyond what
+                            // this rollout's own records report shows responses it dropped.
+                            check_dropped |= before_boundary && scope == CounterScope::Direct;
+                        }
+                        // Its counter adds nothing, whether its usage counted or was
+                        // excluded.
                         if scope == CounterScope::All {
                             compacted_twin = first_usage;
                         }
@@ -1937,7 +2112,8 @@ fn observe_parsed_source(
                 }
                 if let Some(total) = total.as_ref().filter(|_| check_dropped) {
                     check_dropped = false;
-                    if exceeds(&codex_usage(total)?, &accounted) {
+                    // A total that cannot be read cannot show that nothing was dropped.
+                    if codex_measures(total).map_or(true, |total| exceeds(&total, &accounted)) {
                         unverified.add(view.evidence);
                     }
                 }
@@ -1963,8 +2139,6 @@ fn observe_parsed_source(
                     }
                 } else if cumulative {
                     let Some(total) = &total else { continue };
-                    let total_usage = codex_usage(total)?;
-                    last_total = Some(total_usage);
                     let last = last.as_ref();
                     let silent = last.is_some_and(|last| {
                         last.input.unwrap_or(0) == 0 && last.output.unwrap_or(0) == 0
@@ -1977,18 +2151,84 @@ fn observe_parsed_source(
                     }
                     let mut copy_owner =
                         (usage_owner != Some(file_thread_text)).then_some(usage_owner);
+                    let readable_total = codex_measures(total);
+                    if copy_owner.is_none() {
+                        // An own step reads its total, and its last usage unless it is an
+                        // estimate or the twin of a compacted original, which add none.
+                        let last_error = last
+                            .filter(|_| !estimated && !twin)
+                            .and_then(|last| codex_measures(last).err());
+                        if let Some(error) = readable_total.err().or(last_error) {
+                            // A rate-limit refresh repeats an inconsistent step's total and
+                            // last usage without new usage, and a twin adds none.
+                            let step = (*total, last.copied());
+                            if inconsistent_step != Some(step) && !twin {
+                                inconsistent.add(view.evidence, line, error);
+                            }
+                            inconsistent_step = Some(step);
+                            if let Ok(total) = readable_total {
+                                last_total = Some(total);
+                            }
+                            break_epoch(
+                                readable_total.ok(),
+                                &mut counter,
+                                &mut inherited_total,
+                                &mut check_next,
+                            );
+                            continue;
+                        }
+                    }
+                    let Ok(total_usage) = readable_total else {
+                        // A copied total that cannot be read is no baseline: the copy keeps
+                        // its evidence, and the next own step is checked.
+                        check_next = true;
+                        if let (Some(copy_owner), Some(last)) = (copy_owner, last) {
+                            observations.push(counter_observation(
+                                &view,
+                                last,
+                                total,
+                                CounterObservation {
+                                    role: ObservationRole::Copy,
+                                    owner: copy_owner,
+                                    thread_ids,
+                                    context: current_turn.and_then(|turn| turns.get(&turn)),
+                                    delta: None,
+                                },
+                            )?);
+                        }
+                        continue;
+                    };
+                    last_total = Some(total_usage);
+                    // Without an inherited total, a decrease after an inconsistent step is
+                    // the counter rules' own reset, which counts the step's last usage.
+                    if check_next && restarts && copy_owner.is_none() && counter.is_none() {
+                        if let Some(baseline) = inherited_total {
+                            let tracker = RunningTotal::inheriting(baseline);
+                            if tracker.clone().observe(&total_usage, None)?.event
+                                == CounterEvent::Reset
+                            {
+                                counter = Some(tracker);
+                                check_next = false;
+                            }
+                        }
+                    }
                     // An unmarked fork's first own step is checked as a declared boundary's
                     // is, even before any copied counter gives it an inherited total.
-                    let needs_baseline = inherited_total.is_some()
+                    let needs_baseline = check_next
+                        || inherited_total.is_some()
                         || matches!(
                             native_boundary,
                             NativeBoundary::At(_) | NativeBoundary::Unmarked
                         );
                     if copy_owner.is_none() && counter.is_none() && needs_baseline {
+                        // Only a twin's last usage can be unreadable here, and it adds nothing.
                         let last_usage =
-                            last.filter(|_| !estimated).map(codex_usage).transpose()?;
+                            last.filter(|_| !estimated).and_then(|last| codex_measures(last).ok());
                         match first_step(inherited_total, &total_usage, last_usage.as_ref())? {
-                            FirstStep::Continues(tracker) => counter = Some(tracker),
+                            FirstStep::Continues(tracker) => {
+                                counter = Some(tracker);
+                                check_next = false;
+                            }
                             FirstStep::Repeated => continue,
                             FirstStep::Unseeded => {
                                 diagnostics.push(Diagnostic::new(
@@ -1998,6 +2238,7 @@ fn observe_parsed_source(
                                     UNSEEDED_COUNTER_DETAIL,
                                 ));
                                 counter = Some(RunningTotal::new());
+                                check_next = false;
                             }
                             FirstStep::Lowered => {
                                 diagnostics.push(Diagnostic::new(
@@ -2010,7 +2251,13 @@ fn observe_parsed_source(
                                 continue;
                             }
                             FirstStep::Unverified => {
-                                unverified.add(view.evidence);
+                                // After an inconsistent step, a step that cannot be checked
+                                // against it is excluded with it.
+                                if check_next {
+                                    inconsistent.exclude(view.evidence, line);
+                                } else {
+                                    unverified.add(view.evidence);
+                                }
                                 copy_owner = Some(None);
                             }
                         }
@@ -2094,11 +2341,21 @@ fn observe_parsed_source(
                     // it adds no usage; it still moves the running total a later counted
                     // counter continues, as a counted step would, or that counter's delta
                     // would include it.
-                    counter
-                        .get_or_insert_with(|| {
-                            inherited_total.map_or_else(RunningTotal::new, RunningTotal::inheriting)
-                        })
-                        .observe(&codex_usage(total)?, None)?;
+                    match codex_measures(total) {
+                        Ok(total) => {
+                            counter
+                                .get_or_insert_with(|| {
+                                    inherited_total
+                                        .map_or_else(RunningTotal::new, RunningTotal::inheriting)
+                                })
+                                .observe(&total, None)?;
+                        }
+                        // Its usage is its record's, so a total that cannot be read excludes
+                        // nothing; the next counted step is checked instead.
+                        Err(_) => {
+                            break_epoch(None, &mut counter, &mut inherited_total, &mut check_next);
+                        }
+                    }
                 }
             }
         }
@@ -2122,6 +2379,39 @@ fn observe_parsed_source(
             reason: UnobservedReason::UnverifiedHistoryBoundary,
             thread: subject,
             evidence,
+        });
+    }
+    if let Some((first_line, error)) = inconsistent.first {
+        let subject = thread_ids.get(file_thread_text).cloned();
+        let more = match inconsistent.occurrences {
+            0 | 1 => String::new(),
+            steps => format!("; {steps} records or counter steps of this rollout are excluded"),
+        };
+        let what = match error {
+            Some(error) => format!(
+                "Codex input_tokens {} is below its {} cached and {} cache-write tokens",
+                error.input, error.cache_read, error.cache_write
+            ),
+            None => "Codex cumulative usage cannot be checked against an inconsistent total \
+                     before it"
+                .to_owned(),
+        };
+        diagnostics.push(
+            Diagnostic::new(
+                DiagnosticCode::CodexInclusiveInputUnderflow,
+                subject.clone(),
+                inconsistent.evidence.iter().copied(),
+                format!(
+                    "{what} at {}:{first_line}, so that usage is excluded as a coverage gap{more}",
+                    source.locator,
+                ),
+            )
+            .with_occurrences(inconsistent.occurrences),
+        );
+        gaps.push(CoverageGap {
+            reason: UnobservedReason::InconsistentUsage,
+            thread: subject,
+            evidence: inconsistent.evidence,
         });
     }
     Ok(SourceObserve { observations, limit_observations, diagnostics, gaps, copied_regions })
@@ -2292,7 +2582,7 @@ fn normalize(
     }
 
     // Reserve per rollout after earlier observation vectors have been moved. A single
-    // reserve for every row would allocate the 224-byte observation table while every
+    // reserve for every row would allocate the 232-byte observation table while every
     // worker result still holds its own copy.
     let mut observations = Vec::new();
     let mut diagnostics = source_diagnostics(&manifest, &source_table);
@@ -2467,7 +2757,7 @@ fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> Co
             occurrences = occurrences.saturating_add(record.skipped_before);
         }
         match &record.kind {
-            RecordKind::SessionMeta { id } => {
+            RecordKind::SessionMeta { id, .. } => {
                 if let Some(thread_id) = *id {
                     active_thread = thread_id;
                 }
@@ -2535,11 +2825,12 @@ fn counter_observation(
                 .derive()?,
         );
     }
-    let mut usage = codex_usage(last)?;
-    if let Some(delta) = counter.delta {
-        usage = delta;
-    }
-    observation.usage = Some(usage.into());
+    // A copy keeps its evidence even when its usage cannot be read.
+    let usage = match counter.delta {
+        Some(delta) => Some(delta),
+        None => codex_measures(last).ok(),
+    };
+    observation.usage = usage.map(Into::into);
     observation.timestamp = record.timestamp;
     if let Some(context) = counter.context {
         apply_context(&mut observation, context);
@@ -2658,7 +2949,8 @@ fn copied_counter_observation(
         .and_then(|owner| thread_ids.get(owner))
         .cloned()
         .map_or(OwnerEvidence::None, OwnerEvidence::Proven);
-    observation.usage = Some(codex_usage(usage)?.into());
+    // A copy keeps its evidence even when its usage cannot be read.
+    observation.usage = codex_measures(usage).ok().map(Into::into);
     if let Some(response_id) = response_id {
         observation.keys.push(
             RESPONSE_KEY
@@ -2712,11 +3004,14 @@ fn usage_observation(
 fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
     observation.model = context.model.map(|name| ModelName { name, basis: ModelBasis::Requested });
     observation.effort = context.effort;
+    observation.pricing = context.pricing;
 }
 
-fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
+/// Normalizes a usage object; an input below its cache categories is the caller's to
+/// exclude as inconsistent usage.
+fn codex_measures(usage: &CodexUsage) -> Result<TokenMeasures, InputBelowCache> {
     let mut measures = normalize_input(
-        InputSemantics::IncludesCacheRead,
+        InputSemantics::IncludesCache,
         NativeInput {
             input: usage.input,
             cache_read: usage.cached_input,
@@ -2726,6 +3021,11 @@ fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
     measures.output = usage.output;
     measures.reasoning = usage.reasoning_output;
     Ok(measures)
+}
+
+/// Normalizes a usage object that the record loop already found consistent.
+fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
+    Ok(codex_measures(usage)?)
 }
 
 fn thread_identity(native: &str) -> Result<StoredIdentity, AdapterError> {
@@ -2771,7 +3071,7 @@ mod tests {
     /// Decodes one line as the next line of `decoder`'s rollout.
     fn decode(decoder: &mut SourceDecoder, line: &str) -> RecordDisposition {
         let evidence = EvidenceRef::new(0, 0, u64::try_from(line.len()).unwrap());
-        decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes() })
+        decoder.decode(&RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 })
     }
 
     #[test]
@@ -2790,8 +3090,11 @@ mod tests {
         let thread = "019f0000-0000-7000-8000-000000000001";
         let thread_ids = BTreeMap::from([(thread.to_owned(), thread_identity(thread).unwrap().id)]);
         let record = RecordView { evidence: EvidenceRef::new(0, 0, 1), timestamp: None };
-        let context =
-            TurnContext { model: Some(Name::new("gpt-test")), effort: Some(Name::new("high")) };
+        let context = TurnContext {
+            model: Some(Name::new("gpt-test")),
+            effort: Some(Name::new("high")),
+            pricing: None,
+        };
         let usage =
             CodexUsage { input: Some(3), output: Some(1), total: Some(4), ..CodexUsage::default() };
         let mut interner = Interner::default();
@@ -2876,7 +3179,7 @@ mod tests {
             r#"{"type":"compacted","payload":{}}"#,
             r#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}"#,
         ] {
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             assert_eq!(
                 decoder.decode_with_admission(&raw, Some(&budget)),
                 RecordDisposition::Decoded
@@ -2895,7 +3198,7 @@ mod tests {
             let budget = crate::ledger::admission::MemoryAdmission::unlimited()
                 .with_row_ceiling(crate::ledger::capacity::ObservationCapacity::from_rows(1));
             let evidence = EvidenceRef::new(0, 0, 1);
-            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes() };
+            let raw = RawRecord { evidence: &evidence, bytes: line.as_bytes(), line: 1 };
             let mut first = SourceDecoder::new("one");
             let mut second = SourceDecoder::new("two");
             assert_eq!(
@@ -2905,7 +3208,7 @@ mod tests {
             assert_eq!(second.decode_with_admission(&raw, Some(&budget)), RecordDisposition::Stop);
             assert_eq!(first.records.len(), 1);
             assert!(second.records.is_empty());
-            let skipped = RawRecord { evidence: &evidence, bytes: b"{}" };
+            let skipped = RawRecord { evidence: &evidence, bytes: b"{}", line: 2 };
             assert_eq!(
                 first.decode_with_admission(&skipped, Some(&budget)),
                 RecordDisposition::Stop

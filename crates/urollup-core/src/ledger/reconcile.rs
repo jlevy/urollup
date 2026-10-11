@@ -23,8 +23,8 @@
 //!    lowest ID. Original observations with usage are its revisions, passed in canonical
 //!    order to the dialect's [`RevisionSelector`]; copies are recorded as evidence and
 //!    never counted, and a request seen only as copies is [`Counting::CopyOnly`].
-//!    Ownership comes from proven owners; conflicting owners and served models are
-//!    diagnosed, not split.
+//!    Ownership comes from proven owners; conflicting owners, served models and
+//!    pricing contexts are diagnosed, not split.
 //! 5. **Candidate sets:** requests split from one conflicting key form a candidate set. It
 //!    counts the member with the strongest identity basis, then the lowest ID, and marks
 //!    the others [`Counting::Unresolved`], which totals never add.
@@ -37,8 +37,8 @@ use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
     Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsageList,
-    Ownership, ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests,
-    RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
+    Ownership, Pricing, PricingContext, ProviderLimitObservation, Relationship, RelationshipKind,
+    Request, Requests, RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::inline_list::InlineList;
@@ -115,11 +115,13 @@ pub struct RequestObservation {
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
     pub effort: Option<Name>,
+    /// Recorded pricing metadata; copies cannot establish it for an original request.
+    pub pricing: Option<Pricing>,
     /// The record's timestamp.
     pub timestamp: Option<CompactTimestamp>,
 }
 
-const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 224);
+const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 232);
 
 impl RequestObservation {
     /// An original observation with no keys, owner, usage or properties yet.
@@ -135,6 +137,7 @@ impl RequestObservation {
             invariants: InlineList::new(),
             model: None,
             effort: None,
+            pricing: None,
             timestamp: None,
         }
     }
@@ -1305,6 +1308,7 @@ fn build_request(
         effort: selected
             .and_then(|s| s.effort)
             .or_else(|| originals.iter().filter_map(|o| o.effort).min()),
+        pricing: pricing_context(&originals, &id, diagnostics),
         originals: index_u32(originals.len()),
         records: originals
             .iter()
@@ -1315,6 +1319,93 @@ fn build_request(
         counting,
         id: linked.id,
     }))
+}
+
+/// The pricing dimensions a conflicting-context detail can name, in merge order, which
+/// admission charges with the detail's text.
+pub(crate) const PRICING_DIMENSIONS: [&str; 4] =
+    ["provider", "service_tier", "speed", "inference_geo"];
+
+/// Merges the pricing context of a request's originals; copies never contribute.
+///
+/// An original fills the dimensions others left missing, in canonical order. Originals
+/// that record different values for a dimension mark the context conflicted, with a
+/// diagnostic that names each such dimension and its values and cites the originals that
+/// carry a context.
+fn pricing_context(
+    originals: &[&RequestObservation],
+    id: &AnalyticalId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Pricing> {
+    let carriers: Vec<&RequestObservation> =
+        originals.iter().copied().filter(|record| record.pricing.is_some()).collect();
+    let contexts: Vec<&PricingContext> =
+        carriers.iter().filter_map(|record| record.pricing.map(Pricing::context)).collect();
+    let first = carriers.first()?.pricing?;
+    let [provider, service_tier, speed, inference_geo] = PRICING_DIMENSIONS;
+    let mut conflicts = Vec::new();
+    let merged = PricingContext {
+        provider: merged_dimension(
+            &contexts,
+            provider,
+            |c| c.provider,
+            Name::as_str,
+            &mut conflicts,
+        ),
+        service_tier: merged_dimension(
+            &contexts,
+            service_tier,
+            |c| c.service_tier,
+            |tier| tier.name.as_str(),
+            &mut conflicts,
+        ),
+        speed: merged_dimension(&contexts, speed, |c| c.speed, Name::as_str, &mut conflicts),
+        inference_geo: merged_dimension(
+            &contexts,
+            inference_geo,
+            |c| c.inference_geo,
+            Name::as_str,
+            &mut conflicts,
+        ),
+        conflicted: contexts.iter().any(|context| context.conflicted),
+    };
+    let merged =
+        PricingContext { conflicted: merged.conflicted || !conflicts.is_empty(), ..merged };
+    if merged.conflicted {
+        let detail = if conflicts.is_empty() {
+            "an original record's pricing context was already conflicted, so none of them can choose a rate".to_owned()
+        } else {
+            format!(
+                "original records disagree on {}, so none of them can choose a rate",
+                conflicts.join("; ")
+            )
+        };
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ConflictingPricingContext,
+            Some(id.clone()),
+            carriers.iter().map(|record| record.evidence),
+            detail,
+        ));
+    }
+    Some(if merged == *first.context() { first } else { Pricing::new(merged) })
+}
+
+/// One pricing dimension merged across originals in canonical order: the first recorded
+/// value, and a conflict naming the dimension and its distinct values when they differ.
+fn merged_dimension<T: Copy + Ord>(
+    contexts: &[&PricingContext],
+    dimension: &str,
+    field: impl Fn(&PricingContext) -> Option<T>,
+    text: impl Fn(T) -> &'static str,
+    conflicts: &mut Vec<String>,
+) -> Option<T> {
+    let values: BTreeSet<T> = contexts.iter().filter_map(|context| field(context)).collect();
+    if values.len() > 1 {
+        let names: BTreeSet<&str> = values.iter().map(|value| text(*value)).collect();
+        conflicts
+            .push(format!("{dimension} ({})", names.into_iter().collect::<Vec<_>>().join(", ")));
+    }
+    contexts.iter().find_map(|context| field(context))
 }
 
 fn ownership(

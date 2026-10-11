@@ -11,14 +11,16 @@
 //! - **Structures:** diagnostic compaction, without evidence so the rows and details are
 //!   tight and with 64 references so the evidence is, the structures a conflicting key
 //!   leaves, an ambiguous request's owners, the request sort, a key derivation, the name
-//!   table's first node, a thread's name cache, and cold name and overflow interning.
+//!   and pricing tables' first nodes, a thread's name and pricing caches, and cold name,
+//!   overflow and pricing-context interning.
 //! - **Reconciliation:** tight synthetic inputs, one per term, measured between the
 //!   [`ReconcileStage`]s where slice 5's checkpoints run, and the whole run against the
 //!   larger phase estimate by component. Live heap is tracked at every allocation against
 //!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
 //!   largest linked set's from `Order`, then finalize.
 //! - **Retained state:** each ingest's ledger, discovery and the session index against
-//!   their deep sizes, on every fixture and on generated corpora at one and eight workers.
+//!   their deep sizes, on every fixture and on generated corpora at one and eight workers,
+//!   and the caches a fresh thread that coordinates the ingest keeps afterwards.
 //! - **Query and slots:** query documents and their rendering, each decoder's heap, a long
 //!   line's scan, and zstd's context and stream.
 //!
@@ -55,8 +57,9 @@ use urollup_core::ledger::admission::model::{
 use urollup_core::ledger::capacity::ObservationCapacity;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
 use urollup_core::ledger::entities::{
-    Basis, Counting as RequestCounting, ModelBasis, ModelName, ModelUsage, Ownership,
-    ProviderLimitObservation, RecordRefs, Request, Requests, Thread,
+    self as entities, Basis, Counting as RequestCounting, ModelBasis, ModelName, ModelUsage,
+    Ownership, Pricing, PricingContext, ProviderLimitObservation, RecordRefs, Request, Requests,
+    ServiceTier, Thread, TierBasis,
 };
 use urollup_core::ledger::identity::{
     AnalyticalId, IdPrefix, IdentityKey, KeyComponent, StoredIdentity,
@@ -337,13 +340,15 @@ fn ingest(agent: Agent, root: &Path, count: usize) -> Ingested {
     .expect("the corpus ingests")
 }
 
-/// The model's charge for every process intern so far: names and overflow patterns.
+/// The model's charge for every process intern so far: names, overflow patterns and
+/// pricing contexts.
 fn interns() -> u64 {
-    names::interned_bytes() + tokens::overflow_interned_bytes()
+    names::interned_bytes() + tokens::overflow_interned_bytes() + entities::interned_pricing_bytes()
 }
 
-/// Interns names and overflow patterns that no earlier code interned, so the table bases
-/// and this thread's name cache are charged where they are allocated. It must run first.
+/// Interns names, overflow patterns and pricing contexts that no earlier code interned, so
+/// the table bases and this thread's caches are charged where they are allocated. It must
+/// run first.
 fn check_cold_interns(report: &mut Report) {
     let texts: Vec<String> = (0..1_000).map(|index| format!("cold-name-{index:05}")).collect();
     let charged_before = names::interned_bytes();
@@ -402,9 +407,45 @@ fn check_cold_interns(report: &mut Report) {
         rest.retained,
         &[("overflow_intern", tokens::overflow_interned_bytes() - charged_before)],
     );
+    // Contexts whose names are interned before any measured window.
+    let contexts: Vec<PricingContext> = (0..1_000)
+        .map(|index| PricingContext {
+            provider: Some(Name::new(&format!("cold-provider-{index:05}"))),
+            ..PricingContext::default()
+        })
+        .collect();
+    let charged_before = entities::interned_pricing_bytes();
+    let ((), first) = measure(|| {
+        Pricing::new(contexts[0].clone());
+    });
+    report.bound(
+        "intern cold",
+        "first pricing context",
+        first.retained,
+        &[
+            ("pricing_intern", model::pricing_intern()),
+            (
+                "PRICING_TABLE_BASE",
+                entities::interned_pricing_bytes() - charged_before - model::pricing_intern(),
+            ),
+            ("PRICING_CACHE", model::PRICING_CACHE),
+        ],
+    );
+    let charged_before = entities::interned_pricing_bytes();
+    let ((), rest) = measure(|| {
+        for context in &contexts[1..] {
+            Pricing::new(context.clone());
+        }
+    });
+    report.bound(
+        "intern cold",
+        "999 more pricing contexts",
+        rest.retained,
+        &[("pricing_intern", entities::interned_pricing_bytes() - charged_before)],
+    );
 }
 
-/// The name table's first node, and a fresh thread's name cache.
+/// The name and pricing tables' first nodes, and a fresh thread's name and pricing caches.
 fn check_name_structures(report: &mut Report) {
     let name = Name::new("cold-name-00000");
     let (map, measured) = measure(|| {
@@ -429,6 +470,38 @@ fn check_name_structures(report: &mut Report) {
     .join()
     .expect("the thread runs");
     report.bound("name cache", "fresh thread", cache, &[("NAME_CACHE", model::NAME_CACHE)]);
+    let context = Pricing::new(PricingContext {
+        provider: Some(Name::new("cold-provider-00000")),
+        ..PricingContext::default()
+    });
+    let (set, measured) = measure(|| {
+        let mut set: BTreeSet<&'static PricingContext> = BTreeSet::new();
+        set.insert(context.context());
+        set
+    });
+    drop(set);
+    report.bound(
+        "pricing table",
+        "first node",
+        measured.peak,
+        &[("PRICING_TABLE_BASE", model::PRICING_TABLE_BASE)],
+    );
+    // Inside a fresh thread whose name cache exists, interning an existing context
+    // allocates only the thread's pricing cache.
+    let cache = std::thread::spawn(move || {
+        Name::new("cold-name-00001");
+        let before = live();
+        Pricing::new(context.context().clone());
+        live().saturating_sub(before)
+    })
+    .join()
+    .expect("the thread runs");
+    report.bound(
+        "pricing cache",
+        "fresh thread",
+        cache,
+        &[("PRICING_CACHE", model::PRICING_CACHE)],
+    );
 }
 
 /// The running peak above `start`, after each step of a growing structure.
@@ -736,6 +809,7 @@ fn check_structures(report: &mut Report) {
             last_seen: None,
             model: None,
             effort: None,
+            pricing: None,
             usage: None,
             records: RecordRefs::Empty,
             originals: 0,
@@ -823,6 +897,9 @@ enum Shape {
     /// One group whose members each have their own proven owner and served model, so its
     /// owner and model sets fill and their details list every member.
     OneGroupConflicts,
+    /// One group whose originals each record their own provider, service tier, speed and
+    /// geography, so the pricing merge's sets fill and its conflicts list every member's.
+    OneGroupPricing,
     /// Two distinct keys and the model invariant each: two key-graph nodes and an alias.
     ClaudeSingles,
     /// Pairs share both keys and disagree on the model: every pair splits.
@@ -841,12 +918,13 @@ enum Shape {
 }
 
 impl Shape {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::CodexSingles,
         Self::CodexPairs,
         Self::CodexKeyless,
         Self::OneGroup,
         Self::OneGroupConflicts,
+        Self::OneGroupPricing,
         Self::ClaudeSingles,
         Self::ClaudeSplits,
         Self::ClaudeBlocks,
@@ -866,6 +944,7 @@ impl Shape {
             | Self::CodexKeyless
             | Self::OneGroup
             | Self::OneGroupConflicts
+            | Self::OneGroupPricing
             | Self::ManyThreads
             | Self::HeavyThreads
             | Self::Limits => Agent::Codex,
@@ -940,6 +1019,23 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
                 observation.owner = OwnerEvidence::Proven(id(IdPrefix::Thread, "owner", index));
                 observation.model = served(Name::new(&format!("model-{index}")));
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
+            }
+            Shape::OneGroupPricing => {
+                // Without owners, as in `OneGroup`, so the pricing merge's scratch is the
+                // largest step.
+                observation.owner = OwnerEvidence::None;
+                observation.keys.push(key(&SYNTHETIC_RESPONSE, "resp-all"));
+                let name = |dimension: &str| Name::new(&format!("{dimension}-{index:024}"));
+                observation.pricing = Some(Pricing::new(PricingContext {
+                    provider: Some(name("provider")),
+                    service_tier: Some(ServiceTier {
+                        name: name("tier"),
+                        basis: TierBasis::Request,
+                    }),
+                    speed: Some(name("speed")),
+                    inference_geo: Some(name("geo")),
+                    conflicted: false,
+                }));
             }
             Shape::ClaudeSingles | Shape::PayloadHeavy => {
                 observation.keys.push(key(&SYNTHETIC_RESPONSE, &format!("msg-{index}")));
@@ -1030,6 +1126,19 @@ fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
         .filter(|model| model.basis == ModelBasis::Served)
         .map(|model| model.name.as_str())
         .collect();
+    // Each dimension's distinct names, as its conflict lists them.
+    let mut pricing: [BTreeSet<&str>; 4] = Default::default();
+    for context in input.requests.iter().filter_map(|observation| observation.pricing) {
+        let names = [
+            context.provider,
+            context.service_tier.map(|tier| tier.name),
+            context.speed,
+            context.inference_geo,
+        ];
+        for (dimension, name) in pricing.iter_mut().zip(names) {
+            dimension.extend(name.map(Name::as_str));
+        }
+    }
     ReconcileCounts {
         observations: input.requests.len() as u64,
         observation_capacity: input.requests.capacity() as u64,
@@ -1037,6 +1146,7 @@ fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
         observation_payload: input.requests.iter().map(DeepSize::heap).sum(),
         largest_group: 0,
         model_text: models.iter().map(|name| name.len() as u64).sum(),
+        pricing_text: pricing.iter().flatten().map(|name| name.len() as u64).sum(),
         limit_rows: input.limit_observations.len() as u64,
         threads: input.threads.len() as u64,
         thread_heap: input.threads.iter().map(DeepSize::heap).sum(),
@@ -1167,6 +1277,20 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let limits = ledger.limit_observations.len() as u64;
     let pushed = split + conflicting + ambiguous + diagnostics;
     report.bound_total("live above E", &case, excess, pushed);
+    // Group scratch's pricing step is named apart: its share is what group scratch holds
+    // above its lists and largest other step, which only the pricing group makes necessary.
+    let scratch = model::group_scratch(agent, largest, counts.model_text, counts.pricing_text);
+    let other_steps = [
+        model::group_keys(largest * model::key_bound(agent)),
+        model::group_revisions(largest),
+        model::group_owners(largest),
+        model::group_models(largest, counts.model_text),
+        model::group_records(largest),
+        model::group_fields(agent, largest),
+    ];
+    let without_pricing = model::group_lists(agent, largest)
+        + other_steps.into_iter().max().expect("group scratch has steps");
+    let pricing = scratch.saturating_sub(without_pricing);
 
     report.bound(
         "stage canonical",
@@ -1201,7 +1325,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
         stages.delta(ReconcileStage::Requests),
         &[
             ("request_vector", model::request_vector(sets, counts.observations, most_aliases)),
-            ("group_scratch", model::group_scratch(agent, largest, counts.model_text)),
+            ("group_scratch", scratch - pricing),
+            ("group_pricing", pricing),
             ("split_growth", split),
             ("conflicting_key", conflicting),
             ("ambiguous_owners", ambiguous),
@@ -1257,6 +1382,7 @@ fn check_split_growth(report: &mut Report) {
         last_seen: None,
         model: None,
         effort: None,
+        pricing: None,
         usage: None,
         records: RecordRefs::Empty,
         originals: 0,
@@ -1330,7 +1456,8 @@ fn counts(ingested: &Ingested) -> IngestCounts {
 
 /// Discovers and ingests `root`, checking discovery and the retained ledger against their
 /// deep heap, then reports the peak beside the forward estimate that can be computed
-/// after the fact.
+/// after the fact, and checks what a fresh coordinating thread keeps once the result is
+/// dropped.
 fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
     // The first run warms lazily initialized state: interned names, timezone data and
     // thread-local caches, which belong to the baseline or to process interns.
@@ -1383,6 +1510,25 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
         );
         drop(ingested);
     }
+    // A fresh thread coordinates the ingest, as the main thread does once the discovery
+    // checkpoint releases the coordinating slot, and keeps its name and pricing caches
+    // until it exits.
+    let root = root.to_owned();
+    let interns_before = interns();
+    let kept = std::thread::spawn(move || {
+        let before = live();
+        drop(ingest(agent, &root, 8));
+        live().saturating_sub(before)
+    })
+    .join()
+    .expect("the coordinating thread runs");
+    report.bound_beside(
+        "coordinating caches",
+        &format!("{}/{case}", agent.token()),
+        kept,
+        &[("COORDINATING_CACHES", model::COORDINATING_CACHES)],
+        interns() - interns_before,
+    );
 }
 
 fn write_lines(path: &Path, lines: &[serde_json::Value]) {
@@ -1683,10 +1829,11 @@ fn main() {
         "model",
         "slot parts",
         format!(
-            "join pair {}, done vector {}, name cache {}, gzip {}, zstd {}, largest permit need {}, Codex turn state {}",
+            "join pair {}, done vector {}, name cache {}, pricing cache {}, gzip {}, zstd {}, largest permit need {}, Codex turn state {}",
             model::JOIN_PAIR,
             model::JOIN_DONE,
             model::NAME_CACHE,
+            model::PRICING_CACHE,
             model::GZIP_DECODER,
             model::ZSTD_DECODER,
             model::LARGEST_LARGE_RECORD,
@@ -1699,8 +1846,10 @@ fn main() {
     check_split_growth(&mut report);
     for shape in Shape::ALL {
         // Warm the shape's names and identities first, so that no measured window interns:
-        // one member's model name per observation, for the conflicting group.
-        if matches!(shape, Shape::OneGroupConflicts) {
+        // one member's model name per observation, for the conflicting group, and its
+        // pricing names and context, for the pricing group. The small run interns the
+        // pricing group's merged context, which takes its first member's values.
+        if matches!(shape, Shape::OneGroupConflicts | Shape::OneGroupPricing) {
             drop(synthetic_input(shape, 4_000));
         }
         drop(reconcile_with_stages(
