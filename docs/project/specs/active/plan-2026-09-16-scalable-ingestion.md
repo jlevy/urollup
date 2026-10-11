@@ -1270,7 +1270,7 @@ Choices made while implementing, where this design left room:
     longest header fields), a 3.5 MiB line’s scan against `line_need`, and zstd’s
     context and 8 MiB-window stream.
 
-  On x86_64 Linux at this head, all 385 bounds pass in about 5 seconds of a debug build.
+  On x86_64 Linux at this head, all 389 bounds pass in about 5 seconds of a debug build.
   Primitives measure 66–100% of their terms (vectors 99%, hash tables 66–100%, B-trees
   68–81%, stable sorts 100%), retained ledgers 92–98% of their deep heap,
   reconciliation’s retained output 77–99%, discovery 100%, session indexes 53–93% and
@@ -1286,7 +1286,7 @@ Choices made while implementing, where this design left room:
   - Halving the copies fails only `thread_reconcile_is_its_parts`.
   - Removing the pricing step from group scratch fails the pricing group’s requests
     stage (142%) and `group_scratch_is_its_lists_and_largest_step`.
-  - Zeroing `COORDINATING_CACHES` fails 35 of the 44 coordinating-thread checks.
+  - Zeroing `COORDINATING_CACHES` fails 36 of the 45 coordinating-thread checks.
   - Removing group scratch’s owner and model step, the owners’ listed detail, or the
     models’ collected set fails only `group_scratch_is_its_lists_and_largest_step`,
     which pins every part per member.
