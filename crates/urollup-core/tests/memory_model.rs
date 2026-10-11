@@ -560,7 +560,7 @@ fn check_vec<const S: usize>(report: &mut Report, count: usize) {
         items.shrink_to_fit();
         shrunk.keep(running_peak(start), grown_vec(length as u64, S as u64));
     }
-    let case = format!("{S} B Ã 1..{count}");
+    let case = format!("{S} B × 1..{count}");
     report.bound("vec push", &case, grown.measured, &[("grown_vec", grown.estimate)]);
     report.bound("vec shrink", &case, shrunk.measured, &[("grown_vec", shrunk.estimate)]);
 }
@@ -581,7 +581,7 @@ fn check_hash<const S: usize>(report: &mut Report, count: usize) {
         rule.keep(running_peak(start), entries * hash_entry(entry) + hash_base(entry));
     }
     drop(set);
-    let case = format!("{S} B Ã 1..{count}");
+    let case = format!("{S} B × 1..{count}");
     report.bound("hash insert", &case, table.measured, &[("hash_table", table.estimate)]);
     report.bound("hash rule", &case, rule.measured, &[("hash_entry+hash_base", rule.estimate)]);
     let capacity = count.min(1 << (8 * S.min(3)));
@@ -639,7 +639,7 @@ fn check_btree<const K: usize>(report: &mut Report, count: usize) {
         rule.keep(running_peak(start), entries * btree_entry(key, value) + btree_node(key, value));
     }
     drop(map);
-    let case = format!("{K} B keys Ã 1..{count}");
+    let case = format!("{K} B keys × 1..{count}");
     report.bound("btree insert", &case, inserted.measured, &[("btree_map", inserted.estimate)]);
     report.bound("btree rule", &case, rule.measured, &[("btree_entry", rule.estimate)]);
     let mut collected = Worst::new();
@@ -670,7 +670,7 @@ fn check_sort<const S: usize>(report: &mut Report, count: usize) {
     }
     report.bound(
         "stable sort",
-        &format!("{S} B Ã 2..{count}"),
+        &format!("{S} B × 2..{count}"),
         sorted.measured,
         &[("sort_scratch", sorted.estimate)],
     );
@@ -1163,7 +1163,7 @@ fn components(estimate: &PhaseEstimate) -> [(&'static str, u64); 4] {
 
 fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let agent = shape.agent();
-    let case = format!("{shape:?} Ã {observations}");
+    let case = format!("{shape:?} × {observations}");
     let base = live();
     let input = synthetic_input(shape, observations);
     let counts = reconcile_counts(&input);
@@ -1430,7 +1430,7 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
             ingested.heap() + new_interns,
         );
         let counts = counts(&ingested);
-        // Metadata stays beside the request structure that Îº covers.
+        // Metadata stays beside the request structure that κ covers.
         let metadata = [
             ingested.manifest.heap(),
             ingested.sources.heap(),
@@ -1730,7 +1730,7 @@ fn main() {
             "model",
             agent.token(),
             format!(
-                "Îº {} (construction {}, grouping {}, finalize {}, retained {}); decoded record {}; key bound {}",
+                "κ {} (construction {}, grouping {}, finalize {}, retained {}); decoded record {}; key bound {}",
                 structure.kappa(),
                 structure.construction,
                 structure.grouping,
@@ -1798,14 +1798,14 @@ fn main() {
     }
     for (sessions, records, padding) in [(2, 200, 0), (4, 200, 0), (4, 200, 2048)] {
         let corpus = claude_corpus(sessions, records, padding);
-        let case = format!("generated {sessions}Ã{records} pad {padding}");
+        let case = format!("generated {sessions}×{records} pad {padding}");
         check_ingest(&mut report, Agent::Claude, &case, corpus.path());
     }
     for (rollouts, records, period, padding) in
         [(2, 200, 1, 0), (4, 200, 50, 0), (4, 200, 50, 2048)]
     {
         let corpus = codex_corpus(rollouts, records, period, padding);
-        let case = format!("generated {rollouts}Ã{records} limits/{period} pad {padding}");
+        let case = format!("generated {rollouts}×{records} limits/{period} pad {padding}");
         check_ingest(&mut report, Agent::Codex, &case, corpus.path());
     }
     report.note("time", "ingest", format!("{} ms", started.elapsed().as_millis()));
@@ -1818,7 +1818,7 @@ fn main() {
         let codex = codex_corpus(sessions, records, 50, 0);
         let claude = ingest(Agent::Claude, claude.path(), 1);
         let codex = ingest(Agent::Codex, codex.path(), 1);
-        let case = format!("generated {sessions}Ã{records}");
+        let case = format!("generated {sessions}×{records}");
         check_query(&mut report, &case, &[(Agent::Claude, &claude), (Agent::Codex, &codex)]);
     }
     check_query_reserve(&mut report);
