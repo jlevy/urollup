@@ -845,9 +845,12 @@ set these source-specific rules:
   the owner rule below decides, so the session’s own record comes before a fork-style
   subagent’s replay of it, whichever file discovery reads first.
   A thread never spawns itself: a fork whose replay is the only record left is spawned
-  by its session. Where several files describe one thread, the one with the lowest `src-`
-  ID gives its purpose and project, and one spawn edge: from the issuer of the
-  lowest-`src-` sidecar whose tool use has one, else from the thread’s session.
+  by its session. Once the session’s transcript is deleted, another fork’s replay of a
+  spawning record can still decide that spawn, so a sibling fork can take a wrong parent
+  and nested forks can spawn each other (`uro-x146`). Where several files describe one
+  thread, the one with the lowest `src-` ID gives its purpose and project, and one spawn
+  edge: from the issuer of the lowest-`src-` sidecar whose tool use has one, else from
+  the thread’s session.
 - **Claude Code copies:** a record that replays another thread’s record is a copy owned
   by that thread, never counted and never an ambiguous key.
   A `progress` record nesting a subagent’s assistant message is always a copy.
@@ -2609,12 +2612,16 @@ records how the engine reached this shape, with dated whole-history measurements
   whose lines first name another session joins that session’s family too
   ([§3.4](#34-dialect-reconciliation-rules)). A subagent transcript also matches the
   native and `thr-` IDs of the session its lines name, and a match keeps every family it
-  joins. Selecting that session therefore reads a copy under another session’s directory,
-  with the holding session’s family, even after Claude Code deletes the session’s own
-  transcript and directory, or when they lie in another project directory or root.
-  That session is read with the adapter’s line rule from the transcript’s first complete
-  lines, within one record’s worth of bytes; a transcript whose window ends before a
-  line names one stays in every narrowed selection.
+  joins. Selecting that session by its native or `thr-` ID therefore reads a copy under
+  another session’s directory, with the holding session’s family, even after Claude Code
+  deletes the session’s own transcript and directory, or when they lie in another
+  project directory or root.
+  The families themselves are still sibling paths, so across project directories and
+  roots the path of the session’s transcript does not reach the copy, and selecting the
+  copy by agent ID, path or `thr-` ID does not read the session’s transcript
+  (`uro-4v0g`). That session is read with the adapter’s line rule from the transcript’s
+  first complete lines, within one record’s worth of bytes; a transcript whose window
+  ends before a line names one stays in every narrowed selection.
   Identifying the dialect of a `--source` directory likewise skips files it cannot read.
 - **Parallel decoding:** Codex sources, then Claude Code sources, decode independently
   on bounded worker threads that take sources heaviest first from one shared queue,
