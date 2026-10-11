@@ -1880,3 +1880,294 @@ fn a_line_naming_the_child_itself_never_voids_an_inferred_start() {
     assert_eq!(own_usage(&ingested, CHILD), (2, Some(26), Completeness::Complete));
     assert_parent_and_complete(&ingested, true);
 }
+
+/// The `session_meta` fields of a legacy user fork of `PARENT` that Codex's
+/// legacy-to-paginated migration rewrote (`uro-p9ua`): paginated, keeping its fork origin,
+/// with no boundary, no `history_base` and none of its copied prefix's headers.
+fn migrated_fork_meta() -> serde_json::Value {
+    json!({"forked_from_id": PARENT, "history_mode": "paginated", "source": "cli",
+           "thread_source": "user"})
+}
+
+/// A root parent with two turns: 100 tokens, then 60, for a running total of 160.
+fn parent_with_two_turns() -> [String; 4] {
+    [
+        turn(1, Some("p-turn-1")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("p-turn-2")),
+        counter(4, 140, 20, 50, 10),
+    ]
+}
+
+/// A migrated fork's lines: its copy of `parent_with_two_turns`, then `own`.
+fn migrated_fork(own: &[String]) -> Vec<String> {
+    [parent_with_two_turns().to_vec(), own.to_vec()].concat()
+}
+
+/// The fork's own first turn: 20 tokens on the copied 160.
+fn fork_first_turn() -> [String; 2] {
+    [turn(5, Some("f-turn-1")), counter(6, 158, 22, 18, 2)]
+}
+
+/// Checks the history-wide accounting of a migrated fork whose parent is present: the
+/// parent counts its 160 tokens once, every counted request has one owner, and coverage is
+/// complete.
+fn assert_fork_parent_and_complete(ingested: &Ingested) {
+    let (requests, tokens, _) = own_usage(ingested, PARENT);
+    assert_eq!((requests, tokens), (2, Some(160)));
+    assert!(
+        ingested
+            .ledger
+            .requests
+            .values()
+            .filter(|request| request.counting == Counting::Counted)
+            .all(|request| matches!(request.ownership, Ownership::Owned { .. })),
+        "copies must not introduce conflicting owners"
+    );
+    assert!(boundary_diagnostics(ingested).is_empty());
+    assert!(ingested.ledger.gaps.is_empty());
+    assert_eq!(
+        ledger_totals(&ingested.ledger).expect("totals").completeness,
+        Completeness::Complete
+    );
+}
+
+#[test]
+fn a_migrated_user_forks_copied_prefix_counts_once() {
+    // Review B3 of PR #32 (repro R4). Codex's migration drops the copied prefix's header and
+    // gives a user fork no boundary, so the copied counters look like the fork's own: main
+    // reports 340 with complete coverage. The parent root recorded p-turn-1 and p-turn-2, so
+    // the copy ends at f-turn-1, whose first step continues the copied 160 by its own 20.
+    let root = fork_root(Some(&parent_with_two_turns()), &[]);
+    write_child(&root, migrated_fork_meta(), &migrated_fork(&fork_first_turn()));
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+    assert_fork_parent_and_complete(&ingested);
+    assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 180);
+    // Two copied counters and one copied region, as for the same fork before migration.
+    assert_eq!(ingested.ledger.coverage.copies, 3);
+}
+
+#[test]
+fn a_migrated_user_fork_whose_parent_cannot_decide_its_prefix_is_a_gap() {
+    // Without the parent root, or with a parent whose rollout may lack turns the fork
+    // copied (here an old-format subagent's nested spawn link), nothing decides which lines
+    // are the fork's own, so all three steps are excluded as a gap rather than counted.
+    let spawned = json!({"source": {"subagent": {"thread_spawn": {
+        "parent_thread_id": GRANDCHILD, "depth": 1}}}});
+    for parent in [None, Some(spawned)] {
+        let root = tempfile::tempdir().expect("temporary log root");
+        fs::create_dir(root.path().join("sessions")).expect("sessions directory");
+        if let Some(meta) = &parent {
+            write_rollout(&root, PARENT, 1, meta.clone(), &parent_with_two_turns());
+        }
+        write_child(&root, migrated_fork_meta(), &migrated_fork(&fork_first_turn()));
+        let ingested = ingest_every_way(&root);
+        assert_eq!(own_usage(&ingested, CHILD).0, 0, "parent={parent:?}");
+        assert_eq!(
+            counted_totals(&ingested).iter().sum::<u64>(),
+            if parent.is_some() { 160 } else { 0 }
+        );
+        assert_excluded_as_gap(&ingested, CHILD);
+        assert_eq!(undecided_steps(&ingested), 3);
+    }
+}
+
+#[test]
+fn a_migrated_forks_own_turns_after_its_copy_count_from_the_copied_total() {
+    // Its own steps after the first count as deltas, and a settings event naming the fork,
+    // as a 0.152 or later resume writes, keeps the lines after it the fork's own.
+    let root = fork_root(Some(&parent_with_two_turns()), &[]);
+    let own = [
+        fork_first_turn().to_vec(),
+        vec![settings(7, CHILD), turn(8, Some("f-turn-2")), counter(9, 170, 25, 12, 3)],
+    ]
+    .concat();
+    write_child(&root, migrated_fork_meta(), &migrated_fork(&own));
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (2, Some(35), Completeness::Complete));
+    assert_fork_parent_and_complete(&ingested);
+}
+
+#[test]
+fn a_migrated_forks_first_own_step_is_still_checked_against_the_copied_total() {
+    // f-turn-1 reports 20 tokens but advances the copied 160 by 70, so neither is proven the
+    // fork's own; the next step still counts from its total.
+    let root = fork_root(Some(&parent_with_two_turns()), &[]);
+    let own = [
+        turn(5, Some("f-turn-1")),
+        counter(6, 200, 30, 18, 2),
+        turn(7, Some("f-turn-2")),
+        counter(8, 212, 33, 12, 3),
+    ];
+    write_child(&root, migrated_fork_meta(), &migrated_fork(&own));
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).0, 1);
+    assert_eq!(own_usage(&ingested, CHILD).1, Some(15));
+    assert_excluded_as_gap(&ingested, CHILD);
+    assert_eq!(undecided_steps(&ingested), 1);
+}
+
+#[test]
+fn evidence_against_a_migrated_forks_inferred_start_turns_the_rest_into_a_gap() {
+    // The parent root lost turn x (as a rollback can), so the fork's copy of x looks like
+    // its own start, and the parent's p-turn-2 after it proves it copied. A fork has no
+    // boundary to close the window, so everything from x on is undecided, never counted.
+    let parent = [
+        turn(1, Some("p-turn-1")),
+        counter(2, 90, 10, 90, 10),
+        turn(3, Some("p-turn-2")),
+        counter(4, 180, 20, 45, 5),
+    ];
+    let root = fork_root(Some(&parent), &[]);
+    write_child(
+        &root,
+        migrated_fork_meta(),
+        &[
+            turn(1, Some("p-turn-1")),
+            counter(2, 90, 10, 90, 10),
+            turn(3, Some("x")),
+            counter(4, 135, 15, 45, 5),
+            turn(5, Some("p-turn-2")),
+            counter(6, 180, 20, 45, 5),
+            turn(7, Some("f-turn-1")),
+            counter(8, 207, 23, 27, 3),
+        ],
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD).0, 0, "the contradicted region never counts");
+    assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 200);
+    assert_excluded_as_gap(&ingested, CHILD);
+    assert_eq!(undecided_steps(&ingested), 2);
+}
+
+#[test]
+fn a_native_user_fork_with_usage_records_is_untouched() {
+    // Codex 0.153 and later write a referenced paginated fork: a session_meta at its
+    // history_base end, its own settings event, then its own records and counters
+    // (codex-rs/core/src/session/mod.rs:1693-1703 at rust-v0.162.1). Its first counter is
+    // seeded with the parent's 160, and its record names it.
+    let root = fork_root(Some(&parent_with_two_turns()), &[]);
+    let meta = json!({"ordinal": 5, "type": "session_meta", "payload": {
+        "id": CHILD, "forked_from_id": PARENT, "forked_from_ordinal_exclusive": 5,
+        "history_mode": "paginated", "source": "cli", "thread_source": "user",
+        "history_base": {"thread_id": PARENT, "end_ordinal_exclusive": 5, "end_byte_offset": 900}
+    }});
+    let lines = [
+        meta.to_string(),
+        settings(6, CHILD),
+        turn(7, Some("f-turn-1")),
+        direct(8, CHILD, "child-r1", 18, 2),
+        counter(9, 158, 22, 18, 2),
+    ];
+    fs::write(
+        root.path().join("sessions").join(format!("rollout-2026-01-01T00-00-02-{CHILD}.jsonl")),
+        format!("{}\n", lines.join("\n")),
+    )
+    .expect("native fork");
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+    assert_fork_parent_and_complete(&ingested);
+}
+
+#[test]
+fn a_counter_only_native_fork_still_counts_its_seeded_total() {
+    // Pins main's behavior for a counter-only referenced fork (Codex 0.150 to 0.152), which
+    // the migrated-fork inference leaves untouched: a history_base, or a first counter whose
+    // total its own usage does not explain, marks a fork that copied nothing. Codex seeds
+    // its running total with the parent's (codex-rs/core/src/session/mod.rs:1683-1688 at
+    // rust-v0.162.1), and a fork with neither a boundary nor copied counters starts from
+    // zero, so its first step counts the parent's 160 again: 180 instead of 20. The
+    // research note lists this as a residual risk.
+    let history_base = json!({"thread_id": PARENT, "end_ordinal_exclusive": 5,
+                              "end_byte_offset": 900});
+    for declared in [true, false] {
+        let mut meta = migrated_fork_meta();
+        if declared {
+            meta["history_base"] = history_base.clone();
+        }
+        let root = fork_root(Some(&parent_with_two_turns()), &[]);
+        write_child(&root, meta, &fork_first_turn());
+        let ingested = ingest_every_way(&root);
+        assert_eq!(
+            own_usage(&ingested, CHILD),
+            (1, Some(180), Completeness::Complete),
+            "history_base={declared}"
+        );
+        assert!(boundary_diagnostics(&ingested).is_empty());
+    }
+}
+
+#[test]
+fn a_child_that_copies_nothing_counts_its_own_lines_without_its_parent() {
+    // Children that hold no copy keep counting from zero, with or without their parent:
+    // an unmigrated legacy subagent written before thread_source (an unmigrated copy keeps
+    // its prefix's header); a native paginated subagent with no inherited context, which
+    // Codex gives no boundary (codex-rs/thread-store/src/live_thread.rs:151-177 at
+    // rust-v0.162.1) while its migration gives every subagent one; a referenced fork with
+    // a history_base whose parent had no counter to seed it from; and a referenced fork
+    // from a thread's start, which has no history_base but names itself in its settings
+    // event first.
+    let own = [
+        turn(2, Some("c-turn-1")),
+        counter(3, 18, 2, 18, 2),
+        turn(4, Some("c-turn-2")),
+        counter(5, 23, 3, 5, 1),
+    ];
+    let legacy_subagent = (
+        json!({"parent_thread_id": PARENT, "source": {"subagent": {"thread_spawn": {
+            "parent_thread_id": PARENT, "depth": 1}}}}),
+        None,
+    );
+    let native_subagent = (
+        json!({"parent_thread_id": PARENT, "history_mode": "paginated",
+               "thread_source": "subagent"}),
+        None,
+    );
+    let mut referenced = migrated_fork_meta();
+    referenced["history_base"] =
+        json!({"thread_id": PARENT, "end_ordinal_exclusive": 1, "end_byte_offset": 120});
+    let unseeded_referenced_fork = (referenced, None);
+    let fork_from_start = (migrated_fork_meta(), Some(settings(1, CHILD)));
+    for (meta, first) in
+        [legacy_subagent, native_subagent, unseeded_referenced_fork, fork_from_start]
+    {
+        for parent_present in [false, true] {
+            let root = fork_root(parent_present.then_some(&parent_with_two_turns()[..]), &[]);
+            let records = [first.clone().into_iter().collect::<Vec<_>>(), own.to_vec()].concat();
+            write_child(&root, meta.clone(), &records);
+            let ingested = ingest_every_way(&root);
+            assert_eq!(
+                own_usage(&ingested, CHILD),
+                (2, Some(26), Completeness::Complete),
+                "{meta}, parent={parent_present}"
+            );
+            assert!(boundary_diagnostics(&ingested).is_empty());
+            assert_eq!(
+                ledger_totals(&ingested.ledger).expect("totals").completeness,
+                Completeness::Complete
+            );
+        }
+    }
+}
+
+#[test]
+fn a_copied_first_counter_that_carries_a_rolled_back_turn_is_not_a_seed() {
+    // The parent rolled back its first turn before the fork. Codex's migration replays both
+    // rollouts through rollback planning, which drops that turn's turn_context and counters,
+    // so the first counter left in each carries its usage: 160 on a last usage of 60. In the
+    // fork that counter is the copy of a total its parent root reported, not a seed, so the
+    // fork's copy still ends at f-turn-1.
+    let parent = [turn(3, Some("p-turn-2")), counter(4, 140, 20, 50, 10)];
+    let root = fork_root(Some(&parent), &[]);
+    write_child(
+        &root,
+        migrated_fork_meta(),
+        &[parent.to_vec(), fork_first_turn().to_vec()].concat(),
+    );
+    let ingested = ingest_every_way(&root);
+    assert_eq!(own_usage(&ingested, CHILD), (1, Some(20), Completeness::Complete));
+    assert_eq!(own_usage(&ingested, PARENT), (1, Some(160), Completeness::Complete));
+    assert_eq!(counted_totals(&ingested).iter().sum::<u64>(), 180);
+    assert!(boundary_diagnostics(&ingested).is_empty());
+}

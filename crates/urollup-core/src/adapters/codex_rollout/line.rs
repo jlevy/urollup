@@ -21,7 +21,8 @@
 //!   made: a `usage`, `latest_token_usage_record`, `total_token_usage` or
 //!   `last_token_usage` key is present whatever its value, with no counts when the value
 //!   is not an object. An explicit history boundary preserves invalid values as a
-//!   distinct state, since treating them as absent would change request ownership.
+//!   distinct state, since treating them as absent would change request ownership, and
+//!   any `history_base` value but null declares one, for the same reason.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -113,6 +114,11 @@ pub(super) struct Payload<'a> {
     pub(super) parent_thread_id: Option<Cow<'a, str>>,
     pub(super) forked_from_id: Option<Cow<'a, str>>,
     pub(super) subagent_history_start_ordinal: HistoryBoundary,
+    /// A `session_meta`'s `history_mode`: `legacy` (Codex's default) or `paginated`.
+    pub(super) history_mode: Option<Cow<'a, str>>,
+    /// Whether a `session_meta` declares a `history_base`, with any value but null: a
+    /// paginated rollout that references an earlier rollout's prefix instead of copying it.
+    pub(super) history_base: bool,
     pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) model: Option<Cow<'a, str>>,
     pub(super) effort: Option<Cow<'a, str>>,
@@ -310,6 +316,8 @@ enum PayloadField {
     ParentThreadId,
     ForkedFromId,
     SubagentHistoryStartOrdinal,
+    HistoryMode,
+    HistoryBase,
     TurnId,
     Model,
     Effort,
@@ -332,6 +340,8 @@ impl PayloadField {
             "parent_thread_id" => Self::ParentThreadId,
             "forked_from_id" => Self::ForkedFromId,
             "subagent_history_start_ordinal" => Self::SubagentHistoryStartOrdinal,
+            "history_mode" => Self::HistoryMode,
+            "history_base" => Self::HistoryBase,
             "turn_id" => Self::TurnId,
             "model" => Self::Model,
             "effort" => Self::Effort,
@@ -382,6 +392,10 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 PayloadField::SubagentHistoryStartOrdinal => {
                     payload.subagent_history_start_ordinal =
                         map.next_value_seed(HistoryBoundarySeed)?;
+                }
+                PayloadField::HistoryMode => payload.history_mode = map.next_value_seed(Text)?,
+                PayloadField::HistoryBase => {
+                    payload.history_base = map.next_value_seed(Declared)?;
                 }
                 PayloadField::TurnId => payload.turn_id = map.next_value_seed(Text)?,
                 PayloadField::Model => payload.model = map.next_value_seed(Text)?,
@@ -831,6 +845,25 @@ impl<'de> Visitor<'de> for NestedText {
     }
 }
 
+/// Reads whether a value is present at all: anything but null.
+struct Declared;
+
+any_value_seed!(Declared);
+
+impl<'de> Visitor<'de> for Declared {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(true, [bool, numbers, str, map]);
+
+    fn visit_unit<E: Error>(self) -> Result<bool, E> {
+        Ok(false)
+    }
+}
+
 struct HistoryBoundarySeed;
 
 any_value_seed!(HistoryBoundarySeed);
@@ -974,6 +1007,8 @@ mod tests {
                         value.as_u64().map_or(HistoryBoundary::Invalid, HistoryBoundary::Ordinal)
                     }
                 },
+                history_mode: owned(payload, "history_mode"),
+                history_base: payload.get("history_base").is_some_and(|value| !value.is_null()),
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
                 effort: owned(payload, "effort"),
@@ -1081,6 +1116,10 @@ mod tests {
     fn fields_read_as_a_document_reads_them() {
         for line in [
             r#"{"timestamp":"2026-09-16T12:00:00Z","type":"session_meta","ordinal":4,"payload":{"id":"t","cli_version":"0.1","source":"cli","thread_source":"user","cwd":"/work/app","parent_thread_id":"p","forked_from_id":"f","subagent_history_start_ordinal":3}}"#,
+            r#"{"type":"session_meta","ordinal":5,"payload":{"id":"t","forked_from_id":"f","history_mode":"paginated","history_base":{"thread_id":"f","end_ordinal_exclusive":5,"end_byte_offset":900}}}"#,
+            r#"{"type":"session_meta","payload":{"history_mode":null,"history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"history_mode":["paginated"],"history_base":0,"history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"history_base":null,"history_base":"r"}}"#,
             r#"{"type":"session_meta","payload":{"id":"t","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}}}"#,
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p"},"thread_spawn":{}}}}}"#,
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}},"source":"cli"}}"#,
@@ -1159,6 +1198,7 @@ mod tests {
                 Just("\"event_msg\""),
                 Just("\"token_count\""),
                 Just("\"thread_settings_applied\""),
+                Just("\"paginated\""),
                 Just("\"t\\u006fken_count\""),
                 Just("\"t1\""),
                 Just("\"/work/app\""),
@@ -1246,6 +1286,8 @@ mod tests {
             Just("cwd"),
             Just("parent_thread_id"),
             Just("forked_from_id"),
+            Just("history_mode"),
+            Just("history_base"),
             Just("turn_id"),
             Just("model"),
             Just("effort"),
@@ -1258,6 +1300,7 @@ mod tests {
         let entries = prop_oneof![
             6 => (text_key, leaf()),
             1 => count().prop_map(|value| ("subagent_history_start_ordinal", value)),
+            1 => usage_object().prop_map(|value| ("history_base", value)),
             2 => usage_object().prop_map(|value| ("usage", value)),
             2 => usage_record_object().prop_map(|value| ("latest_token_usage_record", value)),
             2 => info_object().prop_map(|value| ("info", value)),
