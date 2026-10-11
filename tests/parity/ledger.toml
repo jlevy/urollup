@@ -381,6 +381,89 @@ metric = "uncached_input"
 expected_delta = -15
 expected_matches = 4
 
+# ccusage folds each subagent into the session whose directory holds its file and
+# deduplicates the copied transcript by message and request ID, keeping the copied
+# subagent's usage in the original session's row. urollup reports both subagents in rows
+# of their own, so each session row differs by its subagent; the copy adds nothing to
+# either side.
+[[entry]]
+id = "claude-resumed-subagent-copy-session-grouping"
+case = "claude-project/resumed-subagent-copy"
+cause = "semantics"
+citation = "docs/project/research/research-2026-09-14-agent-tool-source-reviews.md#ccusage-reports-time-and-output"
+design = "docs/urollup-design.md#42-ownership-and-totals"
+retirement = "Remove if ccusage exposes subagents in their own session rows or a future parity mode intentionally folds urollup descendants into the parent."
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000001"
+metric = "cache_read"
+expected_delta = -800
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000001"
+metric = "cache_write"
+expected_delta = -1000
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000001"
+metric = "output"
+expected_delta = -65
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000001"
+metric = "total"
+expected_delta = -1880
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000001"
+metric = "uncached_input"
+expected_delta = -15
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000002"
+metric = "cache_write"
+expected_delta = -600
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000002"
+metric = "output"
+expected_delta = -33
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000002"
+metric = "total"
+expected_delta = -642
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "00000000-0000-4000-8000-001800000002"
+metric = "uncached_input"
+expected_delta = -9
+expected_matches = 4
+
+[[entry.difference]]
+report = "claude-session"
+key = "*/a*"
+metric = "row"
+expected_delta = 1
+expected_matches = 8
+
 [[entry]]
 id = "claude-fractional-timestamps"
 case = "claude-project/timestamp-precision"
