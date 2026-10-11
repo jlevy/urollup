@@ -705,6 +705,18 @@ Codex rollouts save only the requested model (`turn_context.model`), never the m
 server reroute served, so Codex request models are `requested`. Placeholder model names,
 such as Codex `codex-auto-review` and Claude `<synthetic>`, stay as observed.
 
+Each request also keeps the pricing context its original records report: provider,
+service tier, speed and inference geography, each as recorded, including values no price
+table knows. Claude Code records speed, service tier and inference geography in
+`message.usage` and no provider; Codex records the provider in `session_meta` and the
+tier in `thread_settings_applied` ([§3.4](#34-dialect-reconciliation-rules)). No
+dimension is inferred from a model or agent name, agent configuration or the machine’s
+location, and absent stays unknown.
+Copies never contribute.
+Originals of one request fill each other’s missing fields; originals that record
+different values mark the context conflicted with a `conflicting-pricing-context`
+diagnostic, so no rate is chosen from it ([§4.5](#45-price-table)).
+
 Provider limit observations feed the Phase 2 `windows` report
 ([§4.4](#44-usage-windows)) and need dialect care:
 
@@ -814,8 +826,8 @@ set these source-specific rules:
 - **Claude Code decoding:** a first pass reads each line’s type, `isSidechain` flag, CLI
   version, working directory and whether it bears usage without building a JSON
   document. Only an `assistant` line with an unsigned `message.usage.output_tokens`, or a
-  `progress` line whose nested message has one, is parsed into a document, and only its
-  accounting fields are kept.
+  `progress` line whose nested message has one, receives a typed usage-body parse, and
+  only its accounting fields are kept.
   The first pass reads every value as a document parse would, so a line is malformed
   exactly when it is not valid JSON, a repeated key keeps its last value, and a null or
   mistyped field reads as missing.
@@ -869,6 +881,14 @@ set these source-specific rules:
   `turn_context` of its own `turn_id`, and from its `root_turn_id` only when it has no
   `turn_id`. A multi-agent subagent’s records name the parent’s turn as their root, so
   the root would attribute the parent’s model to the subagent.
+  Its pricing context comes from the same turn: the `model_provider` of its thread’s
+  `session_meta`, and the service tier of that thread’s latest `thread_settings_applied`
+  before the turn’s `turn_context`. A settings event that names a thread sets that
+  thread’s tier wherever it sits, as a usage record’s `thread_id` decides its owner.
+  One that names no thread sets the rollout’s own tier only at or after a declared
+  `subagent_history_start_ordinal`: before it the setting may be the parent’s copied
+  history, and a line without an ordinal, or any line under an invalid boundary, cannot
+  be placed.
 - **Codex counters:** older files use cumulative `token_count` events.
   An update whose running total advances counts the advance as one request.
   A decrease in any cumulative component opens a new counter epoch with a diagnostic,
@@ -1232,10 +1252,15 @@ Tokens, calls, money, time, resources and sizes stay separate measures:
 Counting rules that adapters must normalize explicitly:
 
 - Reasoning output is often a subset of output; total tokens never add both.
-- Cache-read input may be included within a dialect’s native input or reported
-  separately, as the research brief’s
+- Cache-read and cache-write input may be included within a dialect’s native input or
+  reported separately, as the research brief’s
   [usage table](project/research/research-2026-09-13-portable-agent-usage.md#log-dialects-and-session-linkage)
-  shows per dialect.
+  shows per dialect. Codex `input_tokens` is read as including both `cached_input_tokens`
+  and `cache_write_input_tokens`, an inference the
+  [incident record](formats/accounting-incidents.md#codex-cache-write-double-counting)
+  supports, so uncached input is the native value minus both, and a native input below
+  their sum is an error that stops ingestion rather than a silent zero.
+  Claude Code’s `input_tokens` excludes both.
 - When a Claude Code record has `iterations`, its top-level `message.usage` equals the
   sum of the `message` iterations and excludes `advisor_message` iterations, which
   record their own model; an advisor iteration is further model usage within the same

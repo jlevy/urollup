@@ -107,6 +107,9 @@ The complete analysis workflow is tracked separately as G5 in the
 
 ## Documentation
 
+The [agent format contracts](docs/formats/README.md) document supported Codex and Claude
+records, accounting semantics, evidence, regression coverage and known miscount causes.
+
 | Doc | Purpose |
 | --- | --- |
 | [Usage analysis guide](docs/usage-analysis.md) | Current commands, cache accounting, list-price semantics and supported versus planned analysis |
