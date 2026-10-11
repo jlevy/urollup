@@ -1,0 +1,265 @@
+{
+  "format": "urollup-fixture-expected/v1",
+  "case": "cache-write-input",
+  "dialect": "codex-rollout",
+  "summary": "Nonzero cache_write_input_tokens in usage records and in cumulative token_count events: uncached input excludes both cache reads and cache writes from the inclusive input_tokens.",
+  "rules": [
+    "design §4.1 Measure Contracts (Codex input_tokens includes cache reads and cache writes)",
+    "design §3.4 Codex requests and Codex counters beside usage records (twins add nothing)",
+    "design §3.4 Codex counters (deltas within one epoch)"
+  ],
+  "agent": {
+    "name": "Codex CLI",
+    "versions": "Codex CLI 0.154.0 usage records and 0.150.0 cumulative counters; cache_write_input_tokens exists from 0.145, and the nonzero values are synthetic"
+  },
+  "files": [
+    {
+      "path": "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl",
+      "lines": 16,
+      "thread": "019f0000-0000-7000-8000-002000000001"
+    },
+    {
+      "path": "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl",
+      "lines": 7,
+      "thread": "019f0000-0000-7000-8000-002000000002"
+    }
+  ],
+  "decode": {
+    "malformed": [],
+    "pending_tail": []
+  },
+  "threads": [
+    {
+      "id": "019f0000-0000-7000-8000-002000000001",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 3,
+        "tokens": {
+          "uncached_input": 700,
+          "cache_read": 1500,
+          "cache_write": 500,
+          "output": 110,
+          "reasoning": 10
+        }
+      }
+    },
+    {
+      "id": "019f0000-0000-7000-8000-002000000002",
+      "kind": "thread",
+      "parent": null,
+      "relationship": null,
+      "own": {
+        "requests": 2,
+        "tokens": {
+          "uncached_input": 300,
+          "cache_read": 1100,
+          "cache_write": 500,
+          "output": 70,
+          "reasoning": 5
+        }
+      }
+    }
+  ],
+  "requests": [
+    {
+      "key": {
+        "response_id": "resp_synthetic_c20_r1"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-002000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-20T15:00:20.000Z",
+      "tokens": {
+        "uncached_input": 100,
+        "cache_read": 600,
+        "cache_write": 300,
+        "output": 50,
+        "reasoning": 10
+      },
+      "selected": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:6"
+      ],
+      "service_tier": "priority",
+      "service_tier_basis": "observed",
+      "turn_id": "turn-c20-t1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c20_r2"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-002000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-20T15:00:40.000Z",
+      "tokens": {
+        "uncached_input": 300,
+        "cache_read": 900,
+        "cache_write": 0,
+        "output": 40,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:8"
+      ],
+      "evidence": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:8"
+      ],
+      "service_tier": "priority",
+      "service_tier_basis": "observed",
+      "turn_id": "turn-c20-t1"
+    },
+    {
+      "key": {
+        "response_id": "resp_synthetic_c20_r3"
+      },
+      "identity_basis": "native",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-002000000001",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "high",
+      "timestamp": "2026-09-20T15:05:10.000Z",
+      "tokens": {
+        "uncached_input": 300,
+        "cache_read": 0,
+        "cache_write": 200,
+        "output": 20,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:14"
+      ],
+      "evidence": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-00-00-019f0000-0000-7000-8000-002000000001.jsonl:14"
+      ],
+      "service_tier": "priority",
+      "service_tier_basis": "observed",
+      "turn_id": "turn-c20-t2"
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-002000000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:5"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-002000000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-20T15:30:08.000Z",
+      "tokens": {
+        "uncached_input": 100,
+        "cache_read": 500,
+        "cache_write": 200,
+        "output": 30,
+        "reasoning": 5
+      },
+      "selected": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:5"
+      ],
+      "evidence": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:5"
+      ],
+      "service_tier": null,
+      "service_tier_basis": "unknown"
+    },
+    {
+      "key": {
+        "thread_id": "019f0000-0000-7000-8000-002000000002",
+        "counter_epoch": 1,
+        "event": "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:6"
+      },
+      "identity_basis": "fallback",
+      "ownership": "owned",
+      "owner_thread": "019f0000-0000-7000-8000-002000000002",
+      "owner_candidates": [],
+      "model": "gpt-5.2-codex",
+      "model_basis": "requested",
+      "effort": "medium",
+      "timestamp": "2026-09-20T15:30:30.000Z",
+      "tokens": {
+        "uncached_input": 200,
+        "cache_read": 600,
+        "cache_write": 300,
+        "output": 40,
+        "reasoning": 0
+      },
+      "selected": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:6"
+      ],
+      "evidence": [
+        "sessions/2026/09/20/rollout-2026-09-20T08-30-00-019f0000-0000-7000-8000-002000000002.jsonl:6"
+      ],
+      "service_tier": null,
+      "service_tier_basis": "unknown"
+    }
+  ],
+  "copies": [],
+  "totals": {
+    "requests": {
+      "unique": 5,
+      "owned": 5,
+      "ambiguous": 0,
+      "unknown": 0
+    },
+    "unresolved": {
+      "requests": 0
+    },
+    "tokens": {
+      "uncached_input": 1000,
+      "cache_read": 2600,
+      "cache_write": 1000,
+      "output": 180,
+      "reasoning": 15
+    },
+    "total_tokens": 4780
+  },
+  "diagnostics": [],
+  "limit_observations": [],
+  "naive": [
+    {
+      "rule": "Subtract only cached_input_tokens from input_tokens: every cache-write token counts twice, as uncached input and as a cache write, for 5,780 tokens",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 2600,
+        "cache_write": 1000,
+        "output": 180,
+        "reasoning": 15
+      }
+    },
+    {
+      "rule": "Ignore cache_write_input_tokens (ccusage 20.0.20): the cache-write tokens stay in uncached input and no cache write is reported, so the 4,780-token total matches but the categories do not",
+      "requests": 5,
+      "tokens": {
+        "uncached_input": 2000,
+        "cache_read": 2600,
+        "cache_write": 0,
+        "output": 180,
+        "reasoning": 15
+      }
+    }
+  ],
+  "notes": [
+    "The reconciled total, 4,780, equals the sum of the native total_tokens of the three usage records (2,810) and the last cumulative total of the counter-only rollout (1,970); the inclusive input, 4,600, equals the native input_tokens.",
+    "Lines 7, 9 and 15 of the first rollout are the twins of the usage records before them (every native usage field equal), so the rollout is accounted from its usage records alone. Twin matching compares native fields, including cache_write_input_tokens.",
+    "The counter-only rollout's second request is the delta of its cumulative totals, 1,900 - 800 input, 1,100 - 500 cache reads and 500 - 200 cache writes, so its uncached input is 1,100 - 600 - 300 = 200, equal to its last_token_usage."
+  ]
+}

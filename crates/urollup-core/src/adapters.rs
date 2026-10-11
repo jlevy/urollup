@@ -183,9 +183,9 @@ pub enum AdapterError {
     /// Normalized token arithmetic overflowed.
     #[error(transparent)]
     Tokens(#[from] crate::ledger::tokens::TokenOverflow),
-    /// A dialect's inclusive input counter was below its cache-read subset.
+    /// A dialect's inclusive input counter was below the cache reads and writes it includes.
     #[error(transparent)]
-    Input(#[from] crate::ledger::tokens::InputBelowCacheRead),
+    Input(#[from] crate::ledger::tokens::InputBelowCache),
     /// A source-decoding worker thread panicked.
     #[error(transparent)]
     Worker(#[from] crate::sources::parallel::ParallelReadError),

@@ -2557,7 +2557,7 @@ fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
 
 fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
     let mut measures = normalize_input(
-        InputSemantics::IncludesCacheRead,
+        InputSemantics::IncludesCache,
         NativeInput {
             input: usage.input,
             cache_read: usage.cached_input,
