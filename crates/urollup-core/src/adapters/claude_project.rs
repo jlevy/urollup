@@ -31,8 +31,8 @@ use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
-    Basis, Confidence, ModelBasis, ModelName, ModelUsage, ProviderLimitObservation, Relationship,
-    RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, Confidence, ModelBasis, ModelName, ModelUsage, PricingContext, ProviderLimitObservation,
+    Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -110,11 +110,11 @@ const INLINE_THREAD_KEY: KeySpec = KeySpec {
 /// The largest a decoded record may be.
 ///
 /// One record is held for every usage line of a whole history until its observation is
-/// built, so this size bounds that phase: the 381,000 records of a 2.8 GB corpus take
-/// 73 MiB inline. The layout is exactly 200 bytes: 16 of evidence position, a 12-byte
-/// thread, four 4-byte symbols, a 32-byte message ID with its digest, a 16-byte request
-/// ID, a 16-byte timestamp, 64 bytes of counts with a 1-byte presence mask, a 17-byte
-/// optional uuid digest, two flags and an 8-byte pointer to rare fields.
+/// built, so this size bounds that phase: at this budget the 381,000 records of a 2.8 GB
+/// corpus take at most 73 MiB inline. A record holds its evidence position, thread,
+/// interned symbols, message ID with its digest, request ID, timestamp, counts with a
+/// presence mask, optional uuid digest and flags, plus pointers to its rare fields and to
+/// its shared pricing context; `a_decoded_record_is_compact` pins its size.
 const _: () =
     assert!(size_of::<ParsedRecord>() <= 200, "a decoded Claude record outgrew its size budget");
 
@@ -267,6 +267,7 @@ struct ParsedRecord {
     project: Option<Sym>,
     model: Option<Sym>,
     effort: Option<Sym>,
+    pricing: Option<Arc<PricingContext>>,
     forced_copy: bool,
     request_record: bool,
     /// The digest of `uuid`, which only joins replays to originals.
@@ -599,7 +600,14 @@ fn decode_source(
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    let SourceDecoder { thread, mut strings, mut facts, mut records, mut tool_uses } = decoder;
+    let SourceDecoder {
+        thread,
+        mut strings,
+        mut facts,
+        mut records,
+        mut tool_uses,
+        last_pricing: _,
+    } = decoder;
     if let Some(identity) = &entry.source {
         facts.source_id = Some(identity.id.clone());
     }
@@ -662,6 +670,7 @@ struct SourceDecoder {
     facts: SourceFacts,
     records: Vec<ParsedRecord>,
     tool_uses: Vec<(Digest, NativeThread)>,
+    last_pricing: Option<Arc<PricingContext>>,
 }
 
 impl SourceDecoder {
@@ -683,6 +692,7 @@ impl SourceDecoder {
             },
             records: Vec::new(),
             tool_uses: Vec::new(),
+            last_pricing: None,
         }
     }
 
@@ -802,6 +812,7 @@ impl SourceDecoder {
                 .map(|project| strings.intern(&project)),
             model: fields.message.model.as_deref().map(|model| strings.intern(model)),
             effort: fields.effort.as_deref().map(|effort| strings.intern(effort)),
+            pricing: pricing_context(&fields.message.pricing, &mut self.last_pricing),
             forced_copy,
             request_record,
             uuid: fields.uuid.as_deref().map(digest),
@@ -821,6 +832,28 @@ impl SourceDecoder {
             extras: record_extras(fields),
         }
     }
+}
+
+/// Share repeated native context without carrying missing fields across requests.
+fn pricing_context(
+    fields: &line::PricingFields<'_>,
+    previous: &mut Option<Arc<PricingContext>>,
+) -> Option<Arc<PricingContext>> {
+    let context = PricingContext {
+        speed: fields.speed.as_deref().map(Name::new),
+        service_tier: fields.service_tier.as_deref().map(Name::new),
+        inference_geo: fields.inference_geo.as_deref().map(Name::new),
+        ..PricingContext::default()
+    };
+    if context == PricingContext::default() {
+        return None;
+    }
+    if let Some(existing) = previous.as_ref().filter(|old| old.as_ref() == &context) {
+        return Some(Arc::clone(existing));
+    }
+    let context = Arc::new(context);
+    *previous = Some(Arc::clone(&context));
+    Some(context)
 }
 
 /// The project name a working directory implies: its last component.
@@ -1043,6 +1076,7 @@ fn normalize(
             | DiagnosticCode::ConflictingOwners
             | DiagnosticCode::ConflictingAccounts
             | DiagnosticCode::ConflictingModels
+            | DiagnosticCode::ConflictingPricingContext
             | DiagnosticCode::UnresolvedCandidate
             | DiagnosticCode::CounterReset
             | DiagnosticCode::CounterGap
@@ -1128,7 +1162,7 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
     drop((facts, subagent_meta, tool_owners));
 
     // Reserve per chunk after earlier record vectors have dropped. A single reserve for
-    // every record would allocate the observation table (~224 B each) while the corpus
+    // every record would allocate the observation table (~232 B each) while the corpus
     // is still fully resident beside the Codex ledger.
     let mut observations = Vec::new();
     let mut limit_observations = Vec::new();
@@ -1438,6 +1472,7 @@ fn observe(
             basis: ModelBasis::Served,
         });
         observation.effort = record.effort.map(|effort| strings.resolve(effort).into());
+        observation.pricing.clone_from(&record.pricing);
         observation.timestamp = record.timestamp.map(|time| time.get().into());
         if let Some(model) = observation.model.as_ref() {
             observation.invariants.push(("model", model.name));
@@ -1966,6 +2001,11 @@ mod tests {
             assert_eq!(RecordTime::new(timestamp).get(), timestamp);
         }
         assert_eq!(size_of::<Option<RecordTime>>(), 16);
+    }
+
+    #[test]
+    fn a_decoded_record_is_compact() {
+        assert_eq!(size_of::<super::ParsedRecord>(), 184);
     }
 
     #[test]

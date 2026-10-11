@@ -115,6 +115,9 @@ pub(super) struct Payload<'a> {
     pub(super) subagent_history_start_ordinal: HistoryBoundary,
     pub(super) turn_id: Option<Cow<'a, str>>,
     pub(super) model: Option<Cow<'a, str>>,
+    pub(super) model_provider: Option<Cow<'a, str>>,
+    /// The recorded `thread_settings.service_tier`, never local configuration.
+    pub(super) service_tier: Option<Cow<'a, str>>,
     pub(super) effort: Option<Cow<'a, str>>,
     /// The payload's own usage record fields, whose `thread_id` a
     /// `thread_settings_applied` event also names.
@@ -312,6 +315,8 @@ enum PayloadField {
     SubagentHistoryStartOrdinal,
     TurnId,
     Model,
+    ModelProvider,
+    ThreadSettings,
     Effort,
     Usage(UsageField),
     LatestTokenUsageRecord,
@@ -334,6 +339,8 @@ impl PayloadField {
             "subagent_history_start_ordinal" => Self::SubagentHistoryStartOrdinal,
             "turn_id" => Self::TurnId,
             "model" => Self::Model,
+            "model_provider" => Self::ModelProvider,
+            "thread_settings" => Self::ThreadSettings,
             "effort" => Self::Effort,
             "latest_token_usage_record" => Self::LatestTokenUsageRecord,
             "info" => Self::Info,
@@ -385,6 +392,12 @@ impl<'de> Visitor<'de> for PayloadSeed {
                 }
                 PayloadField::TurnId => payload.turn_id = map.next_value_seed(Text)?,
                 PayloadField::Model => payload.model = map.next_value_seed(Text)?,
+                PayloadField::ModelProvider => {
+                    payload.model_provider = map.next_value_seed(Text)?;
+                }
+                PayloadField::ThreadSettings => {
+                    payload.service_tier = map.next_value_seed(ServiceTierSeed)?;
+                }
                 PayloadField::Effort => payload.effort = map.next_value_seed(Text)?,
                 PayloadField::Usage(field) => payload.usage_record.read(field, &mut map)?,
                 PayloadField::LatestTokenUsageRecord => {
@@ -401,6 +414,33 @@ impl<'de> Visitor<'de> for PayloadSeed {
             }
         }
         Ok(payload)
+    }
+}
+
+/// Reads only the service tier from a settings object, replacing repeated objects.
+struct ServiceTierSeed;
+
+any_value_seed!(ServiceTierSeed);
+
+impl<'de> Visitor<'de> for ServiceTierSeed {
+    type Value = Option<Cow<'de, str>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut tier = None;
+        while let Some(is_tier) = map.next_key_seed(Key(|name| name == "service_tier"))? {
+            if is_tier {
+                tier = map.next_value_seed(Text)?;
+            } else {
+                map.next_value_seed(Skip)?;
+            }
+        }
+        Ok(tier)
     }
 }
 
@@ -976,6 +1016,10 @@ mod tests {
                 },
                 turn_id: owned(payload, "turn_id"),
                 model: owned(payload, "model"),
+                model_provider: owned(payload, "model_provider"),
+                service_tier: payload
+                    .get("thread_settings")
+                    .and_then(|settings| owned(settings, "service_tier")),
                 effort: owned(payload, "effort"),
                 // A payload-level `turn_id` is the payload's own field, not its usage
                 // record's.
@@ -1129,6 +1173,33 @@ mod tests {
                 .unwrap();
         assert!(matches!(line.payload.turn_id, Some(Cow::Borrowed("t1"))));
         assert!(matches!(line.payload.model, Some(Cow::Owned(ref model)) if model == "a/b"));
+    }
+
+    #[test]
+    fn pricing_metadata_preserves_recorded_provider_and_nested_tier() {
+        let line = Line::read(
+            br#"{"type":"session_meta","payload":{"model_provider":"custom-provider"}}"#,
+        )
+        .unwrap();
+        assert_eq!(line.payload.model_provider.as_deref(), Some("custom-provider"));
+        for (settings, expected) in [
+            (r#"{"service_tier":"fast"}"#, Some("fast")),
+            (r#"{"service_tier":"unrecognized"}"#, Some("unrecognized")),
+            (r#"{"service_tier":"fast","service_tier":"standard"}"#, Some("standard")),
+            (r#"{"service_tier":null}"#, None),
+            (r#"{"service_tier":2}"#, None),
+            ("null", None),
+        ] {
+            let input = format!(
+                r#"{{"type":"event_msg","payload":{{"type":"thread_settings_applied","thread_settings":{settings}}}}}"#
+            );
+            let line = Line::read(input.as_bytes()).unwrap();
+            assert_eq!(line.payload.service_tier.as_deref(), expected);
+            assert_matches_document(input.as_bytes());
+        }
+        assert_matches_document(
+            br#"{"payload":{"thread_settings":{"service_tier":"fast"},"thread_settings":{}}}"#,
+        );
     }
 
     /// A JSON object text from generated entries, which may repeat a key.

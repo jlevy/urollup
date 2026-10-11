@@ -316,9 +316,8 @@ impl TokenMeasures {
 /// What a dialect's native input count includes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InputSemantics {
-    /// Native input includes cache reads (Codex and the Responses API): uncached input is
-    /// the native value minus cache reads.
-    IncludesCacheRead,
+    /// Native input includes cache reads and writes (Codex and the Responses API).
+    IncludesCache,
     /// Native input excludes cache reads and writes (Claude): it is the uncached input.
     ExcludesCache,
 }
@@ -334,30 +333,41 @@ pub struct NativeInput {
     pub cache_write: Option<u64>,
 }
 
-/// A native input count smaller than the cache reads it claims to include.
+/// A native input count smaller than the cache categories it claims to include.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("native input {input} is smaller than the {cache_read} cache reads it includes")]
-pub struct InputBelowCacheRead {
+#[error(
+    "native input {input} is smaller than the {cache_read} cache reads and {cache_write} cache writes it includes"
+)]
+pub struct InputBelowCache {
     /// The native input count.
     pub input: u64,
     /// The native cache reads.
     pub cache_read: u64,
+    /// The native cache-write count.
+    pub cache_write: u64,
 }
 
 /// Derives disjoint input categories from native counters.
 ///
-/// With [`InputSemantics::IncludesCacheRead`], an input smaller than its cache reads is an
-/// error rather than a silent zero, so the caller records a diagnostic and keeps the native
-/// values.
+/// With [`InputSemantics::IncludesCache`], a missing cache category reads as 0, and an input
+/// smaller than the cache categories is an error rather than a silent zero; the Codex
+/// adapter returns it, which stops ingestion.
 pub fn normalize_input(
     semantics: InputSemantics,
     native: NativeInput,
-) -> Result<TokenMeasures, InputBelowCacheRead> {
-    let uncached_input = match (semantics, native.input, native.cache_read) {
-        (InputSemantics::IncludesCacheRead, Some(input), Some(cache_read)) => {
-            Some(input.checked_sub(cache_read).ok_or(InputBelowCacheRead { input, cache_read })?)
+) -> Result<TokenMeasures, InputBelowCache> {
+    let uncached_input = match (semantics, native.input) {
+        (InputSemantics::IncludesCache, Some(input)) => {
+            let cache_read = native.cache_read.unwrap_or(0);
+            let cache_write = native.cache_write.unwrap_or(0);
+            Some(
+                input
+                    .checked_sub(cache_read)
+                    .and_then(|remaining| remaining.checked_sub(cache_write))
+                    .ok_or(InputBelowCache { input, cache_read, cache_write })?,
+            )
         }
-        (InputSemantics::IncludesCacheRead | InputSemantics::ExcludesCache, input, _) => input,
+        (InputSemantics::IncludesCache | InputSemantics::ExcludesCache, input) => input,
     };
     Ok(TokenMeasures {
         uncached_input,
@@ -386,7 +396,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        InputBelowCacheRead, InputSemantics, Measures, NativeInput, TokenMeasures, TokenOverflow,
+        InputBelowCache, InputSemantics, Measures, NativeInput, TokenMeasures, TokenOverflow,
         normalize_input,
     };
 
@@ -447,7 +457,7 @@ mod tests {
         // The same logical usage as the two dialects record it (qm's mixed-semantics defect:
         // adding cache reads to Codex input counts them twice).
         let codex = normalize_input(
-            InputSemantics::IncludesCacheRead,
+            InputSemantics::IncludesCache,
             NativeInput { input: Some(1_000), cache_read: Some(800), cache_write: None },
         )
         .unwrap();
@@ -462,13 +472,41 @@ mod tests {
     }
 
     #[test]
+    fn codex_cache_writes_are_part_of_inclusive_input() {
+        let normalized = normalize_input(
+            InputSemantics::IncludesCache,
+            NativeInput { input: Some(100), cache_read: Some(20), cache_write: Some(10) },
+        )
+        .unwrap();
+        assert_eq!(normalized.uncached_input, Some(70));
+        assert_eq!(normalized.inclusive_input().unwrap(), Some(100));
+        assert_eq!(normalized.cache_write_unspecified, Some(10));
+    }
+
+    #[test]
+    fn cache_categories_cannot_exceed_inclusive_input() {
+        for (input, read, write) in [(10, 6, 5), (10, 0, 11), (u64::MAX, u64::MAX, 1)] {
+            let error = normalize_input(
+                InputSemantics::IncludesCache,
+                NativeInput {
+                    input: Some(input),
+                    cache_read: Some(read),
+                    cache_write: Some(write),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, InputBelowCache { input, cache_read: read, cache_write: write });
+        }
+    }
+
+    #[test]
     fn inclusive_input_below_its_cache_reads_is_an_error_not_zero() {
         let error = normalize_input(
-            InputSemantics::IncludesCacheRead,
+            InputSemantics::IncludesCache,
             NativeInput { input: Some(10), cache_read: Some(11), cache_write: None },
         )
         .unwrap_err();
-        assert_eq!(error, InputBelowCacheRead { input: 10, cache_read: 11 });
+        assert_eq!(error, InputBelowCache { input: 10, cache_read: 11, cache_write: 0 });
     }
 
     #[test]

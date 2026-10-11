@@ -50,10 +50,12 @@ One object per case, `format: urollup-fixture-expected/v1`:
 Tokens use urollup’s normalized categories: `uncached_input`, `cache_read`,
 `cache_write`, `output` and `reasoning` (`null` when the dialect records none, as Claude
 transcripts do). Claude `input_tokens` excludes cache reads and writes, so it is
-`uncached_input` directly; Codex `input_tokens` includes `cached_input_tokens`, so
-`uncached_input` is their difference.
-Codex cases keep `cache_write_input_tokens` at 0, because whether it sits inside
-`input_tokens` is unverified.
+`uncached_input` directly; Codex `input_tokens` is read as including
+`cached_input_tokens` and `cache_write_input_tokens`, so `uncached_input` is
+`input_tokens` minus both.
+Every Codex case but `cache-write-input` keeps `cache_write_input_tokens` at 0; that
+case pins the subtraction, and [its README](codex-rollout/cache-write-input/README.md)
+gives the evidence for the inclusion, which Codex source does not state.
 Codex rows also carry `total_tokens`, which is where counter overcounts show up.
 Every `path:line` reference is relative to the case directory and 1-based.
 
@@ -102,6 +104,7 @@ README explains the reasoning and names the pinned source its shapes come from.
 | `codex-rollout/counter-reset-epoch` | A cumulative total that restarts lower, opening a new epoch | §3.4, §3.3 | ccusage total-only path | Codex CLI 0.150.0 |
 | `codex-rollout/compaction-lowered-total` | A cumulative total lowered after `compacted` without restarting from zero; the record counts its own `last_token_usage` | §3.4, §3.3 | Codex `token_count` and `compacted`; uro-v1c9 report | Codex CLI 0.150.0 shape; releases unverified |
 | `codex-rollout/compaction-and-context-full` | A compaction estimate and a context-window-full fill | §3.4, §4.1 | Codex estimates, fills and compaction test | Codex CLI 0.150.0 |
+| `codex-rollout/cache-write-input` | Nonzero `cache_write_input_tokens` in usage records, their twin counters and cumulative counters: uncached input excludes cache reads and writes | §4.1, §3.4 | Codex `TokenUsage` and Responses mapping; Pi and ccusage cache-write handling | Codex CLI 0.154.0 and 0.150.0 shapes; the nonzero writes are synthetic |
 | `codex-rollout/token-usage-records` | `token_usage_record` across a resume, a `compacted` copy, and fork copies naming the parent thread | §3.4, §3.2 | Codex `TokenUsageRecord`, wire shapes, fork persistence | Codex CLI 0.154.0 |
 | `codex-rollout/mixed-counter-direct` | Counter-only turns beside a resumed session’s `token_usage_record` lines, each followed by its response’s twin `token_count` | §3.4 | Codex `token_count` and `TokenUsageRecord`; uro-h2sf | Codex CLI 0.150.0 resumed by 0.154.0 |
 | `codex-rollout/legacy-subagent-prefix` | Legacy subagent prefixes with and without a discovered parent, and a prefix without counters | §3.4, §3.2 | Codex spawn copies; ccusage replay tests; squares prefix cut | Codex CLI 0.150.0 |

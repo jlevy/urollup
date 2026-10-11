@@ -274,8 +274,8 @@ The original proposal used 72 B measures and observation/request bounds of 256 B
 | --- | --- | ---: |
 | `EvidenceRef` | source index, length and offset | 16 B |
 | `Measures` | eight compact counters and presence mask; full-width overflow values interned | 36 B, including `Option` |
-| `RequestObservation` | compact observations with optional owned payloads | ≤ 224 B |
-| `Request` | compact request and evidence references | ≤ 216 B |
+| `RequestObservation` | compact observations with optional owned payloads and a shared pricing-context pointer | ≤ 232 B |
+| `Request` | compact request, evidence references and a shared pricing-context pointer | ≤ 224 B |
 | `ProviderLimitObservation` | compact fields and references to interned native text | ≤ 128 B |
 | `Option<NativeSequence>` | presence tag and eight big-endian bytes, preserving all `u64` values | 9 B |
 
@@ -318,8 +318,8 @@ Explicit byte/row limits avoid host probing.
 An explicitly requested percentage fails if physical RAM is unknown; only the default
 uses the fallback. Native RAM queries do not impose a container allowance.
 
-The byte budget is divided by `size_of::<RequestObservation>()`. At 224 B, 8 GiB admits
-about 38 million row shells, but that arithmetic says nothing about whether their
+The byte budget is divided by `size_of::<RequestObservation>()`. At 232 B, 8 GiB admits
+about 37 million row shells, but that arithmetic says nothing about whether their
 payloads and final ledger fit in memory.
 Payloads, intern tables, request construction, source/thread tables and the other
 agent’s retained ledger are additional.
@@ -461,10 +461,10 @@ asserts it.
 
 | Phase | Per request-bearing record | Codex | Claude |
 | --- | --- | --- | --- |
-| Construction | the observation (224 B) at 3 × while `normalize` or `reconcile_input` appends it; for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map) and the eligibility vector’s stable-sort scratch (16 B per record) | 672 B | 672 B plus owner state and 16 B |
-| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (216 B) × 33/32 as presized; one evidence reference | key bound 1 | key bound 3 |
-| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation | 656 B | 656 B |
-| Retained and query | the retained request (216 B and its references) plus the 48 B query reserve | about 0.3 KB | about 0.3 KB |
+| Construction | the observation (232 B) at 3 × while `normalize` or `reconcile_input` appends it; for Claude, owner state (owner and uuid map entries, the eligibility vector and the ambiguity map) and the eligibility vector’s stable-sort scratch (16 B per record) | 696 B | 696 B plus owner state and 16 B |
+| Grouping | the observation, at its length: Codex’s `normalize` and, from slice 6, Claude’s `reconcile_input` shrink the observation vector before grouping, within the construction charge; per key, a key-graph node (30 B in three vectors at 3 ×, 16 B of slots at 1.5 ×) and one alias; 12 B of grouping order; the request (224 B) × 33/32 as presized; one evidence reference | key bound 1 | key bound 3 |
+| Finalize | the request at 3 × (vector, sorted copy and shrink in `Requests::from_unsorted`) plus an 8 B permutation | 680 B | 680 B |
+| Retained and query | the retained request (224 B and its references) plus the 48 B query reserve | about 0.3 KB | about 0.3 KB |
 | κ | the largest phase | indicatively 0.7 KB | indicatively 1.0–1.1 KB |
 
 The model closes two gaps in today’s admission, which retains but never charges Claude
@@ -630,7 +630,7 @@ committed; then query and render.
   usage error when `M` is unknown.
   The value now means the whole-process estimated peak rather than per-agent row shells,
   so the same value admits several times fewer observations (indicatively 1.5–4.2 KB per
-  request-bearing record with payloads at `H` = 1.5, against 224 B; see
+  request-bearing record with payloads at `H` = 1.5, against 232 B; see
   [Indicative Estimates](#indicative-estimates)). No version has been published, so the
   change lands in slice 7, with every description of the row ceiling that slice lists,
   without an alias.

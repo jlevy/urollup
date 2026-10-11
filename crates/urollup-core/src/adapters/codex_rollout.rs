@@ -31,8 +31,9 @@ use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode, SAMPLE_EVIDENCE_LIMIT};
 use crate::ledger::entities::{
-    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, ProviderLimitObservation,
-    Relationship, RelationshipKind, SourceArtifact, SourceCapability, Thread,
+    Basis, CompactTimestamp, Confidence, ModelBasis, ModelName, PricingContext,
+    ProviderLimitObservation, Relationship, RelationshipKind, SourceArtifact, SourceCapability,
+    Thread,
 };
 use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdentity, sha256_128};
 use crate::ledger::names::Name;
@@ -166,6 +167,7 @@ struct ParsedRecord {
 enum RecordKind {
     SessionMeta {
         id: Option<Sym>,
+        provider: Option<Name>,
     },
     TurnContext {
         turn_id: Option<Sym>,
@@ -184,6 +186,7 @@ enum RecordKind {
     },
     ThreadSettingsApplied {
         thread_id: Option<Sym>,
+        service_tier: Option<Name>,
     },
 }
 
@@ -404,10 +407,11 @@ struct RateLimits {
 }
 
 /// A turn's model and reasoning effort.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct TurnContext {
     model: Option<Name>,
     effort: Option<Name>,
+    pricing: Option<Arc<PricingContext>>,
 }
 
 /// The turn contexts of one rollout, by turn ID.
@@ -860,6 +864,7 @@ impl SourceDecoder {
             RecordType::EventMsg => match payload.event_type {
                 EventType::ThreadSettingsApplied => Some(RecordKind::ThreadSettingsApplied {
                     thread_id: self.interner.intern_some(payload.usage_record.thread_id.as_deref()),
+                    service_tier: payload.service_tier.as_deref().map(Name::new),
                 }),
                 EventType::TokenCount => {
                     let mut usage = UsageMask::default();
@@ -890,6 +895,7 @@ impl SourceDecoder {
 
     fn session_meta(&mut self, payload: Payload<'_>, evidence: &EvidenceRef) -> RecordKind {
         let id = self.interner.intern_some(payload.id.as_deref());
+        let provider = payload.model_provider.as_deref().map(Name::new);
         let metas = &mut self.metas;
         if metas.cli_version.is_none() {
             metas.cli_version = payload.cli_version.map(Cow::into_owned);
@@ -921,7 +927,7 @@ impl SourceDecoder {
             };
             metas.own = Some(Box::new((meta, *evidence)));
         }
-        RecordKind::SessionMeta { id }
+        RecordKind::SessionMeta { id, provider }
     }
 }
 
@@ -1052,7 +1058,7 @@ fn is_usage_event(
 fn is_root_rollout(metas: &SourceMetas, records: &[ParsedRecord], file_thread: Sym) -> bool {
     !metas.lineage
         && records.iter().all(|record| match record.kind {
-            RecordKind::ThreadSettingsApplied { thread_id } => {
+            RecordKind::ThreadSettingsApplied { thread_id, .. } => {
                 thread_id.is_none_or(|thread| thread == file_thread)
             }
             RecordKind::UsageRecord(usage) => {
@@ -1492,6 +1498,7 @@ fn observe_parsed_source(
     // Whether the declared boundary leaves usage-bearing lines to another thread or to none.
     let mut copied_prefix = false;
     let mut turns = Turns::new();
+    let mut pricing_by_thread: HashMap<Sym, Arc<PricingContext>> = HashMap::new();
     let mut current_turn: Option<Sym> = None;
     let mut last_response_by_thread: HashMap<&str, Sym> = HashMap::new();
     let mut inherited_total = None;
@@ -1533,8 +1540,10 @@ fn observe_parsed_source(
             // A line naming another thread is copied history, which never follows the
             // child's own lines.
             let names_other = match &record.kind {
-                RecordKind::SessionMeta { id } => id.is_some_and(|thread| thread != file_thread),
-                RecordKind::ThreadSettingsApplied { thread_id } => {
+                RecordKind::SessionMeta { id, .. } => {
+                    id.is_some_and(|thread| thread != file_thread)
+                }
+                RecordKind::ThreadSettingsApplied { thread_id, .. } => {
                     thread_id.is_some_and(|thread| thread != file_thread)
                 }
                 RecordKind::UsageRecord(usage) | RecordKind::Compacted(Some(usage)) => {
@@ -1655,11 +1664,15 @@ fn observe_parsed_source(
                 | RecordKind::ThreadSettingsApplied { .. } => false,
             };
         match &record.kind {
-            RecordKind::SessionMeta { id } => {
+            RecordKind::SessionMeta { id, provider } => {
                 if let Some(thread_id) = *id {
                     active_thread = thread_id;
                     named_own = false;
                     inferred = None;
+                    if let Some(provider) = provider {
+                        let pricing = pricing_by_thread.entry(thread_id).or_default();
+                        Arc::make_mut(pricing).provider = Some(*provider);
+                    }
                 }
             }
             RecordKind::TurnContext { turn_id, model, effort } => {
@@ -1701,15 +1714,37 @@ fn observe_parsed_source(
                     }
                 }
                 if let Some(turn_id) = *turn_id {
-                    turns.insert(turn_id, TurnContext { model: *model, effort: *effort });
+                    turns.insert(
+                        turn_id,
+                        TurnContext {
+                            model: *model,
+                            effort: *effort,
+                            pricing: pricing_by_thread.get(&active_thread).cloned(),
+                        },
+                    );
                 }
                 current_turn = *turn_id;
             }
-            RecordKind::ThreadSettingsApplied { thread_id } => {
+            RecordKind::ThreadSettingsApplied { thread_id, service_tier } => {
                 active_thread = thread_id.unwrap_or(file_thread);
                 named_own = *thread_id == Some(file_thread);
                 if thread_id.is_some() {
                     inferred = None;
+                }
+                // A settings event that names a thread sets that thread's tier wherever it
+                // sits, as a usage record's name decides its owner: a migrated child's own
+                // settings precede its boundary. One that names no thread sets this
+                // rollout's tier only where a declared boundary places it after the
+                // inherited prefix; before it, or with no ordinal to place, it may be the
+                // parent's copied setting, and a turn-inferred start can still be voided.
+                let tier_thread = match *thread_id {
+                    Some(thread) => Some(thread),
+                    None if before_boundary || native_boundary.cannot_place(record.ordinal) => None,
+                    None => Some(file_thread),
+                };
+                if let Some((thread, tier)) = tier_thread.zip(*service_tier) {
+                    let pricing = pricing_by_thread.entry(thread).or_default();
+                    Arc::make_mut(pricing).service_tier = Some(tier);
                 }
             }
             RecordKind::UsageRecord(usage_record) => {
@@ -2168,7 +2203,7 @@ fn normalize(
     }
 
     // Reserve per rollout after earlier observation vectors have been moved. A single
-    // reserve for every row would allocate the 224-byte observation table while every
+    // reserve for every row would allocate the 232-byte observation table while every
     // worker result still holds its own copy.
     let mut observations = Vec::new();
     let mut diagnostics = source_diagnostics(&manifest, &source_table);
@@ -2339,7 +2374,7 @@ fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> Co
             occurrences = occurrences.saturating_add(record.skipped_before);
         }
         match &record.kind {
-            RecordKind::SessionMeta { id } => {
+            RecordKind::SessionMeta { id, .. } => {
                 if let Some(thread_id) = *id {
                     active_thread = thread_id;
                 }
@@ -2553,11 +2588,12 @@ fn usage_observation(
 fn apply_context(observation: &mut RequestObservation, context: &TurnContext) {
     observation.model = context.model.map(|name| ModelName { name, basis: ModelBasis::Requested });
     observation.effort = context.effort;
+    observation.pricing.clone_from(&context.pricing);
 }
 
 fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
     let mut measures = normalize_input(
-        InputSemantics::IncludesCacheRead,
+        InputSemantics::IncludesCache,
         NativeInput {
             input: usage.input,
             cache_read: usage.cached_input,

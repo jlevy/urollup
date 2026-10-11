@@ -23,13 +23,14 @@
 //!    lowest ID. Original observations with usage are its revisions, passed in canonical
 //!    order to the dialect's [`RevisionSelector`]; copies are recorded as evidence and
 //!    never counted, and a request seen only as copies is [`Counting::CopyOnly`].
-//!    Ownership comes from proven owners; conflicting owners and served models are
-//!    diagnosed, not split.
+//!    Ownership comes from proven owners; conflicting owners, served models and
+//!    pricing contexts are diagnosed, not split.
 //! 5. **Candidate sets:** requests split from one conflicting key form a candidate set. It
 //!    counts the member with the strongest identity basis, then the lowest ID, and marks
 //!    the others [`Counting::Unresolved`], which totals never add.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use jiff::Timestamp;
 
@@ -37,8 +38,8 @@ use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
     Basis, CompactTimestamp, Confidence, Counting, ModelBasis, ModelName, ModelUsageList,
-    Ownership, ProviderLimitObservation, Relationship, RelationshipKind, Request, Requests,
-    RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
+    Ownership, PricingContext, ProviderLimitObservation, Relationship, RelationshipKind, Request,
+    Requests, RevisionStatus, SelectedUsage, Thread, ToolAction, UsageRevision,
 };
 use super::identity::{AnalyticalId, IdPrefix, IdentityError, IdentityRegistry};
 use super::inline_list::InlineList;
@@ -115,11 +116,13 @@ pub struct RequestObservation {
     pub model: Option<ModelName>,
     /// The reasoning effort, when recorded.
     pub effort: Option<Name>,
+    /// Recorded pricing metadata; copies cannot establish it for an original request.
+    pub pricing: Option<Arc<PricingContext>>,
     /// The record's timestamp.
     pub timestamp: Option<CompactTimestamp>,
 }
 
-const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 224);
+const _: () = assert!(std::mem::size_of::<RequestObservation>() <= 232);
 
 impl RequestObservation {
     /// An original observation with no keys, owner, usage or properties yet.
@@ -135,6 +138,7 @@ impl RequestObservation {
             invariants: InlineList::new(),
             model: None,
             effort: None,
+            pricing: None,
             timestamp: None,
         }
     }
@@ -1235,6 +1239,7 @@ fn build_request(
         effort: selected
             .and_then(|s| s.effort)
             .or_else(|| originals.iter().filter_map(|o| o.effort).min()),
+        pricing: pricing_context(&originals, &id, diagnostics),
         originals: index_u32(originals.len()),
         records: originals
             .iter()
@@ -1245,6 +1250,42 @@ fn build_request(
         counting,
         id: linked.id,
     }))
+}
+
+/// Merge only original metadata. Missing fields may be filled by another original;
+/// contradictory recorded values must leave pricing unresolved.
+fn pricing_context(
+    originals: &[&RequestObservation],
+    id: &AnalyticalId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Arc<PricingContext>> {
+    let mut contexts = originals.iter().filter_map(|record| record.pricing.as_ref());
+    let first = contexts.next()?;
+    let mut merged = first.as_ref().clone();
+    for context in contexts {
+        merged.conflicted |= context.conflicted;
+        for (target, incoming) in [
+            (&mut merged.provider, context.provider),
+            (&mut merged.service_tier, context.service_tier),
+            (&mut merged.speed, context.speed),
+            (&mut merged.inference_geo, context.inference_geo),
+        ] {
+            match (*target, incoming) {
+                (Some(old), Some(new)) if old != new => merged.conflicted = true,
+                (None, Some(value)) => *target = Some(value),
+                (Some(_), _) | (None, None) => {}
+            }
+        }
+    }
+    if merged.conflicted {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ConflictingPricingContext,
+            Some(id.clone()),
+            originals.iter().map(|record| record.evidence),
+            "original records disagree on a recorded pricing dimension, so none of them can choose a rate",
+        ));
+    }
+    Some(if &merged == first.as_ref() { Arc::clone(first) } else { Arc::new(merged) })
 }
 
 fn ownership(
