@@ -34,23 +34,29 @@
 //!   and stop waiting once a refusal sets the stop flag. Its charge is the largest need
 //!   any holder has held at once in the current phase.
 //!
+//! - **Process interns** charge the ledger the interning thread is scoped to
+//!   ([`MemoryAdmission::scope`]), under their table's lock and only when new, so a text
+//!   is charged once however many threads intern it; a refused intern stores nothing.
+//!
 //! [`model`] prices each unit of retained state and each phase, and [`deep_size`] measures
 //! committed state. In ingestion so far, the source reader takes the permit; each agent's
 //! decode checkpoint charges its worker slots and the parallel read's work order and
 //! releases the coordinating slot ([`Hold::Coordinating`]), which the CLI holds while it
-//! peeks at sources; and each worker charges its source's rows. Record, payload and thread
-//! charges arrive with slices 5 and 6, and the CLI's ledger refuses no bytes until slice 7
-//! gives it a budget; until then only the row ceiling refuses.
+//! peeks at sources; each worker charges its source's rows; and threads scoped to the
+//! ledger charge their new process interns. Record, payload and thread charges arrive with
+//! slices 5 and 6, and the CLI's ledger refuses no bytes until slice 7 gives it a budget;
+//! until then only the row ceiling refuses.
 
 pub mod deep_size;
 pub mod model;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -379,13 +385,50 @@ struct Refused<'a> {
 }
 
 /// One invocation's memory and row admission; see the module documentation.
+///
+/// The ledger's state is shared with the threads [`Self::scope`] scopes to it, so that a
+/// new process intern made on any of them is charged here.
 #[derive(Debug)]
 pub struct MemoryAdmission {
+    shared: Arc<Shared>,
+    rows: [AtomicUsize; 3],
+    row_ceiling: Option<ObservationCapacity>,
+}
+
+/// Where a ledger also stores `E` and whether workers are decoding, for a counting
+/// allocator that compares live heap with `E` at every allocation, as the model-bound
+/// harness does ([`MemoryAdmission::with_heap_mirror`]).
+#[derive(Debug, Default)]
+pub struct HeapMirror {
+    heap: AtomicU64,
+    decoding: AtomicBool,
+}
+
+impl HeapMirror {
+    /// A mirror of an empty ledger.
+    pub const fn new() -> Self {
+        Self { heap: AtomicU64::new(0), decoding: AtomicBool::new(false) }
+    }
+
+    /// The latest `E`.
+    pub fn heap(&self) -> u64 {
+        self.heap.load(Ordering::Relaxed)
+    }
+
+    /// Whether the latest phase is a decode, whose worker slots are in use.
+    pub fn decoding(&self) -> bool {
+        self.decoding.load(Ordering::Relaxed)
+    }
+}
+
+/// The state every charge reads and moves, which scoped threads share with the ledger.
+#[derive(Debug)]
+struct Shared {
     limit: Limit,
     model: ProcessModel,
     /// `E`: every hold, every charge until exit, and the current phase's charges.
     charged: AtomicU64,
-    /// The part of `charged` made by [`Self::charge_until_exit`].
+    /// The part of `charged` made by [`MemoryAdmission::charge_until_exit`].
     until_exit: AtomicU64,
     /// The largest `E` on either side of a transition. Only charges move `E` between
     /// transitions, and they only add, so the largest `E` so far is the larger of this and
@@ -403,8 +446,42 @@ pub struct MemoryAdmission {
     permit_released: Condvar,
     stopped: AtomicBool,
     refusal: OnceLock<CapacityError>,
-    rows: [AtomicUsize; 3],
-    row_ceiling: Option<ObservationCapacity>,
+    /// Where every new `E` is also stored, for the model-bound harness
+    /// ([`MemoryAdmission::with_heap_mirror`]).
+    mirror: OnceLock<&'static HeapMirror>,
+}
+
+thread_local! {
+    /// The ledger this thread's new process interns are charged to, while
+    /// [`MemoryAdmission::scope`] runs.
+    static SCOPED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
+}
+
+/// Restores the ledger a thread was scoped to before [`MemoryAdmission::scope`], even
+/// when the scoped work unwinds.
+struct Rescope(Option<Arc<Shared>>);
+
+impl Drop for Rescope {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        // A thread being torn down has no scope left to restore.
+        SCOPED.try_with(|scoped| scoped.replace(previous)).ok();
+    }
+}
+
+/// Charges `bytes` of a new process intern, until exit, to the ledger the current thread
+/// is scoped to ([`MemoryAdmission::scope`]); `false` when that ledger refuses, and then the
+/// intern must insert nothing. Outside a scope nothing is charged and every intern is
+/// admitted.
+///
+/// The process tables call it under their lock, before they allocate the intern, so a
+/// text two threads intern at once is charged once.
+pub(crate) fn charge_intern(bytes: u64) -> bool {
+    SCOPED
+        .try_with(|scoped| {
+            scoped.borrow().as_ref().is_none_or(|shared| shared.charge_until_exit(bytes))
+        })
+        .unwrap_or(true)
 }
 
 impl MemoryAdmission {
@@ -427,18 +504,21 @@ impl MemoryAdmission {
 
     fn with_limit(limit: Limit, model: ProcessModel) -> Self {
         Self {
-            limit,
-            model,
-            charged: AtomicU64::new(0),
-            until_exit: AtomicU64::new(0),
-            largest: AtomicU64::new(0),
-            components: std::array::from_fn(|_| AtomicU64::new(0)),
-            holds: Mutex::new(BTreeMap::new()),
-            phase: Mutex::new(Phase::Discovery),
-            permit: Mutex::new(Permit::default()),
-            permit_released: Condvar::new(),
-            stopped: AtomicBool::new(false),
-            refusal: OnceLock::new(),
+            shared: Arc::new(Shared {
+                limit,
+                model,
+                charged: AtomicU64::new(0),
+                until_exit: AtomicU64::new(0),
+                largest: AtomicU64::new(0),
+                components: std::array::from_fn(|_| AtomicU64::new(0)),
+                holds: Mutex::new(BTreeMap::new()),
+                phase: Mutex::new(Phase::Discovery),
+                permit: Mutex::new(Permit::default()),
+                permit_released: Condvar::new(),
+                stopped: AtomicBool::new(false),
+                refusal: OnceLock::new(),
+                mirror: OnceLock::new(),
+            }),
             rows: std::array::from_fn(|_| AtomicUsize::new(0)),
             row_ceiling: None,
         }
@@ -451,6 +531,34 @@ impl MemoryAdmission {
         self
     }
 
+    /// Also stores every new `E`, and whether workers are decoding, in `mirror`, so that a
+    /// counting allocator can compare live heap with `E` at every allocation, as the
+    /// model-bound harness does. A ledger keeps the first mirror it is given.
+    #[must_use]
+    pub fn with_heap_mirror(self, mirror: &'static HeapMirror) -> Self {
+        mirror.heap.store(self.charged(), Ordering::Relaxed);
+        mirror
+            .decoding
+            .store(matches!(*lock(&self.shared.phase), Phase::Decode(_)), Ordering::Relaxed);
+        self.shared.mirror.get_or_init(|| mirror);
+        self
+    }
+
+    /// Runs `work` with this ledger as the current thread's ledger for new process
+    /// interns: a new `Name`, overflow `Measures` pattern or `PricingContext` that `work`
+    /// interns on this thread is charged here until exit, under the process table's lock
+    /// and before it is allocated. A refused intern stops the invocation, inserts nothing,
+    /// and yields a placeholder that no successful result holds, since every phase checks
+    /// [`Self::stopped`] before it returns.
+    ///
+    /// Scopes nest: the thread's previous ledger, if any, is restored when `work` returns
+    /// or unwinds.
+    pub fn scope<R>(&self, work: impl FnOnce() -> R) -> R {
+        let previous = SCOPED.with(|scoped| scoped.replace(Some(Arc::clone(&self.shared))));
+        let _restore = Rescope(previous);
+        work()
+    }
+
     /// The per-agent ceiling on request-bearing observations, when there is one.
     pub const fn row_ceiling(&self) -> Option<&ObservationCapacity> {
         self.row_ceiling.as_ref()
@@ -458,26 +566,26 @@ impl MemoryAdmission {
 
     /// The byte budget, or `None` for an unlimited ledger.
     pub fn budget(&self) -> Option<&MemoryBudget> {
-        match &self.limit {
+        match &self.shared.limit {
             Limit::Unlimited => None,
             Limit::Budget { budget, .. } => Some(budget),
         }
     }
 
     /// The baseline and headroom the budget check uses.
-    pub const fn model(&self) -> ProcessModel {
-        self.model
+    pub fn model(&self) -> ProcessModel {
+        self.shared.model
     }
 
     /// Refuses a budget below `F + H × slot_bytes`, the baseline and one decoding worker,
     /// before any work. A budget below `F` alone refuses whatever the slot size.
     pub fn ensure_floor(&self, slot_bytes: u64) -> Result<(), CapacityError> {
-        let Limit::Budget { budget, heap } = &self.limit else { return Ok(()) };
+        let Limit::Budget { budget, heap } = &self.shared.limit else { return Ok(()) };
         if heap.is_some_and(|heap| heap >= slot_bytes) {
             return Ok(());
         }
-        Err(self.refuse(CapacityError::BelowFloor {
-            floor: self.model.whole_process(slot_bytes),
+        Err(self.shared.refuse(CapacityError::BelowFloor {
+            floor: self.shared.model.whole_process(slot_bytes),
             budget: budget.bytes(),
             label: budget.label().to_owned(),
         }))
@@ -495,12 +603,13 @@ impl MemoryAdmission {
         let slots = match self.budget() {
             None => ceiling,
             Some(budget) => {
+                let headroom = self.shared.model.headroom;
                 let per_slot = u128::from(slot_bytes)
                     .saturating_mul(8)
-                    .saturating_mul(u128::from(self.model.headroom.numerator))
+                    .saturating_mul(u128::from(headroom.numerator))
                     .max(1);
                 let slots = u128::from(budget.bytes())
-                    .saturating_mul(u128::from(self.model.headroom.denominator))
+                    .saturating_mul(u128::from(headroom.denominator))
                     / per_slot;
                 usize::try_from(slots).unwrap_or(usize::MAX).clamp(1, ceiling)
             }
@@ -510,40 +619,37 @@ impl MemoryAdmission {
 
     /// Whether any charge or reservation has been refused.
     pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        self.shared.stopped()
     }
 
     /// The first refusal, once there is one.
     pub fn refusal(&self) -> Option<CapacityError> {
-        self.refusal.get().cloned()
+        self.shared.refusal.get().cloned()
     }
 
     /// Charges `bytes` of `component` to the current phase before they are allocated;
     /// `false` refuses, and every later charge and reservation is refused too.
     #[must_use]
     pub fn charge(&self, component: Component, bytes: u64) -> bool {
-        if self.stopped() {
-            return false;
+        self.shared.charge(component, bytes)
+    }
+
+    /// [`Self::charge`], returning the invocation's first refusal when the charge is
+    /// refused, for a caller that reports it.
+    pub fn try_charge(&self, component: Component, bytes: u64) -> Result<(), CapacityError> {
+        if self.charge(component, bytes) {
+            return Ok(());
         }
-        if let Err(refused) = self.update(|total| u128::from(total) + u128::from(bytes)) {
-            let phase = *lock(&self.phase);
-            self.refuse(memory_error(refused.budget, phase, None));
-            return false;
-        }
-        // Statistics only: no admitted total under a budget comes near 2^64.
-        self.components[component.index()].fetch_add(bytes, Ordering::Relaxed);
-        true
+        // A refused charge records its refusal before it stops the invocation, and a
+        // charge refused because the invocation stopped sees the one that stopped it.
+        Err(self.refusal().expect("a refused charge follows a recorded refusal"))
     }
 
     /// Charges `bytes` of a new process intern, which stays allocated until the process
     /// exits; checkpoints and commits keep it.
     #[must_use]
     pub fn charge_until_exit(&self, bytes: u64) -> bool {
-        if !self.charge(Component::Interns, bytes) {
-            return false;
-        }
-        saturating_add(&self.until_exit, bytes);
-        true
+        self.shared.charge_until_exit(bytes)
     }
 
     /// Takes a share of the large-record permit for `need` bytes, waiting while another
@@ -561,10 +667,11 @@ impl MemoryAdmission {
     /// returns within 20 ms of a refusal anywhere in the invocation. A share belongs to the
     /// thread that took it, which the type enforces: it cannot move to another thread.
     pub fn large_record(&self, need: u64) -> Option<LargeRecord<'_>> {
+        let shared = &*self.shared;
         let me = std::thread::current().id();
-        let mut permit = lock(&self.permit);
+        let mut permit = lock(&shared.permit);
         loop {
-            if self.stopped() {
+            if shared.stopped() {
                 return None;
             }
             match permit.holder {
@@ -575,7 +682,7 @@ impl MemoryAdmission {
                 Some(holder) if holder == me => break,
                 Some(_) => {
                     permit.waiting = permit.waiting.saturating_add(1);
-                    permit = self
+                    permit = shared
                         .permit_released
                         .wait_timeout(permit, PERMIT_POLL)
                         .unwrap_or_else(PoisonError::into_inner)
@@ -584,39 +691,22 @@ impl MemoryAdmission {
                 }
             }
         }
-        if self.raise_permit(&mut permit, need) {
+        if shared.raise_permit(&mut permit, need) {
             permit.shares = permit.shares.saturating_add(1);
             return Some(LargeRecord { admission: self, need, _thread: PhantomData });
         }
         if permit.shares == 0 {
             permit.holder = None;
             drop(permit);
-            self.permit_released.notify_all();
+            shared.permit_released.notify_all();
         }
         None
-    }
-
-    /// Adds `more` to what the permit's holder holds and raises the permit's charge to
-    /// that total when it passes every earlier one; `false`, changing nothing, when the
-    /// charge is refused or the invocation is already stopped.
-    fn raise_permit(&self, permit: &mut Permit, more: u64) -> bool {
-        let held = permit.held.saturating_add(more);
-        if held > permit.level {
-            if !self.charge(Component::Slots, held - permit.level) {
-                return false;
-            }
-            permit.level = held;
-        } else if self.stopped() {
-            return false;
-        }
-        permit.held = held;
-        true
     }
 
     /// The large-record permit's holder, for tests.
     #[cfg(test)]
     pub(crate) fn permit_holder(&self) -> Option<ThreadId> {
-        lock(&self.permit).holder
+        lock(&self.shared.permit).holder
     }
 
     /// Whether a thread starts waiting for the large-record permit within `within`, for
@@ -624,7 +714,7 @@ impl MemoryAdmission {
     #[cfg(test)]
     pub(crate) fn permit_waiter_within(&self, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
-        while lock(&self.permit).waiting == 0 {
+        while lock(&self.shared.permit).waiting == 0 {
             if std::time::Instant::now() >= deadline {
                 return false;
             }
@@ -650,7 +740,7 @@ impl MemoryAdmission {
             })
             .is_err()
         {
-            self.refuse(CapacityError::Rows {
+            self.shared.refuse(CapacityError::Rows {
                 agent,
                 observations: maximum.saturating_add(1),
                 maximum,
@@ -714,6 +804,11 @@ impl MemoryAdmission {
         })
     }
 
+    /// The bytes `hold` holds now, or 0 when it is not held.
+    pub fn held(&self, hold: Hold) -> u64 {
+        lock(&self.shared.holds).get(&hold).copied().unwrap_or(0)
+    }
+
     /// Ends `agent`'s ingest in one transition: its phase charges and discovery metadata
     /// are released, and its retained ledger is held at `retained`, its deep size after
     /// finalize. Charges are then attributed to finalizing that agent's ledger until the
@@ -726,14 +821,14 @@ impl MemoryAdmission {
 
     /// The current modeled heap `E`.
     pub fn charged(&self) -> u64 {
-        self.charged.load(Ordering::Relaxed)
+        self.shared.charged.load(Ordering::Relaxed)
     }
 
     /// The bytes charged to `component` so far, over every phase; statistics take the
     /// difference across a phase. Checkpoint estimates and holds are not included: their
     /// callers compute them from the cost model, component by component.
     pub fn charged_by(&self, component: Component) -> u64 {
-        self.components[component.index()].load(Ordering::Relaxed)
+        self.shared.components[component.index()].load(Ordering::Relaxed)
     }
 
     /// The largest modeled heap reached so far.
@@ -742,26 +837,7 @@ impl MemoryAdmission {
     /// budgets that leave [`Self::worker_slots`] unchanged: the slot count depends on the
     /// budget, and so do the slot charges.
     pub fn largest(&self) -> u64 {
-        self.largest.load(Ordering::Relaxed).max(self.charged())
-    }
-
-    /// Moves `E` from its current value `e` to `next(e)` in one read-modify-write, when
-    /// the limit admits it, and returns the previous and new values.
-    fn update(&self, next: impl Fn(u64) -> u128) -> Result<(u64, u64), Refused<'_>> {
-        let mut current = self.charged.load(Ordering::Relaxed);
-        loop {
-            let total = next(current);
-            let admitted = self.limit.admit(total).map_err(|budget| Refused { budget, total })?;
-            match self.charged.compare_exchange_weak(
-                current,
-                admitted,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(previous) => return Ok((previous, admitted)),
-                Err(actual) => current = actual,
-            }
-        }
+        self.shared.largest.load(Ordering::Relaxed).max(self.charged())
     }
 
     /// Sets the holds in `changes` and, with an `estimate`, replaces the phase's charges
@@ -772,16 +848,17 @@ impl MemoryAdmission {
         estimate: Option<u64>,
         edit: impl FnOnce(&mut BTreeMap<Hold, u64>),
     ) -> Result<(), CapacityError> {
-        let mut holds = lock(&self.holds);
+        let shared = &*self.shared;
+        let mut holds = lock(&shared.holds);
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
         let mut next_holds = holds.clone();
         edit(&mut next_holds);
         let (held_before, held_after) = (sum(&holds), sum(&next_holds));
-        let unlimited = self.limit.is_unlimited();
-        let moved = self.update(|current| {
-            let until_exit = || u128::from(self.until_exit.load(Ordering::Relaxed));
+        let unlimited = shared.limit.is_unlimited();
+        let moved = shared.update(|current| {
+            let until_exit = || u128::from(shared.until_exit.load(Ordering::Relaxed));
             match estimate {
                 Some(estimate) => {
                     // After workers join, a budget's `E` is exactly every hold, every charge
@@ -805,19 +882,92 @@ impl MemoryAdmission {
             Ok((previous, next)) => {
                 *holds = next_holds;
                 if let Some(phase) = phase {
-                    *lock(&self.phase) = phase;
+                    *lock(&shared.phase) = phase;
+                    if let Some(mirror) = shared.mirror.get() {
+                        mirror.decoding.store(matches!(phase, Phase::Decode(_)), Ordering::Relaxed);
+                    }
                 }
                 if estimate.is_some() {
-                    lock(&self.permit).level = 0;
+                    lock(&shared.permit).level = 0;
                 }
-                self.largest.fetch_max(previous.max(next), Ordering::Relaxed);
+                shared.largest.fetch_max(previous.max(next), Ordering::Relaxed);
                 Ok(())
             }
             Err(Refused { budget, total }) => {
-                let phase = phase.unwrap_or_else(|| *lock(&self.phase));
+                let phase = phase.unwrap_or_else(|| *lock(&shared.phase));
                 let heap = u64::try_from(total).unwrap_or(u64::MAX);
-                let estimate = self.model.whole_process(heap);
-                Err(self.refuse(memory_error(budget, phase, Some(estimate))))
+                let estimate = shared.model.whole_process(heap);
+                Err(shared.refuse(memory_error(budget, phase, Some(estimate))))
+            }
+        }
+    }
+}
+
+impl Shared {
+    fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    fn charge(&self, component: Component, bytes: u64) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        if let Err(refused) = self.update(|total| u128::from(total) + u128::from(bytes)) {
+            let phase = *lock(&self.phase);
+            self.refuse(memory_error(refused.budget, phase, None));
+            return false;
+        }
+        // Statistics only: no admitted total under a budget comes near 2^64.
+        self.components[component.index()].fetch_add(bytes, Ordering::Relaxed);
+        true
+    }
+
+    fn charge_until_exit(&self, bytes: u64) -> bool {
+        if !self.charge(Component::Interns, bytes) {
+            return false;
+        }
+        saturating_add(&self.until_exit, bytes);
+        true
+    }
+
+    /// Adds `more` to what the permit's holder holds and raises the permit's charge to
+    /// that total when it passes every earlier one; `false`, changing nothing, when the
+    /// charge is refused or the invocation is already stopped.
+    fn raise_permit(&self, permit: &mut Permit, more: u64) -> bool {
+        let held = permit.held.saturating_add(more);
+        if held > permit.level {
+            if !self.charge(Component::Slots, held - permit.level) {
+                return false;
+            }
+            permit.level = held;
+        } else if self.stopped() {
+            return false;
+        }
+        permit.held = held;
+        true
+    }
+
+    /// Moves `E` from its current value `e` to `next(e)` in one read-modify-write, when
+    /// the limit admits it, and returns the previous and new values.
+    fn update(&self, next: impl Fn(u64) -> u128) -> Result<(u64, u64), Refused<'_>> {
+        let mut current = self.charged.load(Ordering::Relaxed);
+        loop {
+            let total = next(current);
+            let admitted = self.limit.admit(total).map_err(|budget| Refused { budget, total })?;
+            match self.charged.compare_exchange_weak(
+                current,
+                admitted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(previous) => {
+                    if let Some(mirror) = self.mirror.get() {
+                        // The latest `E`, should another update have landed meanwhile.
+                        mirror.heap.store(self.charged.load(Ordering::Relaxed), Ordering::Relaxed);
+                    }
+                    return Ok((previous, admitted));
+                }
+                Err(actual) => current = actual,
             }
         }
     }
@@ -910,9 +1060,9 @@ impl LargeRecord<'_> {
         if need <= self.need {
             return !self.admission.stopped();
         }
-        let mut permit = lock(&self.admission.permit);
+        let mut permit = lock(&self.admission.shared.permit);
         debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
-        let raised = self.admission.raise_permit(&mut permit, need - self.need);
+        let raised = self.admission.shared.raise_permit(&mut permit, need - self.need);
         if raised {
             self.need = need;
         }
@@ -927,7 +1077,7 @@ impl LargeRecord<'_> {
 
 impl Drop for LargeRecord<'_> {
     fn drop(&mut self) {
-        let mut permit = lock(&self.admission.permit);
+        let mut permit = lock(&self.admission.shared.permit);
         debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
         permit.held = permit.held.saturating_sub(self.need);
         permit.shares = permit.shares.saturating_sub(1);
@@ -935,7 +1085,7 @@ impl Drop for LargeRecord<'_> {
             permit.holder = None;
             permit.held = 0;
             drop(permit);
-            self.admission.permit_released.notify_all();
+            self.admission.shared.permit_released.notify_all();
         }
     }
 }
@@ -1703,5 +1853,129 @@ mod tests {
         assert_eq!(Headroom::ratio(1, 2), None);
         assert_eq!(Headroom::ratio(1, 0), None);
         assert_eq!(ProcessModel::DEFAULT.whole_process(2 * MIB), model::BASELINE_BYTES + 3 * MIB);
+    }
+
+    /// A text no other test interns: tests in one process share the intern tables.
+    fn unique(label: &str) -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        format!("admission-test-{label}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The charge for interning `text` as a new name: its entry, and the table's first node
+    /// when no earlier test interned a name.
+    fn name_charge(admission: &MemoryAdmission, text: &str) -> u64 {
+        let charged = admission.charged_by(Component::Interns);
+        let entry = model::name_intern(text.len() as u64);
+        assert!(
+            charged == entry || charged == entry + model::NAME_TABLE_BASE,
+            "{charged} charged for a name entry of {entry}"
+        );
+        charged
+    }
+
+    #[test]
+    fn a_new_intern_on_a_scoped_thread_is_charged_until_exit() {
+        use crate::ledger::names::Name;
+        let admission = ledger(1 << 20);
+        let text = unique("scoped");
+        let name = admission.scope(|| Name::new(&text));
+        assert_eq!(name.as_str(), text);
+        let charge = name_charge(&admission, &text);
+        assert_eq!(admission.charged(), charge);
+        // An existing text is not charged again, and charges until exit survive a
+        // checkpoint.
+        admission.scope(|| Name::new(&text));
+        admission.checkpoint(Phase::Construction(Agent::Codex), 10, &[]).unwrap();
+        assert_eq!(admission.charged(), charge + 10);
+        // Outside a scope nothing is charged.
+        Name::new(&unique("unscoped"));
+        assert_eq!(admission.charged(), charge + 10);
+    }
+
+    #[test]
+    fn a_refused_intern_stores_nothing_and_stops_the_invocation() {
+        use crate::ledger::entities::{Pricing, PricingContext};
+        use crate::ledger::names::Name;
+        use crate::ledger::tokens::{Measures, TokenMeasures};
+        let text = unique("refused");
+        let admission = ledger(1);
+        let placeholder = admission.scope(|| Name::new(&text));
+        assert!(admission.stopped());
+        assert_eq!(placeholder.as_str(), "");
+        assert_eq!(admission.charged(), 0);
+        assert!(matches!(admission.refusal(), Some(CapacityError::Memory { estimate: None, .. })));
+        // Nothing was stored or cached: the text interns normally afterwards.
+        let name = Name::new(&text);
+        assert_eq!(name.as_str(), text);
+        assert_ne!(name, placeholder);
+        // Overflow patterns and pricing contexts refuse the same way.
+        let large =
+            TokenMeasures { output: Some(u64::from(u32::MAX) + 7), ..TokenMeasures::default() };
+        let context = PricingContext { provider: Some(name), ..PricingContext::default() };
+        let (measures, pricing) =
+            admission.scope(|| (Measures::from(large), Pricing::new(context.clone())));
+        assert_eq!(measures, Measures::default());
+        assert_eq!(*pricing.context(), PricingContext::default());
+        assert_eq!(TokenMeasures::from(Measures::from(large)), large);
+        assert_eq!(*Pricing::new(context.clone()).context(), context);
+        assert_eq!(admission.charged(), 0);
+    }
+
+    #[test]
+    fn a_text_two_scoped_threads_intern_at_once_is_charged_once() {
+        use crate::ledger::names::Name;
+        for _ in 0..20 {
+            let admission = ledger(1 << 20);
+            let text = unique("shared");
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| admission.scope(|| Name::new(&text)));
+                }
+            });
+            name_charge(&admission, &text);
+        }
+    }
+
+    #[test]
+    fn scopes_nest_and_restore_the_previous_ledger() {
+        use crate::ledger::names::Name;
+        let (outer, inner) = (ledger(1 << 20), ledger(1 << 20));
+        outer.scope(|| {
+            let text = unique("inner");
+            inner.scope(|| Name::new(&text));
+            name_charge(&inner, &text);
+            assert_eq!(outer.charged(), 0);
+            let text = unique("outer");
+            Name::new(&text);
+            name_charge(&outer, &text);
+        });
+        let charged = outer.charged();
+        Name::new(&unique("after"));
+        assert_eq!(outer.charged(), charged);
+        // An unwinding scope restores too.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            inner.scope(|| std::panic::resume_unwind(Box::new("the scoped work unwinds")));
+        }));
+        assert!(unwound.is_err());
+        let charged = inner.charged();
+        Name::new(&unique("after unwind"));
+        assert_eq!(inner.charged(), charged);
+    }
+
+    #[test]
+    fn a_heap_mirror_follows_every_change_of_e() {
+        static MIRROR: HeapMirror = HeapMirror::new();
+        let admission = ledger(1000).with_heap_mirror(&MIRROR);
+        assert_eq!((MIRROR.heap(), MIRROR.decoding()), (0, false));
+        assert!(admission.charge(Component::Records, 30));
+        assert_eq!(MIRROR.heap(), 30);
+        admission.hold(&[(Hold::SessionIndex, 5)]).unwrap();
+        assert_eq!(MIRROR.heap(), 35);
+        admission.checkpoint(Phase::Decode(Agent::Codex), 4, &[]).unwrap();
+        assert_eq!((MIRROR.heap(), MIRROR.decoding()), (9, true));
+        admission.checkpoint(Phase::Query, 2, &[]).unwrap();
+        assert_eq!((MIRROR.heap(), MIRROR.decoding()), (7, false));
+        assert_eq!(admission.held(Hold::SessionIndex), 5);
+        assert_eq!(admission.held(Hold::Coordinating), 0);
     }
 }
