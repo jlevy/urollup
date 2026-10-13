@@ -514,4 +514,10 @@ test("apt packages in release builds are exact, inventoried versions", () => {
   assert.throws(() => validateAptPins([viaVariable], [targets], APT, [...planned, "gcc"]), /must equal the inventory exactly; not inventoried: gcc/);
   assert.throws(() => validateAptPins([viaVariable], [targets], APT, []), /not planned: musl-tools=1\.2\.4-2/);
   assert.throws(() => validateAptPins([viaVariable], [{ ...targets, text: '"musl-tools=1.2.3-1"' }], APT, planned), /does not pin apt package musl-tools=1\.2\.4-2/);
+  // Review B3: options may come before the install verb.
+  for (const install of ["sudo apt-get -y install gcc", "sudo apt-get --yes install gcc", "sudo apt-get -qq install gcc", "sudo DEBIAN_FRONTEND=noninteractive apt-get -y install gcc", "sudo apt-get -o Dpkg::Options::=--force-confold install gcc"]) {
+    assert.throws(() => validateAptPins([step(install)], [targets], APT, planned), /installs apt package gcc/, install);
+  }
+  assert.doesNotThrow(() => validateAptPins([step("sudo apt-get update --no-install-recommends")], [targets], APT, planned), "an install-like option is not the verb");
+  assert.throws(() => validateAptPins([step("sudo dpkg -i musl.deb")], [targets], APT, planned), /installs a package file with dpkg/);
 });

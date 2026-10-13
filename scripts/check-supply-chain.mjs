@@ -708,6 +708,13 @@ export function validateImagePins(files, inventory) {
   }
 }
 
+/**
+ * An apt or apt-get install command, with anything before the install verb: options such
+ * as `-y`, `-qq` or `-o Dpkg::Options::=…`. The verb must be a word of its own, so
+ * `--no-install-recommends` is not mistaken for it.
+ */
+export const APT_INSTALL = /\bapt(?:-get)?\b[^\n]*?(?<![\w-])install(?![\w-])/;
+
 /** Workflow lines with backslash continuations joined, so a wrapped install is read whole. */
 function logicalLines(text) {
   return text.replace(/\\\r?\n\s*/g, " ").split("\n");
@@ -729,8 +736,16 @@ export const APT_VARIABLE = { name: "APT_PACKAGES", value: "${{ matrix.apt_packa
 export function validateAptPins(workflows, files, inventory, planned) {
   const pinned = new Set(inventory.map((item) => `${item.name}=${item.version}`));
   for (const workflow of workflows) {
-    for (const line of logicalLines(workflow.text).filter((candidate) => /\bapt(?:-get)?\s+install\b/.test(candidate))) {
-      const words = line.slice(line.search(/\binstall\b/) + "install".length).trim().split(/\s+/).filter(Boolean);
+    for (const line of logicalLines(workflow.text)) {
+      if (/\bdpkg\s+(?:-\S*i|--install)\b/.test(line)) {
+        fail(`${workflow.path} installs a package file with dpkg; release builds install only pinned apt packages`);
+      }
+      // Options may sit between the command and its install verb: apt-get -y install, -qq, --yes.
+      const install = line.match(APT_INSTALL);
+      if (!install) {
+        continue;
+      }
+      const words = line.slice(install.index + install[0].length).trim().split(/\s+/).filter(Boolean);
       for (const word of words.filter((candidate) => !candidate.startsWith("-"))) {
         const variable = word.match(/^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/)?.[1];
         if (variable !== undefined) {

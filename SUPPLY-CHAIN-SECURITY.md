@@ -29,10 +29,11 @@ It checks against the authoritative services:
   Each apt package a release job installs is an exact inventoried version that Launchpad
   shows published for every listed architecture at least 14 days ago.
   The release plan’s list (`MUSL_APT_PACKAGES` in `scripts/release-targets.mjs`) must
-  equal that inventory exactly, and a workflow `apt-get install`, read with its
-  continuation lines, may name only inventoried `name=version` pairs or `$APT_PACKAGES`
-  set from the plan’s matrix; any other variable fails.
-  These static checks run before any network request.
+  equal that inventory exactly, and a workflow `apt` or `apt-get` install, read with its
+  continuation lines and any options before the `install` verb (`-y`, `-qq`, `-o …`),
+  may name only inventoried `name=version` pairs or `$APT_PACKAGES` set from the plan’s
+  matrix; any other variable fails, as does any `dpkg -i`. These static checks run
+  before any network request.
 - **Workflow trust:** every workflow grants only `contents: read` at the top level;
   pull-request jobs grant no write permission, set `persist-credentials: false`, write
   no reusable cache, and run `npm ci --ignore-scripts`.

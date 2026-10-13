@@ -64,6 +64,21 @@
       "expect": "must equal the inventory exactly; not inventoried: gcc"
     },
     {
+      "id": "supply-chain-apt-option-before-install",
+      "gate": "supply-chain",
+      "violation": "a workflow installs an unpinned apt package with options before the install verb",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "          sudo apt-get update\n",
+            "to": "          sudo apt-get update\n          sudo apt-get -y install gcc\n"
+          }
+        }
+      ],
+      "expect": "installs apt package gcc, which is not a pinned, inventoried version"
+    },
+    {
       "id": "lint-policy-member-opts-out",
       "gate": "lint-policy",
       "violation": "a workspace member drops its [lints] table",
