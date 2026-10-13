@@ -14,7 +14,7 @@
 //!   and pricing tables' first nodes, a thread's name and pricing caches, and cold name,
 //!   overflow and pricing-context interning.
 //! - **Reconciliation:** tight synthetic inputs, one per term, measured between the
-//!   [`ReconcileStage`]s where slice 5's checkpoints run, and the whole run against the
+//!   [`ReconcileStage`]s where the adapters' checkpoints run, and the whole run against the
 //!   larger phase estimate by component. Live heap is tracked at every allocation against
 //!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
 //!   largest linked set's from `Order`, then finalize.
@@ -57,7 +57,7 @@ use urollup_core::ledger::admission::deep_size::DeepSize;
 use urollup_core::ledger::admission::model::{
     self, PhaseEstimate, ReconcileCounts, allocation, btree_collected, btree_entry, btree_map,
     btree_node, grown_vec, hash_base, hash_churned, hash_entry, hash_table, hash_with_capacity,
-    sizes, sort_scratch,
+    sort_scratch,
 };
 use urollup_core::ledger::capacity::ObservationCapacity;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
@@ -1129,69 +1129,6 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
     }
 }
 
-/// The counts a grouping checkpoint before `Order` would see in `input`: no group is built
-/// yet, so the largest linked set is 0.
-fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
-    let key_nodes: u64 = input
-        .requests
-        .iter()
-        .map(|observation| {
-            observation.keys.len().max(1) as u64 + u64::from(!observation.invariants.is_empty())
-        })
-        .sum::<u64>()
-        + 2 * input.links.len() as u64;
-    let models: BTreeSet<&str> = input
-        .requests
-        .iter()
-        .filter_map(|observation| observation.model.as_ref())
-        .filter(|model| model.basis == ModelBasis::Served)
-        .map(|model| model.name.as_str())
-        .collect();
-    // Each dimension's distinct names, as its conflict lists them.
-    let mut pricing: [BTreeSet<&str>; 4] = Default::default();
-    for context in input.requests.iter().filter_map(|observation| observation.pricing) {
-        let names = [
-            context.provider,
-            context.service_tier.map(|tier| tier.name),
-            context.speed,
-            context.inference_geo,
-        ];
-        for (dimension, name) in pricing.iter_mut().zip(names) {
-            dimension.extend(name.map(Name::as_str));
-        }
-    }
-    ReconcileCounts {
-        observations: input.requests.len() as u64,
-        observation_capacity: input.requests.capacity() as u64,
-        key_nodes,
-        observation_payload: input.requests.iter().map(DeepSize::heap).sum(),
-        largest_group: 0,
-        model_text: models.iter().map(|name| name.len() as u64).sum(),
-        pricing_text: pricing.iter().flatten().map(|name| name.len() as u64).sum(),
-        limit_rows: input.limit_observations.len() as u64,
-        threads: input.threads.len() as u64,
-        thread_heap: input.threads.iter().map(DeepSize::heap).sum(),
-        largest_thread_evidence: input
-            .threads
-            .iter()
-            .map(|thread| thread.evidence.len() as u64)
-            .max()
-            .unwrap_or(0),
-        links: input.links.len() as u64,
-        metadata: [
-            model::sized_vec(input.threads.capacity() as u64, sizes::THREAD),
-            input.relationships.heap(),
-            input.tool_actions.heap(),
-            input.links.heap(),
-            input.gaps.heap(),
-            input.diagnostics.heap(),
-            input.source_table.heap(),
-        ]
-        .into_iter()
-        .sum(),
-    }
-}
-
 /// The live heap and the peak since the previous stage, at each stage.
 struct Stages {
     entries: Vec<(ReconcileStage, u64, u64)>,
@@ -1224,7 +1161,7 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let case = format!("{shape:?} × {observations}");
     let base = live();
     let input = synthetic_input(shape, observations);
-    let counts = reconcile_counts(&input);
+    let counts = ReconcileCounts::of(&input);
     let finalize = model::finalize_estimate(agent, &counts);
     let mut stages = Stages { entries: Vec::with_capacity(16) };
     let mut order = (0, 0);
@@ -1235,7 +1172,13 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     // then with the largest linked set's from `Order`, then finalize. Growth that grouping
     // pushes is only known afterwards, so live heap above `E` at any allocation is checked
     // against it below.
+    // What reconciliation reports pushing, which an admission ledger charges at each push.
+    let mut reported = 0;
     let ledger = reconcile_with_stages(input, &LatestRevision, &capacity, &mut |stage| {
+        if let ReconcileStage::Pushed { bytes, .. } = stage {
+            reported += bytes;
+            return Ok(());
+        }
         let now = live();
         let peak = PEAK.swap(now, Ordering::Relaxed);
         stages.entries.push((stage, now, peak));
@@ -1251,7 +1194,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
             | ReconcileStage::KeyGraph
             | ReconcileStage::Requests
             | ReconcileStage::Sorted
-            | ReconcileStage::Finalized => None,
+            | ReconcileStage::Finalized
+            | ReconcileStage::Pushed { .. } => None,
         };
         if let Some(estimate) = estimate {
             LIMIT.store(base + estimate.total(), Ordering::Relaxed);
@@ -1298,6 +1242,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let limits = ledger.limit_observations.len() as u64;
     let pushed = split + conflicting + ambiguous + diagnostics;
     report.bound_total("live above E", &case, excess, pushed);
+    // The pushes reconciliation reports cover what grouping pushed, read from the result.
+    report.bound_total("pushes reported", &case, pushed, reported);
     // Group scratch's pricing step is named apart: its share is what group scratch holds
     // above its lists and largest other step, which only the pricing group makes necessary.
     let scratch = model::group_scratch(agent, largest, counts.model_text, counts.pricing_text);

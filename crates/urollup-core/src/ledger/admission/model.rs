@@ -20,8 +20,7 @@
 //! Each map and B-tree term states the precondition under which it bounds the standard
 //! structure; the model-bound harness checks every primitive against a counting allocator
 //! at every count up to a few thousand. Totals are monotone in their counts, so a push site
-//! can charge the difference between the total after and before it. Only the large-record
-//! permit charges from them so far, in the source reader.
+//! can charge the difference between the total after and before it.
 
 use std::mem::size_of;
 
@@ -105,6 +104,14 @@ pub const fn grown_vec(len: u64, element: u64) -> u64 {
     }
     let slots = max(len, minimum_capacity(element));
     slots.saturating_mul(element).saturating_mul(3).saturating_add(2 * ALLOCATION_COST)
+}
+
+/// The part of [`grown_vec`] that does not grow with the elements, charged once per
+/// vector at its first push: its minimum capacity beyond one element and both buffers'
+/// allocation costs. With 3 × `element` per element pushed, it bounds `grown_vec` at every
+/// length from one.
+pub const fn grown_vec_base(element: u64) -> u64 {
+    grown_vec(1, element).saturating_sub(element.saturating_mul(3))
 }
 
 /// A vector allocated once with exactly `capacity` elements of `element` bytes.
@@ -496,6 +503,13 @@ pub const fn diagnostic(detail_capacity: u64, evidence: u64) -> u64 {
     DIAGNOSTIC_ROW
         .saturating_add(diagnostic_detail(detail_capacity))
         .saturating_add(diagnostic_evidence(evidence))
+}
+
+/// [`diagnostic`] for a diagnostic already built, where it is pushed: its detail's
+/// capacity and its evidence.
+pub fn diagnostic_of(built: &Diagnostic) -> u64 {
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    diagnostic(count(built.detail.capacity()), count(built.evidence.len()))
 }
 
 /// A new process-interned [`Name`] of `text` bytes: the text, its leaked reference and
@@ -939,6 +953,87 @@ pub struct ReconcileCounts {
     pub metadata: u64,
 }
 
+impl ReconcileCounts {
+    /// The counts a grouping checkpoint before
+    /// [`ReconcileStage::Order`](crate::ledger::reconcile::ReconcileStage) sees in `input`:
+    /// no group is built yet, so the largest linked set is 0, and the `Order` checkpoint
+    /// sets it.
+    pub fn of(input: &crate::ledger::reconcile::ReconcileInput) -> Self {
+        use std::collections::BTreeSet;
+
+        use super::deep_size::DeepSize;
+        use crate::ledger::entities::ModelBasis;
+
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        let key_nodes = input
+            .requests
+            .iter()
+            .map(|observation| {
+                count(observation.keys.len().max(1))
+                    .saturating_add(u64::from(!observation.invariants.is_empty()))
+            })
+            .fold(0, u64::saturating_add)
+            .saturating_add(count(input.links.len()).saturating_mul(2));
+        let models: BTreeSet<&str> = input
+            .requests
+            .iter()
+            .filter_map(|observation| observation.model.as_ref())
+            .filter(|model| model.basis == ModelBasis::Served)
+            .map(|model| model.name.as_str())
+            .collect();
+        // Each dimension's distinct names, as its conflict lists them.
+        let mut pricing: [BTreeSet<&str>; 4] = Default::default();
+        for context in input.requests.iter().filter_map(|observation| observation.pricing) {
+            let names = [
+                context.provider,
+                context.service_tier.map(|tier| tier.name),
+                context.speed,
+                context.inference_geo,
+            ];
+            for (dimension, name) in pricing.iter_mut().zip(names) {
+                dimension.extend(name.map(Name::as_str));
+            }
+        }
+        let text = |names: &BTreeSet<&str>| {
+            names.iter().fold(0, |total: u64, name| total.saturating_add(count(name.len())))
+        };
+        Self {
+            observations: count(input.requests.len()),
+            observation_capacity: count(input.requests.capacity()),
+            key_nodes,
+            observation_payload: input
+                .requests
+                .iter()
+                .map(DeepSize::heap)
+                .fold(0, u64::saturating_add),
+            largest_group: 0,
+            model_text: text(&models),
+            pricing_text: pricing.iter().map(text).fold(0, u64::saturating_add),
+            limit_rows: count(input.limit_observations.len()),
+            threads: count(input.threads.len()),
+            thread_heap: input.threads.iter().map(DeepSize::heap).fold(0, u64::saturating_add),
+            largest_thread_evidence: input
+                .threads
+                .iter()
+                .map(|thread| count(thread.evidence.len()))
+                .max()
+                .unwrap_or(0),
+            links: count(input.links.len()),
+            metadata: [
+                sized_vec(count(input.threads.capacity()), sizes::THREAD),
+                input.relationships.heap(),
+                input.tool_actions.heap(),
+                input.links.heap(),
+                input.gaps.heap(),
+                input.diagnostics.heap(),
+                input.source_table.heap(),
+            ]
+            .into_iter()
+            .fold(0, u64::saturating_add),
+        }
+    }
+}
+
 /// Whether `agent`'s observations carry a revision-invariant field, so that a group whose
 /// members disagree on it splits into one request per member. Only Claude's do: the served
 /// model.
@@ -1336,6 +1431,21 @@ mod tests {
         assert_eq!(sort_scratch(1, 16), 0);
         assert_eq!(sort_scratch(10, 16), sized_vec(48, 16));
         assert_eq!(sort_scratch(1_000, 16), sized_vec(1_000, 16));
+    }
+
+    /// A push site that charges a vector's base at its first push and 3 × each element
+    /// covers the vector at every length.
+    #[test]
+    fn a_vectors_base_and_three_times_its_elements_bound_it() {
+        for element in [1, 2, 4, 8, 16, 80, 232, 1024, 1025, 4096] {
+            for len in 1..3000 {
+                assert!(
+                    grown_vec(len, element) <= 3 * len * element + grown_vec_base(element),
+                    "{len} × {element}"
+                );
+            }
+            assert_eq!(grown_vec(1, element), 3 * element + grown_vec_base(element));
+        }
     }
 
     #[test]
