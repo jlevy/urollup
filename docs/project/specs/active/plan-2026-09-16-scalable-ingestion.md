@@ -1451,17 +1451,23 @@ Choices made while implementing, where this design left room:
   both agents’ ingests and the peeks share it.
   Rows stay counted per agent, so output and refusals are unchanged.
   - **Worker slots.** `Decoding::begin` is the decode checkpoint:
-    `checkpoint(Phase::Decode(agent), slots × b, [(Hold::Coordinating, 0)])` with
-    `slots = worker_slots(b, workers)`, and decode runs on `min(workers, slots)`
-    threads. The configured count stands in for an explicit `UROLLUP_JOBS`: the default
-    is at most eight, so it changes the slot count only when an explicit count does.
+    `checkpoint(Phase::Decode(agent), slots × b + work_order(n), [(Hold::Coordinating,
+    0)])` with `slots = worker_slots(b, workers)` for `n` sources, and decode runs on
+    `Decoding::threads()`, `min(workers, slots)`, which the CLI also reports as
+    `stats: workers=`. `model::work_order` is the parallel read’s weights and order,
+    each sized once, and the stable sort of the order, which the read builds before any
+    worker starts; it is charged whatever the thread count.
+    The configured count stands in for an explicit `UROLLUP_JOBS`: the default is at
+    most eight, so it changes the slot count only when an explicit count does, and a
+    compile-time assertion ties `MAX_DEFAULT_WORKERS` to the new `SLOT_CEILING` (8).
   - **One `b`.** `adapters::worker_slot(discoveries)` adds the zstd and gzip decoders
     when any source of either agent’s discovery, before narrowing, has such a file.
   - **The coordinating slot** is the new `Hold::Coordinating`. The CLI raises it with
     the new `MemoryAdmission::raise_hold`: to the plain slot before any peek, to cover a
     `--source` root’s decoders before its classification peeks, and to `b` before the
     catalog peeks. Codex’s decode checkpoint releases it.
-    Charging the coordinating thread’s caches from that checkpoint
+    A raise compares and changes the hold in one transition, so racing raises never
+    lower it. Charging the coordinating thread’s caches from that checkpoint
     (`COORDINATING_CACHES`, `uro-2hzh`) stays with slice 7, beside the discovery holds.
   - **Source rows.** Before a worker returns a source’s result it charges
     `model::source_rows` to `Component::Sources`: one allocation for its manifest entry
@@ -1471,8 +1477,14 @@ Choices made while implementing, where this design left room:
     charged one allocation, which bounds a vector sized once.
     Codex’s `unzip` reserved the standard minimum of four entries for fewer sources, so
     Codex now presizes its entry and rollout vectors.
-    A test checks the charge against the deep heap of every fixture’s entries and source
-    rows plus the join’s copies.
+    `normalize` gives every source row of a source ID the version of its first source
+    that declared one, and two roots holding the same transcript or rollout share an ID,
+    so a source can hold a longer version than its worker charged.
+    After the join, before the rows are built, `Decoding::charge_shared_versions`
+    charges what each source’s copied version costs beyond its own.
+    A test checks the charge, less the join’s copies, against the deep heap of the
+    entries and source rows of every fixture and of a shared-ID case in each dialect,
+    which fails without that charge.
   - **Deviation: thread rows.** The design charges each source’s thread and relationship
     rows and each thread’s session-index reserve with the source rows.
     Those rows are built in `normalize` from per-adapter state: Codex’s session metadata
@@ -1484,11 +1496,12 @@ Choices made while implementing, where this design left room:
     Its first run found the join’s peak at the bound: the join allocated `results` while
     workers were still filling their doubling `done` vectors, which `3 × JOIN_PAIR` per
     source does not cover.
-    The join now places results only once every worker has finished, and `join_copies`
-    adds `JOIN_ORDER`, each source’s weight and place in the work order (16 B). Over ten
-    runs per case, with some reads stalled so that workers take uneven shares, the peaks
-    measure 14–85%, from one source on one worker to 1,000 sources on eight; eight
-    sources on eight workers that wait for one another make `JOIN_DONE` necessary.
+    The join now places results only once every worker has finished, and the work order
+    is charged at the decode checkpoint (`model::work_order`). Over ten runs per case,
+    with some reads stalled so that workers take uneven shares, the peaks measure
+    14–85%, from one source on one worker to 1,000 sources on eight; eight sources on
+    eight workers that wait for one another make `JOIN_DONE` necessary.
+    Before the first read, 100,000 sources hold 2,400,048 bytes, 96% of `work_order`.
   - **Tests.** Under a budget of two slots, eight workers decode on two threads, the
     checkpoint holds `2 × b` and the coordinating slot is gone; a budget below one slot
     refuses at the decode checkpoint with its whole-process estimate.
