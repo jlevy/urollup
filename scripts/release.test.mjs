@@ -48,6 +48,9 @@ test("a build, validation or assembly job may hold no OIDC endpoint and no crede
   }
   assert.deepEqual(authorityProblems({ ACTIONS_ID_TOKEN_REQUEST_URL: "" }), [], "an empty variable grants nothing");
   assert.deepEqual(authorityProblems({ CARGO_REGISTRIES_MIRROR_TOKEN: "x" }), ["CARGO_REGISTRIES_MIRROR_TOKEN"]);
+  for (const renamed of ["RELEASE_CRATES_TOKEN", "RELEASE_READ_TOKEN", "RELEASE_WRITE_TOKEN"]) {
+    assert.deepEqual(authorityProblems({ [renamed]: "x" }), [renamed], `${renamed} is a credential to assert-no-authority too`);
+  }
   const run = spawnSync(process.execPath, [SCRIPT, "assert-no-authority"], { env: { PATH: process.env.PATH, ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.invalid" }, encoding: "utf8" });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /must hold no credential or OIDC endpoint.*ACTIONS_ID_TOKEN_REQUEST_URL/);
@@ -66,7 +69,12 @@ test("the manylinux build runs the locked Maturin offline in the pinned image", 
     gid: 118,
     outDir: "/home/runner/work/urollup/urollup/target/wheel-out",
     env,
+    sourceDateEpoch: 1791912228,
   });
+  assert.ok(args.includes("SOURCE_DATE_EPOCH=1791912228"), "Maturin stamps wheel members with the commit time");
+  for (const bad of [undefined, "1791912228", 1.5, 0, Number.NaN]) {
+    assert.throws(() => manylinuxCommand({ artifact, root: "/r", cargoHomeDir: "/c", sysroot: "/s", maturin: "/r/m", uid: 1, gid: 1, outDir: "/r/o", env, sourceDateEpoch: bad }), /SOURCE_DATE_EPOCH must be whole seconds/);
+  }
   assert.equal(args[0], "run");
   assert.ok(args.includes(artifact.container));
   assert.ok(args.includes("CARGO_NET_OFFLINE=true"));
@@ -164,8 +172,20 @@ function fakePlanContext({ annotated = true, head = "c".repeat(40), tagCommit = 
         if (args[0] === "ls-remote") {
           return { status: 0, stdout: annotated ? `${"a".repeat(40)}\trefs/tags/v0.1.0\n${tagCommit}\trefs/tags/v0.1.0^{}\n` : `${tagCommit}\trefs/tags/v0.1.0\n`, stderr: "" };
         }
+        if (args[0] === "rev-parse" && args[1] === "refs/tags/v0.1.0") {
+          return { status: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "v0.1.0^{commit}") {
+          return { status: 0, stdout: `${tagCommit}\n`, stderr: "" };
+        }
         if (args[0] === "rev-parse") {
           return { status: 0, stdout: `${head}\n`, stderr: "" };
+        }
+        if (args[0] === "cat-file" && args[1] === "-t") {
+          return { status: 0, stdout: "tag\n", stderr: "" };
+        }
+        if (args[0] === "cat-file") {
+          return { status: 0, stdout: `object ${tagCommit}\ntype commit\ntag v0.1.0\ntagger T <t@example.invalid> 0 +0000\n\nurollup 0.1.0\n`, stderr: "" };
         }
         return { status: 0, stdout: "", stderr: "" };
       },
@@ -175,7 +195,7 @@ function fakePlanContext({ annotated = true, head = "c".repeat(40), tagCommit = 
 }
 
 test("a tag run releases the peeled tag commit, never an unpeeled GITHUB_SHA", () => {
-  assert.equal(resolveTagCommit(fakePlanContext().ctx, "v0.1.0"), "c".repeat(40));
+  assert.deepEqual(resolveTagCommit(fakePlanContext().ctx, "v0.1.0"), { object: "a".repeat(40), commit: "c".repeat(40), annotated: true });
   assert.throws(() => resolveTagCommit(fakePlanContext({ annotated: false }).ctx, "v0.1.0"), /lightweight tag/);
   assert.throws(() => resolveTagCommit(fakePlanContext({ head: "d".repeat(40) }).ctx, "v0.1.0"), /checkout is at d+, but v0\.1\.0 names c+/);
 });
@@ -183,7 +203,8 @@ test("a tag run releases the peeled tag commit, never an unpeeled GITHUB_SHA", (
 test("a tag run refuses a missing signers file and unconfigured settings; a rehearsal only reports them", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "urollup-guards-"));
   try {
-    const publish = await publicationGuards(fakePlanContext({ root }).ctx, { tag: "v0.1.0", repository: "jlevy/urollup", token: "read", publish: true });
+    const peeled = { object: "a".repeat(40), commit: "c".repeat(40), annotated: true };
+    const publish = await publicationGuards(fakePlanContext({ root }).ctx, { tag: "v0.1.0", peeled, repository: "jlevy/urollup", token: "read", publish: true });
     assert.match(publish.problems.join("\n"), /release-allowed-signers does not exist/);
     assert.match(publish.problems.join("\n"), /release environment does not exist/);
     const planContext = fakePlanContext({ root });

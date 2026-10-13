@@ -340,18 +340,30 @@ export function checkExecutable(buffer, { os, arch, linkage }) {
 // Archives
 
 /**
+ * Problems with member time stamps: every member must carry the release commit's time,
+ * `sourceDateEpoch`, within zip's two-second precision. Skipped when no time is given.
+ */
+export function checkMemberTimes(name, entries, sourceDateEpoch) {
+  if (sourceDateEpoch === undefined || sourceDateEpoch === null) {
+    return [];
+  }
+  const wrong = entries.filter((entry) => !(Math.abs(entry.mtime - sourceDateEpoch) < 2));
+  return wrong.length === 0 ? [] : [`${name}: ${wrong.map((entry) => entry.name).join(", ")} not stamped with the commit time ${sourceDateEpoch} (found ${wrong[0].mtime})`];
+}
+
+/**
  * Validate a GitHub archive: exactly the executable, README.md and LICENSE as flat regular
  * files, the executable runnable and correct for its target, and the documents identical to
  * the release commit's. Returns `{executable, facts, problems}`.
  */
-export function checkArchive(name, buffer, artifact, { readme, license }) {
+export function checkArchive(name, buffer, artifact, { readme, license, sourceDateEpoch }) {
   let entries;
   try {
     entries = readArchive(name, buffer);
   } catch (error) {
     return { executable: null, facts: {}, problems: [`${name} is not a readable archive: ${error.message}`] };
   }
-  const problems = [];
+  const problems = [...checkMemberTimes(name, entries, sourceDateEpoch)];
   const expected = archiveMembers(artifact.os);
   const names = entries.map((entry) => entry.name);
   for (const entry of entries) {
@@ -449,7 +461,7 @@ function headerFields(text) {
  * RECORD, and the one script payload, which must be the right executable for the target.
  * Returns `{executable, facts, problems}`.
  */
-export function checkWheel(name, buffer, artifact, { version }) {
+export function checkWheel(name, buffer, artifact, { version, sourceDateEpoch }) {
   const problems = [];
   const pep440 = pep440Version(version);
   let parts;
@@ -467,6 +479,7 @@ export function checkWheel(name, buffer, artifact, { version }) {
   } catch (error) {
     return { executable: null, facts: {}, problems: [...problems, `${name} is not a readable wheel: ${error.message}`] };
   }
+  problems.push(...checkMemberTimes(name, entries, sourceDateEpoch));
   const distInfo = `${PRODUCT}-${pep440}.dist-info`;
   const script = `${PRODUCT}-${pep440}.data/scripts/${executableName(artifact.os)}`;
   const required = [script, `${distInfo}/METADATA`, `${distInfo}/WHEEL`, `${distInfo}/RECORD`];

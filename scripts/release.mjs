@@ -17,6 +17,7 @@
 //   assemble           Check the complete matrix; write SHA256SUMS, manifest, notes, actions
 //   stage-github, publish-crates, publish-pypi, publish-github, probe, evidence,
 //   attach-evidence    The tag-only publication path
+//   verify-tag         The maintainer's check of a signed local tag before pushing it
 //   check              Repository release invariants, for `make release-check`
 
 import { spawnSync } from "node:child_process";
@@ -60,13 +61,16 @@ import {
 } from "./release-manifest.mjs";
 import { describeDecision, LATE_ASSETS } from "./release-registry.mjs";
 import {
+  CREDENTIAL_VARIABLES,
   RELEASE_SIGNERS_FILE,
   attachEvidence,
   bundleAssets,
   channelDecisions,
   evidence,
   execIn,
+  isCredentialVariable,
   judgeReleaseSettings,
+  loadBundle,
   observeAll,
   observeReleaseSettings,
   peelRemoteTag,
@@ -75,7 +79,9 @@ import {
   publishGithub,
   publishPypi,
   stageGithub,
-  verifyTagSignature,
+  unverifiableSettings,
+  verifyLocalReleaseTag,
+  verifyReleaseTag,
 } from "./release-publish.mjs";
 import { ephemeralUv, extractArchiveTo, installWheel, smokeInstalled, spawnRun } from "./release-smoke.mjs";
 import {
@@ -97,19 +103,8 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export { LATE_ASSETS };
 
 /** Credentials and the OIDC endpoint: a build, validation or assembly job must hold none. */
-export const AUTHORITY_VARIABLES = [
-  "ACTIONS_ID_TOKEN_REQUEST_URL",
-  "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "RELEASE_WRITE_TOKEN",
-  "CARGO_REGISTRY_TOKEN",
-  "UV_PUBLISH_TOKEN",
-  "UV_PUBLISH_PASSWORD",
-  "PYPI_API_TOKEN",
-  "TWINE_PASSWORD",
-  "MATURIN_PYPI_TOKEN",
-];
+/** Credentials and the OIDC endpoint, from the one shared list in release-publish.mjs. */
+export const AUTHORITY_VARIABLES = CREDENTIAL_VARIABLES;
 
 function fail(message) {
   throw new Error(message);
@@ -290,7 +285,7 @@ export function resolveTagCommit(ctx, tag) {
   if (head !== peeled.commit) {
     fail(`the checkout is at ${head}, but ${tag} names ${peeled.commit}`);
   }
-  return peeled.commit;
+  return peeled;
 }
 
 /**
@@ -299,13 +294,13 @@ export function resolveTagCommit(ctx, tag) {
  * and tag ruleset exist as the runbook configures them. A rehearsal reports the same
  * settings without refusing.
  */
-export async function publicationGuards(ctx, { tag, repository, token, publish }) {
+export async function publicationGuards(ctx, { tag, peeled, repository, token, publish }) {
   const problems = [];
   const facts = {};
   if (publish) {
     execIn(ctx, "git", ["fetch", "--no-tags", "--force", "origin", `refs/tags/${tag}:refs/tags/${tag}`], { label: `git fetch ${tag}` });
     try {
-      facts.signature = verifyTagSignature(ctx, { tag, signersFile: path.join(ctx.root, RELEASE_SIGNERS_FILE) });
+      facts.signature = verifyReleaseTag(ctx, { tag, object: peeled.object, commit: peeled.commit, signersFile: path.join(ctx.root, RELEASE_SIGNERS_FILE) });
     } catch (error) {
       problems.push(error.message);
     }
@@ -315,6 +310,7 @@ export async function publicationGuards(ctx, { tag, repository, token, publish }
   if (repository) {
     const settings = await observeReleaseSettings(ctx, { repository, token });
     facts.settings_problems = judgeReleaseSettings(settings);
+    facts.settings_unverifiable = unverifiableSettings(settings);
     problems.push(...(publish ? facts.settings_problems : []));
   } else {
     facts.settings_problems = ["not read outside GitHub Actions"];
@@ -332,7 +328,8 @@ async function plan(argv) {
   }
   const event = process.env.GITHUB_EVENT_NAME ?? options.event ?? "workflow_dispatch";
   const ref = process.env.GITHUB_REF ?? options.ref ?? git(["symbolic-ref", "-q", "HEAD"]);
-  const sha = event === "push" && ref.startsWith("refs/tags/") ? resolveTagCommit(ctx, ref.slice("refs/tags/".length)) : (process.env.GITHUB_SHA ?? git(["rev-parse", "HEAD"]));
+  const peeled = event === "push" && ref.startsWith("refs/tags/") ? resolveTagCommit(ctx, ref.slice("refs/tags/".length)) : null;
+  const sha = peeled ? peeled.commit : (process.env.GITHUB_SHA ?? git(["rev-parse", "HEAD"]));
   const identity = resolveRunIdentity({
     event,
     ref,
@@ -348,7 +345,7 @@ async function plan(argv) {
   const sourceDateEpoch = commitTime(identity.commit);
   const firstRelease = changelogSection(readText("CHANGELOG.md"), identity.version).first;
   const repository = process.env.GITHUB_REPOSITORY;
-  const guards = options.offline === "true" ? { problems: [], facts: { offline: true } } : await publicationGuards(ctx, { tag: identity.tag, repository, token: readToken(), publish });
+  const guards = options.offline === "true" ? { problems: [], facts: { offline: true } } : await publicationGuards(ctx, { tag: identity.tag, peeled, repository, token: readToken(), publish });
   if (guards.problems.length > 0) {
     fail(`${identity.tag} cannot be published:\n${guards.problems.map((problem) => `- ${problem}`).join("\n")}`);
   }
@@ -395,6 +392,7 @@ async function plan(argv) {
     "### Publication settings",
     "",
     ...(guards.facts.offline ? ["- not read (--offline)"] : settings.length === 0 ? ["- The release environment and the v* tag ruleset are configured as the runbook requires"] : settings.map((problem) => `- ${publish ? "" : "A tag publication would stop: "}${problem}`)),
+    ...(guards.facts.settings_unverifiable ?? []).map((note) => `- Not verifiable by this job: ${note}`),
     ...(guards.facts.signers_file ? [`- Release tag signers file (${RELEASE_SIGNERS_FILE}): ${guards.facts.signers_file}`] : []),
     ...(guards.facts.signature ? [`- Tag signature: ${guards.facts.signature.split("\n")[0]}`] : []),
     "",
@@ -438,9 +436,7 @@ function gateGit(argv) {
 // assert-no-authority
 
 export function authorityProblems(env) {
-  const present = AUTHORITY_VARIABLES.filter((name) => env[name]);
-  present.push(...Object.keys(env).filter((name) => /^CARGO_REGISTRIES_.+_TOKEN$/.test(name) && env[name]));
-  return present;
+  return Object.keys(env).filter((name) => isCredentialVariable(name) && env[name]);
 }
 
 /**
@@ -473,6 +469,9 @@ function cargoHome() {
 
 /** The docker command that builds a manylinux wheel inside the pinned image. */
 export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturin, uid, gid, outDir, env, sourceDateEpoch }) {
+  if (!Number.isInteger(sourceDateEpoch) || sourceDateEpoch <= 0) {
+    fail(`SOURCE_DATE_EPOCH must be whole seconds, not ${JSON.stringify(sourceDateEpoch)}`);
+  }
   const relative = (file) => `/io/${path.relative(root, file).split(path.sep).join("/")}`;
   return [
     "run",
@@ -543,7 +542,7 @@ function buildWheel(artifact, env, workDir, sourceDateEpoch) {
     exec(
       "uv",
       ["--config-file", "uv.toml", "run", "--frozen", "--only-group", "release", "maturin", "build", "--release", "--locked", "--manifest-path", "crates/urollup/Cargo.toml", "--target", artifact.rustTarget, "--compatibility", "pypi", "--out", outDir],
-      { env: { ...process.env, ...env, SOURCE_DATE_EPOCH: String(sourceDateEpoch) }, label: "maturin build" },
+      { env: { ...process.env, ...env, SOURCE_DATE_EPOCH: String(sourceDateEpoch), TZ: "UTC" }, label: "maturin build" },
     );
   }
   const wheels = readdirSync(outDir).filter((name) => name.endsWith(".whl"));
@@ -564,10 +563,22 @@ function buildArchive(artifact, env, sourceDateEpoch) {
   return artifact.os === "windows" ? writeZip(entries, { mtime: sourceDateEpoch }) : writeTarGz(entries, { mtime: sourceDateEpoch });
 }
 
-function inspectArtifact(artifact, data, version) {
+/** The commit time every archive and wheel member must carry, when the job knows it. */
+function plannedSourceDateEpoch(value = process.env.SOURCE_DATE_EPOCH) {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds <= 0) {
+    fail(`SOURCE_DATE_EPOCH ${JSON.stringify(value)} is not whole seconds`);
+  }
+  return seconds;
+}
+
+function inspectArtifact(artifact, data, version, sourceDateEpoch) {
   return artifact.kind === "archive"
-    ? checkArchive(artifact.name, data, artifact, { readme: readFileSync(path.join(ROOT, "README.md")), license: readFileSync(path.join(ROOT, "LICENSE")) })
-    : checkWheel(artifact.name, data, artifact, { version });
+    ? checkArchive(artifact.name, data, artifact, { readme: readFileSync(path.join(ROOT, "README.md")), license: readFileSync(path.join(ROOT, "LICENSE")), sourceDateEpoch })
+    : checkWheel(artifact.name, data, artifact, { version, sourceDateEpoch });
 }
 
 function build(argv) {
@@ -583,7 +594,7 @@ function build(argv) {
   const env = buildEnvironment(artifact, { cargoHome: cargoHome() });
   const workDir = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "urollup-build-"));
   const data = artifact.kind === "archive" ? buildArchive(artifact, env, sourceDateEpoch) : buildWheel(artifact, env, workDir, sourceDateEpoch);
-  const inspected = inspectArtifact(artifact, data, version);
+  const inspected = inspectArtifact(artifact, data, version, sourceDateEpoch);
   if (inspected.problems.length > 0) {
     fail(`the built ${artifact.name} fails inspection:\n${inspected.problems.map((problem) => `- ${problem}`).join("\n")}`);
   }
@@ -616,10 +627,10 @@ function build(argv) {
 // inspect
 
 function inspect(argv) {
-  const options = parseOptions(argv, ["artifact", "file"]);
+  const options = parseOptions(argv, ["artifact", "file", "source-date-epoch"]);
   const version = workspaceVersion(readText("Cargo.toml"));
   const artifact = artifactById(version, required(options, "artifact"));
-  const result = inspectArtifact(artifact, readFileSync(required(options, "file")), version);
+  const result = inspectArtifact(artifact, readFileSync(required(options, "file")), version, plannedSourceDateEpoch(options.sourceDateEpoch));
   console.log(JSON.stringify(result.facts, null, 2));
   if (result.problems.length > 0) {
     fail(result.problems.join("\n"));
@@ -667,7 +678,7 @@ function smoke(argv) {
   if (existsSync(buildRecordFile) && readJson(buildRecordFile).sha256 !== record.sha256) {
     record.problems.push(`${artifact.name} differs from the bytes its build job recorded`);
   }
-  const inspected = inspectArtifact(artifact, data, version);
+  const inspected = inspectArtifact(artifact, data, version, plannedSourceDateEpoch());
   record.facts = inspected.facts;
   record.problems.push(...inspected.problems);
   if (record.problems.length > 0) {
@@ -929,6 +940,9 @@ async function assemble(argv) {
   const repository = process.env.GITHUB_REPOSITORY ?? "jlevy/urollup";
   writeFileSync(path.join(out, "release-notes.md"), renderReleaseNotes({ identity, section, artifacts: manifest.artifacts, repository }));
 
+  // The publish jobs' own loader reads the real bundle here, so a tag run can never be the
+  // first time it sees one (review B8).
+  loadBundle(out);
   const assets = bundleAssets(out);
   const { observed, decisions } = await channelDecisions(defaultContext(), {
     manifest,
@@ -1022,6 +1036,7 @@ async function rehearseHost(argv) {
     fail(`${host} is not a release host; the release hosts are ${RELEASE_TARGETS.map((target) => target.id).join(", ")}`);
   }
   const dirty = git(["status", "--porcelain", "--untracked-files=no"]) !== "";
+  process.env.SOURCE_DATE_EPOCH ??= String(commitTime(git(["rev-parse", "HEAD"])));
   rmSync(out, { recursive: true, force: true });
   await plan(["--out", path.join(out, "plan"), "--event", "workflow_dispatch", "--commit", git(["rev-parse", "HEAD"]), "--version", version, "--offline", "true"]);
   for (const artifact of artifacts) {
@@ -1053,6 +1068,20 @@ function dispatch(argv) {
   const args = dispatchArgs({ branch, commit, version: workspaceVersion(readText("Cargo.toml")), allowUnmerged: options.allowUnmerged });
   exec("gh", args, { label: `gh ${args.join(" ")}` });
   console.log(`Started the release rehearsal of ${commit} on ${branch}; follow it with: gh run list --workflow release.yml --branch ${branch} --limit 1`);
+}
+
+// ---------------------------------------------------------------------------------------
+// verify-tag (make release-verify-tag): the maintainer's check before pushing a tag
+
+function verifyTag(argv) {
+  const options = parseOptions(argv, ["tag", "repo"]);
+  const ctx = { ...defaultContext(), root: options.repo ? path.resolve(options.repo) : ROOT };
+  const result = verifyLocalReleaseTag(ctx, { tag: required(options, "tag"), version: workspaceVersion });
+  console.log(`${result.tag} is an annotated tag of ${result.commit}, made for ${result.tag}, and ${result.signature.split("\n")[0]}`);
+  for (const note of result.notes) {
+    console.log(`note: ${note}`);
+  }
+  console.log(`Push only this tag: git push origin ${result.tag}`);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1102,6 +1131,7 @@ export const COMMANDS = {
   evidence: evidenceCommand,
   "attach-evidence": attachEvidenceCommand,
   "rehearse-host": rehearseHost,
+  "verify-tag": verifyTag,
   dispatch,
   check,
 };

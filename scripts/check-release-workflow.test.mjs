@@ -145,7 +145,26 @@ test("the crates.io token is never exported under Cargo's name", () => {
       const step = copy.jobs["publish-crates"].steps.find((candidate) => candidate.env?.RELEASE_CRATES_TOKEN);
       step.env = { CARGO_REGISTRY_TOKEN: step.env.RELEASE_CRATES_TOKEN };
     }),
-    /no step may export CARGO_REGISTRY_TOKEN/,
+    /exports CARGO_REGISTRY_TOKEN/,
   );
-  assert.match(problemsAfter((copy) => (copy.jobs["publish-crates"].env = { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" })), /no step may export CARGO_REGISTRY_TOKEN/);
+  assert.match(problemsAfter((copy) => (copy.jobs["publish-crates"].env = { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" })), /job publish-crates exports CARGO_REGISTRY_TOKEN/);
+  // Quoting a key changes nothing: the gate reads the parsed YAML, not the text.
+  const quoted = TEXT.replace(
+    "          RELEASE_CRATES_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}",
+    "          RELEASE_CRATES_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n          'CARGO_REGISTRY_TOKEN': ${{ secrets.CARGO_REGISTRY_TOKEN }}",
+  );
+  assert.notEqual(quoted, TEXT);
+  assert.match(checkReleaseWorkflow(parse(quoted), quoted).join("\n"), /exports CARGO_REGISTRY_TOKEN/);
+  assert.match(
+    problemsAfter((copy) => copy.jobs["publish-crates"].steps.splice(-1, 0, { run: 'echo "CARGO_REGISTRY_TOKEN=$RELEASE_CRATES_TOKEN" >> "$GITHUB_ENV"', env: { RELEASE_CRATES_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" } })),
+    /must not write to \$GITHUB_ENV/,
+  );
+  assert.match(problemsAfter((copy) => copy.jobs["publish-crates"].steps.push({ run: "cargo build --release" })), /the job that holds the crates\.io token runs only/);
+});
+
+test("credential-named variables appear only where a job may hold them", () => {
+  assert.match(problemsAfter((copy) => (copy.env.RELEASE_READ_TOKEN = "${{ github.token }}")), /the workflow must not set the credential RELEASE_READ_TOKEN/);
+  assert.match(problemsAfter((copy) => copy.jobs.build.steps.push({ run: "x", env: { RELEASE_CRATES_TOKEN: "x" } })), /job build step \d+ must not set the credential RELEASE_CRATES_TOKEN/);
+  assert.match(problemsAfter((copy) => copy.jobs.validate.steps.push({ run: "x", env: { GH_TOKEN: "x" } })), /job validate step \d+ must not set the credential GH_TOKEN/);
+  assert.match(problemsAfter((copy) => (copy.jobs["publish-pypi"].env = { RELEASE_CRATES_TOKEN: "x" })), /job publish-pypi must not set the credential RELEASE_CRATES_TOKEN/);
 });

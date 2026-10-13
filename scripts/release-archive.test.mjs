@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import zlib from "node:zlib";
 
-import { checkMemberName, gzipDeterministic, readArchive, readTarGz, readZip, writeTarGz, writeZip } from "./release-archive.mjs";
+import { checkMemberName, dosToEpoch, gzipDeterministic, readArchive, readTarGz, readZip, writeTarGz, writeZip } from "./release-archive.mjs";
 
 const MTIME = 1791753852;
 const ENTRIES = [
@@ -89,4 +89,10 @@ test("links and directories are reported for the validator to refuse", () => {
   }
   raw.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
   assert.equal(readTarGz(gzipDeterministic(raw))[0].type, "symlink");
+});
+
+test("zip member times read back as UTC seconds, to two-second precision", () => {
+  assert.deepEqual(readZip(writeZip(ENTRIES, { mtime: MTIME })).map((entry) => entry.mtime), [MTIME, MTIME, MTIME]);
+  assert.deepEqual(readZip(writeZip(ENTRIES, { mtime: MTIME + 1 })).map((entry) => entry.mtime), [MTIME, MTIME, MTIME]);
+  assert.equal(dosToEpoch(0, (0 << 9) | (1 << 5) | 1), 315532800, "the zip epoch is 1980-01-01");
 });

@@ -178,6 +178,11 @@ function dosDateTime(epochSeconds) {
   return { time, day };
 }
 
+/** A zip member's MS-DOS date and time as UTC seconds, to the format's two-second precision. */
+export function dosToEpoch(time, day) {
+  return Date.UTC((day >> 9) + 1980, ((day >> 5) & 15) - 1, day & 31, time >> 11, (time >> 5) & 63, (time & 31) * 2) / 1000;
+}
+
 /**
  * Write a .zip of flat regular files, deflated, with Unix modes and the given time.
  * `entries` is `[{name, data, mode}]`.
@@ -262,6 +267,8 @@ export function readZip(buffer) {
     const madeBy = buffer.readUInt16LE(offset + 4) >> 8;
     const flags = buffer.readUInt16LE(offset + 8);
     const method = buffer.readUInt16LE(offset + 10);
+    const dosTime = buffer.readUInt16LE(offset + 12);
+    const dosDate = buffer.readUInt16LE(offset + 14);
     const crc = buffer.readUInt32LE(offset + 16);
     const compressedSize = buffer.readUInt32LE(offset + 20);
     const size = buffer.readUInt32LE(offset + 24);
@@ -298,7 +305,7 @@ export function readZip(buffer) {
     const unixMode = madeBy === 3 ? external >>> 16 : 0;
     const fileType = unixMode & 0o170000;
     const type = name.endsWith("/") || fileType === 0o040000 ? "directory" : fileType === 0o120000 ? "symlink" : "file";
-    entries.push({ name, type, mode: unixMode & 0o7777, size, data });
+    entries.push({ name, type, mode: unixMode & 0o7777, size, data, mtime: dosToEpoch(dosTime, dosDate) });
   }
   return entries;
 }

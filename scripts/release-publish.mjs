@@ -25,6 +25,8 @@ import { parseReleaseVersion } from "./release-identity.mjs";
 import { compareChecksums, parseChecksums } from "./release-manifest.mjs";
 import {
   USER_AGENT,
+  cratesInCommand,
+  cratesPackageArgs,
   cratesPublishCommand,
   decideCrates,
   decideGithubRelease,
@@ -50,8 +52,12 @@ export const RELEASE_ENVIRONMENT = "release";
 /** The workflow whose runs may attest release artifacts. */
 export const RELEASE_WORKFLOW = ".github/workflows/release.yml";
 
-/** Variables that carry a publishing or GitHub credential, or the OIDC token endpoint. */
-const CREDENTIAL_VARIABLES = [
+/**
+ * Variables that carry a publishing or GitHub credential, or the OIDC token endpoint. The
+ * one list serves `withoutCredentials` here, `release.mjs assert-no-authority` and the
+ * workflow gate, so a renamed credential cannot drop out of one of them.
+ */
+export const CREDENTIAL_VARIABLES = [
   "CARGO_REGISTRY_TOKEN",
   "RELEASE_CRATES_TOKEN",
   "RELEASE_WRITE_TOKEN",
@@ -63,7 +69,14 @@ const CREDENTIAL_VARIABLES = [
   "UV_PUBLISH_TOKEN",
   "UV_PUBLISH_PASSWORD",
   "TWINE_PASSWORD",
+  "PYPI_API_TOKEN",
+  "MATURIN_PYPI_TOKEN",
 ];
+
+/** True for a credential variable name, including Cargo's per-registry token variables. */
+export function isCredentialVariable(name) {
+  return CREDENTIAL_VARIABLES.includes(name) || /^CARGO_REGISTRIES_.+_TOKEN$/.test(name);
+}
 
 function fail(message) {
   throw new Error(message);
@@ -81,7 +94,7 @@ function readJson(file) {
 export function withoutCredentials(env) {
   const clean = { ...env };
   for (const name of Object.keys(clean)) {
-    if (CREDENTIAL_VARIABLES.includes(name) || /^CARGO_REGISTRIES_.+_TOKEN$/.test(name)) {
+    if (isCredentialVariable(name)) {
       delete clean[name];
     }
   }
@@ -188,6 +201,75 @@ export function verifyTagSignature(ctx, { tag, signersFile }) {
   return output;
 }
 
+/** The `tag` header of an annotated tag object: the name it was signed under. */
+export function tagObjectName(text) {
+  return text.match(/^tag (.+)$/m)?.[1] ?? null;
+}
+
+/**
+ * Verify that the local tag is exactly the release's signed tag: the object `ls-remote`
+ * reported (`object`), naming the release commit (`commit`), signed under the release
+ * tag's own name, with a signature from an allowed signer. Without the name check, a
+ * signed tag made for something else could be re-pointed as the release ref (review B1).
+ * Returns the signature line Git printed.
+ */
+export function verifyReleaseTag(ctx, { tag, object, commit, signersFile }) {
+  const git = (...args) => execIn(ctx, "git", args, { label: `git ${args.join(" ")}` }).trim();
+  const local = git("rev-parse", `refs/tags/${tag}`);
+  if (local !== object) {
+    fail(`the local ${tag} is object ${local}, not the ${object} the remote reported`);
+  }
+  const target = git("rev-parse", `${tag}^{commit}`);
+  if (target !== commit) {
+    fail(`${tag} points at ${target}, not the release commit ${commit}`);
+  }
+  if (git("cat-file", "-t", tag) !== "tag") {
+    fail(`${tag} is a lightweight tag; a release tag must be annotated and signed`);
+  }
+  const name = tagObjectName(git("cat-file", "tag", tag));
+  if (name !== tag) {
+    fail(`the signed object at ${tag} was made for the tag ${JSON.stringify(name)}, not ${tag}`);
+  }
+  return verifyTagSignature(ctx, { tag, signersFile });
+}
+
+/**
+ * The maintainer's pre-push check of a local release tag: the same binding and signature
+ * checks `plan` makes on the pushed tag, against the signers file and workspace version
+ * at the tagged commit, plus the gate's rule that the commit is on main. Run it before
+ * `git push`, because a pushed tag cannot be moved once the ruleset protects it.
+ */
+export function verifyLocalReleaseTag(ctx, { tag, version }) {
+  const git = (...args) => execIn(ctx, "git", args, { label: `git ${args.join(" ")}` });
+  const object = git("rev-parse", `refs/tags/${tag}`).trim();
+  const commit = git("rev-parse", `${tag}^{commit}`).trim();
+  if (`v${version(git("show", `${commit}:Cargo.toml`))}` !== tag) {
+    fail(`${tag} names a commit whose workspace version is not ${tag.slice(1)}`);
+  }
+  const notes = [];
+  const main = ctx.run("git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], { env: withoutCredentials(ctx.env), cwd: ctx.root });
+  if (main.status === 0) {
+    if (ctx.run("git", ["merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"], { env: withoutCredentials(ctx.env), cwd: ctx.root }).status !== 0) {
+      fail(`${commit} is not on origin/main; fetch main, or tag a merged commit`);
+    }
+  } else {
+    notes.push("origin/main is not fetched here, so the main check was skipped");
+  }
+  const dir = mkdtempSync(path.join(ctx.tmpdir, "urollup-signers-"));
+  try {
+    const signersFile = path.join(dir, "allowed-signers");
+    const signers = ctx.run("git", ["show", `${commit}:${RELEASE_SIGNERS_FILE}`], { env: withoutCredentials(ctx.env), cwd: ctx.root });
+    if (signers.status !== 0) {
+      fail(`the tagged commit has no ${RELEASE_SIGNERS_FILE}; commit the maintainer's signing key first`);
+    }
+    writeFileSync(signersFile, signers.stdout);
+    const signature = verifyReleaseTag(ctx, { tag, object, commit, signersFile });
+    return { tag, object, commit, signature, notes };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // Repository settings the approval boundary depends on
 
@@ -199,6 +281,11 @@ async function getJson(ctx, url, token) {
     });
   } catch (error) {
     return { status: "unavailable", reason: `${url}: ${error.message}` };
+  }
+  // A job token without a permission the endpoint wants is refused with 403 even where the
+  // public data is readable; read this public repository's settings anonymously instead.
+  if (response.status === 403 && token) {
+    return getJson(ctx, url, undefined);
   }
   if (response.status === 404) {
     return { status: "absent" };
@@ -258,15 +345,46 @@ export function judgeReleaseSettings({ environment, policies, rulesets }) {
   if (rulesets.status !== "present") {
     problems.push(`the repository's rulesets could not be read: ${rulesets.reason ?? rulesets.status}`);
   } else {
-    const guarding = rulesets.list.filter((ruleset) => {
-      const types = new Set((ruleset.rules ?? []).map((rule) => rule.type));
-      return ruleset.enforcement === "active" && (ruleset.conditions?.ref_name?.include ?? []).includes("refs/tags/v*") && types.has("update") && types.has("deletion");
-    });
+    const guarding = guardingRulesets(rulesets.list);
     if (guarding.length === 0) {
-      problems.push("no active tag ruleset on refs/tags/v* blocks tag updates and deletions");
+      problems.push("no active tag ruleset on refs/tags/v*, with nothing excluded, blocks tag updates and deletions");
+    }
+    const bypassed = guarding.filter((ruleset) => Array.isArray(ruleset.bypass_actors) && ruleset.bypass_actors.length > 0);
+    if (guarding.length > 0 && bypassed.length === guarding.length) {
+      problems.push(`the tag ruleset blocking updates and deletions lets ${bypassed[0].bypass_actors.length} actor(s) bypass it; that ruleset needs an empty bypass list`);
     }
   }
   return problems;
+}
+
+/** Ref patterns that include every `v*` tag. */
+const TAG_PATTERNS = ["refs/tags/v*", "refs/tags/*", "~ALL"];
+
+/**
+ * Active tag rulesets that block updates and deletions of every `v*` tag: an include
+ * pattern covering `refs/tags/v*` and nothing excluded, since any exclusion could remove
+ * a release tag.
+ */
+export function guardingRulesets(list) {
+  return list.filter((ruleset) => {
+    const types = new Set((ruleset.rules ?? []).map((rule) => rule.type));
+    const include = ruleset.conditions?.ref_name?.include ?? [];
+    const exclude = ruleset.conditions?.ref_name?.exclude ?? [];
+    return ruleset.target === "tag" && ruleset.enforcement === "active" && include.some((pattern) => TAG_PATTERNS.includes(pattern)) && exclude.length === 0 && types.has("update") && types.has("deletion");
+  });
+}
+
+/**
+ * What the preflight cannot see, so the maintainer confirms it at setup: GitHub returns a
+ * ruleset's bypass list (`bypass_actors: null`) only to repository administrators, and the
+ * job token is not one.
+ */
+export function unverifiableSettings({ rulesets }) {
+  if (rulesets.status !== "present") {
+    return [];
+  }
+  const hidden = guardingRulesets(rulesets.list).filter((ruleset) => !Array.isArray(ruleset.bypass_actors));
+  return hidden.length > 0 ? ["the tag ruleset's bypass list is hidden from the job token; confirm at setup that it is empty"] : [];
 }
 
 /** The `gh attestation verify` arguments that bind a file to this release's own build. */
@@ -497,8 +615,11 @@ export async function publishCrates(ctx, { bundle }) {
   if (command) {
     const clean = withoutCredentials(ctx.env);
     const target = mkdtempSync(path.join(ctx.tmpdir, "urollup-publish-package-"));
-    execIn(ctx, "cargo", ["package", "--locked", "--workspace", "--no-verify"], { env: { ...clean, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
-    for (const item of manifest.cargo_packages) {
+    // Package with the same selection the upload uses: --workspace, or -p for a resumed
+    // publication whose dependency is already on crates.io.
+    execIn(ctx, "cargo", cratesPackageArgs(command), { env: { ...clean, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
+    const uploading = cratesInCommand(command, manifest.cargo_packages.map((item) => item.name));
+    for (const item of manifest.cargo_packages.filter((candidate) => uploading.includes(candidate.name))) {
       const digest = sha256(readFileSync(path.join(target, "package", item.file)));
       if (digest !== item.sha256) {
         fail(`${item.file} packages to ${digest}, not the rehearsed ${item.sha256}; refusing to publish`);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { writeTarGz, writeZip } from "./release-archive.mjs";
-import { checkArchive, checkExecutable, checkWheel, maxSymbolVersion, parseElf, parseMachO, parsePe, parseRecord, parseWheelName, recordDigest } from "./release-inspect.mjs";
+import { checkArchive, checkExecutable, checkMemberTimes, checkWheel, maxSymbolVersion, parseElf, parseMachO, parsePe, parseRecord, parseWheelName, recordDigest } from "./release-inspect.mjs";
 import { makeElf, makeMachO, makePe, makeZip, wheelMembers } from "./release-test-binaries.mjs";
 import { artifactById } from "./release-targets.mjs";
 
@@ -166,4 +166,20 @@ test("a wheel with a missing or wrong script payload or RECORD entry fails", () 
   const { artifact, data } = wheel("wheel-linux-x86_64");
   assert.match(checkWheel("urollup-0.1.0-py3-none-linux_x86_64.whl", data, artifact, { version: "0.1.0" }).problems.join("\n"), /expected urollup-0\.1\.0-py3-none-manylinux_2_17_x86_64/);
   assert.match(checkWheel(artifact.name, Buffer.from("x"), artifact, { version: "0.1.0" }).problems.join("\n"), /not a readable wheel/);
+});
+
+test("every archive and wheel member must carry the release commit's time", () => {
+  const tar = archive("archive-linux-x86_64", goodMembers(STATIC_MUSL));
+  assert.deepEqual(checkArchive(tar.artifact.name, tar.data, tar.artifact, { readme: README, license: LICENSE, sourceDateEpoch: MTIME }).problems, []);
+  assert.match(
+    checkArchive(tar.artifact.name, tar.data, tar.artifact, { readme: README, license: LICENSE, sourceDateEpoch: MTIME + 60 }).problems.join("\n"),
+    /not stamped with the commit time/,
+  );
+  const zip = archive("archive-windows-x86_64", goodMembers(WINDOWS, "urollup.exe"));
+  assert.deepEqual(checkArchive(zip.artifact.name, zip.data, zip.artifact, { readme: README, license: LICENSE, sourceDateEpoch: MTIME }).problems, [], "zip times hold to two seconds");
+  assert.deepEqual(checkMemberTimes("w.whl", [{ name: "a", mtime: MTIME - 1 }], MTIME), [], "zip stores even seconds");
+  assert.match(checkMemberTimes("w.whl", [{ name: "a", mtime: 315532800 }], MTIME).join(""), /w\.whl: a not stamped with the commit time/);
+  assert.deepEqual(checkMemberTimes("w.whl", [{ name: "a", mtime: 315532800 }], undefined), [], "no planned time, no check");
+  const { artifact, data } = wheel("wheel-linux-x86_64");
+  assert.match(checkWheel(artifact.name, data, artifact, { version: "0.1.0", sourceDateEpoch: MTIME }).problems.join("\n"), /not stamped with the commit time/, "a wheel left at the zip epoch is refused");
 });

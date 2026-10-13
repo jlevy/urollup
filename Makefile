@@ -27,7 +27,7 @@ TAPLO := node_modules/.bin/taplo
 .PHONY: help build test rust-test qa-tool-tests golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
 	clippy docs dependency-guard msrv audit npm-audit gate-proofs scale-gate release-check release-rehearsal \
-	release-dispatch fix clean
+	release-dispatch release-verify-tag fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
@@ -53,6 +53,7 @@ help:
 	@echo "make release-rehearsal  Build, inspect and smoke-test this host's release artifacts"
 	@echo "make release-dispatch   Start the full no-publish CI rehearsal for the pushed HEAD"
 	@echo "                        (ALLOW_UNMERGED=true for a commit not on main yet)"
+	@echo "make release-verify-tag Check a signed release tag before pushing it (TAG=v0.1.0)"
 
 build:
 	$(CARGO) build --locked --workspace
@@ -241,6 +242,14 @@ RELEASE_DIR ?= target/release-rehearsal
 
 release-rehearsal: uv-version release-check
 	$(NODE) scripts/release.mjs rehearse-host --out $(RELEASE_DIR)
+
+# The maintainer's check of a signed release tag before pushing it (docs/publishing.md):
+# the same binding and signature checks the tag run makes, against the tagged commit.
+TAG ?=
+
+release-verify-tag:
+	@test -n "$(TAG)" || { echo "error: name the tag, for example make release-verify-tag TAG=v0.1.0"; exit 2; }
+	$(NODE) scripts/release.mjs verify-tag --tag $(TAG)
 
 # Start .github/workflows/release.yml's no-publish rehearsal for this branch's pushed HEAD.
 ALLOW_UNMERGED ?= false

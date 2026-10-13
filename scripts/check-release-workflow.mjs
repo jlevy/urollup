@@ -25,6 +25,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { parse } from "yaml";
 
+import { isCredentialVariable } from "./release-publish.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const WORKFLOW = ".github/workflows/release.yml";
 
@@ -120,6 +122,68 @@ function describePermissions(value) {
   return value === undefined || value === null ? "none (read-only default)" : JSON.stringify(value);
 }
 
+/** The one command the crates.io publish job may run: the script that confines the token. */
+export const PUBLISH_CRATES_RUN = 'node scripts/release.mjs publish-crates --bundle "$RUNNER_TEMP/release-bundle"';
+
+/** Each environment block of the workflow, with where it is, read from the parsed YAML. */
+function environmentBlocks(workflow, jobs) {
+  const blocks = [{ where: "the workflow", job: null, env: workflow.env }];
+  for (const [name, job] of Object.entries(jobs)) {
+    if (!isObject(job)) {
+      continue;
+    }
+    blocks.push({ where: `job ${name}`, job: name, env: job.env });
+    for (const [index, step] of (job.steps ?? []).entries()) {
+      blocks.push({ where: `job ${name} step ${index + 1}`, job: name, env: step.env });
+    }
+  }
+  return blocks.filter((block) => isObject(block.env));
+}
+
+/**
+ * Credentials reach a process only through named environment entries, which this reads
+ * from the parsed workflow, so quoting a key changes nothing:
+ * - no environment anywhere exports CARGO_REGISTRY_TOKEN, which Cargo hands to every build
+ *   script and proc macro;
+ * - a credential-named entry appears only in a job that may hold that credential, never
+ *   at the workflow level, and the crates.io secret only as RELEASE_CRATES_TOKEN in
+ *   publish-crates;
+ * - no step writes to $GITHUB_ENV, which would export a value to every later step; and
+ * - publish-crates runs nothing but the publish script.
+ */
+export function credentialEnvironmentProblems(workflow, jobs) {
+  const problems = [];
+  for (const block of environmentBlocks(workflow, jobs)) {
+    for (const key of Object.keys(block.env)) {
+      if (key === "CARGO_REGISTRY_TOKEN") {
+        problems.push(`${block.where} exports CARGO_REGISTRY_TOKEN: Cargo hands it to every build script and proc macro; pass the secret under another name to the publish script`);
+      } else if (isCredentialVariable(key)) {
+        const allowed = key === "RELEASE_CRATES_TOKEN" ? block.job === "publish-crates" : block.job !== null && TOKEN_JOBS.includes(block.job);
+        if (!allowed) {
+          problems.push(`${block.where} must not set the credential ${key}`);
+        }
+      }
+    }
+  }
+  for (const [name, job] of Object.entries(jobs)) {
+    for (const [index, step] of (isObject(job) ? (job.steps ?? []) : []).entries()) {
+      if (typeof step.run !== "string") {
+        continue;
+      }
+      if (/GITHUB_ENV/.test(step.run)) {
+        problems.push(`job ${name} step ${index + 1}: release jobs must not write to $GITHUB_ENV, which exports a value to every later step`);
+      }
+      if (/CARGO_REGISTRY_TOKEN/.test(step.run)) {
+        problems.push(`job ${name} step ${index + 1}: run must not name CARGO_REGISTRY_TOKEN`);
+      }
+      if (name === "publish-crates" && step.run.trim() !== PUBLISH_CRATES_RUN) {
+        problems.push(`job publish-crates step ${index + 1}: the job that holds the crates.io token runs only ${PUBLISH_CRATES_RUN}`);
+      }
+    }
+  }
+  return problems;
+}
+
 /** Validate a parsed release workflow; returns a list of problems. */
 export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) {
   const problems = [];
@@ -178,9 +242,7 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
     }
   }
 
-  if (/\bCARGO_REGISTRY_TOKEN"?\s*:/.test(text)) {
-    problems.push("no step may export CARGO_REGISTRY_TOKEN: Cargo hands it to every build script and proc macro; pass the secret under another name to the publish script");
-  }
+  problems.push(...credentialEnvironmentProblems(workflow, jobs));
   for (const [name, job] of Object.entries(jobs)) {
     if (!isObject(job)) {
       continue;

@@ -217,6 +217,21 @@ export function cratesPublishCommand(result) {
   return ["cargo", "publish", "--locked", "--no-verify", ...result.publish.flatMap((name) => ["-p", name])];
 }
 
+/**
+ * The `cargo package` arguments that reproduce exactly what a publish command uploads: the
+ * same `--workspace` or `-p` selection, without verification. The publish job checks
+ * these packages' digests before it uploads, and the crates job runs the workspace form.
+ */
+export function cratesPackageArgs(publishCommand) {
+  const selection = publishCommand.slice(publishCommand.indexOf("--no-verify") + 1);
+  return ["package", "--locked", "--no-verify", ...selection];
+}
+
+/** The crates a publish command uploads. */
+export function cratesInCommand(publishCommand, all) {
+  return publishCommand.includes("--workspace") ? all : publishCommand.filter((_, index) => publishCommand[index - 1] === "-p");
+}
+
 /** One line per decision, for the run summary. */
 export function describeDecision(result) {
   const parts = [`${result.channel}: ${result.state}`];

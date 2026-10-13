@@ -242,6 +242,8 @@ jobs:
         run: node scripts/release.mjs smoke --artifact "$ARTIFACT_ID" --input "$RUNNER_TEMP/release-artifact" --out "$RUNNER_TEMP/release-validation"
         env:
           ARTIFACT_ID: ${{ matrix.id }}
+          # Every archive and wheel member must carry the release commit's time.
+          SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source-date-epoch }}
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
