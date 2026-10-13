@@ -1019,7 +1019,8 @@ fn rate_limits(
 /// no document; `false` when the line is not a valid JSON document.
 ///
 /// Decoding does more with the fields; this is the parse alone, whose heap beside a long
-/// line the admission model-bound harness measures.
+/// line the admission model-bound harness measures. It is not part of the supported API.
+#[doc(hidden)]
 pub fn read_line_fields(line: &[u8]) -> bool {
     Line::read(line).is_ok()
 }

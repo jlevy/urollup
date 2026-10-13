@@ -1809,6 +1809,28 @@ fn check_decoders(report: &mut Report) {
         stream.sizeof() as u64,
         &[("zstd_stream", model::zstd_stream(model::SLOT_ZSTD_WINDOW))],
     );
+    // The wide decoders the permit pays for: a frame without a content size, whose window
+    // descriptor (byte 5) declares 16 MiB and then zstd's 2^27 limit.
+    let mut small = zstd::stream::write::Encoder::new(Vec::new(), 1).expect("zstd encoder");
+    small.window_log(10).expect("a 1 KiB window");
+    small.include_contentsize(false).expect("no content size");
+    small.write_all(plain.as_bytes()).expect("zstd encodes");
+    let small = small.finish().expect("zstd finishes");
+    for (name, exponent) in [("16 MiB window", 14_u8), ("2^27 window", 17)] {
+        let mut frame = small.clone();
+        frame[5] = exponent << 3;
+        let window = 1_u64 << (10 + u32::from(exponent));
+        let mut stream = zstd::zstd_safe::DCtx::create();
+        let mut input = zstd::zstd_safe::InBuffer::around(&frame);
+        let mut out = zstd::zstd_safe::OutBuffer::around(&mut output[..]);
+        stream.decompress_stream(&mut out, &mut input).expect("a wide frame decodes");
+        report.bound(
+            "zstd stream",
+            name,
+            stream.sizeof() as u64,
+            &[("zstd_stream", model::zstd_stream(window))],
+        );
+    }
 }
 
 /// A source spec for the harness's own files.

@@ -1842,7 +1842,8 @@ pub(crate) fn located_native_id(path: &Path) -> String {
 /// document.
 ///
 /// Decoding does more with the fields; this is the parse alone, whose heap beside a long
-/// line the admission model-bound harness measures.
+/// line the admission model-bound harness measures. It is not part of the supported API.
+#[doc(hidden)]
 pub fn read_line_fields(line: &[u8]) -> bool {
     let Ok(head) = LineHead::read(line, true, true, true) else { return false };
     let bears_usage = head.bears_usage();
@@ -1852,7 +1853,8 @@ pub fn read_line_fields(line: &[u8]) -> bool {
 
 /// Reads and parses the `.meta.json` sidecar beside the subagent transcript `transcript`
 /// as decoding does; `true` when there is one and it parses. The admission model-bound
-/// harness measures its heap.
+/// harness measures its heap. It is not part of the supported API.
+#[doc(hidden)]
 pub fn read_sidecar(transcript: &Path) -> bool {
     matches!(read_subagent_meta(transcript), Ok(Some(_)))
 }
