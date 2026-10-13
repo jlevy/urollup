@@ -3,11 +3,14 @@ import test from "node:test";
 
 import {
   USER_AGENT,
+  cratesInCommand,
+  cratesPackageArgs,
   cratesPublishCommand,
   decideCrates,
   decideGithubRelease,
   decidePypi,
   describeDecision,
+  fullPublicationCommand,
   metadataDifferences,
   observeCrate,
   observeGithubRelease,
@@ -50,6 +53,34 @@ test("PyPI: absent, identical complete, identical partial, conflicting and unava
   const unavailable = decidePypi(WHEELS, { status: "unavailable", reason: "HTTP 503" });
   assert.equal(unavailable.state, "unavailable");
   assert.equal(unavailable.blocking, true, "unknown registry state is never treated as absent");
+});
+
+test("the crates job packages with the first release's own publish selection", () => {
+  // Review C4: a first release's publish command is cratesPublishCommand on an all-absent
+  // decision, which selects --workspace; the crates job derives its command the same way.
+  const absent = { status: "absent" };
+  const first = cratesPublishCommand(decideCrates(CRATES, { "urollup-core": absent, urollup: absent }, { firstRelease: true, projects: { "urollup-core": absent, urollup: absent } }));
+  assert.deepEqual(fullPublicationCommand(CRATES.map((item) => item.name)), first);
+  assert.deepEqual(cratesPackageArgs(first), ["package", "--locked", "--no-verify", "--workspace"]);
+  assert.deepEqual(cratesInCommand(first, ["urollup-core", "urollup"]), ["urollup-core", "urollup"]);
+  assert.deepEqual(cratesPackageArgs(["cargo", "publish", "--locked", "--no-verify", "-p", "urollup"]), ["package", "--locked", "--no-verify", "-p", "urollup"]);
+});
+
+test("a crate selection that cannot be read, or selects nothing planned, is refused", () => {
+  // Review C5: the digest check must never pass because the selection was empty.
+  const all = ["urollup-core", "urollup"];
+  for (const command of [
+    ["cargo", "publish", "--locked", "--no-verify", "--package", "urollup"],
+    ["cargo", "publish", "--locked", "--no-verify", "-p"],
+    ["cargo", "publish", "--locked", "--no-verify"],
+    ["cargo", "publish", "--locked", "--no-verify", "--workspace", "-p", "urollup"],
+  ]) {
+    assert.throws(() => cratesInCommand(command, all), /cannot read the crate selection/, command.join(" "));
+    assert.throws(() => cratesPackageArgs(command), /cannot read the crate selection/, command.join(" "));
+  }
+  assert.throws(() => cratesPackageArgs(["cargo", "publish", "--locked", "-p", "urollup"]), /must not build: without --no-verify/);
+  assert.throws(() => cratesInCommand(["cargo", "publish", "--locked", "--no-verify", "-p", "urollup-extra"], all), /uploads urollup-extra, which the release did not plan/);
+  assert.throws(() => cratesInCommand(["cargo", "publish", "--locked", "--no-verify", "--workspace"], []), /uploads nothing/);
 });
 
 test("crates.io: dependency order, partial resumption and conflicts", () => {

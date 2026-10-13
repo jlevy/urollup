@@ -14,7 +14,7 @@ import path from "node:path";
 
 import { readTarGz } from "./release-archive.mjs";
 import { sha256 } from "./release-inspect.mjs";
-import { cratesPackageArgs } from "./release-registry.mjs";
+import { cratesPackageArgs, fullPublicationCommand } from "./release-registry.mjs";
 import { CARGO_PACKAGES, crateName } from "./release-targets.mjs";
 
 /** The oldest Cargo whose workspace publication orders and verifies interdependent crates. */
@@ -236,10 +236,11 @@ export function rehearseCrates({ root, commit, version, work, out, smoke, allowD
   cargo(["package", "--locked", "--workspace", ...dirty], { cwd: root, env: { ...cargoEnv, CARGO_TARGET_DIR: first }, label: "cargo package --locked --workspace" });
   const packages = packagedCrates(first, version);
 
-  // The publish job's own pre-publish command, built by the same function, must reproduce
-  // the verified packages byte for byte; publish-crates relies on exactly this.
+  // The first release's publish command comes from the publish job's own decision and
+  // command functions, and its pre-publish packaging must reproduce the verified packages
+  // byte for byte; publish-crates relies on exactly this (review C4).
   const second = path.join(work, "package-b");
-  const prePublish = cratesPackageArgs(["cargo", "publish", "--locked", "--no-verify", "--workspace"]);
+  const prePublish = cratesPackageArgs(fullPublicationCommand(CARGO_PACKAGES));
   cargo([...prePublish, ...dirty], { cwd: root, env: { ...cargoEnv, CARGO_TARGET_DIR: second }, label: `cargo ${prePublish.join(" ")} (the publish job's digest check)` });
   for (const again of packagedCrates(second, version)) {
     const original = packages.find((item) => item.crate === again.crate);

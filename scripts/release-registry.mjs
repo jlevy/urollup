@@ -218,18 +218,68 @@ export function cratesPublishCommand(result) {
 }
 
 /**
- * The `cargo package` arguments that reproduce exactly what a publish command uploads: the
- * same `--workspace` or `-p` selection, without verification. The publish job checks
- * these packages' digests before it uploads, and the crates job runs the workspace form.
+ * The publish command for a version none of whose crates is on crates.io yet: the command
+ * a first release's publish job runs, from the same decision and command functions. The
+ * crates job packages with exactly this selection (review C4).
  */
-export function cratesPackageArgs(publishCommand) {
-  const selection = publishCommand.slice(publishCommand.indexOf("--no-verify") + 1);
-  return ["package", "--locked", "--no-verify", ...selection];
+export function fullPublicationCommand(names) {
+  const absent = Object.fromEntries(names.map((name) => [name, { status: "absent" }]));
+  return cratesPublishCommand(decideCrates(names.map((name) => ({ name })), absent, { firstRelease: true, projects: absent }));
 }
 
-/** The crates a publish command uploads. */
+/**
+ * The crate selection after `--no-verify` in a publish command: exactly `--workspace`, or
+ * one or more `-p <name>` pairs. Any other shape is refused, so a check that depends on
+ * the selection can never pass on an empty or unread one (review C5).
+ */
+function crateSelection(publishCommand) {
+  const at = publishCommand.indexOf("--no-verify");
+  if (at < 0) {
+    throw new Error(`${publishCommand.join(" ")} must not build: without --no-verify, Cargo compiles every build script and proc macro beside the crates.io token`);
+  }
+  const selection = publishCommand.slice(at + 1);
+  const unreadable = () => {
+    throw new Error(`cannot read the crate selection of ${publishCommand.join(" ")}; expected --no-verify then --workspace or -p <crate> pairs`);
+  };
+  if (selection.length === 1 && selection[0] === "--workspace") {
+    return { workspace: true, names: [] };
+  }
+  if (selection.length === 0 || selection.length % 2 !== 0) {
+    unreadable();
+  }
+  const names = [];
+  for (let index = 0; index < selection.length; index += 2) {
+    if (selection[index] !== "-p" || !/^[A-Za-z0-9_-]+$/.test(selection[index + 1])) {
+      unreadable();
+    }
+    names.push(selection[index + 1]);
+  }
+  return { workspace: false, names };
+}
+
+/**
+ * The `cargo package` arguments that reproduce exactly what a publish command uploads: the
+ * same `--workspace` or `-p` selection, without verification. The publish job checks
+ * these packages' digests before it uploads, and the crates job runs the first release's
+ * form (`fullPublicationCommand`).
+ */
+export function cratesPackageArgs(publishCommand) {
+  const { workspace, names } = crateSelection(publishCommand);
+  return ["package", "--locked", "--no-verify", ...(workspace ? ["--workspace"] : names.flatMap((name) => ["-p", name]))];
+}
+
+/**
+ * The crates a publish command uploads, each of which must be one of `all`, the release's
+ * planned crates. An empty, unread or unplanned selection throws.
+ */
 export function cratesInCommand(publishCommand, all) {
-  return publishCommand.includes("--workspace") ? all : publishCommand.filter((_, index) => publishCommand[index - 1] === "-p");
+  const { workspace, names } = crateSelection(publishCommand);
+  const uploading = workspace ? [...all] : names;
+  const unplanned = uploading.filter((name) => !all.includes(name));
+  if (uploading.length === 0 || unplanned.length > 0) {
+    throw new Error(`${publishCommand.join(" ")} uploads ${unplanned.join(", ") || "nothing"}, which the release did not plan`);
+  }
+  return uploading;
 }
 
 /** One line per decision, for the run summary. */

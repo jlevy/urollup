@@ -69,8 +69,10 @@ import {
   evidence,
   execIn,
   isCredentialVariable,
+  describeSettingsReads,
   judgeReleaseSettings,
   loadBundle,
+  localRulesetReport,
   observeAll,
   observeReleaseSettings,
   peelRemoteTag,
@@ -300,7 +302,10 @@ export async function publicationGuards(ctx, { tag, peeled, repository, token, p
   if (publish) {
     execIn(ctx, "git", ["fetch", "--no-tags", "--force", "origin", `refs/tags/${tag}:refs/tags/${tag}`], { label: `git fetch ${tag}` });
     try {
-      facts.signature = verifyReleaseTag(ctx, { tag, object: peeled.object, commit: peeled.commit, signersFile: path.join(ctx.root, RELEASE_SIGNERS_FILE) });
+      const verified = verifyReleaseTag(ctx, { tag, object: peeled.object, commit: peeled.commit, signersFile: path.join(ctx.root, RELEASE_SIGNERS_FILE) });
+      facts.signature = verified.signature;
+      facts.tag_object = verified.object;
+      facts.tagger_date = verified.taggerDate;
     } catch (error) {
       problems.push(error.message);
     }
@@ -311,6 +316,7 @@ export async function publicationGuards(ctx, { tag, peeled, repository, token, p
     const settings = await observeReleaseSettings(ctx, { repository, token });
     facts.settings_problems = judgeReleaseSettings(settings);
     facts.settings_unverifiable = unverifiableSettings(settings);
+    facts.settings_reads = settings.reads;
     problems.push(...(publish ? facts.settings_problems : []));
   } else {
     facts.settings_problems = ["not read outside GitHub Actions"];
@@ -393,8 +399,18 @@ async function plan(argv) {
     "",
     ...(guards.facts.offline ? ["- not read (--offline)"] : settings.length === 0 ? ["- The release environment and the v* tag ruleset are configured as the runbook requires"] : settings.map((problem) => `- ${publish ? "" : "A tag publication would stop: "}${problem}`)),
     ...(guards.facts.settings_unverifiable ?? []).map((note) => `- Not verifiable by this job: ${note}`),
+    ...describeSettingsReads(guards.facts.settings_reads).map((line) => `- Read with the ${line}`),
     ...(guards.facts.signers_file ? [`- Release tag signers file (${RELEASE_SIGNERS_FILE}): ${guards.facts.signers_file}`] : []),
     ...(guards.facts.signature ? [`- Tag signature: ${guards.facts.signature.split("\n")[0]}`] : []),
+    ...(guards.facts.tag_object
+      ? [
+          "",
+          "### Before approving",
+          "",
+          `- Tag object: \`${guards.facts.tag_object}\`, made ${guards.facts.tagger_date ?? "at an unreadable time"}`,
+          `- Approve only if this is the tag you signed: \`git rev-parse ${identity.tag}\` where you made it must print this object ID. A tag you signed earlier for the same name and version would pass every check above (docs/publishing.md).`,
+        ]
+      : []),
     "",
     "### Prior publication",
     "",
@@ -575,10 +591,16 @@ function plannedSourceDateEpoch(value = process.env.SOURCE_DATE_EPOCH) {
   return seconds;
 }
 
+/**
+ * Inspect an artifact. Its facts record the time every member was checked against
+ * (`member_time`), or null when no time was given and that check did not run.
+ */
 function inspectArtifact(artifact, data, version, sourceDateEpoch) {
-  return artifact.kind === "archive"
-    ? checkArchive(artifact.name, data, artifact, { readme: readFileSync(path.join(ROOT, "README.md")), license: readFileSync(path.join(ROOT, "LICENSE")), sourceDateEpoch })
-    : checkWheel(artifact.name, data, artifact, { version, sourceDateEpoch });
+  const result =
+    artifact.kind === "archive"
+      ? checkArchive(artifact.name, data, artifact, { readme: readFileSync(path.join(ROOT, "README.md")), license: readFileSync(path.join(ROOT, "LICENSE")), sourceDateEpoch })
+      : checkWheel(artifact.name, data, artifact, { version, sourceDateEpoch });
+  return { ...result, facts: { ...result.facts, member_time: sourceDateEpoch ?? null } };
 }
 
 function build(argv) {
@@ -678,7 +700,14 @@ function smoke(argv) {
   if (existsSync(buildRecordFile) && readJson(buildRecordFile).sha256 !== record.sha256) {
     record.problems.push(`${artifact.name} differs from the bytes its build job recorded`);
   }
-  const inspected = inspectArtifact(artifact, data, version, plannedSourceDateEpoch());
+  // Validation always checks member times: the workflow passes the plan's commit time and
+  // rehearse-host sets it, so a missing value means the check would silently not run.
+  const sourceDateEpoch = plannedSourceDateEpoch();
+  if (sourceDateEpoch === undefined) {
+    record.problems.push("SOURCE_DATE_EPOCH is not set, so the member-time check cannot run; pass the plan's source-date-epoch output");
+    return finish();
+  }
+  const inspected = inspectArtifact(artifact, data, version, sourceDateEpoch);
   record.facts = inspected.facts;
   record.problems.push(...inspected.problems);
   if (record.problems.length > 0) {
@@ -1078,8 +1107,16 @@ function verifyTag(argv) {
   const ctx = { ...defaultContext(), root: options.repo ? path.resolve(options.repo) : ROOT };
   const result = verifyLocalReleaseTag(ctx, { tag: required(options, "tag"), version: workspaceVersion });
   console.log(`${result.tag} is an annotated tag of ${result.commit}, made for ${result.tag}, and ${result.signature.split("\n")[0]}`);
-  for (const note of result.notes) {
+  console.log(`Tag object: ${result.object}, made ${result.taggerDate ?? "at an unreadable time"}. The tag run's plan summary must show this object before you approve.`);
+  const rulesets = localRulesetReport(ctx);
+  for (const line of rulesets.lines) {
+    console.log(line);
+  }
+  for (const note of [...result.notes, ...rulesets.notes]) {
     console.log(`note: ${note}`);
+  }
+  if (rulesets.problems.length > 0) {
+    fail(`the tag rulesets read with your gh login would stop the tag run:\n${rulesets.problems.map((problem) => `- ${problem}`).join("\n")}`);
   }
   console.log(`Push only this tag: git push origin ${result.tag}`);
 }

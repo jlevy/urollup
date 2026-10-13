@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +20,7 @@ import {
   publicationGuards,
   resolveTagCommit,
 } from "./release.mjs";
+import { writeTarGz } from "./release-archive.mjs";
 import { artifactById, buildEnvironment } from "./release-targets.mjs";
 import { makeReleaseBundle } from "./release-test-binaries.mjs";
 
@@ -136,6 +137,32 @@ test("the publish subcommands refuse a rehearsal bundle, a branch run and a tamp
   }
 });
 
+test("validation never skips the member-time check, and records the time it checked against", () => {
+  // Review C8: a validate job that lost the plan's SOURCE_DATE_EPOCH fails instead of
+  // skipping the check, and the record says which time every member was compared with.
+  const dir = mkdtempSync(path.join(tmpdir(), "urollup-smoke-time-"));
+  try {
+    const artifact = artifactById("0.1.0", "archive-linux-x86_64");
+    const input = path.join(dir, "in");
+    mkdirSync(input);
+    writeFileSync(path.join(input, artifact.name), writeTarGz([{ name: "urollup", data: Buffer.from("not an executable"), mode: 0o755 }], { mtime: 1791919744 }));
+    const validate = (env) => {
+      const out = path.join(dir, `out-${env.SOURCE_DATE_EPOCH ?? "none"}`);
+      const run = spawnSync(process.execPath, [SCRIPT, "smoke", "--artifact", artifact.id, "--input", input, "--out", out], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+      assert.equal(run.status, 1, "the fake archive never passes validation");
+      return JSON.parse(readFileSync(path.join(out, `validation-${artifact.id}.json`), "utf8"));
+    };
+    assert.match(validate({}).problems.join("\n"), /SOURCE_DATE_EPOCH is not set, so the member-time check cannot run/);
+    assert.match(validate({ SOURCE_DATE_EPOCH: "" }).problems.join("\n"), /SOURCE_DATE_EPOCH is not set/);
+    const checked = validate({ SOURCE_DATE_EPOCH: "1791919744" });
+    assert.equal(checked.facts.member_time, 1791919744);
+    assert.doesNotMatch(checked.problems.join("\n"), /not stamped with the commit time/);
+    assert.match(validate({ SOURCE_DATE_EPOCH: "1791919000" }).problems.join("\n"), /urollup not stamped with the commit time 1791919000/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the wheel backend and the release jobs use one Maturin", () => {
   const backend = '[build-system]\nrequires = ["maturin==1.15.0"]\n';
   assert.deepEqual(maturinPinProblems(backend, 'dev = []\nrelease = ["maturin==1.15.0"]\n'), []);
@@ -172,10 +199,10 @@ function fakePlanContext({ annotated = true, head = "c".repeat(40), tagCommit = 
         if (args[0] === "ls-remote") {
           return { status: 0, stdout: annotated ? `${"a".repeat(40)}\trefs/tags/v0.1.0\n${tagCommit}\trefs/tags/v0.1.0^{}\n` : `${tagCommit}\trefs/tags/v0.1.0\n`, stderr: "" };
         }
-        if (args[0] === "rev-parse" && args[1] === "refs/tags/v0.1.0") {
+        if (args[0] === "rev-parse" && args.at(-1) === "refs/tags/v0.1.0") {
           return { status: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" };
         }
-        if (args[0] === "rev-parse" && args[1] === "v0.1.0^{commit}") {
+        if (args[0] === "rev-parse" && args.at(-1).endsWith("^{commit}")) {
           return { status: 0, stdout: `${tagCommit}\n`, stderr: "" };
         }
         if (args[0] === "rev-parse") {
@@ -185,7 +212,10 @@ function fakePlanContext({ annotated = true, head = "c".repeat(40), tagCommit = 
           return { status: 0, stdout: "tag\n", stderr: "" };
         }
         if (args[0] === "cat-file") {
-          return { status: 0, stdout: `object ${tagCommit}\ntype commit\ntag v0.1.0\ntagger T <t@example.invalid> 0 +0000\n\nurollup 0.1.0\n`, stderr: "" };
+          return { status: 0, stdout: `object ${tagCommit}\ntype commit\ntag v0.1.0\ntagger T <t@example.invalid> 1791919744 -0700\n\nurollup 0.1.0\n`, stderr: "" };
+        }
+        if (args.includes("verify-tag")) {
+          return { status: 0, stdout: "", stderr: 'Good "git" signature for urollup-release with ED25519 key SHA256:test\n' };
         }
         return { status: 0, stdout: "", stderr: "" };
       },
@@ -213,6 +243,31 @@ test("a tag run refuses a missing signers file and unconfigured settings; a rehe
     assert.equal(rehearsal.facts.signers_file, "missing");
     assert.match(rehearsal.facts.settings_problems.join("\n"), /release environment does not exist/);
     assert.ok(!planContext.calls.some((call) => call.includes("verify-tag") || call.includes("fetch")), "a rehearsal fetches and verifies no tag");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a tag run records the verified tag object and its time for the approver, and how settings were read", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "urollup-guards-"));
+  try {
+    mkdirSync(path.join(root, ".github"));
+    writeFileSync(path.join(root, ".github", "release-allowed-signers"), "urollup-release ssh-ed25519 AAAA\n");
+    const peeled = { object: "a".repeat(40), commit: "c".repeat(40), annotated: true };
+    const planContext = fakePlanContext({ root });
+    const guards = await publicationGuards(planContext.ctx, { tag: "v0.1.0", peeled, repository: "jlevy/urollup", token: "read", publish: true });
+    assert.equal(guards.facts.tag_object, "a".repeat(40));
+    assert.equal(guards.facts.tagger_date, "2026-10-13T19:29:04Z");
+    assert.match(guards.facts.signature, /Good "git" signature for urollup-release/);
+    const verify = planContext.calls.find((call) => call.includes("verify-tag"));
+    assert.equal(verify.at(-1), "a".repeat(40), "the signature check names the object ID, never the tag name");
+    for (const call of planContext.calls.filter((candidate) => candidate[1] === "cat-file" || (candidate[1] === "rev-parse" && candidate.at(-1).endsWith("^{commit}")))) {
+      assert.ok(call.at(-1).startsWith("a".repeat(40)), `${call.join(" ")} must name the verified object`);
+    }
+    assert.deepEqual(guards.facts.settings_reads, [
+      { what: "environment", via: "job token" },
+      { what: "rulesets", via: "job token" },
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

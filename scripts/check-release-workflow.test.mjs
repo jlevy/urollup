@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
-import { PUBLICATION_JOBS, PUBLISH_CONDITION, REHEARSAL_JOBS, WORKFLOW, checkReleaseWorkflow, secretReferences } from "./check-release-workflow.mjs";
+import { PUBLICATION_JOBS, PUBLISH_CONDITION, PUBLISH_CRATES_RUN, REHEARSAL_JOBS, WORKFLOW, checkReleaseWorkflow, crateSecretProblems, secretReferences } from "./check-release-workflow.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEXT = readFileSync(path.join(ROOT, WORKFLOW), "utf8");
@@ -167,4 +167,30 @@ test("credential-named variables appear only where a job may hold them", () => {
   assert.match(problemsAfter((copy) => copy.jobs.build.steps.push({ run: "x", env: { RELEASE_CRATES_TOKEN: "x" } })), /job build step \d+ must not set the credential RELEASE_CRATES_TOKEN/);
   assert.match(problemsAfter((copy) => copy.jobs.validate.steps.push({ run: "x", env: { GH_TOKEN: "x" } })), /job validate step \d+ must not set the credential GH_TOKEN/);
   assert.match(problemsAfter((copy) => (copy.jobs["publish-pypi"].env = { RELEASE_CRATES_TOKEN: "x" })), /job publish-pypi must not set the credential RELEASE_CRATES_TOKEN/);
+});
+
+test("the crates.io secret reaches only the publish step, as RELEASE_CRATES_TOKEN", () => {
+  // Review C2: each of these hands the token to code other than the publish script.
+  const SECRET = "${{ secrets.CARGO_REGISTRY_TOKEN }}";
+  const publishStep = (copy) => copy.jobs["publish-crates"].steps.find((step) => step.run === PUBLISH_CRATES_RUN);
+  const toolchainStep = (copy) => copy.jobs["publish-crates"].steps.find((step) => String(step.uses).startsWith("dtolnay/rust-toolchain@"));
+  const cases = {
+    "job-level env": [(copy) => {
+      copy.jobs["publish-crates"].env = { RELEASE_CRATES_TOKEN: SECRET };
+      delete publishStep(copy).env;
+    }, /workflow\.jobs\.publish-crates\.env\.RELEASE_CRATES_TOKEN references secrets\.CARGO_REGISTRY_TOKEN/],
+    "an action step's env": [(copy) => (toolchainStep(copy).env = { RELEASE_CRATES_TOKEN: SECRET }), /steps\[2\]\.env\.RELEASE_CRATES_TOKEN references secrets\.CARGO_REGISTRY_TOKEN/],
+    "an action input": [(copy) => (toolchainStep(copy).with.token = SECRET), /steps\[2\]\.with\.token references secrets\.CARGO_REGISTRY_TOKEN/],
+    "another env name on the publish step": [(copy) => (publishStep(copy).env.FOO = SECRET), /steps\[4\]\.env\.FOO references secrets\.CARGO_REGISTRY_TOKEN/],
+    "another job": [(copy) => (copy.jobs["publish-pypi"].steps.at(-1).env = { ...copy.jobs["publish-pypi"].steps.at(-1).env, SPARE: SECRET }), /publish-pypi\.steps\[\d+\]\.env\.SPARE references secrets\.CARGO_REGISTRY_TOKEN/],
+    "a bracketed reference": [(copy) => (toolchainStep(copy).with.token = "${{ secrets['CARGO_REGISTRY_TOKEN'] }}"), /with\.token references secrets\.CARGO_REGISTRY_TOKEN/],
+    "a second value on the publish step": [(copy) => (publishStep(copy).env.EXTRA = "x"), /the publish-crates step's env may hold only RELEASE_CRATES_TOKEN, found EXTRA/],
+    "an env on another step": [(copy) => (toolchainStep(copy).env = { RUSTUP_TOOLCHAIN: "1.98.0" }), /job publish-crates step 3: only the publish step may set env/],
+    "a job-level env without the secret": [(copy) => (copy.jobs["publish-crates"].env = { CI: "true" }), /job publish-crates must not set a job-level env/],
+    "a changed value": [(copy) => (publishStep(copy).env.RELEASE_CRATES_TOKEN = "${{ secrets.OTHER }}"), /must receive the crates\.io secret exactly as RELEASE_CRATES_TOKEN/],
+  };
+  for (const [label, [mutate, message]] of Object.entries(cases)) {
+    assert.match(problemsAfter(mutate), message, label);
+  }
+  assert.deepEqual(crateSecretProblems(parse(TEXT), parse(TEXT).jobs), [], "the workflow as committed passes");
 });

@@ -185,15 +185,17 @@ export function verifyTagTarget(ctx, { tag, commit }) {
 }
 
 /**
- * Verify the local tag's SSH signature against the committed allowed-signers file. Git
- * selects the signer by key, so the file needs no e-mail address. Throws when the file is
+ * Verify a tag object's SSH signature against the committed allowed-signers file. Git
+ * selects the signer by key, so the file needs no e-mail address. `object` is the tag
+ * object's ID; without one, the fully qualified `refs/tags/<tag>` is checked, never the
+ * short name, which a stray ref such as `refs/<tag>` could shadow. Throws when the file is
  * missing, the tag is unsigned, or no allowed key made the signature.
  */
-export function verifyTagSignature(ctx, { tag, signersFile }) {
+export function verifyTagSignature(ctx, { tag, object, signersFile }) {
   if (!existsSync(signersFile)) {
     fail(`${path.relative(ctx.root, signersFile)} does not exist; add the maintainer's SSH signing key before tagging (docs/publishing.md)`);
   }
-  const result = ctx.run("git", ["-c", `gpg.ssh.allowedSignersFile=${signersFile}`, "verify-tag", tag], { env: withoutCredentials(ctx.env), cwd: ctx.root });
+  const result = ctx.run("git", ["-c", `gpg.ssh.allowedSignersFile=${signersFile}`, "verify-tag", object ?? `refs/tags/${tag}`], { env: withoutCredentials(ctx.env), cwd: ctx.root });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   if (result.error || result.status !== 0) {
     fail(`${tag} does not carry a signature from an allowed release signer: ${output || result.error?.message || `exit ${result.status}`}`);
@@ -207,30 +209,47 @@ export function tagObjectName(text) {
 }
 
 /**
+ * When an annotated tag object was made, from its `tagger` header, as an ISO 8601 UTC
+ * time. Only the time is read: the header's name and address are never printed.
+ */
+export function taggerDate(text) {
+  const seconds = text.match(/^tagger .* (\d+) [+-]\d{4}$/m)?.[1];
+  return seconds === undefined ? null : new Date(Number(seconds) * 1000).toISOString().replace(".000Z", "Z");
+}
+
+/**
  * Verify that the local tag is exactly the release's signed tag: the object `ls-remote`
  * reported (`object`), naming the release commit (`commit`), signed under the release
  * tag's own name, with a signature from an allowed signer. Without the name check, a
  * signed tag made for something else could be re-pointed as the release ref (review B1).
- * Returns the signature line Git printed.
+ * After the first comparison every command names the object ID, never the tag name, so a
+ * stray ref such as `refs/<tag>` cannot send a check to another object (review C1).
+ * Returns `{signature, object, taggerDate}`: the signature line Git printed, and the object
+ * ID and tagger time the approver compares with the tag they signed (review C6).
  */
 export function verifyReleaseTag(ctx, { tag, object, commit, signersFile }) {
   const git = (...args) => execIn(ctx, "git", args, { label: `git ${args.join(" ")}` }).trim();
-  const local = git("rev-parse", `refs/tags/${tag}`);
+  if (!/^[0-9a-f]{40}$/.test(object ?? "")) {
+    fail(`the remote's ${tag} object ${JSON.stringify(object)} is not an object ID`);
+  }
+  const local = git("rev-parse", "--verify", "--end-of-options", `refs/tags/${tag}`);
   if (local !== object) {
     fail(`the local ${tag} is object ${local}, not the ${object} the remote reported`);
   }
-  const target = git("rev-parse", `${tag}^{commit}`);
+  const target = git("rev-parse", "--verify", "--end-of-options", `${object}^{commit}`);
   if (target !== commit) {
     fail(`${tag} points at ${target}, not the release commit ${commit}`);
   }
-  if (git("cat-file", "-t", tag) !== "tag") {
+  if (git("cat-file", "-t", object) !== "tag") {
     fail(`${tag} is a lightweight tag; a release tag must be annotated and signed`);
   }
-  const name = tagObjectName(git("cat-file", "tag", tag));
+  const text = git("cat-file", "tag", object);
+  const name = tagObjectName(text);
   if (name !== tag) {
     fail(`the signed object at ${tag} was made for the tag ${JSON.stringify(name)}, not ${tag}`);
   }
-  return verifyTagSignature(ctx, { tag, signersFile });
+  const signature = verifyTagSignature(ctx, { tag, object, signersFile });
+  return { signature, object, taggerDate: taggerDate(text) };
 }
 
 /**
@@ -241,8 +260,8 @@ export function verifyReleaseTag(ctx, { tag, object, commit, signersFile }) {
  */
 export function verifyLocalReleaseTag(ctx, { tag, version }) {
   const git = (...args) => execIn(ctx, "git", args, { label: `git ${args.join(" ")}` });
-  const object = git("rev-parse", `refs/tags/${tag}`).trim();
-  const commit = git("rev-parse", `${tag}^{commit}`).trim();
+  const object = git("rev-parse", "--verify", "--end-of-options", `refs/tags/${tag}`).trim();
+  const commit = git("rev-parse", "--verify", "--end-of-options", `${object}^{commit}`).trim();
   if (`v${version(git("show", `${commit}:Cargo.toml`))}` !== tag) {
     fail(`${tag} names a commit whose workspace version is not ${tag.slice(1)}`);
   }
@@ -263,8 +282,8 @@ export function verifyLocalReleaseTag(ctx, { tag, version }) {
       fail(`the tagged commit has no ${RELEASE_SIGNERS_FILE}; commit the maintainer's signing key first`);
     }
     writeFileSync(signersFile, signers.stdout);
-    const signature = verifyReleaseTag(ctx, { tag, object, commit, signersFile });
-    return { tag, object, commit, signature, notes };
+    const verified = verifyReleaseTag(ctx, { tag, object, commit, signersFile });
+    return { tag, object, commit, signature: verified.signature, taggerDate: verified.taggerDate, notes };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -273,43 +292,79 @@ export function verifyLocalReleaseTag(ctx, { tag, version }) {
 // ---------------------------------------------------------------------------------------
 // Repository settings the approval boundary depends on
 
-async function getJson(ctx, url, token) {
+/** How a settings read was served, recorded in the plan (review C7). */
+export const READ_WITH_TOKEN = "job token";
+export const READ_ANONYMOUSLY = "anonymous";
+export const READ_AFTER_REFUSAL = "anonymous after the job token was refused (403)";
+
+/** True when GitHub refused a request because the caller's API quota is spent. */
+function rateLimited(response) {
+  return response.status === 429 || (response.status === 403 && response.headers?.get?.("x-ratelimit-remaining") === "0");
+}
+
+/**
+ * GET a GitHub API document. The result records which credential served it (`via`), so
+ * the plan can show whether the job token or the anonymous fallback read each setting.
+ */
+async function getJson(ctx, url, token, via = token ? READ_WITH_TOKEN : READ_ANONYMOUSLY) {
   let response;
   try {
     response = await ctx.fetchImpl(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
   } catch (error) {
-    return { status: "unavailable", reason: `${url}: ${error.message}` };
+    return { status: "unavailable", reason: `${url}: ${error.message}`, via };
+  }
+  if (rateLimited(response)) {
+    return { status: "unavailable", reason: `${url}: GitHub's API rate limit is spent (${via}); rerun plan once it resets`, via };
   }
   // A job token without a permission the endpoint wants is refused with 403 even where the
-  // public data is readable; read this public repository's settings anonymously instead.
+  // public data is readable; read this public repository's settings anonymously instead,
+  // and record that the token did not serve the read.
   if (response.status === 403 && token) {
-    return getJson(ctx, url, undefined);
+    return getJson(ctx, url, undefined, READ_AFTER_REFUSAL);
   }
   if (response.status === 404) {
-    return { status: "absent" };
+    return { status: "absent", via };
   }
   if (!response.ok) {
-    return { status: "unavailable", reason: `${url} returned HTTP ${response.status}` };
+    return { status: "unavailable", reason: `${url} returned HTTP ${response.status}`, via };
   }
-  return { status: "present", body: await response.json() };
+  return { status: "present", body: await response.json(), via };
 }
 
-/** Read the `release` environment, its deployment policies and the tag rulesets. */
+/**
+ * Read the `release` environment, its deployment policies and the tag rulesets. `reads`
+ * lists which credential served each request.
+ */
 export async function observeReleaseSettings(ctx, { repository, token }) {
   const base = `https://api.github.com/repos/${repository}`;
-  const environment = await getJson(ctx, `${base}/environments/${RELEASE_ENVIRONMENT}`, token);
-  const policies = environment.status === "present" ? await getJson(ctx, `${base}/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`, token) : { status: "absent" };
-  const listed = await getJson(ctx, `${base}/rulesets?includes_parents=true&per_page=100`, token);
+  const reads = [];
+  const read = async (what, url) => {
+    const result = await getJson(ctx, url, token);
+    reads.push({ what, via: result.via });
+    return result;
+  };
+  const environment = await read("environment", `${base}/environments/${RELEASE_ENVIRONMENT}`);
+  const policies = environment.status === "present" ? await read("deployment policies", `${base}/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`) : { status: "absent" };
+  const listed = await read("rulesets", `${base}/rulesets?includes_parents=true&per_page=100`);
   const rulesets = [];
   if (listed.status === "present") {
     for (const summary of listed.body.filter((ruleset) => ruleset.target === "tag")) {
-      const detail = await getJson(ctx, `${base}/rulesets/${summary.id}`, token);
+      const detail = await read(`ruleset ${summary.id}`, `${base}/rulesets/${summary.id}`);
       rulesets.push(detail.status === "present" ? detail.body : { ...summary, unreadable: detail.reason ?? detail.status });
     }
   }
-  return { environment, policies, rulesets: listed.status === "present" ? { status: "present", list: rulesets } : listed };
+  return { environment, policies, rulesets: listed.status === "present" ? { status: "present", list: rulesets } : listed, reads };
+}
+
+/** One line per credential: which settings reads it served. */
+export function describeSettingsReads(reads = []) {
+  const groups = new Map();
+  for (const { what, via } of reads) {
+    groups.set(via, [...(groups.get(via) ?? []), what]);
+  }
+  return [...groups].map(([via, whats]) => `${via}: ${whats.join(", ")}`);
 }
 
 /**
@@ -342,17 +397,27 @@ export function judgeReleaseSettings({ environment, policies, rulesets }) {
       problems.push(`the ${RELEASE_ENVIRONMENT} environment's only deployment policy must be the tag pattern v*, found ${listed.map((item) => `${item.type ?? "branch"} ${item.name}`).join(", ") || "none"}`);
     }
   }
+  problems.push(...judgeRulesets(rulesets));
+  return problems;
+}
+
+/**
+ * The ruleset half of the settings check: an active tag ruleset covering every `v*` tag,
+ * with nothing excluded, blocks updates and deletions, and at least one such ruleset has
+ * no bypass actor wherever GitHub shows the list.
+ */
+export function judgeRulesets(rulesets) {
   if (rulesets.status !== "present") {
-    problems.push(`the repository's rulesets could not be read: ${rulesets.reason ?? rulesets.status}`);
-  } else {
-    const guarding = guardingRulesets(rulesets.list);
-    if (guarding.length === 0) {
-      problems.push("no active tag ruleset on refs/tags/v*, with nothing excluded, blocks tag updates and deletions");
-    }
-    const bypassed = guarding.filter((ruleset) => Array.isArray(ruleset.bypass_actors) && ruleset.bypass_actors.length > 0);
-    if (guarding.length > 0 && bypassed.length === guarding.length) {
-      problems.push(`the tag ruleset blocking updates and deletions lets ${bypassed[0].bypass_actors.length} actor(s) bypass it; that ruleset needs an empty bypass list`);
-    }
+    return [`the repository's rulesets could not be read: ${rulesets.reason ?? rulesets.status}`];
+  }
+  const problems = [];
+  const guarding = guardingRulesets(rulesets.list);
+  if (guarding.length === 0) {
+    problems.push("no active tag ruleset on refs/tags/v*, with nothing excluded, blocks tag updates and deletions");
+  }
+  const bypassed = guarding.filter((ruleset) => Array.isArray(ruleset.bypass_actors) && ruleset.bypass_actors.length > 0);
+  if (guarding.length > 0 && bypassed.length === guarding.length) {
+    problems.push(`the tag ruleset blocking updates and deletions lets ${bypassed[0].bypass_actors.length} actor(s) bypass it; that ruleset needs an empty bypass list`);
   }
   return problems;
 }
@@ -385,6 +450,51 @@ export function unverifiableSettings({ rulesets }) {
   }
   const hidden = guardingRulesets(rulesets.list).filter((ruleset) => !Array.isArray(ruleset.bypass_actors));
   return hidden.length > 0 ? ["the tag ruleset's bypass list is hidden from the job token; confirm at setup that it is empty"] : [];
+}
+
+/** `owner/name` of a GitHub remote URL, or null. */
+export function githubRepository(url) {
+  return url.trim().match(/github\.com[:/]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/)?.[1] ?? null;
+}
+
+/**
+ * The maintainer's own check of the tag rulesets, for `make release-verify-tag` (review
+ * C9). It reads them with the maintainer's `gh` login, which as a repository
+ * administrator sees the bypass lists the job token cannot, and judges them as `plan`
+ * does. Returns `{problems, notes, lines}`; a `gh` that cannot read them is a note, so
+ * the tag check still runs without it.
+ */
+export function localRulesetReport(ctx) {
+  const remote = ctx.run("git", ["remote", "get-url", "origin"], { env: withoutCredentials(ctx.env), cwd: ctx.root });
+  const repository = remote.status === 0 ? githubRepository(remote.stdout) : null;
+  const skipped = (reason) => ({ problems: [], lines: [], notes: [`the tag rulesets were not read with your gh login (${reason}); confirm in Settings, Rules that release-tags-immutable has an empty bypass list`] });
+  if (!repository) {
+    return skipped("origin is not a GitHub remote");
+  }
+  // The maintainer's own credentials, on their own machine: gh keeps its login.
+  const gh = (route) => {
+    const result = ctx.run("gh", ["api", route], { env: ctx.env, cwd: ctx.root });
+    if (result.error || result.status !== 0) {
+      throw new Error(`gh api ${route}: ${(result.stderr ?? "").trim() || result.error?.message || `exit ${result.status}`}`);
+    }
+    return JSON.parse(result.stdout);
+  };
+  let list;
+  try {
+    list = gh(`repos/${repository}/rulesets?includes_parents=true&per_page=100`)
+      .filter((ruleset) => ruleset.target === "tag")
+      .map((summary) => gh(`repos/${repository}/rulesets/${summary.id}`));
+  } catch (error) {
+    return skipped(error.message);
+  }
+  const lines = guardingRulesets(list).map((ruleset) => {
+    const actors = ruleset.bypass_actors;
+    const bypass = Array.isArray(actors) ? (actors.length === 0 ? "empty bypass list" : `${actors.length} bypass actor(s): ${actors.map((actor) => `${actor.actor_type}${actor.actor_id ? ` ${actor.actor_id}` : ""} (${actor.bypass_mode})`).join(", ")}`) : "bypass list hidden from your gh login";
+    return `ruleset ${JSON.stringify(ruleset.name)} (${ruleset.id}) blocks updates and deletions of v* tags; ${bypass}`;
+  });
+  const hidden = guardingRulesets(list).every((ruleset) => !Array.isArray(ruleset.bypass_actors));
+  const notes = guardingRulesets(list).length > 0 && hidden ? ["your gh login cannot see the bypass lists either; check them as a repository administrator"] : [];
+  return { problems: judgeRulesets({ status: "present", list }), notes, lines };
 }
 
 /** The `gh attestation verify` arguments that bind a file to this release's own build. */
@@ -615,15 +725,28 @@ export async function publishCrates(ctx, { bundle }) {
   if (command) {
     const clean = withoutCredentials(ctx.env);
     const target = mkdtempSync(path.join(ctx.tmpdir, "urollup-publish-package-"));
-    // Package with the same selection the upload uses: --workspace, or -p for a resumed
-    // publication whose dependency is already on crates.io.
-    execIn(ctx, "cargo", cratesPackageArgs(command), { env: { ...clean, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
+    // Package with the same selection the upload uses: --workspace for a first release
+    // (cratesPublishCommand on an absent decision; the crates job runs the same form), or
+    // -p for a resumed publication whose dependency is already on crates.io.
     const uploading = cratesInCommand(command, manifest.cargo_packages.map((item) => item.name));
+    execIn(ctx, "cargo", cratesPackageArgs(command), { env: { ...clean, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
+    // Cargo must have packaged exactly the crates the upload selects, and each must match
+    // its rehearsed digest; a vacuous check is a refusal (review C5).
+    const packaged = readdirSync(path.join(target, "package")).filter((name) => name.endsWith(".crate")).sort();
+    const expected = manifest.cargo_packages.filter((item) => uploading.includes(item.name)).map((item) => item.file).sort();
+    if (expected.length !== uploading.length || JSON.stringify(packaged) !== JSON.stringify(expected)) {
+      fail(`cargo packaged ${packaged.join(", ") || "nothing"}, but ${command.join(" ")} uploads ${expected.join(", ") || "nothing"}; refusing to publish`);
+    }
+    let checked = 0;
     for (const item of manifest.cargo_packages.filter((candidate) => uploading.includes(candidate.name))) {
       const digest = sha256(readFileSync(path.join(target, "package", item.file)));
       if (digest !== item.sha256) {
         fail(`${item.file} packages to ${digest}, not the rehearsed ${item.sha256}; refusing to publish`);
       }
+      checked += 1;
+    }
+    if (checked === 0 || checked !== uploading.length) {
+      fail(`the pre-publish digest check compared ${checked} of ${uploading.length} uploading crates; refusing to publish`);
     }
     verifyTagTarget(ctx, manifest);
     await recordingChannelState(ctx, "crates.io", decide, () =>

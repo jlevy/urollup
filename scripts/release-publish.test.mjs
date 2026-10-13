@@ -14,8 +14,11 @@ import {
   RELEASE_WORKFLOW,
   attachEvidence,
   attestationVerifyArgs,
+  describeSettingsReads,
   evidence,
+  githubRepository,
   judgeReleaseSettings,
+  localRulesetReport,
   loadBundle,
   observeReleaseSettings,
   parseLsRemote,
@@ -161,13 +164,17 @@ function fakeWorld({ bundle, crates = {}, pypi = null, pypiProject = false, crat
   return { ctx, state, calls, fetches };
 }
 
-/** A fake `cargo package` that writes the bundle's exact .crate bytes into its target dir. */
+/**
+ * A fake `cargo package` that writes the bundle's exact .crate bytes into its target dir,
+ * for the crates the arguments select (`--workspace`, or each `-p`), as Cargo does.
+ */
 function packagesRehearsedBytes(bundle, { tamper = false } = {}) {
   return (program, args, options) => {
     if (program === "cargo" && args[0] === "package") {
       const dir = path.join(options.env.CARGO_TARGET_DIR, "package");
       mkdirSync(dir, { recursive: true });
-      for (const item of bundle.cargo) {
+      const selected = args.includes("--workspace") ? bundle.cargo : bundle.cargo.filter((item) => args.some((arg, index) => args[index - 1] === "-p" && item.file.startsWith(`${arg}-0`)));
+      for (const item of selected) {
         writeFileSync(path.join(dir, item.file), tamper ? Buffer.from("different bytes") : readFileSync(path.join(bundle.dir, "crates", item.file)));
       }
       return { status: 0, stdout: "", stderr: "" };
@@ -256,7 +263,10 @@ test("the verified signature must be the release tag's own, on the release commi
     repo.sign("allowed", "v0.1.0", "urollup 0.1.0");
     const commit = repo.git("rev-parse", "HEAD");
     const object = repo.git("rev-parse", "refs/tags/v0.1.0");
-    assert.match(verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object, commit, signersFile: repo.signersFile }), /Good "git" signature for urollup-release/);
+    const verified = verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object, commit, signersFile: repo.signersFile });
+    assert.match(verified.signature, /Good "git" signature for urollup-release/);
+    assert.equal(verified.object, object);
+    assert.match(verified.taggerDate, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     assert.throws(() => verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object: OTHER, commit, signersFile: repo.signersFile }), /is object .*, not the d+ the remote reported/);
     assert.throws(() => verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object, commit: OTHER, signersFile: repo.signersFile }), /points at .*, not the release commit d+/);
 
@@ -275,6 +285,28 @@ test("the verified signature must be the release tag's own, on the release commi
   }
 });
 
+test("every tag check after the first names the verified object, so a stray ref cannot shadow the tag", { skip: !SSH_KEYGEN && "ssh-keygen is not available" }, () => {
+  // Review C1's reproduction: refs/tags/v0.1.0 is signed by an unlisted key, and a stray
+  // refs/v0.1.0, which Git resolves before refs/tags/ for the short name, holds an object
+  // the allowed key signed for v0.1.0 on the same commit.
+  const repo = signingRepository();
+  try {
+    const commit = repo.git("rev-parse", "HEAD");
+    repo.sign("allowed", "v0.1.0", "urollup 0.1.0");
+    const allowed = repo.git("rev-parse", "refs/tags/v0.1.0");
+    repo.git("tag", "-d", "v0.1.0");
+    repo.sign("other", "v0.1.0", "urollup 0.1.0");
+    const unlisted = repo.git("rev-parse", "refs/tags/v0.1.0");
+    assert.throws(() => verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object: unlisted, commit, signersFile: repo.signersFile }), /does not carry a signature from an allowed release signer/, "control");
+    repo.git("update-ref", "refs/v0.1.0", allowed);
+    assert.throws(() => verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object: unlisted, commit, signersFile: repo.signersFile }), /does not carry a signature from an allowed release signer/);
+    assert.throws(() => verifyTagSignature(repo.ctx, { tag: "v0.1.0", signersFile: repo.signersFile }), /does not carry a signature/, "without an object, the fully qualified refs/tags/ ref is checked");
+    assert.throws(() => verifyReleaseTag(repo.ctx, { tag: "v0.1.0", object: "v0.1.0", commit, signersFile: repo.signersFile }), /is not an object ID/);
+  } finally {
+    repo.cleanup();
+  }
+});
+
 test("the maintainer can check a signed tag locally before pushing it", { skip: !SSH_KEYGEN && "ssh-keygen is not available" }, () => {
   const repo = signingRepository();
   const version = (text) => text.match(/version = "([^"]+)"/)[1];
@@ -282,6 +314,8 @@ test("the maintainer can check a signed tag locally before pushing it", { skip: 
     repo.sign("allowed", "v0.1.0", "urollup 0.1.0");
     const result = verifyLocalReleaseTag(repo.ctx, { tag: "v0.1.0", version });
     assert.equal(result.commit, repo.git("rev-parse", "HEAD"));
+    assert.equal(result.object, repo.git("rev-parse", "refs/tags/v0.1.0"));
+    assert.equal(result.taggerDate, new Date(Number(repo.git("for-each-ref", "--format=%(taggerdate:unix)", "refs/tags/v0.1.0")) * 1000).toISOString().replace(".000Z", "Z"));
     assert.match(result.signature, /Good "git" signature/);
     assert.match(result.notes.join(""), /origin\/main is not fetched here/);
     repo.sign("other", "v0.1.0-other", "urollup 0.1.0");
@@ -384,6 +418,71 @@ test("a job token refused with 403 falls back to an anonymous read of public set
   assert.equal(settings.environment.status, "absent");
   assert.equal(settings.rulesets.status, "present");
   assert.deepEqual(seen, ["Bearer read", "anonymous", "Bearer read", "anonymous"]);
+  // Review C7: the plan records that the fallback, not the job token, served each read.
+  assert.deepEqual(settings.reads, [
+    { what: "environment", via: "anonymous after the job token was refused (403)" },
+    { what: "rulesets", via: "anonymous after the job token was refused (403)" },
+  ]);
+  assert.deepEqual(describeSettingsReads(settings.reads), ["anonymous after the job token was refused (403): environment, rulesets"]);
+});
+
+test("a spent API quota is reported as a rate limit, not retried anonymously", async () => {
+  const seen = [];
+  const limited = (status) => ({ ...response(status, { message: "API rate limit exceeded" }), headers: new Map([["x-ratelimit-remaining", "0"]]) });
+  const ctx = {
+    fetchImpl: async (url, options) => {
+      seen.push(options.headers.Authorization ?? "anonymous");
+      return options.headers.Authorization ? response(403, { message: "Resource not accessible by integration" }) : limited(403);
+    },
+  };
+  const settings = await observeReleaseSettings(ctx, { repository: REPOSITORY, token: "read" });
+  assert.equal(settings.environment.status, "unavailable");
+  assert.match(settings.environment.reason, /rate limit is spent \(anonymous after the job token was refused \(403\)\); rerun plan/);
+  assert.match(judgeReleaseSettings(settings).join("\n"), /rate limit .* rerun plan/);
+  const tokenLimited = await observeReleaseSettings({ fetchImpl: async () => limited(403) }, { repository: REPOSITORY, token: "read" });
+  assert.match(tokenLimited.environment.reason, /rate limit is spent \(job token\)/);
+  assert.deepEqual(describeSettingsReads(tokenLimited.reads), ["job token: environment, rulesets"]);
+});
+
+test("the maintainer's gh login reads the ruleset bypass lists the job token cannot see", () => {
+  const immutable = { ...structuredClone(GOOD_SETTINGS.rulesets.list[0]), id: 7, name: "release-tags-immutable" };
+  const world = (detail, { remote = "git@github.com:jlevy/urollup.git", ghFails = false } = {}) => {
+    const calls = [];
+    const ctx = {
+      env: { PATH: process.env.PATH },
+      root: process.cwd(),
+      run: (program, args) => {
+        calls.push([program, ...args]);
+        if (program === "git") {
+          return { status: 0, stdout: `${remote}\n`, stderr: "" };
+        }
+        if (ghFails) {
+          return { status: 4, stdout: "", stderr: "gh: To get started with GitHub CLI, please run: gh auth login" };
+        }
+        const route = args[1];
+        return { status: 0, stdout: JSON.stringify(route.includes("/rulesets?") ? [{ id: 7, target: "tag" }, { id: 8, target: "branch" }] : detail), stderr: "" };
+      },
+    };
+    return { ctx, calls };
+  };
+  const empty = world({ ...immutable, bypass_actors: [] });
+  const report = localRulesetReport(empty.ctx);
+  assert.deepEqual(report.problems, []);
+  assert.deepEqual(report.lines, ['ruleset "release-tags-immutable" (7) blocks updates and deletions of v* tags; empty bypass list']);
+  assert.deepEqual(empty.calls.filter((call) => call[0] === "gh").map((call) => call[2]), ["repos/jlevy/urollup/rulesets?includes_parents=true&per_page=100", "repos/jlevy/urollup/rulesets/7"]);
+
+  const bypassed = localRulesetReport(world({ ...immutable, bypass_actors: [{ actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" }] }).ctx);
+  assert.match(bypassed.lines[0], /1 bypass actor\(s\): RepositoryRole 5 \(always\)/);
+  assert.match(bypassed.problems.join(""), /needs an empty bypass list/);
+
+  const hidden = localRulesetReport(world({ ...immutable, bypass_actors: null }).ctx);
+  assert.deepEqual(hidden.problems, []);
+  assert.match(hidden.notes.join(""), /cannot see the bypass lists either/);
+
+  assert.match(localRulesetReport(world(immutable, { ghFails: true }).ctx).notes.join(""), /not read with your gh login .*gh auth login/);
+  assert.match(localRulesetReport(world(immutable, { remote: "https://example.invalid/x.git" }).ctx).notes.join(""), /origin is not a GitHub remote/);
+  assert.equal(githubRepository("https://github.com/jlevy/urollup.git\n"), "jlevy/urollup");
+  assert.equal(githubRepository("git@github.com:jlevy/urollup"), "jlevy/urollup");
 });
 
 test("settings are read with the read token, and a missing environment is reported", async () => {
@@ -537,6 +636,17 @@ test("crates.io resumes a partial publication and refuses different bytes or a c
     await publishCrates(partial.ctx, { bundle: bundle.dir });
     assert.deepEqual(partial.calls.find((call) => call.args[0] === "publish").args, ["publish", "--locked", "--no-verify", "-p", "urollup"]);
     assert.deepEqual(partial.calls.find((call) => call.args[0] === "package").args, ["package", "--locked", "--no-verify", "-p", "urollup"], "the digest check packages exactly what the resume uploads");
+
+    // Review C5: Cargo must package exactly the crates the upload selects.
+    const extra = cratesWorld(bundle, { crates: { "urollup-core": { checksum: bundle.cargo[0].sha256 } } });
+    extra.ctx.run = ((original) => (program, args, options) => {
+      if (program === "cargo" && args[0] === "package") {
+        return original(program, ["package", "--locked", "--no-verify", "--workspace"], options);
+      }
+      return original(program, args, options);
+    })(extra.ctx.run);
+    await assert.rejects(publishCrates(extra.ctx, { bundle: bundle.dir }), /cargo packaged urollup-0\.1\.0\.crate, urollup-core-0\.1\.0\.crate, but cargo publish --locked --no-verify -p urollup uploads urollup-0\.1\.0\.crate; refusing to publish/);
+    assert.ok(!extra.calls.some((call) => call.args[0] === "publish"), "nothing is uploaded after a selection mismatch");
 
     const tampered = cratesWorld(bundle, { tamper: true });
     await assert.rejects(publishCrates(tampered.ctx, { bundle: bundle.dir }), /packages to .*, not the rehearsed/);

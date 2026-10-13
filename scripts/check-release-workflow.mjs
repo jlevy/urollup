@@ -125,6 +125,60 @@ function describePermissions(value) {
 /** The one command the crates.io publish job may run: the script that confines the token. */
 export const PUBLISH_CRATES_RUN = 'node scripts/release.mjs publish-crates --bundle "$RUNNER_TEMP/release-bundle"';
 
+/** The one place the crates.io secret may appear: this value of the publish step's env. */
+export const CRATES_SECRET = { name: "RELEASE_CRATES_TOKEN", value: "${{ secrets.CARGO_REGISTRY_TOKEN }}" };
+
+/** Every string in a parsed YAML value, with its path. */
+function stringsIn(value, where, found = []) {
+  if (typeof value === "string") {
+    found.push({ where, value });
+  } else if (Array.isArray(value)) {
+    value.forEach((item, index) => stringsIn(item, `${where}[${index}]`, found));
+  } else if (isObject(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      stringsIn(item, `${where}.${key}`, found);
+    }
+  }
+  return found;
+}
+
+/**
+ * The crates.io secret is confined to the publish step (review C2): it is referenced
+ * exactly once in the whole workflow, as `RELEASE_CRATES_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}`
+ * in the env of the publish-crates step that runs the publish script. publish-crates sets
+ * no job-level env and no env on any other step, and the publish step's env holds nothing
+ * else, so no action input, action step, other name or other job ever sees the token.
+ */
+export function crateSecretProblems(workflow, jobs) {
+  const problems = [];
+  const job = isObject(jobs["publish-crates"]) ? jobs["publish-crates"] : {};
+  const steps = Array.isArray(job.steps) ? job.steps : [];
+  const index = steps.findIndex((step) => isObject(step) && typeof step.run === "string" && step.run.trim() === PUBLISH_CRATES_RUN);
+  const allowed = `workflow.jobs.publish-crates.steps[${index}].env.${CRATES_SECRET.name}`;
+  for (const place of stringsIn(workflow, "workflow").filter(({ value }) => secretReferences(value).includes("CARGO_REGISTRY_TOKEN"))) {
+    if (index < 0 || place.where !== allowed) {
+      problems.push(`${place.where} references secrets.CARGO_REGISTRY_TOKEN; only the env of the publish-crates step that runs the publish script may, as ${CRATES_SECRET.name}`);
+    }
+  }
+  const step = index >= 0 ? steps[index] : null;
+  if (!step || typeof step.env?.[CRATES_SECRET.name] !== "string" || step.env[CRATES_SECRET.name].trim() !== CRATES_SECRET.value) {
+    problems.push(`the publish-crates step must receive the crates.io secret exactly as ${CRATES_SECRET.name}: ${CRATES_SECRET.value}`);
+  }
+  const extra = Object.keys(isObject(step?.env) ? step.env : {}).filter((key) => key !== CRATES_SECRET.name);
+  if (extra.length > 0) {
+    problems.push(`the publish-crates step's env may hold only ${CRATES_SECRET.name}, found ${extra.join(", ")}`);
+  }
+  if (job.env !== undefined) {
+    problems.push("job publish-crates must not set a job-level env, which every step, third-party actions included, would inherit");
+  }
+  steps.forEach((other, position) => {
+    if (position !== index && isObject(other) && other.env !== undefined) {
+      problems.push(`job publish-crates step ${position + 1}: only the publish step may set env in the job that holds the crates.io token`);
+    }
+  });
+  return problems;
+}
+
 /** Each environment block of the workflow, with where it is, read from the parsed YAML. */
 function environmentBlocks(workflow, jobs) {
   const blocks = [{ where: "the workflow", job: null, env: workflow.env }];
@@ -146,8 +200,8 @@ function environmentBlocks(workflow, jobs) {
  * - no environment anywhere exports CARGO_REGISTRY_TOKEN, which Cargo hands to every build
  *   script and proc macro;
  * - a credential-named entry appears only in a job that may hold that credential, never
- *   at the workflow level, and the crates.io secret only as RELEASE_CRATES_TOKEN in
- *   publish-crates;
+ *   at the workflow level, and the crates.io secret only where `crateSecretProblems`
+ *   allows it;
  * - no step writes to $GITHUB_ENV, which would export a value to every later step; and
  * - publish-crates runs nothing but the publish script.
  */
@@ -243,6 +297,7 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
   }
 
   problems.push(...credentialEnvironmentProblems(workflow, jobs));
+  problems.push(...crateSecretProblems(workflow, jobs));
   for (const [name, job] of Object.entries(jobs)) {
     if (!isObject(job)) {
       continue;
