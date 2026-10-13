@@ -93,22 +93,33 @@ statically, and each job log’s `GITHUB_TOKEN Permissions` banner shows it.
   It then fetches the tag and verifies that exact object: the one `ls-remote` reported,
   pointing at the release commit, made under the release tag’s own name (its `tag`
   header), and signed by a key in `.github/release-allowed-signers` at the tagged
-  commit. A signed tag made for anything else cannot be re-pointed as a release.
+  commit. After the first comparison every check names that object’s ID, never the tag
+  name, so no other ref can stand in for it.
+  A signed tag made for anything else cannot be re-pointed as a release.
+  These checks cannot tell an older tag the maintainer signed for the same name and
+  version from the one just pushed, so the plan summary prints the tag object’s ID and
+  time, and the approver compares them with the tag they signed
+  ([Publishing a Release](#publishing-a-release), step 6).
 
 - **The settings.** `plan` reads the `release` environment, its deployment policies and
-  the repository’s tag rulesets with the job’s read-only token (falling back to an
-  anonymous read if GitHub refuses the token), and refuses to start unless:
+  the repository’s tag rulesets with the job’s read-only token, and refuses to start
+  unless:
   - the environment has a required reviewer and deploys only from the tag pattern `v*`;
   - administrators cannot bypass it, where GitHub reports that setting;
   - an active tag ruleset covering `refs/tags/v*`, with nothing excluded, blocks tag
     updates and deletions, and lists no bypass actor where GitHub shows the list.
 
+  If GitHub refuses the token with 403, `plan` reads the same public settings
+  anonymously. Its summary says which credential served each read (“Read with the job
+  token: …” or “Read with the anonymous after the job token was refused (403): …”), and
+  a spent API quota is reported as a rate limit to rerun, not as missing settings.
   GitHub shows a ruleset’s bypass list only to repository administrators, and the job
   token is not one, so `plan` cannot see it; it reports that as something the maintainer
-  confirms at setup. A rehearsal reports every finding in its summary without refusing.
-  Reading an existing environment with the job token has not run yet: the rehearsal
-  before the first tag ([Publishing a Release](#publishing-a-release), step 3) is what
-  proves it.
+  confirms, and `make release-verify-tag` reads it with the maintainer’s own `gh` login.
+  A rehearsal reports every finding in its summary without refusing.
+  Whether the job token itself can read an existing `release` environment has not run
+  yet: the rehearsal before the first tag
+  ([Publishing a Release](#publishing-a-release), step 3) shows it.
 
 - **The tag again, at every write.** Each publish job, and each write inside one
   (creating the draft, each upload, each metadata reset, publishing the draft, `cargo
@@ -118,9 +129,14 @@ statically, and each job log’s `GITHUB_TOKEN Permissions` banner shows it.
 - **The bundle.** Before promoting anything, a publish job requires the manifest,
   `SHA256SUMS`, the asset files, the `.crate` files and the plan to agree.
 
-- **No build code beside a credential.** `publish-crates` removes the crates.io token
-  from its own environment, packages without it to prove the bytes match the rehearsal,
-  and hands it only to `cargo publish --no-verify`, which compiles nothing.
+- **No build code beside a credential.** The workflow gate allows the crates.io secret
+  in exactly one place: `RELEASE_CRATES_TOKEN` on the `publish-crates` step that runs
+  the publish script, never a job-level env, an action’s env or input, another name or
+  another job. The script removes the token from its own environment, packages without it
+  with exactly the crate selection it uploads, refuses unless Cargo packaged those
+  crates and each matches its rehearsed digest, and hands the token only to
+  `cargo publish
+  --no-verify`, which compiles nothing.
 
 - **Free names for a first release.** On the first release, an existing crates.io crate
   or PyPI project without the planned version is a conflict, because a pending PyPI
@@ -199,9 +215,15 @@ repository.
      `refs/tags/v*`, rule **Restrict creations**, with the repository admin role as the
      only bypass actor. The signed-tag check already stops an unsigned or wrongly signed
      tag from publishing; this ruleset also stops one from being pushed.
+     Its bypass does not stop an agent that holds the maintainer’s credentials, which is
+     why the tag run also requires the signature and the approver compares the tag
+     object (step 6 of [Publishing a Release](#publishing-a-release)).
 
    `plan` verifies that an active ruleset like the first exists, but it cannot see
    bypass lists, so confirm here that the first ruleset’s bypass list is empty.
+   `make release-verify-tag` reads the lists again with your own `gh` login before every
+   tag, and refuses if the only ruleset that blocks updates and deletions has a bypass
+   actor.
 
 3. **Release signing key.** Sign release tags with an SSH key no agent can reach, such
    as a hardware key or one kept out of the agents’ `ssh-agent`. Configure Git to sign
@@ -248,6 +270,12 @@ repository.
 3. Rehearse the exact candidate from `main` without `allow-unmerged`. Its summary must
    show the publication settings as configured, the signers file present, and every
    channel `absent`; review the bundle.
+   Its “Read with the …” lines must show the **job token** serving the environment and
+   deployment-policy reads.
+   If they show “anonymous after the job token was refused (403)”, the job token cannot
+   read the environment: the tag run would then depend on the anonymous API quota, which
+   runners share. Decide before tagging whether to grant the read GitHub’s refusal names,
+   or to accept the anonymous read.
 
 4. Confirm the names are still free: `https://crates.io/api/v1/crates/urollup`,
    `…/urollup-core` and `https://pypi.org/pypi/urollup/json` all return 404, and the
@@ -265,13 +293,21 @@ repository.
 
    `make release-verify-tag` refuses a lightweight tag, a tag object made for another
    name, a commit off `main` or with another workspace version, and a signature from a
-   key not in the tagged commit’s `.github/release-allowed-signers`. A pushed tag cannot
-   be moved, so a mistake caught here costs nothing; caught by the tag run, it costs the
-   version.
+   key not in the tagged commit’s `.github/release-allowed-signers`. It prints the tag
+   object’s ID and time, and reads the tag rulesets’ bypass lists with your `gh` login
+   (it notes, and does not refuse, when `gh` cannot read them).
+   A pushed tag cannot be moved, so a mistake caught here costs nothing; caught by the
+   tag run, it costs the version.
 
-6. Watch the run. After `plan`, `assemble` and `attest` pass, approve each `release`
-   deployment (`stage-github`, then `publish-crates` and `publish-pypi`, then
-   `publish-github` and `attach-evidence`).
+6. Watch the run. Before approving anything, compare the plan summary’s **Before
+   approving** section with the tag you signed: its tag object must equal what
+   `git rev-parse v0.1.0` prints where you made the tag, and its time must be when you
+   made it. The signature checks pass for any tag you ever signed for this name and
+   version, such as an abandoned attempt or the old tag during recovery, so this
+   comparison is what shows the run releases the tag you just pushed.
+   After `plan`, `assemble` and `attest` pass, approve each `release` deployment
+   (`stage-github`, then `publish-crates` and `publish-pypi`, then `publish-github` and
+   `attach-evidence`).
 
 7. The run succeeds only when every probe passes and `release-evidence.json` is
    attached.
@@ -329,7 +365,9 @@ The supported sequence is:
    ruleset (GitHub’s audit log records it; also note who, when and why in the release
    record), deletes and re-creates the signed tag, checks it with
    `make release-verify-tag`, re-enables the ruleset, and pushes the tag, which starts a
-   new run.
+   new run. The old tag object stays valid for its signature, so when approving the new
+   run, compare its tag object with the new tag (step 6 of
+   [Publishing a Release](#publishing-a-release)).
 5. The old run’s attestations name the old commit.
    Verification passes `--source-digest` with the release commit, so they never verify
    the new artifacts.
