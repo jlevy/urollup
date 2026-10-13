@@ -443,7 +443,9 @@ export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturi
 }
 
 function buildWheel(artifact, env, workDir) {
-  const outDir = path.join(workDir, "wheel");
+  // The manylinux container sees only the repository, mounted at /io, so its output stays
+  // under target/.
+  const outDir = artifact.container ? path.join(ROOT, "target", "release-wheel") : path.join(workDir, "wheel");
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   if (artifact.container) {

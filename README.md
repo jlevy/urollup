@@ -10,19 +10,36 @@ and `sessions` commands with terminal-table and JSON output.
 Pi and Gemini CLI adapters, portable mergeable summaries, capture and a local read-only
 web UI are planned in later milestones.
 
-## Install for Development
+## Install
+
+urollup 0.1.0 is not published yet.
+Once it is, these commands install exactly that version:
+
+```bash
+# Run an exact version without a persistent installation.
+uvx --isolated urollup@0.1.0 --version
+
+# Install the prebuilt executable persistently through uv.
+uv tool install urollup==0.1.0
+
+# Build and install from crates.io with the committed dependency resolution.
+cargo install --locked urollup@0.1.0
+```
+
+The PyPI package is the compiled Rust executable in a binary wheel, not a Python
+reimplementation. GitHub Releases will also carry archives for Linux (static, x86_64 and
+arm64), macOS 11.0 or newer (Apple silicon and Intel) and Windows x86_64, with
+`SHA256SUMS` and build-provenance attestations; the
+[publishing runbook](docs/publishing.md#verifying-a-download) shows how to verify a
+download.
+
+### From Source
 
 From a checkout, install the current binary into Cargo’s executable directory:
 
 ```bash
 cargo install --locked --path crates/urollup
 ```
-
-Public installation through GitHub Releases, crates.io, PyPI and `uvx` begins with
-version 0.1.0. The
-[publishing plan](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md)
-defines the target matrix and release gates; those public packages are not published
-yet.
 
 ## Common Workflows
 
@@ -101,7 +118,8 @@ records dated measurements and the remaining memory work.
 Whole-history results still need acceptance under the
 [full-history QA playbook](tests/qa/full-history-rollup.qa.md).
 The implementation stack is merged into `main`, and its technical review is complete.
-Packaging implementation and rehearsal begin after milestone acceptance.
+The credential-free packaging rehearsal is implemented
+([publishing runbook](docs/publishing.md)); publication waits on milestone acceptance.
 The complete analysis workflow is tracked separately as G5 in the
 [workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md).
 
@@ -114,7 +132,9 @@ The complete analysis workflow is tracked separately as G5 in the
 | [Whole-history workflow plan](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md) | Shared snapshots, joint grouping, cache/pricing evidence, tools/time and G5 acceptance |
 | [Design specification](docs/urollup-design.md) | Goals, layers, interfaces, decisions, glossary and CLI flag index |
 | [Implementation plan](docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md) | Product phases, milestones, tests, performance targets and rollout |
-| [0.1.0 publishing plan](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md) | Release channels, target matrix, artifact validation and publication runbook |
+| [0.1.0 publishing plan](docs/project/specs/active/plan-2026-09-16-first-release-publishing.md) | Release channels, target matrix, artifact validation and release readiness |
+| [Publishing runbook](docs/publishing.md) | Rehearsing, publishing, rerunning and verifying a release, and the maintainer’s setup |
+| [Changelog](CHANGELOG.md) | What each release contains, including its contract versions |
 | [Portable agent usage research](docs/project/research/research-2026-09-13-portable-agent-usage.md) | Existing tools, log dialects, workflows, accounting risks and merge rationale |
 | [Rust CLI engineering baseline](docs/project/research/research-2026-09-13-rust-cli-engineering-baseline.md) | Repository, gate, release and development-tooling practices |
 | [Agent tool source reviews](docs/project/research/research-2026-09-14-agent-tool-source-reviews.md) | Detailed Codex, ccusage, Pi, agentfdr and Anthropic plugin evidence |
@@ -143,6 +163,7 @@ make build   # debug build
 make test    # Rust tests and CLI goldens
 make check   # the handoff gate CI also runs
 make fix     # format Rust, TOML and Markdown
+make release-rehearsal  # build and smoke-test this host's release artifacts
 tbd ready    # beads ready to work on
 ```
 

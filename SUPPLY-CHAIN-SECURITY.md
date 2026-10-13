@@ -23,6 +23,12 @@ It checks against the authoritative services:
 - **Toolchains and bootstrap tools:** the Rust channel manifests, the Node.js
   `SHASUMS256.txt`, and the GitHub release assets for uv, gh and cargo-deny match their
   pinned digests, and each file that names them uses the pinned version.
+- **Release build inputs:** each container image a release build runs is pinned by
+  digest and inventoried, the quay.io tag history shows that tag on that digest for at
+  least 14 days, and no registry image is referenced by tag; each apt package a release
+  job installs is an exact inventoried version that Launchpad shows published for every
+  listed architecture at least 14 days ago, and every workflow `apt-get install` names
+  only such versions or the plan’s pinned list.
 - **Workflow trust:** every workflow grants only `contents: read` at the top level;
   pull-request jobs grant no write permission, set `persist-credentials: false`, write
   no reusable cache, and run `npm ci --ignore-scripts`.
@@ -32,6 +38,12 @@ It checks against the authoritative services:
 GitHub API checks use `GITHUB_TOKEN` or `GH_TOKEN` when provided and otherwise reuse the
 local GitHub CLI credential without invoking a shell or printing it.
 CI passes only its read-only workflow token.
+
+The release workflow’s per-job authority is a gate of its own: `make release-check`
+(`scripts/check-release-workflow.mjs`) proves that its build, validation and assembly
+jobs hold no write, OIDC, attestation, environment or secret authority, and that each
+publish job holds only its own permission behind a tag and the protected `release`
+environment ([publishing runbook](docs/publishing.md)).
 
 Two other gates cover dependencies: `make audit` runs cargo-deny (advisories, licenses,
 bans and sources, configured in [deny.toml](deny.toml)), and `make npm-audit` runs
@@ -186,6 +198,29 @@ stack-exhaustion advisory in `braces` with no patched release, reached through t
 from the cool-off) replaces `fast-glob` with `tinyglobby`, which removes 17 packages
 including `braces`. The new transitive packages, `tinyglobby` 0.2.17, `fdir` 6.5.0 and
 `picomatch` 4.0.7, pass the 14-day gate.
+
+## Reviewed Versions (Release Machinery)
+
+Checked on 2026-10-13, when the cool-off cutoff was 2026-09-29, for beads `uro-uj8w`,
+`uro-080d` and `uro-co0m`. Nothing here is a runtime dependency of the Rust crates.
+
+| Item | Version | Published | Why |
+| --- | --- | --- | --- |
+| maturin (PyPI, `release` group) | 1.15.0 | 2026-08-24 | Builds the `bindings = "bin"` wheels; no dependencies; its Linux wheels are static, so the same binary runs inside the manylinux image |
+| `quay.io/pypa/manylinux2014_x86_64` | `2026.09.26-1`, `sha256:6f74cabe…` | 2026-09-26 | glibc 2.17 environment for the x86_64 wheel |
+| `quay.io/pypa/manylinux2014_aarch64` | `2026.09.26-1`, `sha256:d36e257b…` | 2026-09-26 | glibc 2.17 environment for the aarch64 wheel |
+| Ubuntu noble `musl`, `musl-dev`, `musl-tools` | 1.2.4-2 | 2023-11-14 | `musl-gcc` for zstd’s C sources in the static musl archives |
+| actions/download-artifact | `d3f86a1` (v4.3.0) | 2025-04-24 | Same artifact generation as the pinned upload-artifact v4.6.2 |
+| actions/attest-build-provenance | `4d10147` (v4.2.2) | 2026-08-06 | Build-provenance attestations, tag runs only |
+| yaml (npm) | 2.9.0 | 2026-05-11 | Already locked through tryscript; now a direct dev dependency for the release-workflow gate; 2.9.1 (2026-09-11) held back |
+
+The release builds use the pinned Rust 1.98.0 with the `x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, Apple and `x86_64-pc-windows-msvc` standard libraries from
+the same channel manifest.
+The Linux wheel builds mount that host toolchain read-only into the manylinux image and
+run Cargo offline against the locked, prefetched crates.
+PyPI uploads use the pinned uv’s `uv publish` with trusted publishing, so no publishing
+action is added.
 
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.

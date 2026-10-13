@@ -156,12 +156,13 @@ make fix     # format Rust (rustfmt), TOML (taplo) and Markdown (flowmark)
 
 `make check` is the required handoff gate; if it passes, CI should.
 It runs the toolchain and uv preflights, the supply-chain gate, the lint-policy check,
-rustfmt, taplo and flowmark checks, `uv lock --check`, clippy and tests with and without
-default features, rustdoc, the dependency guard, the MSRV build and tests, cargo-deny,
-npm audit, and `make gate-proofs`, which proves each gate fails on its committed
-violation in `tests/gate-probes/`. Each gate’s decision logic lives in a tested script
-under `scripts/`; `make help` lists the targets, and `.github/workflows/ci.yml` runs the
-same targets.
+the release gate (`make release-check`), rustfmt, taplo and flowmark checks,
+`uv lock --check`, clippy and tests with and without default features, rustdoc, the
+dependency guard, the MSRV build and tests, cargo-deny, npm audit, and
+`make gate-proofs`, which proves each gate fails on its committed violation in
+`tests/gate-probes/`. Each gate’s decision logic lives in a tested script under
+`scripts/`; `make help` lists the targets, and `.github/workflows/ci.yml` runs the same
+targets.
 
 A fresh machine needs these before `make check`, at the versions the Makefile pins
 (`make toolchain` and `make uv-version` say which is missing):
@@ -187,6 +188,10 @@ npm ci --ignore-scripts                                                       # 
   until Phase 2. HTTP, async-runtime and web-asset crates may enter only as `optional`
   dependencies behind it; `make dependency-guard` fails if one reaches `urollup-core` or
   a `--no-default-features` build.
+- **Release machinery:** [docs/publishing.md](docs/publishing.md) is the runbook.
+  `.github/workflows/release.yml` is orchestration over tested `scripts/release*.mjs`;
+  `make release-check` proves its authority boundaries, `make release-rehearsal`
+  rehearses this host’s artifacts and `make release-dispatch` the full CI matrix.
 - **Dependencies:** follow [SUPPLY-CHAIN-SECURITY.md](SUPPLY-CHAIN-SECURITY.md) before
   adding or upgrading any crate, npm package, PyPI package, action or toolchain.
 - **Ported code:** record every file adapted from another repository in
