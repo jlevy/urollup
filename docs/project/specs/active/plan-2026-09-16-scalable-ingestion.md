@@ -608,12 +608,12 @@ committed; then query and render.
   `window_log_max(23)`. A window above 8 MiB and up to 2^27 takes the permit first,
   charged that window’s decoder, and decodes that one frame with a second decoder opened
   with `window_log_max(27)`, zstd’s default limit, which is dropped when the frame ends.
-  A window above 2^27 decodes with `window_log_max(27)` and fails as it does today, a
-  `CorruptCompressedData` failure with zstd’s message, so no decoder error has to be
-  told apart from damage.
-  A header the loop cannot parse (a bad magic number, a reserved bit, or a header cut
-  off at the end of the file) goes to the slot’s decoder unchanged, so its failure kind
-  and message stay as today.
+  A window above 2^27 goes to the slot’s decoder, which fails it as zstd’s default limit
+  did, a `CorruptCompressedData` failure with zstd’s own message, so no decoder error
+  has to be told apart from damage (see the Readers notes under
+  [Implementation Notes](#implementation-notes)). A header the loop cannot parse (a bad
+  magic number, a reserved bit, or a header cut off at the end of the file) goes to the
+  slot’s decoder unchanged, so its failure kind and message stay as today.
   Skippable frames are skipped, as today.
   A decoder’s size comes from zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula, computed
   in Rust because zstd-sys exposes that function only behind its `experimental` feature;
@@ -1339,9 +1339,11 @@ Choices made while implementing, where this design left room:
     shares, and `LargeRecord::raise` grows one share, as a doubling line does.
     The charge stays the largest need held at once since the last checkpoint.
     Dropping the last share frees the permit and signals waiters.
-    A waiter also polls the stop flag every `PERMIT_POLL` (20 ms), because a refusal
-    signals without the permit’s lock, which the refusing thread may hold inside a
-    charge. A refused or stopped share is `None`, and the read ends with the new
+    A waiter also polls the stop flag every 20 ms, because a refusal signals without the
+    permit’s lock, which the refusing thread may hold inside a charge.
+    A share is neither `Send` nor `Sync`, since re-entrance is keyed by the thread that
+    took it, and debug builds assert that its holder raises and drops it.
+    A refused or stopped share is `None`, and the read ends with the new
     `SourceReadError::Stopped`, which the adapters already rank below the refusal.
   - **Line buffers.** The scan’s, `first_record_of`’s and a peek’s line buffer starts at
     the 256 KiB retained capacity and doubles with `reserve_exact` to
@@ -1350,6 +1352,8 @@ Choices made while implementing, where this design left room:
     raises it at each later doubling.
     `LineBuffer::reset` shrinks it to the retained capacity and drops the share at the
     start of the next read, after the visitor has returned, or when the buffer drops.
+    A line past the read’s limit is an error rather than growth without the permit;
+    `read_line` never asks for one.
   - **The zstd frame loop** (`sources/reader/frames.rs`) keeps
     `zstd::stream::read::Decoder`’s loop: one input buffer of `ZSTD_DStreamInSize()`,
     the same reads, the empty-input flush before each read, the session reset between
@@ -1362,8 +1366,19 @@ Choices made while implementing, where this design left room:
     before. That matters: how much a decoder emits before a damaged block depends on its
     input chunks, and a test that damages raw blocks after a split header fails when the
     loop compacts the header instead, or reads 7 bytes less per buffer.
-    A header split across a read that returns fewer bytes than asked before the end of
-    the input goes to the slot’s decoder; a regular file never does this.
+    A read that fails, `Interrupted` included, changes nothing, as `BufReader`’s does,
+    so a caller that retries resumes exactly: a refill sets its bounds only once the
+    read returns, and a failed look-ahead puts the header’s start back.
+    A look-ahead read that returns nothing is the end of the input, as `BufReader`’s
+    would have been, so nothing is read after it.
+    Tests compare the loop with the stock decoder over scripted readers that fail or
+    return `Interrupted` at each read in turn, interrupt every read once, and return
+    short reads, and check that both make the same reads.
+    One deviation remains: a short read before the end of the input that leaves a header
+    incomplete routes the frame by the bytes it has, so a window above 8 MiB goes to the
+    slot’s decoder and fails there, where the stock decoder would decode it.
+    A local regular file returns a short read only at its end, but a network or FUSE
+    file system, or another reader `decode` is given, may not.
   - **Deviation: windows above 2^27** go to the slot’s decoder (`window_log_max(23)`)
     rather than a decoder opened with `window_log_max(27)`. zstd reports the same
     `frameParameter_windowTooLarge` error, `Frame requires too much memory for
@@ -1396,13 +1411,16 @@ Choices made while implementing, where this design left room:
     The copies decoding keeps from head fields (version, project and session names) are
     retained payloads, which slice 6 charges.
   - **Harness.** `codex_rollout::read_line_fields`, `claude_project::read_line_fields`
-    and `claude_project::read_sidecar` expose the line and sidecar parses alone.
-    Lines of 3.9 MiB and 63 MiB, each a string whose one escape comes at 31/32 of its
-    length, read by the scan, measure 95–97% of their need through `validate_record` and
-    both parsers, with and without a kept copy.
+    and `claude_project::read_sidecar` expose the line and sidecar parses alone; they
+    are hidden from the documentation and are not part of the supported API. Lines of
+    3.9 MiB and 63 MiB, each a string whose one escape comes at 31/32 of its length,
+    read by the scan, measure 95–97% of their need through `validate_record` and both
+    parsers, with and without a kept copy.
     A 1 MiB sidecar with a late-escaped kept string measures 24% of the slot’s line
     allowance. Eight workers reading 5 MiB lines hold at most one allocation above 4 MiB
     at a time; without the permit, eight.
+    zstd’s streaming context measures within `zstd_stream` for the 8 MiB slot window and
+    for the 16 MiB and 2^27 windows the permit pays for.
   - **Tests** compare the frame loop with `zstd::stream::read::Decoder`, output bytes
     and error kind and message, on windows from 2^10 to 2^27 with mantissas 0, 1 and 7,
     on single-segment frames of 230 B, about 850 KB and about 8.6 MB, on every prefix of
@@ -1412,7 +1430,8 @@ Choices made while implementing, where this design left room:
     A Codex rollout whose second frame declares 16 MiB ingests at one and eight workers
     with `--max-rows` exact at 5 and refusing at 4, and matches its plain twin.
     Twin checks, catalog peeks and classification of wide-window files match their plain
-    twins.
+    twins. The tests of a thread waiting for the permit wait until it is waiting, by a
+    count of waiters, before they refuse.
 
 - **Left to later slices.** Slice 4: the worker slots, the coordinating slot, source and
   thread rows with the join’s copies, and the eight-worker join test against
