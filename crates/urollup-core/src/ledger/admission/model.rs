@@ -882,9 +882,9 @@ pub struct ConstructionCounts {
 /// their payloads, which each observation may copy once, the construction share of κ per
 /// request-bearing record, the eligibility sort's minimum scratch and the maps' bases,
 /// Codex turn state and its largest rollout's own observation vectors, worker-built
-/// observations, limit rows and metadata. The model harness cannot reach this phase from
-/// outside the adapters, so this estimate is checked only once slices 5 and 6 charge
-/// construction.
+/// observations, limit rows and metadata. An adapter adds what these counts do not cover,
+/// such as the rows it charged per source at decode, and the model-bound harness checks the
+/// sum against live heap through construction.
 pub const fn construction_estimate(agent: Agent, counts: &ConstructionCounts) -> PhaseEstimate {
     let structure = request_structure(agent);
     let mut kappa = counts

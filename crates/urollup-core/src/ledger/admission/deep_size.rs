@@ -79,6 +79,7 @@ macro_rules! owns_no_heap {
 // Plain values, which own nothing on the heap.
 owns_no_heap!(
     u8,
+    [u8; 16],
     u16,
     u32,
     u64,

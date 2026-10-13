@@ -13,7 +13,9 @@ use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{ProviderLimitObservation, Relationship, SourceArtifact, Thread};
 use crate::ledger::identity::AnalyticalId;
-use crate::ledger::reconcile::{Ledger, ReconcileError};
+use crate::ledger::reconcile::{
+    Ledger, ReconcileError, ReconcileInput, ReconcileStage, RevisionSelector, reconcile_with_stages,
+};
 use crate::selection::Agent;
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{ManifestEntry, Representation, SnapshotManifest};
@@ -178,7 +180,7 @@ pub enum AdapterError {
     Key(#[from] crate::ledger::scope::KeyScopeError),
     /// Request observations could not be reconciled.
     #[error(transparent)]
-    Reconcile(#[from] ReconcileError),
+    Reconcile(ReconcileError),
     /// Process-wide memory admission refused the invocation. A row-ceiling refusal
     /// converts to [`ReconcileError::CapacityExceeded`] instead, which keeps its message.
     #[error(transparent)]
@@ -194,6 +196,22 @@ pub enum AdapterError {
     /// A source-decoding worker thread panicked.
     #[error(transparent)]
     Worker(#[from] crate::sources::parallel::ParallelReadError),
+}
+
+impl From<ReconcileError> for AdapterError {
+    /// A refusal a reconciliation checkpoint returned is the invocation's capacity error;
+    /// any other reconciliation failure stays one.
+    fn from(error: ReconcileError) -> Self {
+        match error {
+            ReconcileError::Admission(error) => error.into(),
+            error @ (ReconcileError::Identity(_)
+            | ReconcileError::WrongPrefix { .. }
+            | ReconcileError::WrongEntityPrefix { .. }
+            | ReconcileError::OffsetOutOfRange(_)
+            | ReconcileError::InvalidRevisionChoice { .. }
+            | ReconcileError::CapacityExceeded { .. }) => Self::Reconcile(error),
+        }
+    }
 }
 
 impl From<CapacityError> for AdapterError {
@@ -309,6 +327,224 @@ impl Decoding<'_> {
             .cloned()
             .unwrap_or_else(|| crate::ledger::capacity::ObservationCapacity::from_rows(usize::MAX))
     }
+
+    /// Charges `bytes` of `component` for the source at `path` before they are held: on a
+    /// decoding worker, or where a single-threaded phase pushes what its counts cannot
+    /// predict. A refusal ends that source's read as admission stopping it, and the ingest
+    /// reports the refusal, which ranks above it.
+    pub(crate) fn charge(
+        &self,
+        component: Component,
+        bytes: u64,
+        path: &std::path::Path,
+    ) -> Result<(), AdapterError> {
+        if self.admission.charge(component, bytes) {
+            Ok(())
+        } else {
+            Err(AdapterError::Read { path: path.to_owned(), source: SourceReadError::Stopped })
+        }
+    }
+
+    /// The construction checkpoint for `agent`, once its workers have joined: replaces
+    /// decode's charges, its worker slots and the large-record permit's charge with
+    /// `estimate`, the modeled heap of building its observations, and refuses before
+    /// construction allocates.
+    pub(crate) fn construct(&self, agent: Agent, estimate: u64) -> Result<(), AdapterError> {
+        Ok(self.admission.checkpoint(Phase::Construction(agent), estimate, &[])?)
+    }
+
+    /// Reconciles `agent`'s observations under admission (scalable-ingestion plan, "Phases
+    /// and Checkpoints"): the grouping checkpoints before the key graph and at
+    /// [`ReconcileStage::Order`], the finalize checkpoint once observations are released,
+    /// and a charge where reconciliation pushes what its counts cannot predict, each of
+    /// which can refuse and stop reconciliation before it allocates further.
+    ///
+    /// `held` is the adapter's own state beside the input until reconciliation returns, and
+    /// `after` what the adapter allocates once it returns and before it commits, both by
+    /// their deep size. Each checkpoint also carries the pushed state that stays until the
+    /// ledger is finalized.
+    pub(crate) fn reconcile(
+        &self,
+        agent: Agent,
+        input: ReconcileInput,
+        selector: &dyn RevisionSelector,
+        held: u64,
+        after: u64,
+    ) -> Result<Ledger, AdapterError> {
+        let counts = model::ReconcileCounts::of(&input);
+        debug_assert!(
+            meets_thread_precondition(&input),
+            "thread reconciliation's estimate needs each thread once and without aliases"
+        );
+        let admission = self.admission;
+        let mut carried: u64 = 0;
+        let refused = ReconcileError::Admission;
+        let ledger = reconcile_with_stages(input, selector, &self.row_ceiling(), &mut |stage| {
+            let (phase, estimate) = match stage {
+                ReconcileStage::Start => {
+                    (Phase::Grouping(agent), model::grouping_estimate(agent, &counts).total())
+                }
+                ReconcileStage::Order { largest_group, .. } => {
+                    let counts = model::ReconcileCounts { largest_group, ..counts };
+                    (Phase::Grouping(agent), model::grouping_estimate(agent, &counts).total())
+                }
+                ReconcileStage::Released => (
+                    Phase::Finalize(agent),
+                    model::finalize_estimate(agent, &counts).total().saturating_add(after),
+                ),
+                ReconcileStage::Pushed { component, bytes, kept } => {
+                    admission.try_charge(component, bytes).map_err(refused)?;
+                    if kept {
+                        carried = carried.saturating_add(bytes);
+                    }
+                    return Ok(());
+                }
+                ReconcileStage::Canonical
+                | ReconcileStage::KeyGraph
+                | ReconcileStage::Requests
+                | ReconcileStage::Sorted
+                | ReconcileStage::Finalized => return Ok(()),
+            };
+            let estimate = estimate.saturating_add(held).saturating_add(carried);
+            admission.checkpoint(phase, estimate, &[]).map_err(refused)
+        });
+        // A refusal anywhere in the invocation ranks above what it interrupted.
+        if let Some(refusal) = admission.refusal() {
+            return Err(refusal.into());
+        }
+        Ok(ledger?)
+    }
+
+    /// Commits `agent`'s ingest: releases its phase charges and discovery hold and holds
+    /// what it retains ([`Retained`]).
+    pub(crate) fn commit(&self, agent: Agent, ingested: &Ingested) -> Result<(), AdapterError> {
+        Ok(self.admission.commit(agent, Retained::of(agent, ingested).total())?)
+    }
+}
+
+/// Whether every thread observation has its own identity and no aliases, as both adapters
+/// emit them: the precondition of thread reconciliation's estimate
+/// ([`model::thread_reconcile`]).
+fn meets_thread_precondition(input: &ReconcileInput) -> bool {
+    let mut identities: Vec<&AnalyticalId> =
+        input.threads.iter().map(|thread| &thread.identity.id).collect();
+    identities.sort_unstable();
+    identities.windows(2).all(|pair| pair[0] != pair[1])
+        && input.threads.iter().all(|thread| thread.aliases.is_empty())
+}
+
+/// What the source rows an adapter builds after reconciliation hold, by their deep size:
+/// the row vector, sized once, and per row its copy of its manifest entry and of the
+/// dialect version of its source ID, which every source sharing that ID copies.
+pub(crate) fn source_rows_after(
+    entries: &[ManifestEntry],
+    versions: &BTreeMap<AnalyticalId, String>,
+) -> u64 {
+    use crate::ledger::admission::deep_size::DeepSize as _;
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    entries.iter().fold(
+        model::sized_vec(count(entries.len()), model::sizes::SOURCE_ARTIFACT),
+        |total, entry| {
+            let version = entry.source.as_ref().and_then(|source| versions.get(&source.id));
+            total.saturating_add(entry.heap()).saturating_add(
+                version.map_or(0, |version| model::allocation(count(version.len()))),
+            )
+        },
+    )
+}
+
+/// What an agent's committed ingest holds until exit (scalable-ingestion plan,
+/// "Reservation Model"): its retained ledger at its deep size, the query reserve for its
+/// requests and the index reserve for its threads, which the session index replaces with
+/// its own deep size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Retained {
+    /// The deep size of the ingest's result.
+    pub ledger: u64,
+    /// [`model::QUERY_RESERVE`] per request.
+    pub query_reserve: u64,
+    /// A bound on what the session index builds from the ingest: one session per thread,
+    /// with a copy of its thread, the paths of the sources it matches and its entry in the
+    /// index; and each relationship's copy.
+    pub index_reserve: u64,
+}
+
+impl Retained {
+    /// What `agent`'s `ingested` retains.
+    pub fn of(agent: Agent, ingested: &Ingested) -> Self {
+        use crate::ledger::admission::deep_size::DeepSize as _;
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        Self {
+            ledger: ingested.heap(),
+            query_reserve: count(ingested.ledger.requests.len())
+                .saturating_mul(model::QUERY_RESERVE),
+            index_reserve: index_reserve(agent, ingested),
+        }
+    }
+
+    /// Everything committed.
+    pub const fn total(&self) -> u64 {
+        self.ledger.saturating_add(self.query_reserve).saturating_add(self.index_reserve)
+    }
+}
+
+/// A bound on what [`crate::selection::SessionIndex::add`] keeps of `ingested`.
+///
+/// Each thread becomes a session in a B-tree, holding a copy of the thread (no larger than
+/// the thread, whose evidence and aliases the copy drops) and the paths of the sources it
+/// matches, in a vector that grows by doubling. A thread that is not an inline sidechain
+/// matches the sources its evidence cites, each charged at the costliest source's paths,
+/// and a Codex thread also every rollout of its thread ID, which matches no other thread.
+/// Each relationship is copied into a vector that grows by doubling and is stable-sorted.
+fn index_reserve(agent: Agent, ingested: &Ingested) -> u64 {
+    use std::mem::size_of;
+
+    use crate::ledger::admission::deep_size::DeepSize as _;
+    use crate::sources::manifest::FileIdentity;
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    let paths = |entry: &ManifestEntry| {
+        std::iter::once(&entry.file).chain(&entry.twins).fold(
+            0,
+            |total: u64, file: &FileIdentity| {
+                total
+                    .saturating_add(model::grown_vec(1, count(size_of::<PathBuf>())))
+                    .saturating_add(model::allocation(count(file.path.as_os_str().len())))
+            },
+        )
+    };
+    let costliest =
+        ingested.sources.iter().map(|source| paths(&source.snapshot)).max().unwrap_or(0);
+    let session =
+        model::btree_entry(model::sizes::ID, count(size_of::<crate::selection::IndexedSession>()));
+    let mut reserve =
+        model::btree_node(model::sizes::ID, count(size_of::<crate::selection::IndexedSession>()));
+    for thread in ingested.threads.values() {
+        reserve = reserve.saturating_add(session).saturating_add(thread.heap());
+        if thread.source.value().map(String::as_str) != Some("inline-sidechain") {
+            // Evidence is sorted by source first, so each source cited starts a run.
+            let sources = thread
+                .evidence
+                .iter()
+                .enumerate()
+                .filter(|(index, evidence)| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|previous| thread.evidence.get(previous))
+                        .is_none_or(|previous| previous.source != evidence.source)
+                })
+                .count();
+            reserve = reserve.saturating_add(count(sources).saturating_mul(costliest));
+        }
+    }
+    if let Agent::Codex = agent {
+        for source in &ingested.sources {
+            reserve = reserve.saturating_add(paths(&source.snapshot));
+        }
+    }
+    let relationship = count(size_of::<Relationship>());
+    ingested.relationships.iter().fold(reserve, |total, relationship_row| {
+        total.saturating_add(4 * relationship).saturating_add(relationship_row.heap())
+    })
 }
 
 /// The worker slot `b` for an invocation whose discovery found `discoveries`: the plain

@@ -42,10 +42,11 @@
 //! committed state. In ingestion so far, the source reader takes the permit; each agent's
 //! decode checkpoint charges its worker slots and the parallel read's work order and
 //! releases the coordinating slot ([`Hold::Coordinating`]), which the CLI holds while it
-//! peeks at sources; each worker charges its source's rows; and threads scoped to the
-//! ledger charge their new process interns. Record, payload and thread charges arrive with
-//! slices 5 and 6, and the CLI's ledger refuses no bytes until slice 7 gives it a budget;
-//! until then only the row ceiling refuses.
+//! peeks at sources; each worker charges its source's rows; threads scoped to the ledger
+//! charge their new process interns; and the Codex adapter charges its decode,
+//! construction, reconciliation and commit. Claude's record, payload and thread charges
+//! arrive with slice 6, and the CLI's ledger refuses no bytes until slice 7 gives it a
+//! budget; until then only the row ceiling refuses.
 
 pub mod deep_size;
 pub mod model;
