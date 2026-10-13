@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { AUTHORITY_VARIABLES, COMMANDS, LATE_ASSETS, authorityProblems, dispatchArgs, hostId, manylinuxCommand, maturinPinProblems, parseOptions, pinnedToolchain } from "./release.mjs";
+import {
+  AUTHORITY_VARIABLES,
+  COMMANDS,
+  LATE_ASSETS,
+  authorityProblems,
+  dispatchArgs,
+  hostId,
+  manylinuxCommand,
+  maturinPinProblems,
+  parseOptions,
+  pinnedToolchain,
+  publicationGuards,
+  resolveTagCommit,
+} from "./release.mjs";
 import { artifactById, buildEnvironment } from "./release-targets.mjs";
 import { makeReleaseBundle } from "./release-test-binaries.mjs";
 
@@ -136,4 +150,49 @@ test("a CI rehearsal is dispatched for the pushed commit and the workspace versi
     "allow-unmerged=true",
   ]);
   assert.equal(dispatchArgs({ branch: "main", commit: "c", version: "0.1.0", allowUnmerged: "false" }).at(-1), "allow-unmerged=false");
+});
+
+function fakePlanContext({ annotated = true, head = "c".repeat(40), tagCommit = "c".repeat(40), root = process.cwd() } = {}) {
+  const calls = [];
+  return {
+    calls,
+    ctx: {
+      env: { PATH: process.env.PATH },
+      root,
+      run: (program, args) => {
+        calls.push([program, ...args]);
+        if (args[0] === "ls-remote") {
+          return { status: 0, stdout: annotated ? `${"a".repeat(40)}\trefs/tags/v0.1.0\n${tagCommit}\trefs/tags/v0.1.0^{}\n` : `${tagCommit}\trefs/tags/v0.1.0\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse") {
+          return { status: 0, stdout: `${head}\n`, stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }),
+    },
+  };
+}
+
+test("a tag run releases the peeled tag commit, never an unpeeled GITHUB_SHA", () => {
+  assert.equal(resolveTagCommit(fakePlanContext().ctx, "v0.1.0"), "c".repeat(40));
+  assert.throws(() => resolveTagCommit(fakePlanContext({ annotated: false }).ctx, "v0.1.0"), /lightweight tag/);
+  assert.throws(() => resolveTagCommit(fakePlanContext({ head: "d".repeat(40) }).ctx, "v0.1.0"), /checkout is at d+, but v0\.1\.0 names c+/);
+});
+
+test("a tag run refuses a missing signers file and unconfigured settings; a rehearsal only reports them", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "urollup-guards-"));
+  try {
+    const publish = await publicationGuards(fakePlanContext({ root }).ctx, { tag: "v0.1.0", repository: "jlevy/urollup", token: "read", publish: true });
+    assert.match(publish.problems.join("\n"), /release-allowed-signers does not exist/);
+    assert.match(publish.problems.join("\n"), /release environment does not exist/);
+    const planContext = fakePlanContext({ root });
+    const rehearsal = await publicationGuards(planContext.ctx, { tag: "v0.1.0", repository: "jlevy/urollup", token: "read", publish: false });
+    assert.deepEqual(rehearsal.problems, []);
+    assert.equal(rehearsal.facts.signers_file, "missing");
+    assert.match(rehearsal.facts.settings_problems.join("\n"), /release environment does not exist/);
+    assert.ok(!planContext.calls.some((call) => call.includes("verify-tag") || call.includes("fetch")), "a rehearsal fetches and verifies no tag");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
