@@ -519,5 +519,31 @@ test("apt packages in release builds are exact, inventoried versions", () => {
     assert.throws(() => validateAptPins([step(install)], [targets], APT, planned), /installs apt package gcc/, install);
   }
   assert.doesNotThrow(() => validateAptPins([step("sudo apt-get update --no-install-recommends")], [targets], APT, planned), "an install-like option is not the verb");
-  assert.throws(() => validateAptPins([step("sudo dpkg -i musl.deb")], [targets], APT, planned), /installs a package file with dpkg/);
+  assert.throws(() => validateAptPins([step("sudo dpkg -i musl.deb")], [targets], APT, planned), /runs dpkg; release workflows change packages only with apt-get update/);
+  // Review C3: only apt-get update and a pinned apt-get install are allowed; every other
+  // verb, tool or unreadable form is refused rather than skipped.
+  const refusals = {
+    "sudo apt-get satisfy -y 'gcc (>= 1)'": /runs apt-get satisfy/,
+    "sudo apt-get build-dep -y gcc": /runs apt-get build-dep/,
+    "sudo apt-get -y upgrade": /runs apt-get upgrade/,
+    "sudo apt-get -y dist-upgrade": /runs apt-get dist-upgrade/,
+    "sudo apt-get -y reinstall gcc": /runs apt-get reinstall/,
+    "sudo apt-get -y -f install": /names no package/,
+    "sudo apt-get -y": /runs apt-get with no verb/,
+    "sudo aptitude -y install gcc": /runs aptitude/,
+    "sudo apt install -y musl-tools=1.2.4-2": /runs apt;/,
+    "echo gcc | xargs sudo apt-get install -y": /"xargs sudo apt-get install -y" runs apt-get in a form this gate cannot read/,
+    "sudo apt-get update && sudo apt-get upgrade -y": /runs apt-get upgrade/,
+    "pkgs=$(apt-get -s upgrade)": /runs apt-get upgrade/,
+    "sudo /usr/bin/apt-get -y upgrade": /runs apt-get upgrade/,
+    "sudo apt-get install -y ./musl.deb": /installs apt package \.\/musl\.deb/,
+  };
+  for (const [command, message] of Object.entries(refusals)) {
+    assert.throws(() => validateAptPins([step(command)], [targets], APT, planned), message, command);
+  }
+  const env = (value) => ({ path: "w.yml", text: `      - run: sudo $CMD\n        env:\n          CMD: ${value}\n` });
+  assert.throws(() => validateAptPins([env("apt-get -y upgrade")], [targets], APT, planned), /runs apt-get upgrade/, "an env value that runs apt-get is read too");
+  const prose = { path: "w.yml", text: "      # apt-get upgrade is never run here\n      - name: Install the apt packages\n        run: sudo apt-get update # refresh the apt lists\n" };
+  assert.doesNotThrow(() => validateAptPins([prose], [targets], APT, planned), "comments and step names are prose, not commands");
+  assert.doesNotThrow(() => validateAptPins([step("sudo -E env DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 install -y musl-tools=1.2.4-2")], [targets], APT, planned));
 });
