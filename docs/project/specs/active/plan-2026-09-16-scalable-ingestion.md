@@ -347,11 +347,12 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 to 3 (budget source, ledger, and
-model and harness) implemented, and slice 4’s readers (the decoder constructor, the zstd
-frame loop, line buffers under the large-record permit and field-only peeks), with only
-the row ceiling and the permit wired into ingestion; `F` rests on CI’s Linux intercept
-and the query constants stay guesses until slice 8.
+**Status:** design accepted (2026-10-09); slices 1 to 4 (budget source, ledger, model
+and harness, and readers and workers) implemented.
+The CLI passes one ledger that never refuses bytes, so only the row ceiling refuses; the
+permit, worker slots, the coordinating slot and source rows are charged, and the thread
+rows slices 5 and 6 own are not.
+`F` rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -1410,8 +1411,8 @@ Choices made while implementing, where this design left room:
     reproduces the old `take(…).read_until` bounds exactly, including classification’s
     count of a line’s terminator against its limit.
     The design lists these peeks under slice 7 as well.
-    Slice 4 did the reading and parsing, under a discovery ledger the CLI creates
-    unlimited; slice 7 moves them onto the shared ledger under the coordinating slot.
+    Slice 4 did the reading and parsing, under the coordinating slot on the invocation’s
+    ledger (see Workers); slice 7 gives that ledger its budget.
   - **Claude’s head before its body.** The model-bound harness found Claude’s decode
     holding the line head’s copy of an escaped string beside the body pass’s
     `serde_json` scratch: 120% of `4 × C′` for a kept `cwd` (20,428,144 bytes against
@@ -1442,15 +1443,66 @@ Choices made while implementing, where this design left room:
     twins. The tests of a thread waiting for the permit wait until it is waiting, by a
     count of waiters, before they refuse.
 
-- **Left to later slices.** Slice 4: the worker slots, the coordinating slot, source and
-  thread rows with the join’s copies, and the eight-worker join test against
-  `JOIN_DONE`. Slices 5 and 6: the decode charges, which make the reported ingest bound
-  fail rather than report, on corpora where `E` is at least 10 × the slots’ Rust-heap
-  term; the construction checkpoint, which first measures `construction_estimate`; the
-  grouping checkpoints before the key graph and at `Order`, which return their refusal
-  through the stage callback, and a check of thread reconciliation’s precondition; and
-  Claude’s thread graph, which uses `with_capacity` and removes entries, so it is
-  charged by capacity and by cumulative inserts.
+- **Workers (slice 4).** `adapters::Decoding` carries an ingest’s ledger, the configured
+  worker count and the slot size `b`; each adapter’s new
+  `ingest_discovery_with_admission` takes it, and `ingest_discovery_with_capacity`
+  builds one over its own unlimited ledger.
+  The CLI now creates one unlimited ledger with the row ceiling for the invocation, so
+  both agents’ ingests and the peeks share it.
+  Rows stay counted per agent, so output and refusals are unchanged.
+  - **Worker slots.** `Decoding::begin` is the decode checkpoint:
+    `checkpoint(Phase::Decode(agent), slots × b, [(Hold::Coordinating, 0)])` with
+    `slots = worker_slots(b, workers)`, and decode runs on `min(workers, slots)`
+    threads. The configured count stands in for an explicit `UROLLUP_JOBS`: the default
+    is at most eight, so it changes the slot count only when an explicit count does.
+  - **One `b`.** `adapters::worker_slot(discoveries)` adds the zstd and gzip decoders
+    when any source of either agent’s discovery, before narrowing, has such a file.
+  - **The coordinating slot** is the new `Hold::Coordinating`. The CLI raises it with
+    the new `MemoryAdmission::raise_hold`: to the plain slot before any peek, to cover a
+    `--source` root’s decoders before its classification peeks, and to `b` before the
+    catalog peeks. Codex’s decode checkpoint releases it.
+    Charging the coordinating thread’s caches from that checkpoint
+    (`COORDINATING_CACHES`, `uro-2hzh`) stays with slice 7, beside the discovery holds.
+  - **Source rows.** Before a worker returns a source’s result it charges
+    `model::source_rows` to `Component::Sources`: one allocation for its manifest entry
+    and one for its source entity row, twice the entry’s deep heap (the entry and the
+    row’s copy), the dialect version the row copies, and the join’s three copies of the
+    result pair. A refusal ends the source as `SourceReadError::Stopped`. Each row is
+    charged one allocation, which bounds a vector sized once.
+    Codex’s `unzip` reserved the standard minimum of four entries for fewer sources, so
+    Codex now presizes its entry and rollout vectors.
+    A test checks the charge against the deep heap of every fixture’s entries and source
+    rows plus the join’s copies.
+  - **Deviation: thread rows.** The design charges each source’s thread and relationship
+    rows and each thread’s session-index reserve with the source rows.
+    Those rows are built in `normalize` from per-adapter state: Codex’s session metadata
+    strings, and Claude’s per-record thread evidence, sidechain runs and subagent
+    sidecars. They move to slices 5 and 6, which wire each adapter’s decode charges and
+    make the decode bound fail.
+  - **The join.** The harness measures `try_read_in_parallel` with a result pair of
+    `JOIN_PAIR` bytes against `JOIN_DONE` per worker and `join_copies` per source.
+    Its first run found the join’s peak at the bound: the join allocated `results` while
+    workers were still filling their doubling `done` vectors, which `3 × JOIN_PAIR` per
+    source does not cover.
+    The join now places results only once every worker has finished, and `join_copies`
+    adds `JOIN_ORDER`, each source’s weight and place in the work order (16 B). Over ten
+    runs per case, with some reads stalled so that workers take uneven shares, the peaks
+    measure 14–85%, from one source on one worker to 1,000 sources on eight; eight
+    sources on eight workers that wait for one another make `JOIN_DONE` necessary.
+  - **Tests.** Under a budget of two slots, eight workers decode on two threads, the
+    checkpoint holds `2 × b` and the coordinating slot is gone; a budget below one slot
+    refuses at the decode checkpoint with its whole-process estimate.
+    Every fixture ingests on one slot to the same ledger and threads as on eight
+    unlimited workers.
+
+- **Left to later slices.** Slices 5 and 6: thread and relationship rows and the
+  session-index reserve (see Workers); the decode charges, which make the reported
+  ingest bound fail rather than report, on corpora where `E` is at least 10 × the slots’
+  Rust-heap term; the construction checkpoint, which first measures
+  `construction_estimate`; the grouping checkpoints before the key graph and at `Order`,
+  which return their refusal through the stage callback, and a check of thread
+  reconciliation’s precondition; and Claude’s thread graph, which uses `with_capacity`
+  and removes entries, so it is charged by capacity and by cumulative inserts.
   Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`,
   with `F` measured on Linux directly, and the query constants from the calibration
   matrix.
