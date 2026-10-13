@@ -497,10 +497,21 @@ const APT = [{ name: "musl-tools", version: "1.2.4-2", distribution: "noble", ar
 
 test("apt packages in release builds are exact, inventoried versions", () => {
   const targets = { path: "scripts/release-targets.mjs", text: 'export const MUSL_APT_PACKAGES = ["musl-tools=1.2.4-2"];\n' };
-  const viaVariable = { path: ".github/workflows/release.yml", text: "        run: |\n          sudo apt-get install --yes --no-install-recommends $APT_PACKAGES\n" };
-  assert.doesNotThrow(() => validateAptPins([viaVariable], [targets], APT));
-  assert.doesNotThrow(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools=1.2.4-2\n" }], [targets], APT));
-  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools\n" }], [targets], APT), /installs apt package musl-tools, which is not a pinned/);
-  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt install gcc=13.2.0-4\n" }], [targets], APT), /gcc=13\.2\.0-4/);
-  assert.throws(() => validateAptPins([viaVariable], [{ ...targets, text: '"musl-tools=1.2.3-1"' }], APT), /does not pin apt package musl-tools=1\.2\.4-2/);
+  const planned = ["musl-tools=1.2.4-2"];
+  const step = (install, env = "          APT_PACKAGES: ${{ matrix.apt_packages }}\n") => ({
+    path: ".github/workflows/release.yml",
+    text: `      - run: |\n          sudo apt-get update\n          ${install}\n        env:\n${env}`,
+  });
+  const viaVariable = step("sudo apt-get install --yes --no-install-recommends $APT_PACKAGES");
+  assert.doesNotThrow(() => validateAptPins([viaVariable], [targets], APT, planned));
+  assert.doesNotThrow(() => validateAptPins([step('sudo apt-get install -y "${APT_PACKAGES}"')], [targets], APT, planned));
+  assert.doesNotThrow(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools=1.2.4-2\n" }], [targets], APT, planned));
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools\n" }], [targets], APT, planned), /installs apt package musl-tools, which is not a pinned/);
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt install gcc=13.2.0-4\n" }], [targets], APT, planned), /gcc=13\.2\.0-4/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y $APT_PACKAGES $EXTRA_PACKAGES")], [targets], APT, planned), /through \$EXTRA_PACKAGES; only \$APT_PACKAGES/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y $APT_PACKAGES", "          APT_PACKAGES: gcc\n")], [targets], APT, planned), /must set APT_PACKAGES: \$\{\{ matrix\.apt_packages \}\}/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y \\\n            gcc")], [targets], APT, planned), /installs apt package gcc/, "a continuation line is read with its install");
+  assert.throws(() => validateAptPins([viaVariable], [targets], APT, [...planned, "gcc"]), /must equal the inventory exactly; not inventoried: gcc/);
+  assert.throws(() => validateAptPins([viaVariable], [targets], APT, []), /not planned: musl-tools=1\.2\.4-2/);
+  assert.throws(() => validateAptPins([viaVariable], [{ ...targets, text: '"musl-tools=1.2.3-1"' }], APT, planned), /does not pin apt package musl-tools=1\.2\.4-2/);
 });

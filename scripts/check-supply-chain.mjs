@@ -708,22 +708,51 @@ export function validateImagePins(files, inventory) {
   }
 }
 
+/** Workflow lines with backslash continuations joined, so a wrapped install is read whole. */
+function logicalLines(text) {
+  return text.replace(/\\\r?\n\s*/g, " ").split("\n");
+}
+
 /**
- * Every `apt-get install` in a workflow installs only pinned, inventoried packages, either
- * as literal `name=version` arguments or through one environment variable whose value the
- * inventoried files define; and each inventoried package is pinned in its files.
+ * The only variable a workflow `apt-get install` may expand, and the value it must take:
+ * the release plan's matrix, which carries `MUSL_APT_PACKAGES` from
+ * scripts/release-targets.mjs.
  */
-export function validateAptPins(workflows, files, inventory) {
+export const APT_VARIABLE = { name: "APT_PACKAGES", value: "${{ matrix.apt_packages }}" };
+
+/**
+ * Every `apt-get install` in a workflow installs only pinned, inventoried packages:
+ * literal `name=version` arguments from the inventory, or `$APT_PACKAGES` set from the
+ * plan's matrix. `planned` is the plan's package list (`MUSL_APT_PACKAGES`), which must
+ * equal the inventory exactly, and each inventoried package must be pinned in its files.
+ */
+export function validateAptPins(workflows, files, inventory, planned) {
+  const pinned = new Set(inventory.map((item) => `${item.name}=${item.version}`));
   for (const workflow of workflows) {
-    for (const line of workflow.text.split("\n").filter((candidate) => /\bapt(?:-get)?\s+install\b/.test(candidate))) {
+    for (const line of logicalLines(workflow.text).filter((candidate) => /\bapt(?:-get)?\s+install\b/.test(candidate))) {
       const words = line.slice(line.search(/\binstall\b/) + "install".length).trim().split(/\s+/).filter(Boolean);
-      for (const word of words.filter((candidate) => !candidate.startsWith("-") && !/^"?\$\{?[A-Z_]+\}?"?$/.test(candidate))) {
-        const [name, version] = word.split("=");
-        if (!inventory.some((item) => item.name === name && item.version === version)) {
+      for (const word of words.filter((candidate) => !candidate.startsWith("-"))) {
+        const variable = word.match(/^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/)?.[1];
+        if (variable !== undefined) {
+          if (variable !== APT_VARIABLE.name) {
+            fail(`${workflow.path} installs apt packages through $${variable}; only $${APT_VARIABLE.name} from the plan's matrix is allowed`);
+          }
+          if (!new RegExp(`^\\s*${APT_VARIABLE.name}:\\s*${escapeRegExp(APT_VARIABLE.value)}\\s*$`, "m").test(workflow.text)) {
+            fail(`${workflow.path} must set ${APT_VARIABLE.name}: ${APT_VARIABLE.value}`);
+          }
+          continue;
+        }
+        if (!pinned.has(word)) {
           fail(`${workflow.path} installs apt package ${word}, which is not a pinned, inventoried version`);
         }
       }
     }
+  }
+  const plannedSet = new Set(planned);
+  const unplanned = planned.filter((entry) => !pinned.has(entry));
+  const uninstalled = [...pinned].filter((entry) => !plannedSet.has(entry));
+  if (unplanned.length > 0 || uninstalled.length > 0) {
+    fail(`the release's apt packages (MUSL_APT_PACKAGES) must equal the inventory exactly; not inventoried: ${unplanned.join(", ") || "none"}; not planned: ${uninstalled.join(", ") || "none"}`);
   }
   for (const item of inventory) {
     for (const filePath of item.files) {
@@ -902,15 +931,6 @@ async function verifyBootstrap(policy, root, context) {
     }
   }
 
-  const pinnedFiles = await Promise.all(
-    [...new Set([...policy.bootstrap.containerImages, ...policy.bootstrap.aptPackages].flatMap((item) => item.files))].map(async (file) => ({
-      path: file,
-      text: await readFile(path.join(root, file), "utf8"),
-    })),
-  );
-  const workflows = await workflowFiles(root);
-  validateImagePins([...pinnedFiles, ...workflows], policy.bootstrap.containerImages);
-  validateAptPins(workflows, pinnedFiles, policy.bootstrap.aptPackages);
 
   for (const item of policy.bootstrap.containerImages) {
     const [registry, namespace, ...rest] = item.image.split("/");
@@ -988,6 +1008,23 @@ export function validatePolicy(policy, now) {
   }
 }
 
+/**
+ * The release build inputs' static pins, checked before any network request so a bad pin
+ * fails fast and offline: container images by digest, and apt packages as exact versions
+ * that the workflow and the release plan's list both match.
+ */
+async function validateReleaseInputs(policy, root, workflows) {
+  const pinnedFiles = await Promise.all(
+    [...new Set([...policy.bootstrap.containerImages, ...policy.bootstrap.aptPackages].flatMap((item) => item.files))].map(async (file) => ({
+      path: file,
+      text: await readFile(path.join(root, file), "utf8"),
+    })),
+  );
+  validateImagePins([...pinnedFiles, ...workflows], policy.bootstrap.containerImages);
+  const { MUSL_APT_PACKAGES } = await import(pathToFileURL(path.join(root, "scripts", "release-targets.mjs")).href);
+  validateAptPins(workflows, pinnedFiles, policy.bootstrap.aptPackages, MUSL_APT_PACKAGES);
+}
+
 async function main() {
   const policy = JSON.parse(await readFile(path.join(ROOT, "supply-chain-policy.json"), "utf8"));
   const now = new Date();
@@ -1009,6 +1046,7 @@ async function main() {
   const python = uvTexts.flatMap((text) => parseUvLock(text));
   const actions = parseActionUses(workflows);
   validateWorkflowSecurity(workflows);
+  await validateReleaseInputs(policy, ROOT, workflows);
 
   await Promise.all([
     verifyCargo(cargo, context),
