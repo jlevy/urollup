@@ -289,6 +289,16 @@ test("the maintainer can check a signed tag locally before pushing it", { skip: 
     repo.git("tag", "-d", "v0.1.0");
     repo.sign("other", "v0.1.0", "urollup 0.1.0");
     assert.throws(() => verifyLocalReleaseTag(repo.ctx, { tag: "v0.1.0", version }), /does not carry a signature from an allowed release signer/);
+
+    // With main fetched, the tagged commit must be on it.
+    repo.git("tag", "-d", "v0.1.0");
+    repo.sign("allowed", "v0.1.0", "urollup 0.1.0");
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    assert.deepEqual(verifyLocalReleaseTag(repo.ctx, { tag: "v0.1.0", version }).notes, []);
+    repo.git("commit", "-q", "--allow-empty", "-m", "unmerged");
+    repo.git("tag", "-d", "v0.1.0");
+    repo.sign("allowed", "v0.1.0", "urollup 0.1.0");
+    assert.throws(() => verifyLocalReleaseTag(repo.ctx, { tag: "v0.1.0", version }), /is not on origin\/main; fetch main, or tag a merged commit/);
   } finally {
     repo.cleanup();
   }
