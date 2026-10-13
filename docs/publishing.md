@@ -88,24 +88,40 @@ statically, and each job log’s `GITHUB_TOKEN Permissions` banner shows it.
 ### What a Tag Run Checks Before It Writes
 
 - **The tag.** `plan` peels the remote tag (`git ls-remote origin
-  'refs/tags/<tag>^{}'`) instead of trusting `GITHUB_SHA`, requires it to be annotated
-  and to name the checked-out commit, and verifies its SSH signature against
-  `.github/release-allowed-signers`.
+  'refs/tags/<tag>^{}'`) instead of trusting `GITHUB_SHA`, and requires it to be
+  annotated and to name the checked-out commit.
+  It then fetches the tag and verifies that exact object: the one `ls-remote` reported,
+  pointing at the release commit, made under the release tag’s own name (its `tag`
+  header), and signed by a key in `.github/release-allowed-signers` at the tagged
+  commit. A signed tag made for anything else cannot be re-pointed as a release.
+
 - **The settings.** `plan` reads the `release` environment, its deployment policies and
-  the repository’s rulesets, and refuses to start unless the environment has a required
-  reviewer, deploys only from the tag pattern `v*`, does not let administrators bypass
-  it where GitHub reports that setting, and an active tag ruleset on `refs/tags/v*`
-  blocks updates and deletions.
-  A rehearsal reports the same findings in its summary without refusing.
+  the repository’s tag rulesets with the job’s read-only token (falling back to an
+  anonymous read if GitHub refuses the token), and refuses to start unless:
+  - the environment has a required reviewer and deploys only from the tag pattern `v*`;
+  - administrators cannot bypass it, where GitHub reports that setting;
+  - an active tag ruleset covering `refs/tags/v*`, with nothing excluded, blocks tag
+    updates and deletions, and lists no bypass actor where GitHub shows the list.
+
+  GitHub shows a ruleset’s bypass list only to repository administrators, and the job
+  token is not one, so `plan` cannot see it; it reports that as something the maintainer
+  confirms at setup. A rehearsal reports every finding in its summary without refusing.
+  Reading an existing environment with the job token has not run yet: the rehearsal
+  before the first tag ([Publishing a Release](#publishing-a-release), step 3) is what
+  proves it.
+
 - **The tag again, at every write.** Each publish job, and each write inside one
   (creating the draft, each upload, each metadata reset, publishing the draft, `cargo
   publish`, `uv publish`, attaching the evidence), first peels the remote tag again and
   stops if it no longer names the release commit.
+
 - **The bundle.** Before promoting anything, a publish job requires the manifest,
   `SHA256SUMS`, the asset files, the `.crate` files and the plan to agree.
+
 - **No build code beside a credential.** `publish-crates` removes the crates.io token
   from its own environment, packages without it to prove the bytes match the rehearsal,
   and hands it only to `cargo publish --no-verify`, which compiles nothing.
+
 - **Free names for a first release.** On the first release, an existing crates.io crate
   or PyPI project without the planned version is a conflict, because a pending PyPI
   publisher does not reserve a name.
@@ -170,25 +186,53 @@ repository.
    `release`. Add the maintainer as a required reviewer, set deployment branches and
    tags to **Selected** with the tag pattern `v*` only, and disallow administrators
    bypassing the protection rules.
-2. **Tag ruleset**: Settings → Rules → new tag ruleset, enforcement **Active**,
-   targeting `refs/tags/v*`, that restricts creation to the maintainer and blocks
-   updates and deletions, so a tag cannot move.
-3. **Release signing key**: commit `.github/release-allowed-signers` with the public SSH
-   key the maintainer signs release tags with, one line per key in Git’s allowed-signers
-   format, for example `urollup-release namespaces="git" ssh-ed25519 AAAA…`. The
-   principal is a label, not an e-mail address.
-   Use a key no agent can reach, such as a hardware key or one kept out of the agents’
-   `ssh-agent`.
+
+2. **Tag rulesets.** A ruleset’s bypass list applies to all of its rules, so a single
+   ruleset cannot both let the maintainer create tags and stop everyone moving them.
+   Create two, under Settings → Rules → New tag ruleset:
+   - **`release-tags-immutable`**: enforcement **Active**, target `refs/tags/v*` with no
+     exclusions, rules **Restrict updates**, **Restrict deletions** and **Block force
+     pushes**, and an **empty bypass list**. Nobody, the maintainer included, can move
+     or delete a release tag without first disabling this ruleset, which GitHub’s audit
+     log records.
+   - **`release-tags-create`** (optional): enforcement **Active**, target
+     `refs/tags/v*`, rule **Restrict creations**, with the repository admin role as the
+     only bypass actor. The signed-tag check already stops an unsigned or wrongly signed
+     tag from publishing; this ruleset also stops one from being pushed.
+
+   `plan` verifies that an active ruleset like the first exists, but it cannot see
+   bypass lists, so confirm here that the first ruleset’s bypass list is empty.
+
+3. **Release signing key.** Sign release tags with an SSH key no agent can reach, such
+   as a hardware key or one kept out of the agents’ `ssh-agent`. Configure Git to sign
+   with it (these settings can stay local to this repository):
+
+   ```bash
+   git config gpg.format ssh
+   git config user.signingkey ~/.ssh/urollup-release.pub   # the key's public half
+   ```
+
+   Commit `.github/release-allowed-signers` with that public key, one line per key in
+   Git’s allowed-signers format, for example
+   `urollup-release namespaces="git" ssh-ed25519 AAAA…`. The principal is a label, not
+   an e-mail address. `plan` reads the file from the tagged commit, which must be on
+   `main`, and its summary prints the signature line, with the key’s fingerprint, for
+   the approver to check.
+   A GPG signature, or a key not in the file, fails the tag run.
+
 4. **Actions permissions**: confirm the default `GITHUB_TOKEN` permission is read-only
    and that Actions cannot create or approve pull requests.
+
 5. **PyPI pending trusted publisher**: on pypi.org, Your projects → Publishing → add a
    pending publisher for project `urollup`, owner `jlevy`, repository `urollup`,
    workflow `release.yml`, environment `release`. Do not create a `urollup-core` PyPI
    project.
+
 6. **crates.io bootstrap token**: create one API token with the shortest practical
    expiry, only the `publish-new` endpoint scope, and crate scopes exactly
    `urollup-core` and `urollup`. Store it as the **environment** secret
    `CARGO_REGISTRY_TOKEN` of `release`, never as a repository secret.
+
 7. Leave GitHub’s immutable releases off for now: `attach-evidence` adds
    `release-evidence.json` after the release is public, which an immutable release
    refuses. Turning it on needs the evidence published elsewhere first.
@@ -209,12 +253,21 @@ repository.
    `…/urollup-core` and `https://pypi.org/pypi/urollup/json` all return 404, and the
    PyPI publisher is still pending.
 
-5. Sign the reviewed commit’s tag and push only that tag:
+5. Sign the reviewed commit’s tag, check it locally with the same checks the tag run
+   makes, and only then push that tag:
 
    ```bash
+   git fetch origin main
    git tag -s v0.1.0 -m "urollup 0.1.0" <commit>
+   make release-verify-tag TAG=v0.1.0
    git push origin v0.1.0
    ```
+
+   `make release-verify-tag` refuses a lightweight tag, a tag object made for another
+   name, a commit off `main` or with another workspace version, and a signature from a
+   key not in the tagged commit’s `.github/release-allowed-signers`. A pushed tag cannot
+   be moved, so a mistake caught here costs nothing; caught by the tag run, it costs the
+   version.
 
 6. Watch the run. After `plan`, `assemble` and `attest` pass, approve each `release`
    deployment (`stage-github`, then `publish-crates` and `publish-pypi`, then
@@ -272,9 +325,11 @@ The supported sequence is:
 3. Prefer a new version, such as `0.1.1`: bump it, rehearse it, and sign and push its
    own tag. Nothing about the abandoned tag needs to change.
 4. Only if the same version must ship, and only if no registry published and nobody
-   consumed the tag: the maintainer deletes and re-creates the tag through a recorded
-   bypass of the tag ruleset (note who, when and why in the release record), then pushes
-   the new signed tag, which starts a new run.
+   consumed the tag: the maintainer temporarily disables the `release-tags-immutable`
+   ruleset (GitHub’s audit log records it; also note who, when and why in the release
+   record), deletes and re-creates the signed tag, checks it with
+   `make release-verify-tag`, re-enables the ruleset, and pushes the tag, which starts a
+   new run.
 5. The old run’s attestations name the old commit.
    Verification passes `--source-digest` with the release commit, so they never verify
    the new artifacts.

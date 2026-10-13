@@ -191,7 +191,8 @@ npm ci --ignore-scripts                                                       # 
 - **Release machinery:** [docs/publishing.md](docs/publishing.md) is the runbook.
   `.github/workflows/release.yml` is orchestration over tested `scripts/release*.mjs`;
   `make release-check` proves its authority boundaries, `make release-rehearsal`
-  rehearses this host’s artifacts and `make release-dispatch` the full CI matrix.
+  rehearses this host’s artifacts and `make release-dispatch` the full CI matrix;
+  `make release-verify-tag` is the maintainer’s check of a signed tag before pushing it.
 - **Dependencies:** follow [SUPPLY-CHAIN-SECURITY.md](SUPPLY-CHAIN-SECURITY.md) before
   adding or upgrading any crate, npm package, PyPI package, action or toolchain.
 - **Ported code:** record every file adapted from another repository in

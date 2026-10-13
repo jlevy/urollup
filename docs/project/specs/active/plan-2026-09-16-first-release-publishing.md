@@ -599,14 +599,36 @@ The [publishing runbook](../../../publishing.md) describes the resulting procedu
   proves `make release-check` fails if the publish command verifies.
   The Phase 2 trusted-publishing change keeps this rule.
 - **A tag run checks its own preconditions.** `plan` peels the remote tag explicitly
-  rather than trusting `GITHUB_SHA`, requires an annotated tag naming the checked-out
-  commit, verifies its SSH signature against `.github/release-allowed-signers`, and
-  refuses to start unless the `release` environment (a required reviewer, a `v*`
-  tag-only deployment policy, no administrator bypass where GitHub reports it) and an
-  active `v*` tag ruleset blocking updates and deletions exist.
-  These settings answer anonymously for this public repository, and a rehearsal reports
-  them without refusing.
+  rather than trusting `GITHUB_SHA` and requires an annotated tag naming the checked-out
+  commit. It verifies that exact tag object (the one `ls-remote` reported, on the release
+  commit, made under the release tag’s own name) and its SSH signature against
+  `.github/release-allowed-signers`, so a signed tag made for something else cannot be
+  re-pointed as a release (review B1). It refuses to start unless the `release`
+  environment (a required reviewer, a `v*` tag-only deployment policy, no administrator
+  bypass where GitHub reports it) and an active tag ruleset covering `refs/tags/v*`,
+  with nothing excluded and no visible bypass actor, blocking updates and deletions
+  exist. The job’s read-only token reads these settings, with an anonymous read as the
+  fallback if GitHub refuses the token.
+  GitHub hides a ruleset’s bypass list from non-administrators, so the maintainer
+  confirms it at setup, and the runbook asks for two rulesets because one bypass list
+  covers every rule in a ruleset (review B2). Whether the job token reads an existing
+  environment has not run yet; the rehearsal before the first tag proves it (review B7).
+  A rehearsal reports every setting without refusing.
   Every write then re-peels the tag and stops if it moved.
+- **The maintainer checks a tag before pushing it.** `make release-verify-tag` runs the
+  same binding and signature checks against the local tag, the tagged commit’s
+  allowed-signers file and workspace version, and `main`, because a pushed release tag
+  cannot be moved (review B6).
+- **The rehearsal exercises the publish path’s checks on real bytes** (review B8):
+  `assemble` loads the finished bundle with the publish jobs’ own loader; the `crates`
+  job runs the publish job’s package command, built by the same function, and requires
+  the verified bytes; and `publish-crates` packages with exactly the selection it
+  uploads, `--workspace` or `-p urollup` for a resumed publication.
+  Whether `cargo package -p urollup` reproduces the bytes once `urollup-core` is on
+  crates.io can only run in that partial state; the digest check refuses the upload if
+  it does not.
+- **Every archive and wheel member carries the commit time**, which the build and the
+  native validation both check (review B5).
 - **Signed tags are a technical control on who can release.** The approval boundary
   cannot tell the maintainer from an agent holding the maintainer’s credentials, so
   AGENTS.md reserves tags, approvals and release settings to the maintainer, and a tag
