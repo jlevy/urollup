@@ -347,17 +347,17 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 to 4 (budget source, ledger, model
-and harness, and readers and workers) implemented.
+**Status:** design accepted (2026-10-09); slices 1 to 5 (budget source, ledger, model
+and harness, readers and workers, and Codex) implemented.
 The CLI passes one ledger that never refuses bytes, so only the row ceiling refuses; the
-permit, worker slots, the coordinating slot and source rows are charged, and the thread
-rows slices 5 and 6 own are not.
-`F` rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
-[Implementation Notes](#implementation-notes) records choices the slices made where this
-design left room. The maintainer settled the policy [decisions](#decisions) on
-2026-10-09. Values marked *guess* are placeholders that the
-[slices](#implementation-slices) measure or calibrate; *derived* values follow from type
-sizes and growth patterns in the current code.
+permit, worker slots, the coordinating slot and source rows are charged for both agents,
+and Codex charges its decode, construction, reconciliation and commit, which slice 6
+does for Claude. `F` rests on CI’s Linux intercept and the query constants stay guesses
+until slice 8. [Implementation Notes](#implementation-notes) records choices the slices
+made where this design left room.
+The maintainer settled the policy [decisions](#decisions) on 2026-10-09. Values marked
+*guess* are placeholders that the [slices](#implementation-slices) measure or calibrate;
+*derived* values follow from type sizes and growth patterns in the current code.
 
 One byte ledger per invocation replaces the per-agent row-shell ceiling described under
 [Memory Model](#memory-model).
@@ -1508,17 +1508,112 @@ Choices made while implementing, where this design left room:
     Every fixture ingests on one slot to the same ledger and threads as on eight
     unlimited workers.
 
-- **Left to later slices.** Slices 5 and 6: thread and relationship rows and the
-  session-index reserve (see Workers); the decode charges, which make the reported
-  ingest bound fail rather than report, on corpora where `E` is at least 10 × the slots’
-  Rust-heap term; the construction checkpoint, which first measures
-  `construction_estimate`; the grouping checkpoints before the key graph and at `Order`,
-  which return their refusal through the stage callback, and a check of thread
-  reconciliation’s precondition; and Claude’s thread graph, which uses `with_capacity`
-  and removes entries, so it is charged by capacity and by cumulative inserts.
-  Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`,
-  with `F` measured on Linux directly, and the query constants from the calibration
-  matrix.
+- **Codex (slice 5).** The Codex adapter charges every phase of its ingest on the
+  invocation’s ledger; with the CLI’s unlimited ledger, output is unchanged.
+  - **Interns.** `MemoryAdmission::scope(work)` makes the ledger the current thread’s
+    ledger for new process interns while `work` runs, and restores the previous one
+    after, unwinding included.
+    The ledger’s state moved into an `Arc` so that a thread-local can hold it.
+    `intern`, `intern_overflow` and `intern_pricing` charge a new entry until exit
+    through it, under their table’s lock and before they allocate; a refused intern
+    inserts nothing, caches nothing and returns a placeholder (the empty name, empty
+    measures or the default context).
+    Codex scopes each rollout’s decode on its worker and `normalize` on the coordinating
+    thread, which also covers reconciliation’s pricing merge.
+  - **Decode.** Before a record is pushed it is charged `decoded_record` and, when it
+    bears a request, κ; its payloads are the strings and counts it added to its
+    rollout’s tables (3 × each byte, and per new symbol its end offset, link and hash
+    entry), the session metadata it set, its settings snapshot, its turn state
+    (`CODEX_TURN_STATE`), a thread pricing entry, and a distinct rate-limit snapshot’s
+    allocation with one limit row per window.
+    A line’s strings and counts exist once the line is read, so they are charged just
+    after, within the line’s own need.
+    Each structure’s one-time base is charged at its first push
+    (`model::grown_vec_base`).
+  - **Thread rows** (`normalized_rows`), charged to `Sources` before the worker returns
+    a rollout: its thread’s row as `normalize` builds it (now `thread_row`, built once
+    on the worker to size it), its relationship, the session-index reserve (the session
+    entry, the thread’s copy, this rollout’s and its evidence source’s paths, the
+    relationship’s copy), `normalize`’s per-thread map entries and the orphan
+    diagnostic, and the rollout’s share of the source table, the duplicate-location
+    index and its snapshot’s diagnostics and gap.
+    A thread several rollouts record is charged per rollout.
+  - **Observation.** A rollout observed on its worker charges its thread name, its own
+    observation vectors (`source_observations`) and `charges::OBSERVE_BASES`: the
+    per-rollout maps’ and vectors’ bases and one observation’s transient key derivation.
+    Observation then charges each diagnostic where it pushes it (the copied-history
+    diagnostic before its evidence is collected, at one reference per record), each new
+    limit stream’s entry with its key’s copy of the limit name, and any limit row beyond
+    those decode charged per snapshot: a snapshot shared across an owner change emits
+    rows again. A waiting rollout observed in `normalize` charges the same pushes there.
+  - **Construction.** After workers join, the construction checkpoint replaces decode’s
+    charges, its slots and the permit’s charge with `construction_estimate` over the
+    waiting rollouts’ records, request-bearing records, turn contexts, largest slot
+    count, limit rows and payloads, and the observed rollouts’ built state, plus what
+    those counts do not cover, held once: each rollout’s thread rows as charged, the
+    waiting rollouts’ pricing entries and settings snapshots, one waiting rollout’s
+    observation bases, the bases of `normalize`’s own maps and vectors
+    (`charges::NORMALIZE_BASES`), the manifest and the rollout vector.
+    It also replaces the charge for shared versions, since the source rows are built
+    only after reconciliation.
+    `ConstructionCounts::metadata` is unused for Codex.
+    `normalize` now frees its per-thread maps before reconciliation, which changes no
+    output, so only the input, the manifest and the dialect versions stay through it.
+  - **Reconciliation** runs through `Decoding::reconcile`, whose stage callback
+    checkpoints at `Start` (grouping, before the key graph), at `Order` (with the
+    largest linked set) and at `Released` (finalize, plus the source rows built after
+    it, each with its copies of its manifest entry and of its source ID’s version, so
+    sources sharing an ID are counted there: `source_rows_after`), each estimate plus
+    what the adapter holds beside the input.
+    A new `ReconcileStage::Pushed { component, bytes, kept }` reports what grouping and
+    finalize push that counts cannot predict: the diagnostics reconciliation raises, a
+    split key’s candidate structures, an ambiguous request’s owners, and the request
+    vector’s growth past its presized capacity.
+    Each group’s pushes are reported once its requests are built, before the next group,
+    and charged there; `kept` pushes stay until the ledger is finalized, so later
+    checkpoints carry them.
+    A refusal returns the new `ReconcileError::Admission`, which `AdapterError` converts
+    to the capacity error.
+    `ReconcileCounts::of` moved from the harness into the model.
+    A debug assertion checks thread reconciliation’s precondition, each thread once and
+    without aliases.
+  - **Commit.** `Decoding::commit` holds `Retained::of(agent, ingested)`: the result’s
+    deep size, `QUERY_RESERVE` per request, and an index reserve bounding what
+    `SessionIndex::add` keeps: per thread its session entry and copy and, unless it is
+    an inline sidechain, each source its evidence cites at the costliest source’s paths;
+    per Codex rollout its own paths, which its locator thread matches; and each
+    relationship’s copy at 4 × its row plus its heap.
+    Slice 7’s session-index checkpoint replaces the reserve.
+  - **Harness.** `MemoryAdmission::with_heap_mirror` stores every new `E` and whether
+    workers are decoding in a `HeapMirror` the counting allocator reads.
+    The harness ingests every Codex fixture and generated home under an unlimited ledger
+    with `b` = 0 and the discovery held (`codex_rollout::discovery_heap`, which includes
+    the thread-ID map built from the locators), and fails when live heap above the level
+    before discovery passes `E` at any allocation, plus, while workers decode, the
+    slots’ Rust heap; 1 KiB covers the ledger’s own copy of its holds at each
+    transition. All pass at one and eight workers; on the generated homes of 5,400
+    records the peak is 34% of the largest `E` with a new snapshot on every count and
+    55% with one every 50. Scaling records and κ, or the construction estimate, down by
+    1,000 fails both bounds.
+  - **Tests.** A committed Codex ingest holds exactly its `Retained` total with no
+    discovery hold or slot left; at the threshold `T` computed from a successful run’s
+    largest heap term the ledger is the unlimited one’s, and `T` − 1 refuses with one
+    identical error at one and eight workers; a budget of one slot refuses while
+    reading, with no estimate.
+    A history with a new snapshot on every count and a model per turn refuses at the
+    budget its plain twin needs, whose row-shell count admits every request, and padding
+    skipped content changes no charge.
+    Thresholds also hold in fresh processes of the test binary, whose intern tables
+    start cold, at one and eight workers across repeated runs; the CLI stays unlimited
+    until slice 7, which moves them to the binary.
+
+- **Left to later slices.** Slice 6: the same for Claude, including its thread graph,
+  which uses `with_capacity` and removes entries, so it is charged by capacity and by
+  cumulative inserts. Slice 7: the statistics line from `PhaseEstimate`, the discovery
+  and coordinating holds (`COORDINATING_CACHES`, `uro-2hzh`), and the session-index
+  checkpoint, which replaces the index reserve.
+  Slice 8: per-allocator `F` and `H`, with `F` measured on Linux directly, and the query
+  constants from the calibration matrix.
 
 ### Parallelism and Determinism
 
