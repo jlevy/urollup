@@ -429,9 +429,12 @@ The workflow stages and promotes artifacts in this order:
    archives, wheels, checksums, manifest, and notes.
    Existing assets are accepted only when their digests match.
 8. **Publish crates.io.** Run the pinned Cargo 1.90-or-newer workspace publication,
-   which verifies the full set and orders `urollup-core` before `urollup`. On a rerun,
-   accept an existing version only when its registry checksum matches the planned
-   package; treat a publish polling timeout as unknown until the registry is queried.
+   which orders `urollup-core` before `urollup`, with `--no-verify`: the token-free
+   `crates` job already verified the full set, and the publish job proves this commit
+   packages to those exact digests, without the token, before it uploads (see the
+   [Phase 1 notes](#phase-1-implementation-notes)). On a rerun, accept an existing
+   version only when its registry checksum matches the planned package; treat a publish
+   polling timeout as unknown until the registry is queried.
 9. **Publish PyPI.** Upload the already validated wheels through the pending trusted
    publisher. On a rerun, compare every expected filename and PyPI hash before skipping.
 10. **Publish GitHub Release.** Make the staged release public only after both
@@ -573,9 +576,10 @@ The [publishing runbook](../../../publishing.md) describes the resulting procedu
 - **The crates.io rehearsal found a packaging defect**: an unanchored `README.md`
   include pattern packaged every fixture README into `urollup-core`. The include
   patterns are now anchored.
-  The `urollup` package still ships `tests/cli_process.rs`, whose fixtures are not
-  packaged, so the extracted packages are built, not tested; whether to exclude that
-  test is a Phase 2 metadata decision.
+  The `urollup` package no longer ships `tests/cli_process.rs`: its fixtures live in
+  `urollup-core`’s `tests/`, which no package ships, so the test could only fail there.
+  Both crates’ unit tests read those fixtures too, so the extracted packages are built
+  and installed, not tested; the repository runs every test.
 - **Concurrency is per version and per path.** A tag publication holds
   `release-publish-<tag>`; rehearsals use `release-rehearsal-v<version>`, because GitHub
   keeps one pending run per group and would otherwise let a later rehearsal cancel a
@@ -585,6 +589,48 @@ The [publishing runbook](../../../publishing.md) describes the resulting procedu
   `stage-github` repeats the GitHub decision with drafts included.
 - **Evidence is attached after the release is public**, as the plan orders, so GitHub’s
   immutable releases must stay off until evidence is published another way.
+- **No build code runs beside a publishing credential.** Cargo hands its environment to
+  every build script and proc macro, so `cargo publish` verification with the token set
+  would expose it to the whole dependency tree (review A1). The workflow passes the
+  secret as `RELEASE_CRATES_TOKEN`, never under Cargo’s name; `publish-crates` removes
+  it from its own environment, runs `cargo package --no-verify` without it to prove the
+  rehearsed digests, and hands it only to `cargo publish --no-verify`. A real-Cargo test
+  shows `--no-verify` runs no build script and that verification does, and a gate probe
+  proves `make release-check` fails if the publish command verifies.
+  The Phase 2 trusted-publishing change keeps this rule.
+- **A tag run checks its own preconditions.** `plan` peels the remote tag explicitly
+  rather than trusting `GITHUB_SHA`, requires an annotated tag naming the checked-out
+  commit, verifies its SSH signature against `.github/release-allowed-signers`, and
+  refuses to start unless the `release` environment (a required reviewer, a `v*`
+  tag-only deployment policy, no administrator bypass where GitHub reports it) and an
+  active `v*` tag ruleset blocking updates and deletions exist.
+  These settings answer anonymously for this public repository, and a rehearsal reports
+  them without refusing.
+  Every write then re-peels the tag and stops if it moved.
+- **Signed tags are a technical control on who can release.** The approval boundary
+  cannot tell the maintainer from an agent holding the maintainer’s credentials, so
+  AGENTS.md reserves tags, approvals and release settings to the maintainer, and a tag
+  must carry an SSH signature from a key in the committed allowed-signers file.
+- **GitHub API assumptions**, both failing closed if wrong: an uploaded release asset
+  reports its SHA-256 `digest` once GitHub has processed it (`stage-github` re-reads for
+  a while before calling a missing digest a conflict), and the tag peeling above
+  replaces any assumption about `GITHUB_SHA` for annotated tags.
+- **Attestations are verified against this release only**: `--signer-workflow`,
+  `--source-ref`, `--source-digest` and `--deny-self-hosted-runners` in the probes, the
+  notes and the runbook.
+  The `.crate` files are attested with the archives and wheels.
+- **Release files come from named artifacts.** `assemble`, `evidence` and
+  `attach-evidence` download only the artifacts they need, by name or pattern, into
+  separate directories and read fixed paths; a bundle must agree with itself (manifest,
+  `SHA256SUMS`, files, `.crate` files and plan) before anything is promoted; and an
+  existing draft’s name, notes, prerelease flag and target are reset to the plan.
+- **The gate job keeps its read token for all of `make check`.** Only the supply-chain
+  step needs it, but `make check` runs that step itself and would fall back to anonymous
+  GitHub API limits without it; splitting `make check` would duplicate its target list
+  in a second place that can drift, for a token that can only read a public repository.
+  The probes, by contrast, give their read token only to `gh attestation verify`.
+- **Wheels are stamped with the commit time on every platform**: the manylinux container
+  now receives `SOURCE_DATE_EPOCH`, as the macOS and Windows builds do.
 - **A musl and glibc benchmark** runs in every rehearsal as an informational job, as
   evidence for the global-allocator decision `uro-uj8w` asks for; it does not gate.
 
@@ -594,8 +640,9 @@ The [publishing runbook](../../../publishing.md) describes the resulting procedu
   `make check`, and confirm the release commit is clean, pushed, and on `main`.
 - [ ] Finalize Cargo metadata, `README.md`, `CHANGELOG.md`, release notes, known
   limitations, and the publishing and incident runbook.
-- [ ] Create and push annotated tag `v0.1.0` on the reviewed release commit; review the
-  workflow’s plan and validated artifacts before approving the `release` environment.
+- [ ] Create and push the signed, annotated tag `v0.1.0` on the reviewed release commit;
+  review the workflow’s plan and validated artifacts before approving the `release`
+  environment.
 - [ ] Publish and verify crates.io, PyPI, and GitHub Release through the workflow
   without rebuilding validated channel artifacts.
 - [ ] On clean target environments, download and verify a GitHub archive, run

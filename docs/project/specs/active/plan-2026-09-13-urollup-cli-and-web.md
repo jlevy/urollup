@@ -754,13 +754,16 @@ within the confirmed
   first release, rather than an empty placeholder for a possible bindings package.
 - **Verification:** `--locked` builds from the tagged commit, with a build-provenance
   attestation for every archive and wheel; no GPG or minisign signature.
-- **Versioning:** SemVer from `[workspace.package] version`, checked against the tag by
-  `build.rs`. Before 1.0, a minor release may change CLI or JSON contracts; report,
-  bundle, query and identity contracts carry their own versions, recorded in
-  `CHANGELOG.md` ([§5.6](../../../urollup-design.md#56-versioning-and-compatibility)).
-  The first public alpha is `0.1.0` immediately after milestone 0.1 local acceptance;
-  later Phase 1 milestones ship as subsequent pre-1.0 releases rather than delaying the
-  first release.
+- **Versioning:** SemVer from `[workspace.package] version`, checked against the tag,
+  the crates, the PyPI metadata and `urollup --version` by the release plan
+  (`scripts/release-identity.mjs`; see the publishing plan’s
+  [Phase 1 notes](plan-2026-09-16-first-release-publishing.md#phase-1-implementation-notes)),
+  not by a build script.
+  Before 1.0, a minor release may change CLI or JSON contracts; report, bundle, query
+  and identity contracts carry their own versions, recorded in `CHANGELOG.md`
+  ([§5.6](../../../urollup-design.md#56-versioning-and-compatibility)). The first public
+  alpha is `0.1.0` immediately after milestone 0.1 local acceptance; later Phase 1
+  milestones ship as subsequent pre-1.0 releases rather than delaying the first release.
 
 ## Decisions
 
