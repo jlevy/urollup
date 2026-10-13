@@ -723,7 +723,7 @@ pub fn ingest_discovery_with_admission(
         });
     }
 
-    let threads = decoding.begin(Agent::Codex)?;
+    let threads = decoding.begin(Agent::Codex, discovery.sources.len())?;
     let thread_ids = Arc::new(thread_ids_from_locators(
         discovery.sources.iter().map(|source| source.locator.as_str()),
     )?);
@@ -737,6 +737,14 @@ pub fn ingest_discovery_with_admission(
         return Err(refusal.into());
     }
     let decoded = decoded?;
+    decoding.charge_shared_versions(decoded.iter().map(|(_, rollout)| match rollout {
+        DecodedRollout::Observed(observed) => {
+            (observed.id.as_ref(), observed.metas.cli_version.as_deref())
+        }
+        DecodedRollout::Pending(source) => {
+            (source.id.as_ref(), source.metas.cli_version.as_deref())
+        }
+    }))?;
     // Sized once, as each source's rows were charged: `unzip` would reserve at least four
     // rows, the standard minimum capacity, for fewer sources.
     let mut entries = Vec::with_capacity(decoded.len());

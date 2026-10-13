@@ -2000,9 +2000,36 @@ fn check_join(report: &mut Report) {
             &[
                 ("JOIN_DONE", threads as u64 * model::JOIN_DONE),
                 ("join_copies", count as u64 * model::join_copies()),
+                ("work_order", model::work_order(count as u64)),
             ],
         );
     }
+    // Before the first read, the join holds its work order and its workers' spawning, which
+    // the decode checkpoint charges whatever the thread count.
+    let count = 100_000;
+    let items: Vec<usize> = (0..count).collect();
+    let first_read = std::sync::OnceLock::new();
+    let ((), measured) = measure(|| {
+        let values = try_read_in_parallel(
+            &items,
+            workers(8),
+            |item| *item as u64,
+            |_| {
+                first_read.get_or_init(|| PEAK.load(Ordering::Relaxed));
+                Ok::<u8, ParallelReadError>(1)
+            },
+        )
+        .expect("the workers join");
+        assert_eq!(values.len(), count);
+    });
+    let start = PEAK.load(Ordering::Relaxed) - measured.peak;
+    let before_reads = first_read.get().copied().unwrap_or(start).saturating_sub(start);
+    report.bound(
+        "join",
+        "work order of 100,000 sources",
+        before_reads,
+        &[("work_order", model::work_order(count as u64)), ("JOIN_DONE", 8 * model::JOIN_DONE)],
+    );
 }
 
 /// Eight workers read sources that each hold a 5 MiB line: the large-record permit lets

@@ -207,24 +207,74 @@ const DIALECTS: [(&str, IngestWithAdmission); 2] = [
     ("codex-rollout", codex_rollout::ingest_discovery_with_admission),
 ];
 
+/// Two roots holding the same transcript or rollout, so both sources share one source ID:
+/// in the first root a later record declares a long dialect version, and the second root
+/// holds only the first record, so its source row copies a version it never declared.
+fn shared_source_ids(dialect: &str) -> (tempfile::TempDir, Vec<std::path::PathBuf>) {
+    let root = tempfile::tempdir().expect("synthetic source directory");
+    let version = "9".repeat(206);
+    let (path, first, later) = if dialect == "claude-project" {
+        let session = "00000000-0000-4000-8000-000000000001";
+        (
+            format!("-Users-example-project/{session}.jsonl"),
+            json!({"type":"summary","summary":"a session","leafUuid":"leaf"}),
+            json!({"type":"user","sessionId":session,"uuid":"u1","version":version,
+                "cwd":"/work/app","message":{"role":"user","content":"hello"}}),
+        )
+    } else {
+        let thread = "019f0000-0000-7000-8000-000000000001";
+        (
+            format!("rollout-2026-09-02T17-00-00-{thread}.jsonl"),
+            json!({"type":"session_meta","payload":{"id":thread}}),
+            json!({"type":"session_meta","payload":{"id":thread,"cli_version":version}}),
+        )
+    };
+    let roots: Vec<_> = ["a", "b"].iter().map(|name| root.path().join(name)).collect();
+    for (index, directory) in roots.iter().enumerate() {
+        let file = directory.join(&path);
+        fs::create_dir_all(file.parent().expect("a parent")).expect("a source directory");
+        let mut text = format!("{first}\n");
+        if index == 0 {
+            text.push_str(&later.to_string());
+            text.push('\n');
+        }
+        fs::write(file, text).expect("the source is written");
+    }
+    (root, roots)
+}
+
 #[test]
-fn source_rows_cover_every_sources_manifest_entry_source_row_and_join_copies() {
+fn source_rows_cover_every_sources_manifest_entry_and_source_row() {
     use urollup_core::ledger::admission::deep_size::DeepSize as _;
+    use urollup_core::ledger::entities::Basis;
     for (dialect, ingest) in DIALECTS {
-        for (case, roots) in fixture_cases(dialect) {
+        let (_shared, shared_roots) = shared_source_ids(dialect);
+        let cases = fixture_cases(dialect)
+            .into_iter()
+            .chain([("shared source ID".to_owned(), shared_roots)]);
+        for (case, roots) in cases {
             let discovery = discover(&roots);
             let slot = worker_slot(&[&discovery]);
             let admission = MemoryAdmission::unlimited();
             let workers = NonZeroUsize::new(2).expect("positive workers");
             let ingested =
                 ingest(discovery, true, &Decoding { admission: &admission, workers, slot })
-                    .expect("the fixture ingests");
+                    .expect("the case ingests");
+            if case == "shared source ID" {
+                let ids: Vec<_> =
+                    ingested.manifest.entries.iter().map(|entry| &entry.source).collect();
+                assert!(ids.len() == 2 && ids[0] == ids[1], "{dialect}: one source ID");
+                assert!(
+                    ingested.sources.iter().all(|row| matches!(&row.dialect_version,
+                        Basis::Observed(version) if version.len() == 206)),
+                    "{dialect}: both rows copy the declared version"
+                );
+            }
+            // The join's copies are the harness's to check; here, what the rows hold.
             let sources = ingested.manifest.entries.len() as u64;
-            let held = ingested.manifest.entries.heap()
-                + ingested.sources.heap()
-                + sources * model::join_copies();
-            let charged = admission.charged_by(Component::Sources);
-            assert!(charged >= held, "{dialect}/{case}: {charged} charged for {held} held");
+            let rows = admission.charged_by(Component::Sources) - sources * model::join_copies();
+            let held = ingested.manifest.entries.heap() + ingested.sources.heap();
+            assert!(rows >= held, "{dialect}/{case}: {rows} charged for {held} held");
         }
     }
 }

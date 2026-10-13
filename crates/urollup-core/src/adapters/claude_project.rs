@@ -611,7 +611,7 @@ pub fn ingest_discovery_with_admission(
         });
     }
 
-    let threads = decoding.begin(Agent::Claude)?;
+    let threads = decoding.begin(Agent::Claude, discovery.sources.len())?;
     let decoded = try_read_in_parallel(
         &discovery.sources,
         threads,
@@ -622,6 +622,11 @@ pub fn ingest_discovery_with_admission(
         return Err(refusal.into());
     }
     let decoded = decoded?;
+    decoding.charge_shared_versions(
+        decoded
+            .iter()
+            .map(|source| (source.facts.source_id.as_ref(), source.facts.version.as_deref())),
+    )?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
     normalize(corpus, manifest, &decoding.row_ceiling())
 }

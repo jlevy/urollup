@@ -661,22 +661,30 @@ pub const JOIN_PAIR: u64 = max(
 /// result ([`join_copies`]).
 pub const JOIN_DONE: u64 = grown_vec(1, JOIN_PAIR);
 
-/// The work order the join keeps per source while workers run: its weight and its place
-/// in the heaviest-first order, each in a vector sized once.
-pub const JOIN_ORDER: u64 = 2 * sizes::POINTER;
+/// The work order of a parallel read of `sources` sources, which `run_in_parallel` builds
+/// before any worker starts and keeps while they run: each source's weight and its place in
+/// the heaviest-first order, each vector sized once, and the stable sort of the order
+/// beside them. The decode checkpoint charges it whatever the thread count.
+pub const fn work_order(sources: u64) -> u64 {
+    let weights = sized_vec(sources, size_of::<u64>() as u64);
+    let order = sized_vec(sources, sizes::POINTER);
+    weights.saturating_add(order).saturating_add(sort_scratch(sources, sizes::POINTER))
+}
 
-/// The copies the join makes of one source's result pair, and its share of the work
-/// order: the worker's doubling `done` vector, then the finished `done` vectors, at most
-/// twice their pairs, beside `results`, which the join allocates only once every worker has
-/// finished, then `results` beside `values`, then `values` beside the unzipped vectors.
+/// The copies the join makes of one source's result pair: the worker's doubling `done`
+/// vector, then the finished `done` vectors, at most twice their pairs, beside `results`,
+/// which the join allocates only once every worker has finished, then `results` beside
+/// `values`, then `values` beside the unzipped vectors.
 pub const fn join_copies() -> u64 {
-    3 * JOIN_PAIR + JOIN_ORDER
+    3 * JOIN_PAIR
 }
 
 /// One source's rows apart from its threads, charged before the worker returns the
 /// source's result: its manifest entry, whose heap is `entry_heap`, in the manifest; its
 /// source entity row, which holds a copy of the entry and, as `version` bytes, the
-/// dialect version its records declared; and the join's copies of its result pair.
+/// dialect version its records declared; and the join's copies of its result pair. A
+/// source row that copies a longer version from an earlier source with the same source ID
+/// is charged the difference after the join (`adapters::Decoding`).
 ///
 /// A vector of `n` rows sized once costs at most `n` single-row allocations, so each row
 /// is charged one. A cloned entry's strings and vectors are sized to their length, so the

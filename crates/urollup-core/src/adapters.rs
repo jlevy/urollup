@@ -224,15 +224,26 @@ pub struct Decoding<'a> {
 }
 
 impl Decoding<'_> {
-    /// The decode checkpoint for `agent`: charges its worker slots,
-    /// `clamp(⌊B / (8 × H × b)⌋, 1, max(8, workers))` of them, releases the coordinating
-    /// slot, and returns the threads decode runs on, `min(workers, slots)`. Fewer threads
-    /// never change the result.
-    pub(crate) fn begin(&self, agent: Agent) -> Result<NonZeroUsize, AdapterError> {
-        let slots = self.admission.worker_slots(self.slot, Some(self.workers));
-        let charge = u64::try_from(slots.get()).unwrap_or(u64::MAX).saturating_mul(self.slot);
-        self.admission.checkpoint(Phase::Decode(agent), charge, &[(Hold::Coordinating, 0)])?;
-        Ok(self.workers.min(slots))
+    /// The threads decode runs on: `min(workers, slots)`, where the slot count is
+    /// `clamp(⌊B / (8 × H × b)⌋, 1, max(8, workers))`. It depends only on the budget, `b`
+    /// and an explicit worker count past eight, and fewer threads never change a result.
+    pub fn threads(&self) -> NonZeroUsize {
+        self.workers.min(self.slots())
+    }
+
+    fn slots(&self) -> NonZeroUsize {
+        self.admission.worker_slots(self.slot, Some(self.workers))
+    }
+
+    /// The decode checkpoint for `agent`, before `sources` decode: charges the worker
+    /// slots and the parallel read's work order ([`model::work_order`]), whatever the
+    /// thread count, releases the coordinating slot, and returns [`Self::threads`].
+    pub(crate) fn begin(&self, agent: Agent, sources: usize) -> Result<NonZeroUsize, AdapterError> {
+        let slots = u64::try_from(self.slots().get()).unwrap_or(u64::MAX);
+        let sources = u64::try_from(sources).unwrap_or(u64::MAX);
+        let estimate = slots.saturating_mul(self.slot).saturating_add(model::work_order(sources));
+        self.admission.checkpoint(Phase::Decode(agent), estimate, &[(Hold::Coordinating, 0)])?;
+        Ok(self.threads())
     }
 
     /// Charges a source's rows apart from its threads ([`model::source_rows`]) before the
@@ -250,6 +261,45 @@ impl Decoding<'_> {
         } else {
             Err(AdapterError::Read { path: path.to_owned(), source: SourceReadError::Stopped })
         }
+    }
+
+    /// Charges the dialect versions that source rows copy from another source with the
+    /// same source ID, beyond what each source charged for its own version.
+    ///
+    /// `sources` gives each source's ID and declared version in manifest order. `normalize`
+    /// gives every source row of an ID the version of its first source that declared one,
+    /// so a source with no version, or a shorter one, holds a longer copy than its worker
+    /// charged; two roots holding the same transcript share an ID. Called after the join,
+    /// before the rows are built.
+    pub(crate) fn charge_shared_versions<'s>(
+        &self,
+        sources: impl Iterator<Item = (Option<&'s AnalyticalId>, Option<&'s str>)> + Clone,
+    ) -> Result<(), AdapterError> {
+        let mut first: BTreeMap<&AnalyticalId, &str> = BTreeMap::new();
+        for (id, version) in sources.clone() {
+            if let (Some(id), Some(version)) = (id, version) {
+                first.entry(id).or_insert(version);
+            }
+        }
+        let cost = |version: Option<&str>| {
+            version.map_or(0, |version| {
+                model::allocation(u64::try_from(version.len()).unwrap_or(u64::MAX))
+            })
+        };
+        let extra = sources
+            .map(|(id, own)| {
+                let copied = id.and_then(|id| first.get(id).copied());
+                cost(copied).saturating_sub(cost(own))
+            })
+            .fold(0_u64, u64::saturating_add);
+        if extra == 0 || self.admission.charge(Component::Sources, extra) {
+            return Ok(());
+        }
+        // A refused charge records its refusal before it returns.
+        Err(self.admission.refusal().map_or(
+            AdapterError::Read { path: PathBuf::new(), source: SourceReadError::Stopped },
+            AdapterError::from,
+        ))
     }
 
     /// The row ceiling reconciliation checks again, or none.
@@ -282,6 +332,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{Decoding, worker_slot};
+    use crate::ledger::admission::model::allocation;
     use crate::ledger::admission::{
         CapacityError, Hold, MemoryAdmission, Phase, ProcessModel, model,
     };
@@ -335,15 +386,23 @@ mod tests {
         admission.raise_hold(Hold::Coordinating, slot / 2).unwrap();
         assert_eq!(admission.charged(), slot, "a smaller hold keeps the larger");
         let decoding = Decoding { admission: &admission, workers: workers(8), slot };
-        assert_eq!(decoding.begin(Agent::Codex).unwrap(), workers(2));
-        assert_eq!(admission.charged(), 2 * slot, "the slots replace the coordinating slot");
+        assert_eq!(decoding.threads(), workers(2));
+        assert_eq!(decoding.begin(Agent::Codex, 1_000).unwrap(), workers(2));
+        assert_eq!(
+            admission.charged(),
+            2 * slot + model::work_order(1_000),
+            "the slots and the work order replace the coordinating slot"
+        );
+        // The work order is charged whatever the thread count.
+        assert!(model::work_order(1_000) >= 3 * allocation(8_000));
         // One worker needs only one thread, and without a budget an explicit count past
         // eight decodes on every thread it names.
         let one = Decoding { workers: workers(1), ..decoding };
-        assert_eq!(one.begin(Agent::Claude).unwrap(), workers(1));
+        assert_eq!(one.begin(Agent::Claude, 1_000).unwrap(), workers(1));
+        assert_eq!(admission.charged(), 2 * slot + model::work_order(1_000));
         let unlimited = MemoryAdmission::unlimited();
         let many = Decoding { admission: &unlimited, workers: workers(16), slot };
-        assert_eq!(many.begin(Agent::Codex).unwrap(), workers(16));
+        assert_eq!(many.begin(Agent::Codex, 0).unwrap(), workers(16));
     }
 
     #[test]
@@ -353,12 +412,15 @@ mod tests {
         let admission =
             MemoryAdmission::new(MemoryBudget::exact(budget, "test"), ProcessModel::DEFAULT);
         let decoding = Decoding { admission: &admission, workers: workers(8), slot };
-        let error = decoding.begin(Agent::Codex).unwrap_err();
+        let error = decoding.begin(Agent::Codex, 0).unwrap_err();
         let super::AdapterError::Capacity(CapacityError::Memory { phase, estimate, .. }) = error
         else {
             unreachable!("expected a memory refusal, got {error}");
         };
         assert_eq!(phase, Phase::Decode(Agent::Codex));
-        assert_eq!(estimate, Some(ProcessModel::DEFAULT.whole_process(slot)));
+        assert_eq!(
+            estimate,
+            Some(ProcessModel::DEFAULT.whole_process(slot + model::work_order(0)))
+        );
     }
 }
