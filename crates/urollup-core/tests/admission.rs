@@ -581,6 +581,7 @@ fn threshold_child() {
     let count = count.parse().expect("a worker count");
     let result = match agent {
         "codex" => ingest_codex(std::path::Path::new(root), &admission, count),
+        "claude" => ingest_claude(std::path::Path::new(root), &admission, count),
         agent => panic!("no adapter for {agent}"),
     };
     match result {
@@ -619,16 +620,13 @@ fn largest_of(outcome: &str) -> u64 {
 /// Tests", worker determinism): the threshold `T` computed from a successful run's
 /// largest heap term succeeds and `T` − 1 refuses, with identical outcomes, on one and
 /// eight workers across repeated runs, while new interns are charged cold in each.
-#[test]
-fn codex_thresholds_hold_in_fresh_processes_at_one_and_eight_workers() {
-    let root = codex_families(3, 120, 0, true, true);
-    let slot = slot_of(root.path());
+fn assert_fresh_thresholds(agent: &str, root: &std::path::Path, slot: u64) {
     let slots = |bytes: Option<u64>| {
         bytes.map_or(8, |bytes| budget(bytes).worker_slots(slot, Some(workers(8))).get())
     };
     let mut probe = None;
     let threshold = loop {
-        let largest = largest_of(&in_child("codex", root.path(), probe, 1));
+        let largest = largest_of(&in_child(agent, root, probe, 1));
         let threshold = ProcessModel::DEFAULT.whole_process(largest);
         if slots(Some(threshold)) == slots(probe) {
             break threshold;
@@ -639,14 +637,251 @@ fn codex_thresholds_hold_in_fresh_processes_at_one_and_eight_workers() {
     let mut below = Vec::new();
     for count in [1, 8] {
         for _ in 0..3 {
-            at.push(in_child("codex", root.path(), Some(threshold), count));
-            below.push(in_child("codex", root.path(), Some(threshold - 1), count));
+            at.push(in_child(agent, root, Some(threshold), count));
+            below.push(in_child(agent, root, Some(threshold - 1), count));
         }
     }
     at.dedup();
     below.dedup();
-    assert_eq!(at.len(), 1, "{at:#?}");
-    assert!(at[0].starts_with("ok "), "{at:#?}");
-    assert_eq!(below.len(), 1, "{below:#?}");
-    assert!(below[0].starts_with("refused estimated memory"), "{below:#?}");
+    assert_eq!(at.len(), 1, "{agent}: {at:#?}");
+    assert!(at[0].starts_with("ok "), "{agent}: {at:#?}");
+    assert_eq!(below.len(), 1, "{agent}: {below:#?}");
+    assert!(below[0].starts_with("refused estimated memory"), "{agent}: {below:#?}");
+}
+
+#[test]
+fn codex_thresholds_hold_in_fresh_processes_at_one_and_eight_workers() {
+    let root = codex_families(3, 120, 0, true, true);
+    assert_fresh_thresholds("codex", root.path(), slot_of(root.path()));
+}
+
+#[test]
+fn claude_thresholds_hold_in_fresh_processes_at_one_and_eight_workers() {
+    let root = claude_sessions(3, 90, 0, true);
+    let slot = worker_slot(&[&discover(&[root.path().to_owned()])]);
+    assert_fresh_thresholds("claude", root.path(), slot);
+}
+
+/// A Claude project of `sessions` sessions of `records` assistant records each, every one
+/// after a user line of `padding` bytes the adapter skips. Block records of three share a
+/// message ID, each record has a request ID and a uuid, and every fifth reports quota
+/// limits. When `dense`, each record names a model of its own, its quota limits differ, and
+/// each later session resumes the one before, replaying its records under that session's
+/// ID first, so its sessions form one long family; otherwise one model and one quota
+/// snapshot serve every record and no session resumes another.
+fn claude_sessions(
+    sessions: usize,
+    records: usize,
+    padding: usize,
+    dense: bool,
+) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("a synthetic Claude root");
+    let project = root.path().join("projects/-home-example-project");
+    fs::create_dir_all(&project).expect("a project directory");
+    let session_id = |session: usize| format!("00000000-0000-4000-8000-{session:012}");
+    let assistant = |session: usize, record: usize, recorded: &str| {
+        let model =
+            if dense { format!("claude-{session}-{record}") } else { "claude-a".to_owned() };
+        let quota = if record % 5 == 0 {
+            let used = if dense { record } else { 1 };
+            json!({"status": "allowed", "rateLimitType": "five_hour", "used": used})
+        } else {
+            serde_json::Value::Null
+        };
+        json!({"type": "assistant", "sessionId": recorded, "cwd": "/home/example/project",
+            "version": "2.1.0", "uuid": format!("uuid-{session}-{record}"),
+            "requestId": format!("req_{session}_{}", record / 3),
+            "timestamp": format!("2026-09-{:02}T10:{:02}:{:02}.000Z", session % 28 + 1, record / 60 % 60, record % 60),
+            "message": {"id": format!("msg_{session}_{}", record / 3), "model": model,
+                "usage": {"input_tokens": record + 1, "output_tokens": record % 7 + 1,
+                    "cache_read_input_tokens": 10}},
+            "quotaLimits": quota})
+    };
+    for session in 0..sessions {
+        let id = session_id(session);
+        let mut lines = Vec::new();
+        if dense && session > 0 {
+            let previous = session_id(session - 1);
+            for record in 0..records / 2 {
+                lines.push(assistant(session - 1, record, &previous));
+            }
+        }
+        for record in 0..records {
+            lines.push(json!({"type": "user", "sessionId": id,
+                "message": {"content": "x".repeat(padding)}}));
+            lines.push(assistant(session, record, &id));
+        }
+        let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        fs::write(project.join(format!("{id}.jsonl")), text).expect("a transcript is written");
+    }
+    root
+}
+
+/// Ingests the Claude project at `root` under `admission` on `count` workers, with the slot
+/// size its discovery implies.
+fn ingest_claude(
+    root: &std::path::Path,
+    admission: &MemoryAdmission,
+    count: usize,
+) -> Result<urollup_core::adapters::Ingested, AdapterError> {
+    let discovery = discover(&[root.to_owned()]);
+    let slot = worker_slot(&[&discovery]);
+    claude_project::ingest_discovery_with_admission(
+        discovery,
+        true,
+        &Decoding { admission, workers: workers(count), slot },
+    )
+}
+
+#[test]
+fn a_claude_ingest_commits_what_it_retains_and_releases_its_decode() {
+    use urollup_core::adapters::Retained;
+    use urollup_core::ledger::admission::deep_size::DeepSize as _;
+    use urollup_core::selection::Agent;
+    let root = claude_sessions(3, 30, 0, true);
+    for count in [1, 8] {
+        let admission = MemoryAdmission::unlimited();
+        admission.hold(&[(Hold::Discovery(Agent::Claude), 1_000)]).expect("the hold fits");
+        let ingested = ingest_claude(root.path(), &admission, count).expect("the project ingests");
+        // The resumed sessions replay the ones before them.
+        assert_eq!(ingested.relationships.len(), 2);
+        assert!(ingested.ledger.coverage.copies > 0);
+        let retained = Retained::of(Agent::Claude, &ingested);
+        assert_eq!(retained.ledger, ingested.heap());
+        assert_eq!(admission.held(Hold::Ledger(Agent::Claude)), retained.total());
+        assert_eq!(admission.held(Hold::Discovery(Agent::Claude)), 0);
+        assert_eq!(
+            admission.charged(),
+            retained.total() + admission.charged_by(Component::Interns)
+        );
+        for component in [
+            Component::Records,
+            Component::Kappa,
+            Component::Payloads,
+            Component::Limits,
+            Component::Sources,
+        ] {
+            assert!(admission.charged_by(component) > 0, "{component:?}");
+        }
+    }
+}
+
+/// The budget at which a Claude ingest succeeds is exact and the same for one and eight
+/// workers.
+#[test]
+fn claude_refusal_is_exact_and_independent_of_the_worker_count() {
+    use urollup_core::ledger::admission::CapacityError;
+    let root = claude_sessions(3, 90, 0, true);
+    let slot = worker_slot(&[&discover(&[root.path().to_owned()])]);
+    let expected = ingest_claude(root.path(), &MemoryAdmission::unlimited(), 1).expect("ingests");
+    let threshold = threshold(slot, |admission| ingest_claude(root.path(), admission, 1).is_ok());
+    let mut refusals = Vec::new();
+    for count in [1, 8] {
+        for _ in 0..3 {
+            let at = ingest_claude(root.path(), &budget(threshold), count)
+                .expect("the threshold budget succeeds");
+            assert_eq!(at.ledger, expected.ledger, "{count} workers");
+            let error = ingest_claude(root.path(), &budget(threshold - 1), count)
+                .expect_err("one byte less refuses");
+            assert!(
+                matches!(error, AdapterError::Capacity(CapacityError::Memory { .. })),
+                "{error}"
+            );
+            refusals.push(error.to_string());
+        }
+    }
+    refusals.dedup();
+    assert_eq!(refusals.len(), 1, "{refusals:#?}");
+}
+
+/// Many models, distinct quota snapshots and a long family of resumed sessions cost a Claude
+/// history more than its plain twin with as many records: at the budget the plain history
+/// needs, whose row-shell count admits every request, the dense one refuses. Padding the
+/// skipped content changes nothing admission charges.
+#[test]
+fn high_cardinality_claude_histories_refuse_where_row_shells_admitted_them() {
+    use urollup_core::ledger::admission::CapacityError;
+    let plain = claude_sessions(4, 150, 0, false);
+    let dense = claude_sessions(4, 150, 0, true);
+    let padded = claude_sessions(4, 150, 4_096, true);
+    let slot = worker_slot(&[&discover(&[plain.path().to_owned()])]);
+    let mut observations = 0;
+    for root in [&plain, &dense, &padded] {
+        let ingested =
+            ingest_claude(root.path(), &MemoryAdmission::unlimited(), 1).expect("ingests");
+        observations = observations.max(ingested.ledger.coverage.observations);
+    }
+    let plain_threshold =
+        threshold(slot, |admission| ingest_claude(plain.path(), admission, 1).is_ok());
+    let rows = ObservationCapacity::from_byte_budget(plain_threshold, "row shells");
+    assert!(rows.maximum() as u64 >= observations);
+    let admission = budget(plain_threshold).with_row_ceiling(rows);
+    let error = ingest_claude(dense.path(), &admission, 1).expect_err("the dense history refuses");
+    assert!(matches!(error, AdapterError::Capacity(CapacityError::Memory { .. })), "{error}");
+    let measure = |root: &tempfile::TempDir| {
+        let admission = MemoryAdmission::unlimited();
+        ingest_claude(root.path(), &admission, 1).expect("ingests");
+        (admission.largest(), Component::ALL.map(|component| admission.charged_by(component)))
+    };
+    assert_eq!(measure(&padded), measure(&dense));
+}
+
+/// A Codex home and a Claude project that each fit a budget alone refuse it together,
+/// while Claude decodes or at one of its checkpoints, with the Codex ledger held.
+#[test]
+fn agents_that_fit_alone_refuse_together_during_the_claude_ingest() {
+    use urollup_core::ledger::admission::{CapacityError, Phase};
+    use urollup_core::selection::Agent;
+    // Claude needs the larger budget alone, so the Codex ledger it holds beside its own
+    // ingest passes it.
+    let codex = codex_families(2, 60, 0, true, true);
+    let claude = claude_sessions(4, 200, 0, true);
+    let slot = worker_slot(&[
+        &discover(&codex_rollout::rollout_roots(&[codex.path().to_owned()])),
+        &discover(&[claude.path().to_owned()]),
+    ]);
+    let both = |admission: &MemoryAdmission| {
+        ingest_codex(codex.path(), admission, 1)?;
+        ingest_claude(claude.path(), admission, 1)
+    };
+    drop(both(&MemoryAdmission::unlimited()).expect("both ingest"));
+    let codex_alone = threshold(slot, |admission| ingest_codex(codex.path(), admission, 1).is_ok());
+    let alone = threshold(slot, |admission| ingest_claude(claude.path(), admission, 1).is_ok());
+    assert!(codex_alone <= alone, "{codex_alone} > {alone}");
+    assert!(ingest_codex(codex.path(), &budget(alone), 1).is_ok());
+    assert!(ingest_claude(claude.path(), &budget(alone), 1).is_ok());
+    let error = both(&budget(alone)).expect_err("both together refuse");
+    let AdapterError::Capacity(CapacityError::Memory { phase, .. }) = error else {
+        panic!("unexpected error {error}");
+    };
+    assert_eq!(phase.agent(), Some(Agent::Claude), "{phase:?}");
+    assert_ne!(phase, Phase::Query);
+}
+
+/// A `quotaLimits` object whose running cost passes the worker slot's 640 KiB allowance
+/// takes the large-record permit, and a value that is not an object builds nothing.
+#[test]
+fn a_large_quota_document_takes_the_permit_and_a_non_object_builds_nothing() {
+    let write = |quota: &str| {
+        let root = tempfile::tempdir().expect("a synthetic Claude root");
+        let project = root.path().join("projects/-p");
+        fs::create_dir_all(&project).expect("a project directory");
+        let line = format!(
+            r#"{{"type":"assistant","sessionId":"00000000-0000-4000-8000-000000000001","uuid":"u1","message":{{"id":"m1","usage":{{"output_tokens":1}}}},"quotaLimits":{quota}}}"#
+        );
+        fs::write(project.join("00000000-0000-4000-8000-000000000001.jsonl"), line + "\n")
+            .expect("a transcript is written");
+        root
+    };
+    let entries: Vec<String> =
+        (0..8_000).map(|index| format!(r#""k{index:05}":{{"a":1}}"#)).collect();
+    let large = write(&format!("{{{}}}", entries.join(",")));
+    let values: Vec<String> = (0..8_000).map(|_| r#"{"a":1}"#.to_owned()).collect();
+    let array = write(&format!("[{}]", values.join(",")));
+    for (root, permit) in [(&large, true), (&array, false)] {
+        let admission = MemoryAdmission::unlimited();
+        let ingested = ingest_claude(root.path(), &admission, 1).expect("the project ingests");
+        assert_eq!(ingested.limit_observations.len(), usize::from(permit));
+        assert_eq!(admission.charged_by(Component::Slots) > 0, permit);
+    }
 }
