@@ -614,6 +614,8 @@ committed; then query and render.
   [Implementation Notes](#implementation-notes)). A header the loop cannot parse (a bad
   magic number, a reserved bit, or a header cut off at the end of the file) goes to the
   slot’s decoder unchanged, so its failure kind and message stay as today.
+  As in zstd, as much of the magic number as there is decides, so 1 to 3 bytes that
+  cannot begin a zstd frame go there at once, without reading further.
   Skippable frames are skipped, as today.
   A decoder’s size comes from zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula, computed
   in Rust because zstd-sys exposes that function only behind its `experimental` feature;
@@ -1343,6 +1345,7 @@ Choices made while implementing, where this design left room:
     permit’s lock, which the refusing thread may hold inside a charge.
     A share is neither `Send` nor `Sync`, since re-entrance is keyed by the thread that
     took it, and debug builds assert that its holder raises and drops it.
+    `compile_fail` doctests on `LargeRecord` pin both.
     A refused or stopped share is `None`, and the read ends with the new
     `SourceReadError::Stopped`, which the adapters already rank below the refusal.
   - **Line buffers.** The scan’s, `first_record_of`’s and a peek’s line buffer starts at
@@ -1360,20 +1363,25 @@ Choices made while implementing, where this design left room:
     frames and the `incomplete frame` error at an early end.
     It reads each frame’s header (`frame_header`, RFC 8878 §3.1.1.1, with the mantissa)
     before the decoder sees the frame.
-    When the input buffer ends inside a header, the loop moves the header’s start to an
-    18-byte side buffer and reads the next buffer as the old decoder would have, then
-    offers that start as a chunk of its own, so the decoder sees the same chunks as
-    before. That matters: how much a decoder emits before a damaged block depends on its
-    input chunks, and a test that damages raw blocks after a split header fails when the
-    loop compacts the header instead, or reads 7 bytes less per buffer.
+    When the input buffer ends inside a zstd frame’s header, with bytes that can begin
+    one, the loop moves the header’s start to an 18-byte side buffer and reads the next
+    buffer as the old decoder would have, then offers that start as a chunk of its own,
+    so the decoder sees the same chunks as before.
+    That matters: how much a decoder emits before a damaged block depends on its input
+    chunks, and a test that damages raw blocks after a split header fails when the loop
+    compacts the header instead, or reads 7 bytes less per buffer.
     A read that fails, `Interrupted` included, changes nothing, as `BufReader`’s does,
     so a caller that retries resumes exactly: a refill sets its bounds only once the
     read returns, and a failed look-ahead puts the header’s start back.
     A look-ahead read that returns nothing is the end of the input, as `BufReader`’s
     would have been, so nothing is read after it.
-    Tests compare the loop with the stock decoder over scripted readers that fail or
-    return `Interrupted` at each read in turn, interrupt every read once, and return
-    short reads, and check that both make the same reads.
+    Bytes that cannot begin a zstd frame are routed without a look-ahead, however few:
+    zstd checks as much of the magic number as it is offered and fails on bytes that
+    begin no frame before it reads again, so the loop makes no read the stock decoder
+    does not. Tests compare the loop with the stock decoder over scripted readers that
+    fail or return `Interrupted` at each read in turn, scribbling over the buffer as
+    `Read` allows, interrupt every read once, and return short reads, and check that
+    both make the same reads, including none past bytes that cannot begin a frame.
     One deviation remains: a short read before the end of the input that leaves a header
     incomplete routes the frame by the bytes it has, so a window above 8 MiB goes to the
     slot’s decoder and fails there, where the stock decoder would decode it.
@@ -1384,8 +1392,9 @@ Choices made while implementing, where this design left room:
     `frameParameter_windowTooLarge` error, `Frame requires too much memory for
     decoding`, under either limit, so the kind and message are as before and no second
     context is opened for a frame that cannot decode.
-    A skippable frame, a bad magic number, a reserved bit or a header cut off at the end
-    of the file also goes to the slot’s decoder unchanged.
+    A skippable frame, a bad magic number (or 1 to 3 bytes that cannot begin one), a
+    reserved bit or a header cut off at the end of the file also goes to the slot’s
+    decoder unchanged.
   - **zstd’s single-pass path.** A frame whose content size fits the read buffer and
     whose bytes are all in the input buffer decodes in one pass, which never checks the
     window, so such a frame declaring 2^28 still decodes, as it did before.

@@ -135,6 +135,12 @@ fn frame_headers_give_the_window_zstd_reads() {
     assert_eq!(frame_header(&header(0x08, &[0])), FrameHeader::Other);
     assert_eq!(frame_header(b"{\"a\":1}\n"), FrameHeader::Other);
     assert_eq!(frame_header(&skippable(16)), FrameHeader::Other);
+    // As much of the magic number as there is decides, as in zstd: fewer than 4 bytes that
+    // cannot begin a zstd frame are not the start of one.
+    assert_eq!(frame_header(&[]), FrameHeader::Incomplete(5));
+    assert_eq!(frame_header(b"ab"), FrameHeader::Other);
+    assert_eq!(frame_header(&[magic[0], magic[1], magic[2] ^ 1]), FrameHeader::Other);
+    assert_eq!(frame_header(&skippable(16)[..3]), FrameHeader::Other);
 }
 
 #[test]
@@ -367,9 +373,10 @@ enum Step {
     Full,
     /// Reads at most this many bytes.
     Short(usize),
-    /// Fails with `Interrupted`, reading nothing, which a caller retries.
+    /// Fails with `Interrupted`, reading nothing but scribbling over the buffer, which a
+    /// caller retries.
     Interrupted,
-    /// Fails with another error, reading nothing.
+    /// Fails with another error, reading nothing but scribbling over the buffer.
     Fail,
     /// Reads nothing, before the end of the input, as a growing file does.
     Nothing,
@@ -389,8 +396,16 @@ impl io::Read for Scripted<'_> {
         self.reads.set(index + 1);
         let rest = &self.bytes[self.position..];
         let length = match (self.script)(index) {
-            Step::Interrupted => return Err(io::Error::from(io::ErrorKind::Interrupted)),
-            Step::Fail => return Err(io::Error::other("scripted failure")),
+            // `Read` lets a failed read leave `buf` changed; these do, so a reader that
+            // keeps input in the buffer it reads into must restore it.
+            Step::Interrupted => {
+                buf.fill(0xEE);
+                return Err(io::Error::from(io::ErrorKind::Interrupted));
+            }
+            Step::Fail => {
+                buf.fill(0xEE);
+                return Err(io::Error::other("scripted failure"));
+            }
             Step::Nothing => 0,
             Step::Short(most) => most.min(buf.len()).min(rest.len()),
             Step::Full => buf.len().min(rest.len()),
@@ -510,4 +525,26 @@ fn a_look_ahead_that_finds_the_end_of_the_input_ends_it() {
     assert_eq!(decoded, records(100));
     assert_eq!(error, Some((io::ErrorKind::UnexpectedEof, "incomplete frame".to_owned())));
     assert_eq!(reads, 2, "nothing is read after the end of the input");
+}
+
+#[test]
+fn bytes_that_cannot_begin_a_frame_are_not_read_past() {
+    // zstd rejects 1 to 3 bytes that cannot begin a frame before it reads again, so the
+    // loop routes them without a look-ahead: a damaged frame's first bytes ending the
+    // first buffer, or a file of junk too short to hold a magic number.
+    let input = usize::try_from(ZSTD_INPUT_BUFFER).unwrap();
+    let mut damaged = frame(&records(200));
+    damaged[0] ^= 0xFF;
+    for inside in 1..=3 {
+        let stream = [&skippable(input - inside)[..], &damaged].concat();
+        for step in [Step::Full, Step::Interrupted, Step::Fail] {
+            let script = move |index| if index == 1 { step } else { Step::Full };
+            let case = format!("{inside} damaged bytes in, {step:?} at the next read");
+            assert_eq!(same_reads_as_before(&stream, &script, &case), 1, "{case}");
+        }
+    }
+    for junk in [&b"a"[..], b"ab", b"abc"] {
+        let case = format!("a {}-byte file", junk.len());
+        assert_eq!(same_reads_as_before(junk, &|_| Step::Full, &case), 1, "{case}");
+    }
 }

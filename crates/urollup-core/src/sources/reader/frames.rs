@@ -15,26 +15,27 @@
 //!   there as it did under zstd's default limit, with the same kind and message; a
 //!   skippable frame, which the decoder skips; and a header the loop cannot parse (a bad
 //!   magic number, a reserved bit, or a header cut off at the end of the file), so its
-//!   failure stays what it was.
+//!   failure stays what it was. As in zstd, as much of the magic number as there is
+//!   decides: 1 to 3 bytes that cannot begin a zstd frame go to the slot's decoder at once.
 //!
 //! A wide frame is detected before it decodes, so nothing is read twice. Apart from the
 //! routing, the loop is `zstd::stream::read::Decoder`'s: the same input buffer size and
 //! reads, the same chunks of input offered to the decoder, the same flush before each
 //! read, the same session reset between frames, and the same `incomplete frame` error when
-//! the input ends inside a frame. When the buffer ends inside a frame header, the loop
-//! reads the next buffer before offering the header's start, and offers that start as a
-//! chunk of its own, as `BufReader` would have; a look-ahead read that finds the end of
-//! the input ends it, as `BufReader`'s would have. A read that fails, `Interrupted`
-//! included, changes nothing, as `BufReader`'s does, so a caller that retries resumes
-//! exactly where it stopped.
+//! the input ends inside a frame. When the buffer ends inside a zstd frame's header, with
+//! bytes that can begin one, the loop reads the next buffer before offering the header's
+//! start, and offers that start as a chunk of its own, as `BufReader` would have; a
+//! look-ahead read that finds the end of the input ends it, as `BufReader`'s would have.
+//! A read that fails, `Interrupted` included, changes nothing, as `BufReader`'s does, so a
+//! caller that retries resumes exactly where it stopped.
 //!
-//! Its output bytes, and the kind and message of any error, are that decoder's, whatever
-//! the reads return; the tests compare the two over scripted readers. The one exception
-//! is a read that returns fewer bytes than asked before the end of the input and leaves a
-//! frame header incomplete: the loop routes that frame by the bytes it has, so a window
-//! above 8 MiB goes to the slot's decoder and fails there. A local regular file returns
-//! a short read only at its end, but a network or FUSE file system, or another reader
-//! [`decode`](super::decode) is given, may not.
+//! Its reads, its output bytes, and the kind and message of any error are that decoder's,
+//! whatever the reads return; the tests compare the two over scripted readers. The one
+//! exception is a read that returns fewer bytes than asked before the end of the input and
+//! leaves a frame header incomplete: the loop routes that frame by the bytes it has, so a
+//! window above 8 MiB goes to the slot's decoder and fails there. A local regular file
+//! returns a short read only at its end, but a network or FUSE file system, or another
+//! reader [`decode`](super::decode) is given, may not.
 
 use std::io::{self, Read};
 
@@ -64,10 +65,12 @@ const MIN_WINDOW_LOG: u32 = 10;
 pub(super) enum FrameHeader {
     /// A zstd frame whose window is this many bytes.
     Window(u64),
-    /// More bytes are needed to read the window: at least this many in all.
+    /// The start of a zstd frame, too short to read the window: at least this many bytes
+    /// are needed in all.
     Incomplete(usize),
-    /// Not a zstd frame this loop routes: a skippable frame, an unknown magic number or a
-    /// reserved bit. The decoder handles it as it always did.
+    /// Not a zstd frame this loop routes: a skippable frame, an unknown magic number (or
+    /// fewer than 4 bytes that cannot begin the zstd one) or a reserved bit. The decoder
+    /// handles it as it always did.
     Other,
 }
 
@@ -76,11 +79,11 @@ pub(super) enum FrameHeader {
 /// A single-segment frame's window is its content size; otherwise the window descriptor
 /// gives `2^(10 + exponent)` plus `mantissa` eighths of it, so a 9 MiB window is not read
 /// as 8 MiB. This is `ZSTD_getFrameHeader`'s rule.
+///
+/// Like `ZSTD_getFrameHeader`, it checks as much of the magic number as it is given, so 1
+/// to 3 bytes that cannot begin a zstd frame are [`FrameHeader::Other`], not incomplete.
 pub(super) fn frame_header(bytes: &[u8]) -> FrameHeader {
-    let Some(magic) = bytes.first_chunk::<4>() else {
-        return FrameHeader::Incomplete(5);
-    };
-    if u32::from_le_bytes(*magic) != FRAME_MAGIC {
+    if bytes.iter().zip(FRAME_MAGIC.to_le_bytes()).any(|(&byte, magic)| byte != magic) {
         return FrameHeader::Other;
     }
     let Some(&descriptor) = bytes.get(4) else {

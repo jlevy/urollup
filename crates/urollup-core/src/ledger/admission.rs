@@ -835,6 +835,33 @@ struct Permit {
 ///
 /// Re-entrance is keyed by the thread that took the permit, so a share never moves to
 /// another thread: the type is neither `Send` nor `Sync`.
+///
+/// ```
+/// use urollup_core::ledger::admission::MemoryAdmission;
+///
+/// let admission = MemoryAdmission::unlimited();
+/// let share = admission.large_record(1 << 20).expect("an unlimited ledger admits it");
+/// assert_eq!(share.need(), 1 << 20);
+/// ```
+///
+/// A share cannot be sent to another thread:
+///
+/// ```compile_fail,E0277
+/// use urollup_core::ledger::admission::LargeRecord;
+///
+/// fn release_elsewhere(share: LargeRecord<'static>) {
+///     std::thread::spawn(move || drop(share));
+/// }
+/// ```
+///
+/// nor shared with one:
+///
+/// ```compile_fail,E0277
+/// use urollup_core::ledger::admission::LargeRecord;
+///
+/// fn shared<T: Sync>() {}
+/// shared::<LargeRecord<'static>>();
+/// ```
 #[derive(Debug)]
 #[must_use = "dropping the share releases the large-record permit"]
 pub struct LargeRecord<'a> {
