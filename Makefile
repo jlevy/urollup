@@ -227,7 +227,7 @@ fixtures-check:
 RELEASE_TESTS := scripts/release-identity.test.mjs scripts/release-targets.test.mjs \
 	scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs \
 	scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs \
-	scripts/release.test.mjs scripts/check-release-workflow.test.mjs
+	scripts/release-publish.test.mjs scripts/release.test.mjs scripts/check-release-workflow.test.mjs
 
 release-check: $(NODE_INSTALL_STAMP)
 	$(NODE) --test $(RELEASE_TESTS)

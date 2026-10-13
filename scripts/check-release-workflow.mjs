@@ -8,8 +8,9 @@
 //
 // - only a v* tag push or a workflow_dispatch with an explicit commit and version starts it;
 // - plan, gate, build, crates, validate, benchmark and assemble hold no write or OIDC
-//   permission, no environment and no secret, and prove at run time that they hold no
-//   credential (`release.mjs assert-no-authority`);
+//   permission, no environment and no secret (this gate is what proves the job token's
+//   scope), and check at run time that their environment holds no credential or OIDC
+//   endpoint (`release.mjs assert-no-authority`);
 // - each job that can write anything runs only when the plan says this is a tag
 //   publication, and holds exactly the permission its step needs: id-token and
 //   attestations for attestation, id-token for PyPI, contents: write for the GitHub
@@ -54,6 +55,9 @@ export const PUBLICATION_JOBS = {
 
 /** Jobs whose steps may read the workflow token, all for reads except the release writers. */
 export const TOKEN_JOBS = ["plan", "gate", "assemble", "stage-github", "publish-github", "probe", "evidence", "attach-evidence"];
+
+/** The only job that may fail without failing the run: informational evidence. */
+export const OPTIONAL_JOBS = ["benchmark"];
 
 /** Plan outputs every later job trusts, which must come from the tested plan step. */
 export const PLAN_OUTPUTS = ["version", "tag", "commit", "mode", "publish", "matrix", "hosts", "source-date-epoch", "allow-unmerged"];
@@ -174,9 +178,15 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
     }
   }
 
+  if (/\bCARGO_REGISTRY_TOKEN"?\s*:/.test(text)) {
+    problems.push("no step may export CARGO_REGISTRY_TOKEN: Cargo hands it to every build script and proc macro; pass the secret under another name to the publish script");
+  }
   for (const [name, job] of Object.entries(jobs)) {
     if (!isObject(job)) {
       continue;
+    }
+    if (job["continue-on-error"] !== undefined && !OPTIONAL_JOBS.includes(name)) {
+      problems.push(`job ${name} must not continue on error: a later job would treat its failure as success`);
     }
     const body = JSON.stringify(job);
     const rule = PUBLICATION_JOBS[name];
@@ -223,11 +233,20 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
       problems.push(`job ${name} must not read the workflow token`);
     }
     if (ASSERTING_JOBS.includes(name) && !(job.steps ?? []).some((step) => /release\.mjs assert-no-authority/.test(step.run ?? ""))) {
-      problems.push(`job ${name} must prove at run time that it holds no publishing authority (release.mjs assert-no-authority)`);
+      problems.push(`job ${name} must check at run time that its environment holds no credential or OIDC endpoint (release.mjs assert-no-authority)`);
     }
     for (const [index, step] of (job.steps ?? []).entries()) {
       const uses = typeof step.uses === "string" ? step.uses : "";
       const where = `job ${name} step ${index + 1}`;
+      if (step["continue-on-error"] !== undefined) {
+        problems.push(`${where}: steps must not continue on error`);
+      }
+      if (typeof step.run === "string" && step.run.includes("${{")) {
+        problems.push(`${where}: run must not expand \${{ }} expressions into the shell; pass values through env`);
+      }
+      if (uses.startsWith("actions/download-artifact@") && !step.with?.name && !step.with?.pattern) {
+        problems.push(`${where}: download artifacts by name or pattern, never every artifact of the run`);
+      }
       if (uses.startsWith("actions/checkout@") && step.with?.["persist-credentials"] !== false) {
         problems.push(`${where}: checkout must set persist-credentials: false`);
       }

@@ -49,6 +49,21 @@
       "expect": "actions/cache@v4 must pin an exact 40-character commit"
     },
     {
+      "id": "supply-chain-unpinned-apt",
+      "gate": "supply-chain",
+      "violation": "the release plan's apt list gains a package that is not pinned and inventoried",
+      "edits": [
+        {
+          "path": "scripts/release-targets.mjs",
+          "substitute": {
+            "from": "\"musl-tools=1.2.4-2\"];",
+            "to": "\"musl-tools=1.2.4-2\", \"gcc\"];"
+          }
+        }
+      ],
+      "expect": "must equal the inventory exactly; not inventoried: gcc"
+    },
+    {
       "id": "lint-policy-member-opts-out",
       "gate": "lint-policy",
       "violation": "a workspace member drops its [lints] table",
@@ -146,6 +161,36 @@
         }
       ],
       "expect": "the PyPI version must not be a literal"
+    },
+    {
+      "id": "release-gate-continue-on-error",
+      "gate": "release-check",
+      "violation": "the release gate job may fail without failing the run",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "  gate:\n    name: Gate (make check)\n    needs: plan\n",
+            "to": "  gate:\n    name: Gate (make check)\n    needs: plan\n    continue-on-error: true\n"
+          }
+        }
+      ],
+      "expect": "job gate must not continue on error"
+    },
+    {
+      "id": "release-crates-publish-verifies",
+      "gate": "release-check",
+      "violation": "cargo publish verifies, compiling every build script while the crates.io token is in its environment",
+      "edits": [
+        {
+          "path": "scripts/release-registry.mjs",
+          "substitute": {
+            "from": "return [\"cargo\", \"publish\", \"--locked\", \"--no-verify\", \"--workspace\"];",
+            "to": "return [\"cargo\", \"publish\", \"--locked\", \"--workspace\"];"
+          }
+        }
+      ],
+      "expect": "must not build"
     },
     {
       "id": "rustfmt",

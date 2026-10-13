@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { AUTHORITY_VARIABLES, COMMANDS, LATE_ASSETS, authorityProblems, dispatchArgs, hostId, manylinuxCommand, maturinPinProblems, parseOptions, pinnedToolchain } from "./release.mjs";
 import { artifactById, buildEnvironment } from "./release-targets.mjs";
+import { makeReleaseBundle } from "./release-test-binaries.mjs";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "release.mjs");
 
@@ -37,7 +36,7 @@ test("a build, validation or assembly job may hold no OIDC endpoint and no crede
   assert.deepEqual(authorityProblems({ CARGO_REGISTRIES_MIRROR_TOKEN: "x" }), ["CARGO_REGISTRIES_MIRROR_TOKEN"]);
   const run = spawnSync(process.execPath, [SCRIPT, "assert-no-authority"], { env: { PATH: process.env.PATH, ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.invalid" }, encoding: "utf8" });
   assert.equal(run.status, 1);
-  assert.match(run.stderr, /must hold no publishing authority.*ACTIONS_ID_TOKEN_REQUEST_URL/);
+  assert.match(run.stderr, /must hold no credential or OIDC endpoint.*ACTIONS_ID_TOKEN_REQUEST_URL/);
 });
 
 test("the manylinux build runs the locked Maturin offline in the pinned image", () => {
@@ -96,29 +95,22 @@ test("every subcommand the workflow calls exists", () => {
   assert.match(run.stderr, /usage: release\.mjs/);
 });
 
-test("publication refuses a rehearsal bundle and any run that is not its tag", () => {
-  const bundle = mkdtempSync(path.join(tmpdir(), "urollup-bundle-test-"));
+test("the publish subcommands refuse a rehearsal bundle, a branch run and a tampered bundle", () => {
+  const bundle = makeReleaseBundle({ commit: "0".repeat(40), mode: "rehearsal" });
   try {
-    mkdirSync(path.join(bundle, "assets"));
-    const data = Buffer.from("archive");
-    writeFileSync(path.join(bundle, "assets", "urollup-0.1.0-x86_64-unknown-linux-musl.tar.gz"), data);
-    writeFileSync(path.join(bundle, "SHA256SUMS"), `${createHash("sha256").update(data).digest("hex")}  urollup-0.1.0-x86_64-unknown-linux-musl.tar.gz\n`);
-    writeFileSync(path.join(bundle, "release-notes.md"), "notes\n");
-    const manifest = { mode: "rehearsal", version: "0.1.0", tag: "v0.1.0", commit: "0".repeat(40), artifacts: [], cargo_packages: [] };
-    writeFileSync(path.join(bundle, "release-manifest.json"), JSON.stringify(manifest));
     for (const command of ["stage-github", "publish-crates", "publish-pypi", "publish-github"]) {
-      const run = spawnSync(process.execPath, [SCRIPT, command, "--bundle", bundle], { env: { PATH: process.env.PATH, GITHUB_REF: "refs/tags/v0.1.0" }, encoding: "utf8" });
+      const run = spawnSync(process.execPath, [SCRIPT, command, "--bundle", bundle.dir], {
+        env: { PATH: process.env.PATH, GITHUB_REF: "refs/tags/v0.1.0", RELEASE_CRATES_TOKEN: "x" },
+        encoding: "utf8",
+      });
       assert.equal(run.status, 1, command);
       assert.match(run.stderr, /publication runs only from the pushed tag v0\.1\.0/, command);
     }
-    writeFileSync(path.join(bundle, "release-manifest.json"), JSON.stringify({ ...manifest, mode: "publish" }));
-    const branch = spawnSync(process.execPath, [SCRIPT, "stage-github", "--bundle", bundle], { env: { PATH: process.env.PATH, GITHUB_REF: "refs/heads/main" }, encoding: "utf8" });
-    assert.match(branch.stderr, /publication runs only from the pushed tag/);
-    writeFileSync(path.join(bundle, "SHA256SUMS"), `${"f".repeat(64)}  urollup-0.1.0-x86_64-unknown-linux-musl.tar.gz\n`);
-    const tampered = spawnSync(process.execPath, [SCRIPT, "stage-github", "--bundle", bundle], { env: { PATH: process.env.PATH, GITHUB_REF: "refs/tags/v0.1.0" }, encoding: "utf8" });
-    assert.match(tampered.stderr, /does not match its SHA256SUMS:\nchecksum conflict/);
+    writeFileSync(path.join(bundle.dir, "SHA256SUMS"), `${"f".repeat(64)}  urollup-0.1.0-x86_64-unknown-linux-musl.tar.gz\n`);
+    const tampered = spawnSync(process.execPath, [SCRIPT, "stage-github", "--bundle", bundle.dir], { env: { PATH: process.env.PATH, GITHUB_REF: "refs/tags/v0.1.0" }, encoding: "utf8" });
+    assert.match(tampered.stderr, /release bundle is inconsistent/);
   } finally {
-    rmSync(bundle, { recursive: true, force: true });
+    bundle.cleanup();
   }
 });
 

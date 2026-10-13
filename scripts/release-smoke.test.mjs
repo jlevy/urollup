@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { normalizeExpected } from "./check-e2e-results.mjs";
 import { HOME_CANARY_TOKEN } from "./golden-env.mjs";
 import {
   SMOKE_CASES,
@@ -18,20 +17,9 @@ import {
   smokeInstalled,
   smokePath,
 } from "./release-smoke.mjs";
+import { fixtureReportFor } from "./release-test-binaries.mjs";
 
-/** A report document whose extracted results are exactly what a case's expected.json states. */
-function reportFor(fixtureCase) {
-  const raw = JSON.parse(readFileSync(path.join(fixtureCaseDir(fixtureCase), "expected.json"), "utf8"));
-  const { reconciled } = normalizeExpected(raw);
-  const rows = (counts) => Object.entries(counts ?? {}).map(([value, requests]) => ({ value, requests }));
-  return {
-    schema_version: 1,
-    coverage: { copies_excluded: reconciled.copies_excluded, limit_observations: reconciled.limit_observations },
-    diagnostics: raw.diagnostics ?? [],
-    totals: { requests: reconciled.ownership, tokens: reconciled.tokens, unresolved: reconciled.unresolved, possible: reconciled.possible },
-    breakdowns: { model: rows(reconciled.models), effort: rows(reconciled.efforts) },
-  };
-}
+const reportFor = fixtureReportFor;
 
 function scratch() {
   return mkdtempSync(path.join(tmpdir(), "urollup-smoke-test-"));

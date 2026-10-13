@@ -6,9 +6,20 @@
 // import descriptors. They let the tests prove every linkage rule without a compiler,
 // cross toolchain or real release build.
 
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import zlib from "node:zlib";
 
+import { normalizeExpected } from "./check-e2e-results.mjs";
+import { writeTarGz } from "./release-archive.mjs";
 import { recordDigest } from "./release-inspect.mjs";
+import { formatChecksums } from "./release-manifest.mjs";
+import { fixtureCaseDir } from "./release-smoke.mjs";
+import { plannedArtifacts, plannedCrates } from "./release-targets.mjs";
+
+const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
 function cstrings(strings) {
   const offsets = new Map();
@@ -259,4 +270,60 @@ export function makeTarGz(entries) {
   }
   blocks.push(Buffer.alloc(1024, 0));
   return zlib.gzipSync(Buffer.concat(blocks));
+}
+
+/** A report document whose extracted results are exactly what a fixture case's expected.json states. */
+export function fixtureReportFor(fixtureCase) {
+  const raw = JSON.parse(readFileSync(path.join(fixtureCaseDir(fixtureCase), "expected.json"), "utf8"));
+  const { reconciled } = normalizeExpected(raw);
+  const rows = (counts) => Object.entries(counts ?? {}).map(([value, requests]) => ({ value, requests }));
+  return {
+    schema_version: 1,
+    coverage: { copies_excluded: reconciled.copies_excluded, limit_observations: reconciled.limit_observations },
+    diagnostics: raw.diagnostics ?? [],
+    totals: { requests: reconciled.ownership, tokens: reconciled.tokens, unresolved: reconciled.unresolved, possible: reconciled.possible },
+    breakdowns: { model: rows(reconciled.models), effort: rows(reconciled.efforts) },
+  };
+}
+
+/** A self-consistent publish-mode bundle with real archives (so probes can extract them). */
+export function makeReleaseBundle({ commit, mode = "publish", firstRelease = true } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), "urollup-publish-test-"));
+  mkdirSync(path.join(dir, "assets"));
+  mkdirSync(path.join(dir, "crates"));
+  const executable = Buffer.from("fake urollup executable");
+  const artifacts = plannedArtifacts("0.1.0").map((artifact) => {
+    const data =
+      artifact.kind === "archive" && artifact.os !== "windows"
+        ? writeTarGz(
+            [
+              { name: "urollup", data: executable, mode: 0o755 },
+              { name: "README.md", data: Buffer.from("# urollup\n") },
+              { name: "LICENSE", data: Buffer.from("MIT\n") },
+            ],
+            { mtime: 1791884182 },
+          )
+        : Buffer.from(`fake ${artifact.name}`);
+    writeFileSync(path.join(dir, "assets", artifact.name), data);
+    return {
+      name: artifact.name,
+      kind: artifact.kind,
+      target: artifact.rustTarget,
+      platform: artifact.host,
+      size: data.length,
+      sha256: sha256(data),
+      executable_sha256: sha256(executable),
+    };
+  });
+  const cargo = plannedCrates("0.1.0").map((crate) => {
+    const data = Buffer.from(`fake ${crate.name}`);
+    writeFileSync(path.join(dir, "crates", crate.name), data);
+    return { name: crate.crate, version: "0.1.0", file: crate.name, size: data.length, sha256: sha256(data) };
+  });
+  const identity = { version: "0.1.0", tag: "v0.1.0", commit, mode };
+  writeFileSync(path.join(dir, "SHA256SUMS"), formatChecksums(artifacts));
+  writeFileSync(path.join(dir, "release-manifest.json"), JSON.stringify({ ...identity, pep440_version: "0.1.0", artifacts, cargo_packages: cargo }));
+  writeFileSync(path.join(dir, "release-plan.json"), JSON.stringify({ ...identity, pep440: "0.1.0", first_release: firstRelease }));
+  writeFileSync(path.join(dir, "release-notes.md"), "First release.\n");
+  return { dir, artifacts, cargo, executable, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }

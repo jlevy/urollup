@@ -9,13 +9,15 @@
 // tree's build nor an earlier installation can stand in for the artifact under test.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { EXTRACTORS, compareResults, formatDifferences, normalizeExpected } from "./check-e2e-results.mjs";
 import { canaryLines, openGoldenEnvironment } from "./golden-env.mjs";
+import { readArchive } from "./release-archive.mjs";
 import { checkVersionOutput } from "./release-identity.mjs";
+import { executableName } from "./release-targets.mjs";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = path.join(ROOT, "crates", "urollup-core", "tests", "fixtures");
@@ -214,4 +216,69 @@ export function isolatedUvEnv(dir, baseEnv = process.env) {
     UV_NO_CONFIG: "1",
     UV_NO_PROGRESS: "1",
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// Installing artifacts (shared by native validation and the post-publication probes)
+
+/** spawnSync with the options every release subprocess uses; returns its result. */
+export function spawnRun(program, args, { env = process.env, cwd, timeout = 600_000 } = {}) {
+  return spawnSync(program, args, { env, cwd, encoding: "utf8", timeout, maxBuffer: 256 * 1024 * 1024 });
+}
+
+/** Write an archive's members into `dir` with their modes; returns the executable's path. */
+export function extractArchiveTo(artifact, data, dir) {
+  mkdirSync(dir, { recursive: true });
+  for (const entry of readArchive(artifact.name, data)) {
+    const target = path.join(dir, entry.name);
+    writeFileSync(target, entry.data);
+    if (process.platform !== "win32") {
+      chmodSync(target, entry.mode & 0o777);
+    }
+  }
+  return path.join(dir, executableName(artifact.os));
+}
+
+function uvCommand(baseEnv) {
+  return resolveOnPath("uv", baseEnv[pathKey(baseEnv)]) ?? "uv";
+}
+
+/**
+ * Install a wheel, or a PyPI requirement when `index` is set, with `uv tool install` into
+ * isolated directories under `dir`; returns where the executable went. Throws on failure.
+ */
+export function installWheel({ wheel, dir, index = false, requirement, run = spawnRun, baseEnv = process.env }) {
+  const env = isolatedUvEnv(dir, baseEnv);
+  const python = findPython(baseEnv);
+  const args = ["tool", "install", ...(python ? ["--python", python] : []), ...(index ? [requirement] : ["--no-index", wheel])];
+  const result = run(uvCommand(baseEnv), args, { env });
+  if (result.error || result.status !== 0) {
+    throw new Error(`uv ${args.join(" ")} failed (${result.error?.message ?? `exit ${result.status}`}): ${String(result.stderr ?? "").trim().slice(-400)}`);
+  }
+  const binDir = env.UV_TOOL_BIN_DIR;
+  const installed = resolveOnPath("urollup", binDir);
+  if (!installed) {
+    throw new Error(`uv tool install left no urollup in ${binDir}`);
+  }
+  return { binDir, toolDir: env.UV_TOOL_DIR, installed };
+}
+
+/**
+ * The ephemeral `uv tool run` path: `--version` and one fixture report through uv, from a
+ * local wheel with no index, or from PyPI when `index` is set. Returns `{checks, problems}`.
+ */
+export function ephemeralUv({ from, dir, version, index = false, run = spawnRun, baseEnv = process.env }) {
+  const env = isolatedUvEnv(dir, baseEnv);
+  const python = findPython(baseEnv);
+  const base = ["tool", "run", "--isolated", ...(python ? ["--python", python] : []), ...(index ? [] : ["--no-index"]), "--from", from, "urollup"];
+  const problems = [];
+  const versionRun = run(uvCommand(baseEnv), [...base, "--version"], { env, timeout: 300_000 });
+  problems.push(...(versionRun.status === 0 ? checkVersionOutput(versionRun.stdout, version) : [`uv tool run urollup --version exited ${versionRun.status}: ${versionRun.stderr}`]));
+  const fixtureCase = SMOKE_CASES[0];
+  const reportRun = run(uvCommand(baseEnv), [...base, ...reportArgs(fixtureCaseDir(fixtureCase))], {
+    env: { ...env, NO_COLOR: "1", CLAUDE_CONFIG_DIR: path.join(dir, "empty"), CODEX_HOME: path.join(dir, "empty") },
+    timeout: 300_000,
+  });
+  problems.push(...checkFixtureReport(fixtureCase, reportRun, { allowStderr: true }).map((problem) => `uv tool run: ${problem}`));
+  return { checks: [{ check: "uv-tool-run", from: path.basename(from), version: String(versionRun.stdout ?? "").trim() }], problems };
 }

@@ -39,7 +39,7 @@ test("rehearsal jobs can never gain write, OIDC, attestation, environment or sec
   assert.match(problemsAfter((copy) => copy.jobs.build.steps.push({ run: "x", env: { GITHUB_TOKEN: "${{ github.token }}" } })), /job build must not read the workflow token/);
   assert.match(
     problemsAfter((copy) => (copy.jobs.build.steps = copy.jobs.build.steps.filter((step) => !/assert-no-authority/.test(step.run ?? "")))),
-    /job build must prove at run time that it holds no publishing authority/,
+    /job build must check at run time that its environment holds no credential/,
   );
   assert.match(problemsAfter((copy) => (copy.jobs.assemble.if = "always()")), /job assemble must run in every release run/);
 });
@@ -122,4 +122,30 @@ test("the publish condition and order come only from the plan and the plan's job
   assert.match(problemsAfter((copy) => (copy.jobs["publish-crates"].needs = ["plan", "assemble"])), /job publish-crates must need exactly plan, stage-github/);
   assert.match(problemsAfter((copy) => (copy.jobs["publish-github"].needs = ["plan", "stage-github"])), /job publish-github must need exactly plan, publish-crates, publish-pypi/);
   assert.match(problemsAfter((copy) => (copy.jobs.probe.permissions = { contents: "read" })), /job probe must hold exactly/);
+});
+
+test("no job hides a failure, no run expands an expression, and downloads are named", () => {
+  assert.match(problemsAfter((copy) => (copy.jobs.gate["continue-on-error"] = true)), /job gate must not continue on error/);
+  assert.match(problemsAfter((copy) => (copy.jobs.validate["continue-on-error"] = true)), /job validate must not continue on error/);
+  assert.equal(problemsAfter((copy) => (copy.jobs.benchmark["continue-on-error"] = true)), "", "the informational benchmark may fail");
+  assert.match(
+    problemsAfter((copy) => (copy.jobs.gate.steps.find((step) => /gate-git/.test(step.run ?? ""))["continue-on-error"] = true)),
+    /job gate step \d+: steps must not continue on error/,
+  );
+  assert.match(problemsAfter((copy) => copy.jobs.plan.steps.push({ run: "echo ${{ inputs.version }}" })), /run must not expand \$\{\{ \}\} expressions/);
+  assert.match(
+    problemsAfter((copy) => copy.jobs.assemble.steps.unshift({ uses: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093", with: { path: "x" } })),
+    /download artifacts by name or pattern/,
+  );
+});
+
+test("the crates.io token is never exported under Cargo's name", () => {
+  assert.match(
+    problemsAfter((copy) => {
+      const step = copy.jobs["publish-crates"].steps.find((candidate) => candidate.env?.RELEASE_CRATES_TOKEN);
+      step.env = { CARGO_REGISTRY_TOKEN: step.env.RELEASE_CRATES_TOKEN };
+    }),
+    /no step may export CARGO_REGISTRY_TOKEN/,
+  );
+  assert.match(problemsAfter((copy) => (copy.jobs["publish-crates"].env = { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" })), /no step may export CARGO_REGISTRY_TOKEN/);
 });

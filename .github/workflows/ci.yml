@@ -123,7 +123,7 @@ jobs:
         run: node scripts/check-e2e-results.mjs
       # The release workflow runs these scripts on every release host, Windows included.
       - name: Test the release logic
-        run: node --test scripts/release-identity.test.mjs scripts/release-targets.test.mjs scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs scripts/release.test.mjs scripts/check-release-workflow.test.mjs
+        run: node --test scripts/release-identity.test.mjs scripts/release-targets.test.mjs scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs scripts/release-publish.test.mjs scripts/release.test.mjs scripts/check-release-workflow.test.mjs
 
   release-check:
     name: Release logic and workflow authority

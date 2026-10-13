@@ -105,16 +105,41 @@ export function decideGithubRelease(planned, observed, { late = LATE_ASSETS } = 
 }
 
 /**
+ * A first release publishes into names nobody holds yet. A project that already exists
+ * without the planned version belongs to someone else (a pending PyPI publisher does not
+ * reserve a name), so it is a conflict rather than "absent". `project` is the project-level
+ * observation; anything but a clean "absent" is refused.
+ */
+function firstReleaseConflict(channel, name, project) {
+  if (project === undefined) {
+    return null;
+  }
+  if (project.status === "unavailable") {
+    return decision(channel, "unavailable", { publish: [], skip: [], conflicts: [`${name}: ${project.reason ?? "the project could not be read"}`] });
+  }
+  if (project.status === "present") {
+    return decision(channel, "conflict", {
+      publish: [],
+      skip: [],
+      conflicts: [`${name} already exists without this version; a first release never publishes into an existing project`],
+    });
+  }
+  return null;
+}
+
+/**
  * PyPI: `observed` is `{status: "absent"}`, `{status: "unavailable", reason}` or
  * `{status: "present", files: [{name, sha256, packagetype, yanked}]}`. An sdist, a yanked
- * file or an unplanned wheel under this version is a conflict.
+ * file or an unplanned wheel under this version is a conflict. With `firstRelease`, an
+ * existing `project` without the version is a conflict too.
  */
-export function decidePypi(planned, observed) {
+export function decidePypi(planned, observed, { firstRelease = false, project } = {}) {
   if (observed.status === "unavailable") {
     return decision("pypi", "unavailable", { publish: [], skip: [], conflicts: [observed.reason ?? "PyPI could not be read"] });
   }
   if (observed.status === "absent") {
-    return decision("pypi", "absent", { publish: planned.map((item) => item.name), skip: [], conflicts: [] });
+    const taken = firstRelease ? firstReleaseConflict("pypi", "PyPI project urollup", project) : null;
+    return taken ?? decision("pypi", "absent", { publish: planned.map((item) => item.name), skip: [], conflicts: [] });
   }
   const files = observed.files ?? [];
   const result = classifyFiles("pypi", planned, files);
@@ -137,9 +162,20 @@ export function decidePypi(planned, observed) {
  * crates.io: `planned` is `[{name: crate, sha256}]` in publication order, and `observed`
  * maps each crate to `{status: "absent"}`, `{status: "unavailable", reason}` or
  * `{status: "present", checksum, yanked}`. A dependent published without its dependency is
- * a conflict, since Cargo never orders a workspace publication that way.
+ * a conflict, since Cargo never orders a workspace publication that way. With
+ * `firstRelease`, a crate whose project exists without the version is a conflict.
  */
-export function decideCrates(planned, observed) {
+export function decideCrates(planned, observed, { firstRelease = false, projects = {} } = {}) {
+  if (firstRelease) {
+    for (const item of planned) {
+      if (observed[item.name]?.status === "absent") {
+        const taken = firstReleaseConflict("crates", `crates.io crate ${item.name}`, projects[item.name]);
+        if (taken) {
+          return taken;
+        }
+      }
+    }
+  }
   const unavailable = planned.filter((item) => observed[item.name]?.status === "unavailable" || observed[item.name] === undefined);
   if (unavailable.length > 0) {
     return decision("crates", "unavailable", {
@@ -164,15 +200,21 @@ export function decideCrates(planned, observed) {
   return result;
 }
 
-/** The command a crates.io decision runs, or null when there is nothing to publish. */
+/**
+ * The command a crates.io decision runs, or null when there is nothing to publish.
+ * `--no-verify` is load-bearing: verification compiles every dependency's build script
+ * and proc macro, and in the publish job the crates.io credential is in Cargo's
+ * environment. The token-free `crates` job already verified these exact bytes, and the
+ * publish job proves the digests match before it uploads.
+ */
 export function cratesPublishCommand(result) {
   if (result.blocking || result.publish.length === 0) {
     return null;
   }
   if (result.state === "absent") {
-    return ["cargo", "publish", "--locked", "--workspace"];
+    return ["cargo", "publish", "--locked", "--no-verify", "--workspace"];
   }
-  return ["cargo", "publish", "--locked", ...result.publish.flatMap((name) => ["-p", name])];
+  return ["cargo", "publish", "--locked", "--no-verify", ...result.publish.flatMap((name) => ["-p", name])];
 }
 
 /** One line per decision, for the run summary. */
@@ -224,6 +266,18 @@ export async function observeCrate(name, version, fetchImpl = fetch) {
     return { status: "unavailable", reason: `crates.io returned an unexpected record for ${name} ${version}` };
   }
   return { status: "present", checksum: published.checksum, yanked: Boolean(published.yanked) };
+}
+
+/** Observe whether a crate exists at all on crates.io, whatever its versions. */
+export async function observeCrateProject(name, fetchImpl = fetch) {
+  const result = await getJson(fetchImpl, `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`);
+  return result.status === "present" ? { status: "present" } : result;
+}
+
+/** Observe whether a PyPI project exists at all, whatever its versions. */
+export async function observePypiProject(project, fetchImpl = fetch) {
+  const result = await getJson(fetchImpl, `https://pypi.org/pypi/${encodeURIComponent(project)}/json`);
+  return result.status === "present" ? { status: "present" } : result;
 }
 
 /** Observe one release on PyPI. */
@@ -285,6 +339,10 @@ function releaseObservation(release) {
     status: "present",
     id: release.id,
     draft: Boolean(release.draft),
+    name: release.name ?? null,
+    body: release.body ?? null,
+    prerelease: Boolean(release.prerelease),
+    target: release.target_commitish ?? null,
     assets: (release.assets ?? []).map((asset) => ({ name: asset.name, sha256: assetDigest(asset), id: asset.id, state: asset.state ?? "uploaded" })),
   };
 }
@@ -304,26 +362,72 @@ async function githubWrite(fetchImpl, url, { method, token, body, contentType })
   return response.status === 204 ? null : response.json();
 }
 
+/** Fields a draft must carry before it is published, as the plan writes them. */
+export function releaseMetadata({ tag, commit, title, notes, prerelease }) {
+  return { tag_name: tag, target_commitish: commit, name: title, body: notes, prerelease: Boolean(prerelease) };
+}
+
+/** The metadata fields where an observed release differs from the planned values. */
+export function metadataDifferences(observed, planned) {
+  const actual = { name: observed.name, body: observed.body, prerelease: observed.prerelease, target_commitish: observed.target };
+  return ["name", "body", "prerelease", "target_commitish"].filter((field) => actual[field] !== planned[field]);
+}
+
+const realSleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 /**
- * Stage the draft release: create it if absent, upload only the planned assets it lacks,
- * and then re-read it to prove every planned asset is present with its planned digest.
- * `files` is `[{name, sha256, data}]`. Refuses any blocking state.
+ * Re-read the release until every planned asset GitHub holds reports a digest. GitHub
+ * computes an asset's SHA-256 at upload; this tolerates the digest appearing a moment
+ * later, and still fails closed when it never does.
  */
-export async function stageGithubRelease({ repository, tag, commit, title, notes, prerelease, files, token, fetchImpl = fetch }) {
+async function observeWithDigests({ repository, tag, token, fetchImpl, sleep, planned, attempts = 6, delayMs = 5_000 }) {
+  let observed;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
+    const pending = observed.status === "present" && observed.assets.some((asset) => planned.some((item) => item.name === asset.name) && asset.sha256 === null);
+    if (!pending) {
+      return observed;
+    }
+    await sleep(delayMs);
+  }
+  return observed;
+}
+
+/**
+ * Stage the draft release: create it if absent, bring an existing draft's name, notes,
+ * prerelease flag and target to the planned values, upload only the planned assets it
+ * lacks, and then re-read it to prove every planned asset is present with its planned
+ * digest. `files` is `[{name, sha256, data}]`. `beforeWrite()` runs immediately before
+ * every write, so the caller can re-check the tag's target. Refuses any blocking state.
+ */
+export async function stageGithubRelease({ repository, tag, commit, title, notes, prerelease, files, token, fetchImpl = fetch, beforeWrite = async () => {}, sleep = realSleep }) {
   const planned = files.map((file) => ({ name: file.name, sha256: file.sha256 }));
+  const metadata = releaseMetadata({ tag, commit, title, notes, prerelease });
+  const write = async (url, options) => {
+    await beforeWrite();
+    return githubWrite(fetchImpl, url, { ...options, token });
+  };
   let observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
   // An upload interrupted in an earlier attempt leaves a planned asset with no digest or an
   // unfinished state. While the release is still a private draft, remove it so this run can
   // upload it again; on a public release it stays a conflict.
   const repaired = [];
+  let reconciled = [];
   if (observed.status === "present" && observed.draft) {
     for (const asset of observed.assets.filter((candidate) => planned.some((item) => item.name === candidate.name))) {
       if (asset.state !== "uploaded" || asset.sha256 === null) {
-        await githubWrite(fetchImpl, `https://api.github.com/repos/${repository}/releases/assets/${asset.id}`, { method: "DELETE", token });
+        await write(`https://api.github.com/repos/${repository}/releases/assets/${asset.id}`, { method: "DELETE" });
         repaired.push(asset.name);
       }
     }
-    if (repaired.length > 0) {
+    reconciled = metadataDifferences(observed, metadata);
+    if (reconciled.length > 0) {
+      await write(`https://api.github.com/repos/${repository}/releases/${observed.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(Object.fromEntries(reconciled.map((field) => [field, metadata[field]]))),
+      });
+    }
+    if (repaired.length > 0 || reconciled.length > 0) {
       observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
     }
   }
@@ -331,40 +435,50 @@ export async function stageGithubRelease({ repository, tag, commit, title, notes
   if (result.blocking) {
     throw new Error(describeDecision(result));
   }
+  if (observed.status === "present" && !observed.draft && metadataDifferences(observed, metadata).length > 0) {
+    throw new Error(`the public ${tag} release differs from the plan in ${metadataDifferences(observed, metadata).join(", ")}`);
+  }
   let releaseId = observed.id;
   if (observed.status === "absent") {
-    const created = await githubWrite(fetchImpl, `https://api.github.com/repos/${repository}/releases`, {
+    const created = await write(`https://api.github.com/repos/${repository}/releases`, {
       method: "POST",
-      token,
-      body: JSON.stringify({ tag_name: tag, target_commitish: commit, name: title, body: notes, draft: true, prerelease }),
+      body: JSON.stringify({ ...metadata, draft: true }),
     });
     releaseId = created.id;
   }
   for (const name of result.publish) {
     const file = files.find((candidate) => candidate.name === name);
-    await githubWrite(fetchImpl, `https://uploads.github.com/repos/${repository}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`, {
+    await write(`https://uploads.github.com/repos/${repository}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`, {
       method: "POST",
-      token,
       body: file.data,
       contentType: "application/octet-stream",
     });
   }
-  const after = decideGithubRelease(planned, await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl }));
+  const after = decideGithubRelease(planned, await observeWithDigests({ repository, tag, token, fetchImpl, sleep, planned }));
   if (after.state !== "identical-complete") {
     throw new Error(`after staging, ${describeDecision(after)}`);
   }
-  return { releaseId, staged: result, repaired };
+  return { releaseId, staged: result, repaired, reconciled };
 }
 
-/** Make the staged draft public, only when it is identical and complete. */
-export async function publishGithubRelease({ repository, tag, files, token, fetchImpl = fetch }) {
+/**
+ * Make the staged draft public, only when its assets are identical and complete and its
+ * name, notes, prerelease flag and target are the planned ones. `beforeWrite()` runs
+ * immediately before the write.
+ */
+export async function publishGithubRelease({ repository, tag, commit, title, notes, prerelease, files, token, fetchImpl = fetch, beforeWrite = async () => {} }) {
   const planned = files.map((file) => ({ name: file.name, sha256: file.sha256 }));
   const observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
   const result = decideGithubRelease(planned, observed);
   if (result.state !== "identical-complete") {
     throw new Error(`refusing to publish: ${describeDecision(result)}`);
   }
+  const differences = metadataDifferences(observed, releaseMetadata({ tag, commit, title, notes, prerelease }));
+  if (differences.length > 0) {
+    throw new Error(`refusing to publish: the release's ${differences.join(", ")} differ from the plan; rerun stage-github`);
+  }
   if (observed.draft) {
+    await beforeWrite();
     await githubWrite(fetchImpl, `https://api.github.com/repos/${repository}/releases/${observed.id}`, {
       method: "PATCH",
       token,

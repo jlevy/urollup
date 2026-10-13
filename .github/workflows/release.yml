@@ -79,7 +79,7 @@ jobs:
         with:
           node-version: 24.19.0
       - name: Test the release logic
-        run: node --test scripts/release-identity.test.mjs scripts/release-targets.test.mjs scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs scripts/release.test.mjs
+        run: node --test scripts/release-identity.test.mjs scripts/release-targets.test.mjs scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs scripts/release-publish.test.mjs scripts/release.test.mjs
       - name: Resolve the release plan
         id: plan
         run: node scripts/release.mjs plan --out "$RUNNER_TEMP/release-plan"
@@ -156,7 +156,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Prove this job holds no publishing authority
+      - name: Check this job's environment holds no credential or OIDC endpoint
         run: node scripts/release.mjs assert-no-authority
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
         with:
@@ -198,7 +198,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Prove this job holds no publishing authority
+      - name: Check this job's environment holds no credential or OIDC endpoint
         run: node scripts/release.mjs assert-no-authority
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
         with:
@@ -227,7 +227,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Prove this job holds no publishing authority
+      - name: Check this job's environment holds no credential or OIDC endpoint
         run: node scripts/release.mjs assert-no-authority
       - if: matrix.kind == 'wheel'
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -264,7 +264,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Prove this job holds no publishing authority
+      - name: Check this job's environment holds no credential or OIDC endpoint
         run: node scripts/release.mjs assert-no-authority
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
@@ -299,13 +299,37 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Prove this job holds no publishing authority
+      - name: Check this job's environment holds no credential or OIDC endpoint
         run: node scripts/release.mjs assert-no-authority
+      # Each input comes from a named artifact into its own directory; nothing is searched for.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: ${{ runner.temp }}/release-input
+          name: release-plan
+          path: ${{ runner.temp }}/release-input/plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: archive-*
+          path: ${{ runner.temp }}/release-input/artifacts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheel-*
+          path: ${{ runner.temp }}/release-input/artifacts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: validation-*
+          path: ${{ runner.temp }}/release-input/validations
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: crates
+          path: ${{ runner.temp }}/release-input/crates
       - name: Check the complete matrix and write SHA256SUMS, the manifest, notes and channel actions
-        run: node scripts/release.mjs assemble --input "$RUNNER_TEMP/release-input" --out "$RUNNER_TEMP/release-bundle"
+        run: >-
+          node scripts/release.mjs assemble
+          --plan "$RUNNER_TEMP/release-input/plan"
+          --artifacts "$RUNNER_TEMP/release-input/artifacts"
+          --validations "$RUNNER_TEMP/release-input/validations"
+          --crates "$RUNNER_TEMP/release-input/crates"
+          --out "$RUNNER_TEMP/release-bundle"
         env:
           RELEASE_READ_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -335,6 +359,7 @@ jobs:
         with:
           subject-path: |
             ${{ runner.temp }}/release-bundle/assets/*
+            ${{ runner.temp }}/release-bundle/crates/*
             ${{ runner.temp }}/release-bundle/SHA256SUMS
             ${{ runner.temp }}/release-bundle/release-manifest.json
 
@@ -384,10 +409,12 @@ jobs:
           name: release-bundle
           path: ${{ runner.temp }}/release-bundle
       # The first release uses the bootstrap token; after 0.1.0 the crates move to trusted
-      # publishing and this job gains id-token: write instead (docs/publishing.md).
+      # publishing and this job gains id-token: write instead (docs/publishing.md). The token
+      # is never exported under Cargo's name: the script removes it from its environment and
+      # gives it only to `cargo publish --no-verify`, which compiles nothing.
       - run: node scripts/release.mjs publish-crates --bundle "$RUNNER_TEMP/release-bundle"
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RELEASE_CRATES_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   publish-pypi:
     name: Publish PyPI
@@ -475,7 +502,8 @@ jobs:
         run: node scripts/release.mjs probe --host "$PROBE_HOST" --bundle "$RUNNER_TEMP/release-bundle" --out "$RUNNER_TEMP/release-probe"
         env:
           PROBE_HOST: ${{ matrix.host }}
-          GH_TOKEN: ${{ github.token }}
+          # Passed only to gh attestation verify, never to cargo install or uv.
+          RELEASE_READ_TOKEN: ${{ github.token }}
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -499,8 +527,13 @@ jobs:
           node-version: 24.19.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: ${{ runner.temp }}/release-input
-      - run: node scripts/release.mjs evidence --input "$RUNNER_TEMP/release-input" --out "$RUNNER_TEMP/release-evidence"
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: probe-*
+          path: ${{ runner.temp }}/release-probes
+      - run: node scripts/release.mjs evidence --bundle "$RUNNER_TEMP/release-bundle" --probes "$RUNNER_TEMP/release-probes" --out "$RUNNER_TEMP/release-evidence"
         env:
           RELEASE_READ_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -546,7 +579,12 @@ jobs:
           node-version: 24.19.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: ${{ runner.temp }}/release-input
-      - run: node scripts/release.mjs attach-evidence --input "$RUNNER_TEMP/release-input"
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: ${{ runner.temp }}/release-evidence
+      - run: node scripts/release.mjs attach-evidence --bundle "$RUNNER_TEMP/release-bundle" --evidence "$RUNNER_TEMP/release-evidence"
         env:
           RELEASE_WRITE_TOKEN: ${{ github.token }}

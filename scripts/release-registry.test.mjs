@@ -8,10 +8,12 @@ import {
   decideGithubRelease,
   decidePypi,
   describeDecision,
+  metadataDifferences,
   observeCrate,
   observeGithubRelease,
   observePypi,
   publishGithubRelease,
+  releaseMetadata,
   stageGithubRelease,
 } from "./release-registry.mjs";
 
@@ -55,10 +57,10 @@ test("crates.io: dependency order, partial resumption and conflicts", () => {
   const absent = { status: "absent" };
   const none = decideCrates(CRATES, { "urollup-core": absent, urollup: absent });
   assert.equal(none.state, "absent");
-  assert.deepEqual(cratesPublishCommand(none), ["cargo", "publish", "--locked", "--workspace"]);
+  assert.deepEqual(cratesPublishCommand(none), ["cargo", "publish", "--locked", "--no-verify", "--workspace"]);
   const partial = decideCrates(CRATES, { "urollup-core": present(digest("c")), urollup: absent });
   assert.equal(partial.state, "identical-partial");
-  assert.deepEqual(cratesPublishCommand(partial), ["cargo", "publish", "--locked", "-p", "urollup"]);
+  assert.deepEqual(cratesPublishCommand(partial), ["cargo", "publish", "--locked", "--no-verify", "-p", "urollup"]);
   const complete = decideCrates(CRATES, { "urollup-core": present(digest("c")), urollup: present(digest("d")) });
   assert.equal(complete.state, "identical-complete");
   assert.equal(cratesPublishCommand(complete), null);
@@ -97,7 +99,7 @@ test("GitHub: drafts resume, a public release never takes new or different asset
 
 test("an interrupted upload in a draft is removed and uploaded again; a public release is never repaired", async () => {
   const files = [{ name: "a.tar.gz", sha256: digest("1"), data: Buffer.from("a") }];
-  const release = { id: 7, tag_name: "v0.1.0", draft: true, assets: [{ id: 70, name: "a.tar.gz", state: "starter", digest: null }] };
+  const release = { id: 7, tag_name: "v0.1.0", draft: true, name: "t", body: "n", prerelease: false, target_commitish: "c", assets: [{ id: 70, name: "a.tar.gz", state: "starter", digest: null }] };
   const deleted = [];
   const { impl } = fakeFetch([
     { match: (url, method) => method === "GET" && url.endsWith("/releases?per_page=100"), respond: () => ({ status: 200, body: [release] }) },
@@ -176,7 +178,7 @@ test("GitHub staging creates one draft, uploads only missing assets and verifies
     {
       match: (url, method) => method === "POST" && url.endsWith("/repos/jlevy/urollup/releases"),
       respond: (url, options) => {
-        release = { id: 42, tag_name: JSON.parse(options.body).tag_name, draft: JSON.parse(options.body).draft, assets: [] };
+        release = { id: 42, ...JSON.parse(options.body), assets: [] };
         return { status: 201, body: release };
       },
     },
@@ -189,24 +191,25 @@ test("GitHub staging creates one draft, uploads only missing assets and verifies
         return { status: 201, body: {} };
       },
     },
-    { match: (url, method) => method === "PATCH" && url.endsWith("/releases/42"), respond: () => ((release.draft = false), { status: 200, body: release }) },
+    { match: (url, method) => method === "PATCH" && url.endsWith("/releases/42"), respond: (url, options) => (Object.assign(release, JSON.parse(options.body)), { status: 200, body: release }) },
   ]);
-  const staged = await stageGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "urollup 0.1.0", notes: "n", prerelease: false, files, token: "t", fetchImpl: impl });
+  const meta = { repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "urollup 0.1.0", notes: "n", prerelease: false, token: "t", fetchImpl: impl };
+  let writes = 0;
+  const staged = await stageGithubRelease({ ...meta, files, beforeWrite: async () => (writes += 1) });
+  assert.equal(writes, 3, "the hook runs before the create and before each upload");
   assert.equal(staged.releaseId, 42);
   assert.deepEqual(uploads, ["a.tar.gz", "SHA256SUMS"]);
   assert.equal(release.draft, true);
-  await stageGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "t", notes: "n", prerelease: false, files, token: "t", fetchImpl: impl });
+  const rerun = await stageGithubRelease({ ...meta, files });
   assert.deepEqual(uploads, ["a.tar.gz", "SHA256SUMS"], "a rerun uploads nothing that is already identical");
-  const published = await publishGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", files, token: "t", fetchImpl: impl });
+  assert.deepEqual(rerun.reconciled, []);
+  const published = await publishGithubRelease({ ...meta, files });
   assert.equal(published.alreadyPublic, false);
   assert.equal(release.draft, false);
   assert.ok(calls.filter((call) => call.method !== "GET").every((call) => call.headers.Authorization === "Bearer t"));
   release.assets[0].digest = `sha256:${digest("9")}`;
-  await assert.rejects(
-    stageGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "t", notes: "n", prerelease: false, files, token: "t", fetchImpl: impl }),
-    /conflict/,
-  );
-  await assert.rejects(publishGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", files, token: "t", fetchImpl: impl }), /refusing to publish/);
+  await assert.rejects(stageGithubRelease({ ...meta, files }), /conflict/);
+  await assert.rejects(publishGithubRelease({ ...meta, files }), /refusing to publish/);
 });
 
 test("a read-only token sees published releases only; drafts need the write token", async () => {
@@ -214,8 +217,25 @@ test("a read-only token sees published releases only; drafts need the write toke
     { match: (url) => url.endsWith("/releases/tags/v0.1.0"), respond: { status: 200, body: { id: 1, draft: false, assets: [{ id: 2, name: "x", digest: `sha256:${digest("1")}` }] } } },
   ]);
   const observed = await observeGithubRelease("jlevy/urollup", "v0.1.0", { token: "read", fetchImpl: impl });
-  assert.deepEqual(observed, { status: "present", id: 1, draft: false, assets: [{ name: "x", sha256: digest("1"), id: 2, state: "uploaded" }] });
+  assert.deepEqual(observed, { status: "present", id: 1, draft: false, name: null, body: null, prerelease: false, target: null, assets: [{ name: "x", sha256: digest("1"), id: 2, state: "uploaded" }] });
   assert.match(calls[0].url, /\/releases\/tags\/v0\.1\.0$/);
   const many = fakeFetch([{ match: (url) => url.endsWith("/releases?per_page=100"), respond: { status: 200, body: [{ tag_name: "v0.1.0" }, { tag_name: "v0.1.0" }] } }]);
   assert.equal((await observeGithubRelease("jlevy/urollup", "v0.1.0", { token: "w", includeDrafts: true, fetchImpl: many.impl })).status, "unavailable");
+});
+
+test("release metadata differences are named field by field", () => {
+  const planned = releaseMetadata({ tag: "v0.1.0", commit: "c", title: "urollup 0.1.0", notes: "n", prerelease: false });
+  assert.deepEqual(metadataDifferences({ name: "urollup 0.1.0", body: "n", prerelease: false, target: "c" }, planned), []);
+  assert.deepEqual(metadataDifferences({ name: "x", body: "n", prerelease: true, target: "main" }, planned), ["name", "prerelease", "target_commitish"]);
+});
+
+test("a first release refuses a project someone else already holds", () => {
+  const absent = { status: "absent" };
+  assert.equal(decidePypi(WHEELS, absent, { firstRelease: true, project: absent }).state, "absent");
+  assert.match(decidePypi(WHEELS, absent, { firstRelease: true, project: { status: "present" } }).conflicts.join(""), /already exists without this version/);
+  assert.equal(decidePypi(WHEELS, absent, { firstRelease: true, project: { status: "unavailable", reason: "x" } }).state, "unavailable");
+  assert.equal(decidePypi(WHEELS, absent, { firstRelease: false, project: { status: "present" } }).state, "absent", "a later release publishes into its own project");
+  const crates = { "urollup-core": absent, urollup: absent };
+  assert.equal(decideCrates(CRATES, crates, { firstRelease: true, projects: { "urollup-core": absent, urollup: absent } }).state, "absent");
+  assert.equal(decideCrates(CRATES, crates, { firstRelease: true, projects: { "urollup-core": absent, urollup: { status: "present" } } }).state, "conflict");
 });

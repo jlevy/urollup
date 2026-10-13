@@ -8,7 +8,7 @@
 //
 //   plan               Resolve version, tag, commit, matrix and prior publication state
 //   gate-git           Require the release commit checked out, clean, and on main
-//   assert-no-authority  Fail if this job could publish anything
+//   assert-no-authority  Fail if this job's environment holds a credential or OIDC endpoint
 //   build              Build and package one archive or wheel
 //   inspect            Check one packaged artifact's contents
 //   smoke              Install one artifact into an empty environment and test it
@@ -37,13 +37,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { readArchive, writeTarGz, writeZip } from "./release-archive.mjs";
+import { writeTarGz, writeZip } from "./release-archive.mjs";
 import { rehearseCrates } from "./release-crates.mjs";
 import {
   checkCargoManifests,
   checkPyproject,
-  checkVersionOutput,
-  parseReleaseVersion,
   pep440Version,
   resolveRunIdentity,
   tagForVersion,
@@ -60,21 +58,26 @@ import {
   parseChecksums,
   renderReleaseNotes,
 } from "./release-manifest.mjs";
+import { describeDecision, LATE_ASSETS } from "./release-registry.mjs";
 import {
-  cratesPublishCommand,
-  decideCrates,
-  decideGithubRelease,
-  decidePypi,
-  describeDecision,
-  LATE_ASSETS,
-  observeCrate,
-  observeGithubRelease,
-  observePypi,
-  publishGithubRelease,
-  stageGithubRelease,
-  USER_AGENT,
-} from "./release-registry.mjs";
-import { SMOKE_CASES, checkFixtureReport, findPython, isolatedUvEnv, resolveOnPath, smokeInstalled } from "./release-smoke.mjs";
+  RELEASE_SIGNERS_FILE,
+  attachEvidence,
+  bundleAssets,
+  channelDecisions,
+  evidence,
+  execIn,
+  judgeReleaseSettings,
+  observeAll,
+  observeReleaseSettings,
+  peelRemoteTag,
+  probe,
+  publishCrates,
+  publishGithub,
+  publishPypi,
+  stageGithub,
+  verifyTagSignature,
+} from "./release-publish.mjs";
+import { ephemeralUv, extractArchiveTo, installWheel, smokeInstalled, spawnRun } from "./release-smoke.mjs";
 import {
   CARGO_PACKAGES,
   MACOS_DEPLOYMENT_TARGET,
@@ -239,27 +242,33 @@ function commitTime(commit) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Registry observation shared by plan, assemble and the publish jobs
+// Context for the tag-only path (scripts/release-publish.mjs takes its effects from it)
 
 function readToken() {
   return process.env.RELEASE_READ_TOKEN || process.env.GITHUB_TOKEN || undefined;
 }
 
-async function observeAll({ version, pep440, tag, repository, token, includeDrafts = false }) {
-  const crates = {};
-  for (const crate of CARGO_PACKAGES) {
-    crates[crate] = await observeCrate(crate, version);
-  }
-  const pypi = await observePypi(PRODUCT, pep440);
-  const github = repository ? await observeGithubRelease(repository, tag, { token, includeDrafts }) : { status: "unavailable", reason: "no repository is known outside GitHub Actions" };
-  return { crates, pypi, github };
+/** The real effects: processes, network, time, smoke tests and the run summary. */
+export function defaultContext() {
+  return {
+    env: process.env,
+    run: spawnRun,
+    fetchImpl: fetch,
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    smoke: smokeInstalled,
+    log: summary,
+    root: ROOT,
+    tmpdir: process.env.RUNNER_TEMP ?? os.tmpdir(),
+    host: hostId(),
+    workflowRun: workflowRun(),
+  };
 }
 
 function observationSummary(observed) {
-  const status = (value) => value.status + (value.status === "unavailable" ? ` (${value.reason})` : "");
+  const status = (value) => (value === undefined ? "not read" : value.status + (value.status === "unavailable" ? ` (${value.reason})` : ""));
   return [
-    ...CARGO_PACKAGES.map((crate) => `- crates.io ${crate}: ${status(observed.crates[crate])}`),
-    `- PyPI ${PRODUCT}: ${status(observed.pypi)}`,
+    ...CARGO_PACKAGES.map((crate) => `- crates.io ${crate}: ${status(observed.crates[crate])}${observed.firstRelease ? `; crate ${status(observed.projects[crate])}` : ""}`),
+    `- PyPI ${PRODUCT}: ${status(observed.pypi)}${observed.firstRelease ? `; project ${status(observed.pypiProject)}` : ""}`,
     `- GitHub Release: ${status(observed.github)}`,
   ];
 }
@@ -267,17 +276,66 @@ function observationSummary(observed) {
 // ---------------------------------------------------------------------------------------
 // plan
 
+/**
+ * The commit a tag run releases. `GITHUB_SHA` is not trusted to be the peeled commit of an
+ * annotated tag: the remote tag is peeled explicitly, must be annotated, and must be the
+ * commit this job checked out.
+ */
+export function resolveTagCommit(ctx, tag) {
+  const peeled = peelRemoteTag(ctx, tag);
+  if (!peeled.annotated) {
+    fail(`${tag} is a lightweight tag; create the release tag with git tag -s (annotated and signed)`);
+  }
+  const head = execIn(ctx, "git", ["rev-parse", "HEAD"], { label: "git rev-parse HEAD" }).trim();
+  if (head !== peeled.commit) {
+    fail(`the checkout is at ${head}, but ${tag} names ${peeled.commit}`);
+  }
+  return peeled.commit;
+}
+
+/**
+ * The guards a tag publication must pass before any job builds for it: the tag carries a
+ * signature from an allowed release signer, and the repository's `release` environment
+ * and tag ruleset exist as the runbook configures them. A rehearsal reports the same
+ * settings without refusing.
+ */
+export async function publicationGuards(ctx, { tag, repository, token, publish }) {
+  const problems = [];
+  const facts = {};
+  if (publish) {
+    execIn(ctx, "git", ["fetch", "--no-tags", "--force", "origin", `refs/tags/${tag}:refs/tags/${tag}`], { label: `git fetch ${tag}` });
+    try {
+      facts.signature = verifyTagSignature(ctx, { tag, signersFile: path.join(ctx.root, RELEASE_SIGNERS_FILE) });
+    } catch (error) {
+      problems.push(error.message);
+    }
+  } else {
+    facts.signers_file = existsSync(path.join(ctx.root, RELEASE_SIGNERS_FILE)) ? "present" : "missing";
+  }
+  if (repository) {
+    const settings = await observeReleaseSettings(ctx, { repository, token });
+    facts.settings_problems = judgeReleaseSettings(settings);
+    problems.push(...(publish ? facts.settings_problems : []));
+  } else {
+    facts.settings_problems = ["not read outside GitHub Actions"];
+  }
+  return { problems, facts };
+}
+
 async function plan(argv) {
   const options = parseOptions(argv, ["out", "event", "ref", "commit", "version", "offline"]);
   const out = required(options, "out");
+  const ctx = defaultContext();
   const repo = repositoryState();
   if (repo.problems.length > 0) {
     fail(`the repository is not releasable:\n${repo.problems.map((problem) => `- ${problem}`).join("\n")}`);
   }
-  const sha = process.env.GITHUB_SHA ?? git(["rev-parse", "HEAD"]);
+  const event = process.env.GITHUB_EVENT_NAME ?? options.event ?? "workflow_dispatch";
+  const ref = process.env.GITHUB_REF ?? options.ref ?? git(["symbolic-ref", "-q", "HEAD"]);
+  const sha = event === "push" && ref.startsWith("refs/tags/") ? resolveTagCommit(ctx, ref.slice("refs/tags/".length)) : (process.env.GITHUB_SHA ?? git(["rev-parse", "HEAD"]));
   const identity = resolveRunIdentity({
-    event: process.env.GITHUB_EVENT_NAME ?? options.event ?? "workflow_dispatch",
-    ref: process.env.GITHUB_REF ?? options.ref ?? git(["symbolic-ref", "-q", "HEAD"]),
+    event,
+    ref,
     sha,
     inputs: {
       commit: process.env.RELEASE_INPUT_COMMIT ?? options.commit,
@@ -285,23 +343,30 @@ async function plan(argv) {
     },
     workspaceToml: repo.workspaceToml,
   });
+  const publish = identity.mode === "publish";
   const allowUnmerged = identity.mode === "rehearsal" && process.env.RELEASE_INPUT_ALLOW_UNMERGED === "true";
   const sourceDateEpoch = commitTime(identity.commit);
-  const observed =
-    options.offline === "true"
-      ? null
-      : await observeAll({ ...identity, repository: process.env.GITHUB_REPOSITORY, token: readToken() });
+  const firstRelease = changelogSection(readText("CHANGELOG.md"), identity.version).first;
+  const repository = process.env.GITHUB_REPOSITORY;
+  const guards = options.offline === "true" ? { problems: [], facts: { offline: true } } : await publicationGuards(ctx, { tag: identity.tag, repository, token: readToken(), publish });
+  if (guards.problems.length > 0) {
+    fail(`${identity.tag} cannot be published:\n${guards.problems.map((problem) => `- ${problem}`).join("\n")}`);
+  }
+  const observed = options.offline === "true" ? null : await observeAll(ctx, { ...identity, repository, token: readToken(), firstRelease });
   const document = {
     schema: "urollup-release-plan/v1",
     ...identity,
-    publish: identity.mode === "publish",
+    publish,
     allow_unmerged: allowUnmerged,
+    first_release: firstRelease,
     source_date_epoch: sourceDateEpoch,
     rust_toolchain: repo.toolchain,
+    node: process.version,
     macos_deployment_target: MACOS_DEPLOYMENT_TARGET,
     workflow_run: workflowRun(),
     artifacts: plannedArtifacts(identity.version),
     crates: plannedCrates(identity.version),
+    publication_guards: guards.facts,
     prior_publication: observed,
   };
   writeJson(path.join(out, "release-plan.json"), document);
@@ -310,21 +375,28 @@ async function plan(argv) {
     tag: identity.tag,
     commit: identity.commit,
     mode: identity.mode,
-    publish: String(document.publish),
+    publish: String(publish),
     "allow-unmerged": String(allowUnmerged),
     "source-date-epoch": String(sourceDateEpoch),
     matrix: buildMatrix(identity.version),
     hosts: { include: RELEASE_TARGETS.map((target) => ({ host: target.id, runner: target.runner })) },
   });
+  const settings = guards.facts.settings_problems ?? [];
   summary([
     `## Release plan: ${identity.tag} (${identity.mode})`,
     "",
     `- Commit: \`${identity.commit}\``,
-    `- Version: ${identity.version} (PyPI ${identity.pep440})`,
-    `- Rust toolchain: ${repo.toolchain}; SOURCE_DATE_EPOCH ${sourceDateEpoch}`,
-    `- Publication: ${document.publish ? "enabled after validation and approval" : "none; this is a rehearsal"}`,
+    `- Version: ${identity.version} (PyPI ${identity.pep440})${firstRelease ? "; first release" : ""}`,
+    `- Rust toolchain: ${repo.toolchain}; Node ${process.version}; SOURCE_DATE_EPOCH ${sourceDateEpoch}`,
+    `- Publication: ${publish ? "enabled after validation and approval" : "none; this is a rehearsal"}`,
     ...(allowUnmerged ? ["- The commit may be off main; this rehearsal is not releasable"] : []),
     `- Artifacts: ${document.artifacts.length} (${document.artifacts.map((artifact) => artifact.name).join(", ")})`,
+    "",
+    "### Publication settings",
+    "",
+    ...(guards.facts.offline ? ["- not read (--offline)"] : settings.length === 0 ? ["- The release environment and the v* tag ruleset are configured as the runbook requires"] : settings.map((problem) => `- ${publish ? "" : "A tag publication would stop: "}${problem}`)),
+    ...(guards.facts.signers_file ? [`- Release tag signers file (${RELEASE_SIGNERS_FILE}): ${guards.facts.signers_file}`] : []),
+    ...(guards.facts.signature ? [`- Tag signature: ${guards.facts.signature.split("\n")[0]}`] : []),
     "",
     "### Prior publication",
     "",
@@ -371,12 +443,17 @@ export function authorityProblems(env) {
   return present;
 }
 
+/**
+ * What this can observe is the environment: no OIDC token endpoint and no exported
+ * credential. The job token's scope is not in the environment; scripts/check-release-workflow.mjs
+ * proves it statically, and each job log's GITHUB_TOKEN Permissions banner shows it.
+ */
 function assertNoAuthority() {
   const present = authorityProblems(process.env);
   if (present.length > 0) {
-    fail(`this job must hold no publishing authority, but its environment has ${present.join(", ")}`);
+    fail(`this job's environment must hold no credential or OIDC endpoint, but it has ${present.join(", ")}`);
   }
-  console.log("No OIDC token endpoint and no GitHub, crates.io or PyPI credential is present in this job.");
+  console.log("This job's environment holds no OIDC token endpoint and no GitHub, crates.io or PyPI credential.");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -395,7 +472,7 @@ function cargoHome() {
 }
 
 /** The docker command that builds a manylinux wheel inside the pinned image. */
-export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturin, uid, gid, outDir, env }) {
+export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturin, uid, gid, outDir, env, sourceDateEpoch }) {
   const relative = (file) => `/io/${path.relative(root, file).split(path.sep).join("/")}`;
   return [
     "run",
@@ -410,6 +487,9 @@ export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturi
     "CARGO_NET_OFFLINE=true",
     "--env",
     "CARGO_TARGET_DIR=/io/target/manylinux",
+    // Maturin stamps wheel members with this time, as it does on macOS and Windows.
+    "--env",
+    `SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
     "--env",
     `CARGO_ENCODED_RUSTFLAGS=${env.CARGO_ENCODED_RUSTFLAGS.replace(`${cargoHomeDir}=/cargo`, "/cargo=/cargo")}`,
     "--volume",
@@ -442,7 +522,7 @@ export function manylinuxCommand({ artifact, root, cargoHomeDir, sysroot, maturi
   ];
 }
 
-function buildWheel(artifact, env, workDir) {
+function buildWheel(artifact, env, workDir, sourceDateEpoch) {
   // The manylinux container sees only the repository, mounted at /io, so its output stays
   // under target/.
   const outDir = artifact.container ? path.join(ROOT, "target", "release-wheel") : path.join(workDir, "wheel");
@@ -456,14 +536,14 @@ function buildWheel(artifact, env, workDir) {
     }
     exec("cargo", ["fetch", "--locked"], { label: "fetch the locked crates for the offline container build" });
     const sysroot = exec("rustc", ["--print", "sysroot"], { capture: true }).trim();
-    exec("docker", manylinuxCommand({ artifact, root: ROOT, cargoHomeDir: cargoHome(), sysroot, maturin, uid: process.getuid(), gid: process.getgid(), outDir, env }), {
+    exec("docker", manylinuxCommand({ artifact, root: ROOT, cargoHomeDir: cargoHome(), sysroot, maturin, uid: process.getuid(), gid: process.getgid(), outDir, env, sourceDateEpoch }), {
       label: `maturin build in ${artifact.container}`,
     });
   } else {
     exec(
       "uv",
       ["--config-file", "uv.toml", "run", "--frozen", "--only-group", "release", "maturin", "build", "--release", "--locked", "--manifest-path", "crates/urollup/Cargo.toml", "--target", artifact.rustTarget, "--compatibility", "pypi", "--out", outDir],
-      { env: { ...process.env, ...env }, label: "maturin build" },
+      { env: { ...process.env, ...env, SOURCE_DATE_EPOCH: String(sourceDateEpoch) }, label: "maturin build" },
     );
   }
   const wheels = readdirSync(outDir).filter((name) => name.endsWith(".whl"));
@@ -502,7 +582,7 @@ function build(argv) {
   }
   const env = buildEnvironment(artifact, { cargoHome: cargoHome() });
   const workDir = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "urollup-build-"));
-  const data = artifact.kind === "archive" ? buildArchive(artifact, env, sourceDateEpoch) : buildWheel(artifact, env, workDir);
+  const data = artifact.kind === "archive" ? buildArchive(artifact, env, sourceDateEpoch) : buildWheel(artifact, env, workDir, sourceDateEpoch);
   const inspected = inspectArtifact(artifact, data, version);
   if (inspected.problems.length > 0) {
     fail(`the built ${artifact.name} fails inspection:\n${inspected.problems.map((problem) => `- ${problem}`).join("\n")}`);
@@ -519,6 +599,8 @@ function build(argv) {
     host: hostId(),
     runner_image: runnerImage(),
     rustc: rustcVersion(),
+    // Archive bytes come from Node's bundled zlib, so a reproduction names this version too.
+    node: process.version,
     builder: artifact.kind === "archive" ? "cargo build" : `maturin ${maturinVersion()}`,
     container: artifact.container ?? null,
     source_date_epoch: sourceDateEpoch,
@@ -546,59 +628,6 @@ function inspect(argv) {
 
 // ---------------------------------------------------------------------------------------
 // smoke
-
-function extractArchiveTo(artifact, data, dir) {
-  mkdirSync(dir, { recursive: true });
-  for (const entry of readArchive(artifact.name, data)) {
-    const target = path.join(dir, entry.name);
-    writeFileSync(target, entry.data);
-    if (process.platform !== "win32") {
-      chmodSync(target, entry.mode & 0o777);
-    }
-  }
-  return path.join(dir, executableName(artifact.os));
-}
-
-function uvCommand() {
-  const uv = resolveOnPath("uv", process.env.PATH);
-  if (!uv) {
-    fail("uv is not on PATH");
-  }
-  return uv;
-}
-
-/** Install a wheel with `uv tool install` into isolated directories; returns where it went. */
-function installWheel({ wheel, dir, index = false, requirement }) {
-  const env = isolatedUvEnv(dir);
-  const python = findPython();
-  const args = ["tool", "install", ...(python ? ["--python", python] : []), ...(index ? [requirement] : ["--no-index", wheel])];
-  exec(uvCommand(), args, { env, label: `uv ${args.join(" ")}`, capture: true });
-  const binDir = env.UV_TOOL_BIN_DIR;
-  const installed = resolveOnPath("urollup", binDir);
-  if (!installed) {
-    fail(`uv tool install left no urollup in ${binDir}`);
-  }
-  return { binDir, toolDir: env.UV_TOOL_DIR, installed };
-}
-
-/** Run the ephemeral `uv tool run` path: --version and one fixture report. */
-function ephemeralUv({ from, dir, version, index = false }) {
-  const env = isolatedUvEnv(dir);
-  const python = findPython();
-  const base = ["tool", "run", "--isolated", ...(python ? ["--python", python] : []), ...(index ? [] : ["--no-index"]), "--from", from, PRODUCT];
-  const problems = [];
-  const versionRun = spawnSync(uvCommand(), [...base, "--version"], { env, encoding: "utf8", timeout: 300_000 });
-  problems.push(...(versionRun.status === 0 ? checkVersionOutput(versionRun.stdout, version) : [`uv tool run urollup --version exited ${versionRun.status}: ${versionRun.stderr}`]));
-  const fixtureCase = SMOKE_CASES[0];
-  const caseDir = path.join(ROOT, "crates", "urollup-core", "tests", "fixtures", ...fixtureCase.split("/"));
-  const reportRun = spawnSync(uvCommand(), [...base, "report", "--source", caseDir, "--no-default-sources", "--format", "json", "--timezone", "UTC"], {
-    env: { ...env, NO_COLOR: "1", CLAUDE_CONFIG_DIR: path.join(dir, "empty"), CODEX_HOME: path.join(dir, "empty") },
-    encoding: "utf8",
-    timeout: 300_000,
-  });
-  problems.push(...checkFixtureReport(fixtureCase, reportRun, { allowStderr: true }).map((problem) => `uv tool run: ${problem}`));
-  return { checks: [{ check: "uv-tool-run", from: path.basename(from), version: versionRun.stdout.trim() }], problems };
-}
 
 function smoke(argv) {
   const options = parseOptions(argv, ["artifact", "input", "out"]);
@@ -784,60 +813,30 @@ function benchmark(argv) {
 // ---------------------------------------------------------------------------------------
 // assemble
 
-function findFile(directory, name) {
-  if (!existsSync(directory)) {
+/** Read a JSON file a named artifact must contain, or record that it is missing. */
+function namedJson(file, problems, what) {
+  if (!existsSync(file)) {
+    problems.push(`${what} is missing (${file})`);
     return null;
   }
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      const found = findFile(full, name);
-      if (found) {
-        return found;
-      }
-    } else if (entry.name === name) {
-      return full;
-    }
-  }
-  return null;
+  return readJson(file);
 }
 
-/** The GitHub Release assets a bundle stages: archives, wheels, SHA256SUMS and the manifest. */
-function bundleAssets(bundle) {
-  const assets = readdirSync(path.join(bundle, "assets"))
-    .sort()
-    .map((name) => ({ name, file: path.join(bundle, "assets", name) }));
-  return [...assets, { name: "SHA256SUMS", file: path.join(bundle, "SHA256SUMS") }, { name: "release-manifest.json", file: path.join(bundle, "release-manifest.json") }].map((asset) => {
-    const data = readFileSync(asset.file);
-    return { ...asset, data, sha256: sha256(data) };
-  });
-}
-
-/** Channel decisions for a bundle against current registry state. */
-async function channelDecisions({ manifest, assets, repository, token, includeDrafts }) {
-  const observed = await observeAll({ version: manifest.version, pep440: manifest.pep440_version, tag: manifest.tag, repository, token, includeDrafts });
-  const wheels = manifest.artifacts.filter((artifact) => artifact.kind === "wheel").map((artifact) => ({ name: artifact.name, sha256: artifact.sha256 }));
-  const crates = manifest.cargo_packages.map((item) => ({ name: item.name, sha256: item.sha256 }));
-  return {
-    observed,
-    decisions: [
-      decideCrates(crates, observed.crates),
-      decidePypi(wheels, observed.pypi),
-      decideGithubRelease(
-        assets.map((asset) => ({ name: asset.name, sha256: asset.sha256 })),
-        observed.github,
-      ),
-    ],
-  };
-}
-
+/**
+ * Assemble the release from named artifacts at fixed paths: `--plan` holds
+ * release-plan.json, `--artifacts` one directory per planned artifact id, `--validations`
+ * one `validation-<id>` directory per artifact, and `--crates` the crates job's output.
+ * Nothing is found by searching, so no other artifact of the run can stand in.
+ */
 async function assemble(argv) {
-  const options = parseOptions(argv, ["input", "out"]);
-  const input = required(options, "input");
+  const options = parseOptions(argv, ["plan", "artifacts", "validations", "crates", "out"]);
   const out = required(options, "out");
-  const planFile = findFile(input, "release-plan.json");
-  if (!planFile) {
-    fail(`no release-plan.json under ${input}`);
+  const planFile = path.join(required(options, "plan"), "release-plan.json");
+  const artifactsDir = required(options, "artifacts");
+  const validationsDir = required(options, "validations");
+  const cratesDir = required(options, "crates");
+  if (!existsSync(planFile)) {
+    fail(`no release-plan.json at ${planFile}`);
   }
   const planned = readJson(planFile);
   const identity = { mode: planned.mode, version: planned.version, tag: planned.tag, pep440: planned.pep440, commit: planned.commit };
@@ -849,15 +848,13 @@ async function assemble(argv) {
   const builds = [];
   const validations = [];
   for (const artifact of plannedArtifacts(identity.version)) {
-    const file = findFile(path.join(input, artifact.id), artifact.name);
-    const buildFile = findFile(path.join(input, artifact.id), `build-${artifact.id}.json`);
-    const validationFile = findFile(path.join(input, `validation-${artifact.id}`), `validation-${artifact.id}.json`);
-    if (file) {
+    const file = path.join(artifactsDir, artifact.id, artifact.name);
+    if (existsSync(file)) {
       const data = readFileSync(file);
       artifacts.push({ name: artifact.name, file, sha256: sha256(data), size: data.length });
     }
-    if (buildFile) {
-      const build = readJson(buildFile);
+    const build = namedJson(path.join(artifactsDir, artifact.id, `build-${artifact.id}.json`), problems, `the build record of ${artifact.name}`);
+    if (build) {
       builds.push(build);
       if (build.commit !== identity.commit) {
         problems.push(`${artifact.name} was built from ${build.commit}, not ${identity.commit}`);
@@ -866,25 +863,21 @@ async function assemble(argv) {
       if (assembled && build.sha256 !== assembled.sha256) {
         problems.push(`${artifact.name} differs from the bytes its build job recorded`);
       }
-    } else {
-      problems.push(`${artifact.name} has no build record`);
     }
-    if (validationFile) {
-      validations.push(readJson(validationFile));
+    const validation = namedJson(path.join(validationsDir, `validation-${artifact.id}`, `validation-${artifact.id}.json`), problems, `the validation record of ${artifact.name}`);
+    if (validation) {
+      validations.push(validation);
     }
   }
-  const cratesRecordFile = findFile(path.join(input, "crates"), "crates.json");
   const crateFiles = [];
-  if (!cratesRecordFile) {
-    problems.push("the crates.io rehearsal left no record");
-  } else {
-    const record = readJson(cratesRecordFile);
+  const record = namedJson(path.join(cratesDir, "crates.json"), problems, "the crates.io rehearsal record");
+  if (record) {
     if (record.status !== "passed" || record.commit !== identity.commit) {
       problems.push(`the crates.io rehearsal record is ${record.status} for ${record.commit}`);
     }
     for (const item of plannedCrates(identity.version)) {
-      const file = findFile(path.join(input, "crates"), item.name);
-      if (file) {
+      const file = path.join(cratesDir, item.name);
+      if (existsSync(file)) {
         const data = readFileSync(file);
         const recorded = record.packages.find((candidate) => candidate.name === item.name);
         if (recorded?.sha256 !== sha256(data)) {
@@ -937,7 +930,14 @@ async function assemble(argv) {
   writeFileSync(path.join(out, "release-notes.md"), renderReleaseNotes({ identity, section, artifacts: manifest.artifacts, repository }));
 
   const assets = bundleAssets(out);
-  const { observed, decisions } = await channelDecisions({ manifest, assets, repository: process.env.GITHUB_REPOSITORY, token: readToken(), includeDrafts: false });
+  const { observed, decisions } = await channelDecisions(defaultContext(), {
+    manifest,
+    assets,
+    firstRelease: Boolean(planned.first_release),
+    repository: process.env.GITHUB_REPOSITORY,
+    token: readToken(),
+    includeDrafts: false,
+  });
   const actions = {
     schema: "urollup-release-channel-actions/v1",
     mode: identity.mode,
@@ -972,334 +972,37 @@ async function assemble(argv) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Publication (tag runs only, inside the protected release environment)
+// Publication, probes and evidence (tag runs only; logic in scripts/release-publish.mjs)
 
-function requirePublishRun(manifest) {
-  if (manifest.mode !== "publish" || process.env.GITHUB_REF !== `refs/tags/${manifest.tag}`) {
-    fail(`publication runs only from the pushed tag ${manifest.tag}, in a publish-mode run`);
-  }
-  if (git(["rev-parse", "HEAD"]) !== manifest.commit) {
-    fail(`the checkout is not the release commit ${manifest.commit}`);
-  }
+async function stageGithubCommand(argv) {
+  await stageGithub(defaultContext(), { bundle: required(parseOptions(argv, ["bundle"]), "bundle") });
 }
 
-function loadBundle(bundle) {
-  const manifest = readJson(path.join(bundle, "release-manifest.json"));
-  const assets = bundleAssets(bundle);
-  const sums = parseChecksums(readFileSync(path.join(bundle, "SHA256SUMS"), "utf8"));
-  const problems = compareChecksums(
-    sums,
-    assets.filter((asset) => asset.name !== "SHA256SUMS" && asset.name !== "release-manifest.json"),
-  );
-  if (problems.length > 0) {
-    fail(`the release bundle does not match its SHA256SUMS:\n${problems.join("\n")}`);
-  }
-  return { manifest, assets };
+async function publishCratesCommand(argv) {
+  await publishCrates(defaultContext(), { bundle: required(parseOptions(argv, ["bundle"]), "bundle") });
 }
 
-function writeToken() {
-  const token = process.env.RELEASE_WRITE_TOKEN;
-  if (!token) {
-    fail("RELEASE_WRITE_TOKEN is not set");
-  }
-  return token;
+async function publishPypiCommand(argv) {
+  await publishPypi(defaultContext(), { bundle: required(parseOptions(argv, ["bundle"]), "bundle") });
 }
 
-async function stageGithub(argv) {
-  const bundle = required(parseOptions(argv, ["bundle"]), "bundle");
-  const { manifest, assets } = loadBundle(bundle);
-  requirePublishRun(manifest);
-  const result = await stageGithubRelease({
-    repository: process.env.GITHUB_REPOSITORY,
-    tag: manifest.tag,
-    commit: manifest.commit,
-    title: `${PRODUCT} ${manifest.version}`,
-    notes: readFileSync(path.join(bundle, "release-notes.md"), "utf8"),
-    prerelease: parseReleaseVersion(manifest.version).prerelease !== null,
-    files: assets,
-    token: writeToken(),
-  });
-  summary([`- GitHub Release draft ${result.releaseId}: ${describeDecision(result.staged)}`]);
+async function publishGithubCommand(argv) {
+  await publishGithub(defaultContext(), { bundle: required(parseOptions(argv, ["bundle"]), "bundle") });
 }
 
-async function waitFor(check, { attempts = 20, delayMs = 15_000 } = {}) {
-  let last;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    last = await check();
-    if (last.state === "identical-complete" || last.state === "conflict") {
-      return last;
-    }
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  return last;
-}
-
-async function publishCrates(argv) {
-  const bundle = required(parseOptions(argv, ["bundle"]), "bundle");
-  const { manifest } = loadBundle(bundle);
-  requirePublishRun(manifest);
-  const planned = manifest.cargo_packages.map((item) => ({ name: item.name, sha256: item.sha256 }));
-  const decide = async () => {
-    const observed = {};
-    for (const item of planned) {
-      observed[item.name] = await observeCrate(item.name, manifest.version);
-    }
-    return decideCrates(planned, observed);
-  };
-  const before = await decide();
-  if (before.blocking) {
-    fail(`refusing to publish to crates.io: ${describeDecision(before)}`);
-  }
-  const command = cratesPublishCommand(before);
-  if (command) {
-    // `cargo publish` packages again; prove first that this commit packages to exactly the
-    // rehearsed bytes, so an upload can never differ from the manifest.
-    const target = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "urollup-publish-package-"));
-    exec("cargo", ["package", "--locked", "--workspace", "--no-verify"], { env: { ...process.env, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
-    for (const item of manifest.cargo_packages) {
-      const digest = sha256(readFileSync(path.join(target, "package", item.file)));
-      if (digest !== item.sha256) {
-        fail(`${item.file} packages to ${digest}, not the rehearsed ${item.sha256}; refusing to publish`);
-      }
-    }
-    await recordingChannelState("crates.io", decide, () => exec(command[0], command.slice(1), { label: command.join(" ") }));
-  }
-  const after = await waitFor(decide);
-  if (after.state !== "identical-complete") {
-    fail(`crates.io does not show the planned packages after publishing: ${describeDecision(after)}`);
-  }
-  summary([`- crates.io: ${describeDecision(before)}; now ${after.state}`]);
-}
-
-/**
- * Run a publishing command; if it fails, observe the registry again and record exactly
- * what it now holds before failing, so a partial publication is never left unrecorded.
- */
-async function recordingChannelState(channel, decide, publish) {
-  try {
-    publish();
-  } catch (error) {
-    let state;
-    try {
-      state = describeDecision(await decide());
-    } catch (observeError) {
-      state = `unknown (${observeError.message})`;
-    }
-    summary([`- ${channel} publishing failed; the registry now reads: ${state}`]);
-    throw error;
-  }
-}
-
-async function publishPypi(argv) {
-  const bundle = required(parseOptions(argv, ["bundle"]), "bundle");
-  const { manifest } = loadBundle(bundle);
-  requirePublishRun(manifest);
-  const planned = manifest.artifacts.filter((artifact) => artifact.kind === "wheel").map((artifact) => ({ name: artifact.name, sha256: artifact.sha256 }));
-  const decide = async () => decidePypi(planned, await observePypi(PRODUCT, manifest.pep440_version));
-  const before = await decide();
-  if (before.blocking) {
-    fail(`refusing to publish to PyPI: ${describeDecision(before)}`);
-  }
-  if (before.publish.length > 0) {
-    const files = before.publish.map((name) => path.join(bundle, "assets", name));
-    // No configuration file: uv.toml's resolution cool-off would hide the just-uploaded
-    // files from --check-url, and publishing must not read user configuration either.
-    await recordingChannelState("PyPI", decide, () =>
-      exec("uv", ["publish", "--trusted-publishing", "always", "--check-url", "https://pypi.org/simple/", ...files], {
-        env: { ...process.env, UV_NO_CONFIG: "1" },
-        label: "uv publish",
-      }),
-    );
-  }
-  const after = await waitFor(decide);
-  if (after.state !== "identical-complete") {
-    fail(`PyPI does not show the planned wheels after publishing: ${describeDecision(after)}`);
-  }
-  summary([`- PyPI: ${describeDecision(before)}; now ${after.state}`]);
-}
-
-async function publishGithub(argv) {
-  const bundle = required(parseOptions(argv, ["bundle"]), "bundle");
-  const { manifest, assets } = loadBundle(bundle);
-  requirePublishRun(manifest);
-  const { decisions } = await channelDecisions({ manifest, assets, repository: process.env.GITHUB_REPOSITORY, token: writeToken(), includeDrafts: true });
-  const registries = decisions.filter((decision) => decision.channel !== "github");
-  if (registries.some((decision) => decision.state !== "identical-complete")) {
-    fail(`both registries must verify before the release is public:\n${registries.map(describeDecision).join("\n")}`);
-  }
-  const result = await publishGithubRelease({ repository: process.env.GITHUB_REPOSITORY, tag: manifest.tag, files: assets, token: writeToken() });
-  summary([`- GitHub Release ${result.releaseId}: ${result.alreadyPublic ? "already public" : "published"}`]);
-}
-
-// ---------------------------------------------------------------------------------------
-// Post-publication probes and evidence
-
-/** Retry an installation while a registry's index catches up with a new publication. */
-async function retrying(attempt, { attempts = 10, delayMs = 30_000 } = {}) {
-  for (let index = 1; ; index += 1) {
-    try {
-      return attempt();
-    } catch (error) {
-      if (index >= attempts) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
-async function download(url, file) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-    if (response.ok) {
-      writeFileSync(file, Buffer.from(await response.arrayBuffer()));
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 15_000));
-  }
-  fail(`could not download ${url}`);
-}
-
-async function probe(argv) {
+async function probeCommand(argv) {
   const options = parseOptions(argv, ["host", "bundle", "out"]);
-  const host = required(options, "host");
-  const { manifest } = loadBundle(required(options, "bundle"));
-  const out = required(options, "out");
-  if (hostId() !== host) {
-    fail(`probe ${host} must run on its native host, not ${hostId()}`);
-  }
-  const repository = process.env.GITHUB_REPOSITORY;
-  const work = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "urollup-probe-"));
-  const record = { schema: "urollup-release-probe/v1", host, version: manifest.version, channels: {}, problems: [] };
-  const archive = manifest.artifacts.find((artifact) => artifact.kind === "archive" && artifact.platform === host);
-  const wheel = manifest.artifacts.find((artifact) => artifact.kind === "wheel" && artifact.platform === host);
-  const targetArchive = artifactById(manifest.version, `archive-${host}`);
-  const channel = async (name, body) => {
-    const problems = [];
-    let checks = [];
-    try {
-      const result = await body();
-      checks = result.checks;
-      problems.push(...result.problems);
-    } catch (error) {
-      problems.push(error.message);
-    }
-    record.channels[name] = { status: problems.length === 0 ? "passed" : "failed", checks, problems };
-    record.problems.push(...problems.map((problem) => `${name}: ${problem}`));
-  };
-  await channel("github", async () => {
-    const dir = path.join(work, "github");
-    mkdirSync(dir, { recursive: true });
-    const base = `https://github.com/${repository}/releases/download/${manifest.tag}`;
-    const file = path.join(dir, archive.name);
-    await download(`${base}/${archive.name}`, file);
-    await download(`${base}/SHA256SUMS`, path.join(dir, "SHA256SUMS"));
-    const data = readFileSync(file);
-    const sums = parseChecksums(readFileSync(path.join(dir, "SHA256SUMS"), "utf8"));
-    const problems = compareChecksums(new Map([[archive.name, sums.get(archive.name)]]), [{ name: archive.name, sha256: sha256(data) }]);
-    if (sha256(data) !== archive.sha256) {
-      problems.push(`the downloaded ${archive.name} is not the manifest's ${archive.sha256}`);
-    }
-    exec("gh", ["attestation", "verify", file, "--repo", repository], { label: `gh attestation verify ${archive.name}`, capture: true });
-    const installDir = path.join(dir, "install");
-    const executable = extractArchiveTo(targetArchive, data, installDir);
-    const smoked = smokeInstalled({ expected: executable, installDirs: [installDir], version: manifest.version, label: "GitHub archive" });
-    return { checks: [{ check: "sha256-and-attestation", file: archive.name }, ...smoked.checks], problems: [...problems, ...smoked.problems] };
-  });
-  await channel("pypi", async () => {
-    const dir = path.join(work, "pypi");
-    const ephemeral = ephemeralUv({ from: `${PRODUCT}@${manifest.pep440_version}`, dir: path.join(dir, "uvx"), version: manifest.version, index: true });
-    const installed = await retrying(() => installWheel({ dir: path.join(dir, "install"), index: true, requirement: `${PRODUCT}==${manifest.pep440_version}` }));
-    const smoked = smokeInstalled({ expected: installed.installed, installDirs: [installed.binDir], version: manifest.version, label: "uv tool install" });
-    const digest = sha256(readFileSync(realpathSync(installed.installed)));
-    const problems = [...ephemeral.problems, ...smoked.problems];
-    if (digest !== wheel.executable_sha256) {
-      problems.push(`the PyPI-installed urollup is ${digest}, not the validated wheel payload ${wheel.executable_sha256}`);
-    }
-    return { checks: [...ephemeral.checks, ...smoked.checks], problems };
-  });
-  await channel("crates", async () => {
-    const root = path.join(work, "cargo-root");
-    await retrying(() =>
-      exec("cargo", ["install", "--locked", `${PRODUCT}@${manifest.version}`, "--root", root], {
-        env: { ...process.env, CARGO_TARGET_DIR: path.join(work, "cargo-target") },
-        label: "cargo install --locked",
-        capture: true,
-      }),
-    );
-    const binDir = path.join(root, "bin");
-    return smokeInstalled({ expected: path.join(binDir, executableName(targetArchive.os)), installDirs: [binDir], version: manifest.version, label: "cargo install" });
-  });
-  record.status = record.problems.length === 0 ? "passed" : "failed";
-  writeJson(path.join(out, `probe-${host}.json`), record);
-  rmSync(work, { recursive: true, force: true });
-  summary([`- ${host}: ${record.status}`, ...record.problems.map((problem) => `  - ${problem}`)]);
-  if (record.status !== "passed") {
-    fail(`installation probes failed on ${host}`);
-  }
+  await probe(defaultContext(), { host: required(options, "host"), bundle: required(options, "bundle"), out: required(options, "out") });
 }
 
-async function evidence(argv) {
-  const options = parseOptions(argv, ["input", "out"]);
-  const input = required(options, "input");
-  const out = required(options, "out");
-  const bundle = path.dirname(findFile(input, "release-manifest.json") ?? fail("no release bundle under the input"));
-  const { manifest, assets } = loadBundle(bundle);
-  const probes = RELEASE_TARGETS.map((target) => {
-    const file = findFile(input, `probe-${target.id}.json`);
-    return file ? readJson(file) : { host: target.id, status: "missing" };
-  });
-  const { decisions } = await channelDecisions({ manifest, assets, repository: process.env.GITHUB_REPOSITORY, token: readToken(), includeDrafts: false });
-  const incomplete = [
-    ...probes.filter((record) => record.status !== "passed").map((record) => `probe ${record.host} is ${record.status}`),
-    ...decisions.filter((decision) => decision.state !== "identical-complete").map(describeDecision),
-  ];
-  if (incomplete.length > 0) {
-    fail(`release evidence is incomplete, so none is written:\n${incomplete.join("\n")}`);
-  }
-  const record = {
-    schema: "urollup-release-evidence/v1",
-    version: manifest.version,
-    tag: manifest.tag,
-    commit: manifest.commit,
-    manifest_sha256: assets.find((asset) => asset.name === "release-manifest.json").sha256,
-    workflow_run: workflowRun(),
-    channels: Object.fromEntries(decisions.map((decision) => [decision.channel, { state: decision.state, verified: decision.skip }])),
-    probes,
-    complete: true,
-  };
-  writeJson(path.join(out, "release-evidence.json"), record);
-  summary([`- Release evidence written for ${manifest.tag}: every channel and probe passed`]);
+async function evidenceCommand(argv) {
+  const options = parseOptions(argv, ["bundle", "probes", "out"]);
+  await evidence(defaultContext(), { bundle: required(options, "bundle"), probes: required(options, "probes"), out: required(options, "out") });
 }
 
-async function attachEvidence(argv) {
-  const input = required(parseOptions(argv, ["input"]), "input");
-  const bundle = path.dirname(findFile(input, "release-manifest.json") ?? fail("no release bundle under the input"));
-  const { manifest } = loadBundle(bundle);
-  requirePublishRun(manifest);
-  const file = findFile(input, "release-evidence.json") ?? fail("no release-evidence.json under the input");
-  const data = readFileSync(file);
-  const observed = await observeGithubRelease(process.env.GITHUB_REPOSITORY, manifest.tag, { token: writeToken(), includeDrafts: true });
-  if (observed.status !== "present" || observed.draft) {
-    fail(`the ${manifest.tag} release must be public before its evidence is attached`);
-  }
-  const existing = observed.assets.find((asset) => asset.name === "release-evidence.json");
-  if (existing) {
-    if (existing.sha256 !== sha256(data)) {
-      fail("a different release-evidence.json is already attached; evidence is never replaced");
-    }
-    summary(["- release-evidence.json is already attached and identical"]);
-    return;
-  }
-  const response = await fetch(`https://uploads.github.com/repos/${process.env.GITHUB_REPOSITORY}/releases/${observed.id}/assets?name=release-evidence.json`, {
-    method: "POST",
-    headers: { "User-Agent": USER_AGENT, Authorization: `Bearer ${writeToken()}`, "Content-Type": "application/json", Accept: "application/vnd.github+json" },
-    body: data,
-  });
-  if (!response.ok) {
-    fail(`attaching release-evidence.json returned HTTP ${response.status}`);
-  }
-  summary(["- Attached release-evidence.json"]);
+async function attachEvidenceCommand(argv) {
+  const options = parseOptions(argv, ["bundle", "evidence"]);
+  await attachEvidence(defaultContext(), { bundle: required(options, "bundle"), evidenceDir: required(options, "evidence") });
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1391,13 +1094,13 @@ export const COMMANDS = {
   crates,
   benchmark,
   assemble,
-  "stage-github": stageGithub,
-  "publish-crates": publishCrates,
-  "publish-pypi": publishPypi,
-  "publish-github": publishGithub,
-  probe,
-  evidence,
-  "attach-evidence": attachEvidence,
+  "stage-github": stageGithubCommand,
+  "publish-crates": publishCratesCommand,
+  "publish-pypi": publishPypiCommand,
+  "publish-github": publishGithubCommand,
+  probe: probeCommand,
+  evidence: evidenceCommand,
+  "attach-evidence": attachEvidenceCommand,
   "rehearse-host": rehearseHost,
   dispatch,
   check,
