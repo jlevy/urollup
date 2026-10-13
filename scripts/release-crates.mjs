@@ -29,7 +29,7 @@ export const PACKAGE_METADATA = {
 /** Files a package may contain, beyond Cargo's own generated files. */
 const ALLOWED = {
   "urollup-core": [/^src\/[A-Za-z0-9_/.-]+\.rs$/, /^README\.md$/],
-  urollup: [/^src\/[A-Za-z0-9_/.-]+\.rs$/, /^tests\/[A-Za-z0-9_-]+\.rs$/, /^README\.md$/],
+  urollup: [/^src\/[A-Za-z0-9_/.-]+\.rs$/, /^README\.md$/],
 };
 const GENERATED = [".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml", "Cargo.toml.orig"];
 

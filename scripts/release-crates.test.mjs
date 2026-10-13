@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +21,9 @@ const CORE_FILES = [".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml", "Cargo.t
 
 test("package listings hold sources and generated files only", () => {
   assert.deepEqual(checkPackageListing("urollup-core", CORE_FILES), []);
-  assert.deepEqual(checkPackageListing("urollup", [".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "README.md", "src/main.rs", "tests/cli_process.rs"]), []);
+  const executable = [".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "README.md", "src/main.rs", "src/cli.rs"];
+  assert.deepEqual(checkPackageListing("urollup", executable), []);
+  assert.match(checkPackageListing("urollup", [...executable, "tests/cli_process.rs"]).join("\n"), /unexpected packaged file tests\/cli_process\.rs/, "tests that need unshipped fixtures stay out of the package");
   assert.match(checkPackageListing("urollup-core", [...CORE_FILES, "tests/fixtures/claude-project/x/README.md"]).join("\n"), /unexpected packaged file tests\/fixtures/);
   assert.match(checkPackageListing("urollup-core", [...CORE_FILES, "tests/gate-probes/files/x.probe"]).join("\n"), /unexpected packaged file/);
   assert.match(checkPackageListing("urollup-core", CORE_FILES.filter((file) => file !== "README.md")).join("\n"), /lacks README\.md/);
@@ -109,6 +112,36 @@ test("a .crate extracts only below its own name and version", () => {
     assert.throws(() => extractCrate(makeTarGz([{ name: "urollup-0.1.0/../escape", data: Buffer.from("x") }]), "urollup-0.1.0", dir), /outside urollup-0\.1\.0/);
     assert.throws(() => extractCrate(makeTarGz([{ name: "other-0.1.0/x", data: Buffer.from("x") }]), "urollup-0.1.0", dir), /outside/);
     assert.throws(() => extractCrate(makeTarGz([{ name: "urollup-0.1.0/link", data: Buffer.alloc(0), type: "2" }]), "urollup-0.1.0", dir), /is a symlink/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const CARGO = spawnSync("cargo", ["--version"], { encoding: "utf8" });
+
+test("with --no-verify, Cargo runs no build script, so none can read the crates.io token", { skip: (CARGO.error || CARGO.status !== 0) && "cargo is not available" }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "urollup-token-probe-"));
+  try {
+    mkdirSync(path.join(dir, "src"));
+    writeFileSync(
+      path.join(dir, "Cargo.toml"),
+      '[package]\nname = "token-probe"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\ndescription = "probe"\nbuild = "build.rs"\n\n[workspace]\n',
+    );
+    writeFileSync(path.join(dir, "src", "main.rs"), "fn main() {}\n");
+    writeFileSync(
+      path.join(dir, "build.rs"),
+      'fn main() { let seen = std::env::var("CARGO_REGISTRY_TOKEN").is_ok(); std::fs::write(std::env::var("PROBE_MARKER").unwrap(), if seen { "token" } else { "no token" }).unwrap(); }\n',
+    );
+    const marker = path.join(dir, "marker");
+    const env = { ...process.env, CARGO_REGISTRY_TOKEN: "probe-token", PROBE_MARKER: marker, CARGO_TARGET_DIR: path.join(dir, "target") };
+    const cargo = (args) => spawnSync("cargo", args, { cwd: dir, env, encoding: "utf8" });
+    const noVerify = cargo(["package", "--no-verify", "--offline", "--allow-dirty"]);
+    assert.equal(noVerify.status, 0, noVerify.stderr);
+    assert.equal(existsSync(marker), false, "cargo package --no-verify ran a build script");
+    // The control: verification does run the build script, which then sees the token.
+    const verified = cargo(["package", "--offline", "--allow-dirty"]);
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.equal(readFileSync(marker, "utf8"), "token");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
