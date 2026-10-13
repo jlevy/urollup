@@ -23,10 +23,18 @@
 //! read, the same session reset between frames, and the same `incomplete frame` error when
 //! the input ends inside a frame. When the buffer ends inside a frame header, the loop
 //! reads the next buffer before offering the header's start, and offers that start as a
-//! chunk of its own, as `BufReader` would have. Its output bytes, and the kind and message
-//! of any error, are that decoder's; the tests compare the two. The one exception needs a
-//! read that returns fewer bytes than asked before the end of the input, which a regular
-//! file does not do: a header split across such a read goes to the slot's decoder.
+//! chunk of its own, as `BufReader` would have; a look-ahead read that finds the end of
+//! the input ends it, as `BufReader`'s would have. A read that fails, `Interrupted`
+//! included, changes nothing, as `BufReader`'s does, so a caller that retries resumes
+//! exactly where it stopped.
+//!
+//! Its output bytes, and the kind and message of any error, are that decoder's, whatever
+//! the reads return; the tests compare the two over scripted readers. The one exception
+//! is a read that returns fewer bytes than asked before the end of the input and leaves a
+//! frame header incomplete: the loop routes that frame by the bytes it has, so a window
+//! above 8 MiB goes to the slot's decoder and fails there. A local regular file returns
+//! a short read only at its end, but a network or FUSE file system, or another reader
+//! [`decode`](super::decode) is given, may not.
 
 use std::io::{self, Read};
 
@@ -148,6 +156,18 @@ enum State {
     Finished,
 }
 
+/// Where the input is relative to its frames, as the stock reader tracks it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Frame {
+    /// No frame has started: the next input byte starts the first, unrouted.
+    First,
+    /// Inside a routed frame.
+    Inside,
+    /// The last frame decoded and flushed completely, so the input may end here; the next
+    /// input byte starts another frame, unrouted, and the slot's decoder resets for it.
+    Between,
+}
+
 /// One wide frame's decoder and the permit share that pays for it.
 struct WideFrame<'a> {
     decoder: Decoder<'static>,
@@ -170,17 +190,16 @@ pub(super) struct ZstdFrames<'a, R> {
     head: [u8; MAX_HEADER],
     head_start: usize,
     head_end: usize,
+    /// Whether a look-ahead read found the end of `stored`, which `BufReader` would have
+    /// found on the read after the header's start, so no later read is made.
+    ended: bool,
     /// The slot's decoder, for windows up to 8 MiB.
     slot: Decoder<'static>,
     /// The current frame's decoder, when its window needs the permit.
     wide: Option<WideFrame<'a>>,
     state: State,
-    /// Whether the last frame decoded completely, so the input may end here.
-    finished_frame: bool,
-    /// Whether the next input byte starts a frame that has not been routed yet.
-    at_frame_start: bool,
-    /// Whether a frame has started, so the slot's decoder resets before the next one.
-    started: bool,
+    /// Where the input is relative to its frames.
+    frame: Frame,
 }
 
 impl<'a, R: Read> ZstdFrames<'a, R> {
@@ -196,63 +215,89 @@ impl<'a, R: Read> ZstdFrames<'a, R> {
             head: [0; MAX_HEADER],
             head_start: 0,
             head_end: 0,
+            ended: false,
             slot: decoder(SLOT_WINDOW_LOG)?,
             wide: None,
             state: State::Reading,
-            finished_frame: false,
-            at_frame_start: true,
-            started: false,
+            frame: Frame::First,
         })
     }
 
     /// How many input bytes are ready to offer, reading the next buffer from `stored` when
-    /// none are, as `BufReader` fills.
+    /// none are, as `BufReader` fills. A read that fails changes nothing.
     fn fill(&mut self) -> io::Result<usize> {
         if self.head_start < self.head_end {
             return Ok(self.head_end - self.head_start);
         }
-        if self.start == self.end {
-            self.start = 0;
-            self.end = self.stored.read(&mut self.input)?;
+        if self.start == self.end && !self.ended {
+            let read = self.stored.read(&mut self.input)?;
+            (self.start, self.end) = (0, read);
         }
         Ok(self.end - self.start)
     }
 
+    /// The header of the frame the ready input starts with: the stashed header start, if
+    /// any, followed by the input buffer.
+    fn header(&self) -> FrameHeader {
+        let head = &self.head[self.head_start..self.head_end];
+        let input = &self.input[self.start..self.end];
+        let more = input.len().min(MAX_HEADER);
+        let mut joined = [0_u8; 2 * MAX_HEADER];
+        joined[..head.len()].copy_from_slice(head);
+        joined[head.len()..head.len() + more].copy_from_slice(&input[..more]);
+        frame_header(&joined[..head.len() + more])
+    }
+
+    /// Moves the start of a header the input buffer ends inside to `head` and reads the
+    /// next buffer, the read `BufReader` would have made once the decoder had consumed that
+    /// start. A failed read restores the input as it was, so a retry repeats the look-ahead;
+    /// a read of nothing is the end of `stored`.
+    fn look_ahead(&mut self) -> io::Result<()> {
+        // An incomplete header is shorter than the longest one.
+        let length = (self.end - self.start).min(MAX_HEADER);
+        let mut head = [0_u8; MAX_HEADER];
+        head[..length].copy_from_slice(&self.input[self.start..self.start + length]);
+        match self.stored.read(&mut self.input) {
+            Ok(read) => {
+                self.head = head;
+                (self.head_start, self.head_end) = (0, length);
+                (self.start, self.end) = (0, read);
+                self.ended = read == 0;
+                Ok(())
+            }
+            Err(error) => {
+                // A failed read may still have written to the buffer.
+                self.input[self.start..self.start + length].copy_from_slice(&head[..length]);
+                Err(error)
+            }
+        }
+    }
+
     /// Routes the frame the ready input starts with, and prepares its decoder.
     ///
-    /// When the buffer ends inside the frame's header, its start moves to `head` and the
-    /// next buffer is read, with the read `BufReader` would have made once the decoder had
-    /// consumed it, so the header is read whole and the decoder is still offered the same
-    /// chunks.
+    /// When the buffer ends inside the frame's header, [`Self::look_ahead`] reads the
+    /// next buffer first, so the header is read whole and the decoder is still offered the
+    /// same chunks. Nothing about the frame changes until it is routed, so a failure here
+    /// leaves the loop to route it again.
     fn begin_frame(&mut self) -> io::Result<()> {
-        let mut header = frame_header(&self.input[self.start..self.end]);
-        if matches!(header, FrameHeader::Incomplete(_)) && self.head_start == self.head_end {
-            let tail = &self.input[self.start..self.end];
-            // An incomplete header is shorter than the longest one.
-            let length = tail.len().min(MAX_HEADER);
-            self.head[..length].copy_from_slice(&tail[..length]);
-            (self.head_start, self.head_end) = (0, length);
-            self.start = 0;
-            self.end = self.stored.read(&mut self.input)?;
-            let mut joined = [0_u8; 2 * MAX_HEADER];
-            let more = self.end.min(MAX_HEADER);
-            joined[..length].copy_from_slice(&self.head[..length]);
-            joined[length..length + more].copy_from_slice(&self.input[..more]);
-            header = frame_header(&joined[..length + more]);
+        if self.head_start == self.head_end && matches!(self.header(), FrameHeader::Incomplete(_)) {
+            self.look_ahead()?;
         }
-        self.finished_frame = false;
-        self.at_frame_start = false;
-        match Route::of(header) {
+        let wide = match Route::of(self.header()) {
             Route::Wide(window) => {
                 let permit =
                     self.admission.large_record(zstd_stream(window)).ok_or_else(stopped)?;
-                let decoder = decoder(WIDE_WINDOW_LOG)?;
-                self.wide = Some(WideFrame { decoder, _permit: permit });
+                Some(WideFrame { decoder: decoder(WIDE_WINDOW_LOG)?, _permit: permit })
             }
-            Route::Slot if self.started => self.slot.reinit()?,
-            Route::Slot => {}
-        }
-        self.started = true;
+            Route::Slot => {
+                if self.frame == Frame::Between {
+                    self.slot.reinit()?;
+                }
+                None
+            }
+        };
+        self.wide = wide;
+        self.frame = Frame::Inside;
         Ok(())
     }
 }
@@ -276,7 +321,7 @@ impl<R: Read> Read for ZstdFrames<'_, R> {
                         self.state = State::PastEof;
                         continue;
                     }
-                    if available > 0 && self.at_frame_start {
+                    if available > 0 && self.frame != Frame::Inside {
                         self.begin_frame()?;
                     }
                     let from_head = self.head_start < self.head_end;
@@ -302,8 +347,7 @@ impl<R: Read> Read for ZstdFrames<'_, R> {
                     if hint == 0 {
                         // The frame is decoded and flushed; a wide frame's decoder and
                         // its permit share go with it.
-                        self.finished_frame = true;
-                        self.at_frame_start = true;
+                        self.frame = Frame::Between;
                         self.wide = None;
                     }
                     if written > 0 {
@@ -311,7 +355,7 @@ impl<R: Read> Read for ZstdFrames<'_, R> {
                     }
                 }
                 State::PastEof => {
-                    if !self.finished_frame {
+                    if self.frame != Frame::Between {
                         return Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
                             "incomplete frame",

@@ -359,3 +359,155 @@ fn a_header_split_across_input_buffers_is_offered_in_the_same_chunks() {
         }
     }
 }
+
+/// What one scripted read does.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// Fills the buffer, or reads what is left.
+    Full,
+    /// Reads at most this many bytes.
+    Short(usize),
+    /// Fails with `Interrupted`, reading nothing, which a caller retries.
+    Interrupted,
+    /// Fails with another error, reading nothing.
+    Fail,
+    /// Reads nothing, before the end of the input, as a growing file does.
+    Nothing,
+}
+
+/// A reader over `bytes` whose reads follow `script`, by the index of each read.
+struct Scripted<'a> {
+    bytes: &'a [u8],
+    position: usize,
+    reads: std::rc::Rc<std::cell::Cell<usize>>,
+    script: &'a dyn Fn(usize) -> Step,
+}
+
+impl io::Read for Scripted<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let index = self.reads.get();
+        self.reads.set(index + 1);
+        let rest = &self.bytes[self.position..];
+        let length = match (self.script)(index) {
+            Step::Interrupted => return Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Step::Fail => return Err(io::Error::other("scripted failure")),
+            Step::Nothing => 0,
+            Step::Short(most) => most.min(buf.len()).min(rest.len()),
+            Step::Full => buf.len().min(rest.len()),
+        };
+        buf[..length].copy_from_slice(&rest[..length]);
+        self.position += length;
+        Ok(length)
+    }
+}
+
+/// What a decoder yields from `bytes` read by `script`, and how many reads it made.
+fn scripted(bytes: &[u8], script: &dyn Fn(usize) -> Step, frame_loop: bool) -> (Outcome, usize) {
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+    let stored = Scripted { bytes, position: 0, reads: std::rc::Rc::clone(&reads), script };
+    let admission = MemoryAdmission::unlimited();
+    let outcome = if frame_loop {
+        drain(&mut *decode(stored, Representation::Zstd, &admission).unwrap())
+    } else {
+        let decoder = zstd::stream::read::Decoder::new(stored).unwrap();
+        drain(&mut BufReader::with_capacity(READ_BUFFER_BYTES, decoder))
+    };
+    (outcome, reads.get())
+}
+
+/// Asserts that the frame loop decodes `bytes` read by `script` as zstd's reader does,
+/// with the same reads; returns how many reads that took.
+fn same_reads_as_before(bytes: &[u8], script: &dyn Fn(usize) -> Step, case: &str) -> usize {
+    let ((ours, our_error), our_reads) = scripted(bytes, script, true);
+    let ((theirs, their_error), their_reads) = scripted(bytes, script, false);
+    assert_eq!(our_error, their_error, "{case}: the error");
+    assert!(ours == theirs, "{case}: {} bytes against {}", ours.len(), theirs.len());
+    assert_eq!(our_reads, their_reads, "{case}: the reads");
+    our_reads
+}
+
+/// Streams whose reads include refills inside a frame and a look-ahead for a header split
+/// across the input buffer, with narrow and wide frames.
+fn scripted_streams() -> Vec<(String, Vec<u8>)> {
+    let input = usize::try_from(ZSTD_INPUT_BUFFER).unwrap();
+    let narrow = frame(&noise(60_000, 7));
+    let wide = widened(frame(&noise(50_000, 9)), 14, 2);
+    let (raw, raw_wide, _) = raw_block_frames();
+    let mut streams =
+        vec![("raw blocks".to_owned(), raw), ("raw blocks, wide".to_owned(), raw_wide)];
+    for (name, second) in [("narrow", &narrow), ("wide", &wide)] {
+        for inside in [1, 3, 5, 8] {
+            let stream = [&skippable(input - inside)[..], second, &narrow].concat();
+            streams
+                .push((format!("{name} header with {inside} bytes in the first buffer"), stream));
+        }
+    }
+    streams
+}
+
+#[test]
+fn a_failed_or_interrupted_read_leaves_the_loop_where_it_was() {
+    for (name, stream) in scripted_streams() {
+        let reads = same_reads_as_before(&stream, &|_| Step::Full, &name);
+        assert!(reads > 2, "{name}: {reads} reads");
+        // Each read in turn fails once: a retried `Interrupted` read resumes exactly, and
+        // any other failure ends the stream after the same output, with the same error.
+        for failing in 0..=reads {
+            for step in [Step::Interrupted, Step::Fail] {
+                let script = move |index| if index == failing { step } else { Step::Full };
+                same_reads_as_before(
+                    &stream,
+                    &script,
+                    &format!("{name}, {step:?} at read {failing}"),
+                );
+            }
+        }
+        // Every read interrupted once before it succeeds.
+        let every = |index: usize| if index % 2 == 0 { Step::Interrupted } else { Step::Full };
+        same_reads_as_before(&stream, &every, &format!("{name}, every read interrupted once"));
+    }
+}
+
+#[test]
+fn short_reads_decode_as_before_when_they_complete_each_header() {
+    for (name, stream) in scripted_streams() {
+        for most in [18, 1_000, 65_536, 131_074] {
+            let script = move |_| Step::Short(most);
+            same_reads_as_before(&stream, &script, &format!("{name}, reads of {most} bytes"));
+        }
+    }
+    // Reads too short to complete a header only route a narrow frame, which the slot's
+    // decoder takes either way.
+    let narrow = [frame(&records(400)), frame(&records(300))].concat();
+    for most in [1, 2, 5, 7] {
+        let script = move |_| Step::Short(most);
+        same_reads_as_before(&narrow, &script, &format!("narrow frames, reads of {most} bytes"));
+    }
+}
+
+#[test]
+fn a_look_ahead_that_finds_the_end_of_the_input_ends_it() {
+    // The first read ends 3 bytes into the second frame's header; the look-ahead read
+    // finds nothing, as at the end of a file a compressor is still writing, and the rest
+    // arrives only after it.
+    let first = frame(&records(100));
+    let split = first.len() + 3;
+    let stream = [first, frame(&records(200))].concat();
+    for second in [Step::Nothing, Step::Interrupted] {
+        let script = move |index| match index {
+            0 => Step::Short(split),
+            1 => second,
+            _ => Step::Full,
+        };
+        same_reads_as_before(&stream, &script, &format!("look-ahead {second:?}"));
+    }
+    let script = |index| match index {
+        0 => Step::Short(split),
+        1 => Step::Nothing,
+        _ => Step::Full,
+    };
+    let ((decoded, error), reads) = scripted(&stream, &script, true);
+    assert_eq!(decoded, records(100));
+    assert_eq!(error, Some((io::ErrorKind::UnexpectedEof, "incomplete frame".to_owned())));
+    assert_eq!(reads, 2, "nothing is read after the end of the input");
+}
