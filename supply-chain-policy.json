@@ -73,7 +73,8 @@
         "requireAssetDigestsInFiles": false,
         "files": [
           ".github/workflows/ci.yml",
-          "Makefile"
+          "Makefile",
+          ".github/workflows/release.yml"
         ],
         "assets": {
           "uv-x86_64-unknown-linux-gnu.tar.gz": "sha256:90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb"
@@ -99,7 +100,8 @@
         "sha256": "3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a",
         "files": [
           "rust-toolchain.toml",
-          ".github/workflows/ci.yml"
+          ".github/workflows/ci.yml",
+          ".github/workflows/release.yml"
         ]
       },
       {
@@ -108,7 +110,8 @@
         "sha256": "009e8b5ff43f12bf644b5e5b9fd89f96453072062a450c623882f64e85405da5",
         "files": [
           ".github/workflows/ci.yml",
-          "Makefile"
+          "Makefile",
+          ".github/workflows/release.yml"
         ]
       }
     ],
@@ -118,7 +121,69 @@
         "shasums": "https://nodejs.org/dist/v24.19.0/SHASUMS256.txt",
         "sha256": "be0629ee2bcd8e40bb856abdd3407f0762101b76bd60a36b8867f637733631c0",
         "files": [
-          ".github/workflows/ci.yml"
+          ".github/workflows/ci.yml",
+          ".github/workflows/release.yml"
+        ]
+      }
+    ],
+    "containerImages": [
+      {
+        "image": "quay.io/pypa/manylinux2014_x86_64",
+        "tag": "2026.09.26-1",
+        "digest": "sha256:6f74cabeac2432570aa4bfdb29f7c1f30313d4d6654d764c44e574b6ffdd4ed5",
+        "purpose": "Builds the manylinux_2_17 x86_64 wheel against glibc 2.17",
+        "files": [
+          "scripts/release-targets.mjs"
+        ]
+      },
+      {
+        "image": "quay.io/pypa/manylinux2014_aarch64",
+        "tag": "2026.09.26-1",
+        "digest": "sha256:d36e257b4f7b1130a1442a5cd28022307645a92b8093ab65543205426354cfd2",
+        "purpose": "Builds the manylinux_2_17 aarch64 wheel against glibc 2.17",
+        "files": [
+          "scripts/release-targets.mjs"
+        ]
+      }
+    ],
+    "aptPackages": [
+      {
+        "name": "musl",
+        "version": "1.2.4-2",
+        "distribution": "noble",
+        "architectures": [
+          "amd64",
+          "arm64"
+        ],
+        "purpose": "musl-gcc for the static musl release archives",
+        "files": [
+          "scripts/release-targets.mjs"
+        ]
+      },
+      {
+        "name": "musl-dev",
+        "version": "1.2.4-2",
+        "distribution": "noble",
+        "architectures": [
+          "amd64",
+          "arm64"
+        ],
+        "purpose": "musl-gcc for the static musl release archives",
+        "files": [
+          "scripts/release-targets.mjs"
+        ]
+      },
+      {
+        "name": "musl-tools",
+        "version": "1.2.4-2",
+        "distribution": "noble",
+        "architectures": [
+          "amd64",
+          "arm64"
+        ],
+        "purpose": "musl-gcc for the static musl release archives",
+        "files": [
+          "scripts/release-targets.mjs"
         ]
       }
     ],

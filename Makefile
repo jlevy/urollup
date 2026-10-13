@@ -26,7 +26,8 @@ TAPLO := node_modules/.bin/taplo
 
 .PHONY: help build test rust-test qa-tool-tests golden golden-update golden-lint e2e-results e2e-local parity parity-local check toolchain uv-version \
 	supply-chain lint-policy fixtures-check fmt-check toml-fmt-check docs-format-check uv-lock-check \
-	clippy docs dependency-guard msrv audit npm-audit gate-proofs scale-gate fix clean
+	clippy docs dependency-guard msrv audit npm-audit gate-proofs scale-gate release-check release-rehearsal \
+	release-dispatch fix clean
 
 help:
 	@echo "make build              Debug build of the workspace"
@@ -48,6 +49,10 @@ help:
 	@echo "make msrv               Compile and test the workspace on Rust $(MSRV)"
 	@echo "make audit              cargo-deny advisories, licenses, bans and sources"
 	@echo "make gate-proofs        Prove each gate fails on its committed violation"
+	@echo "make release-check      Test the release logic and the release workflow's authority"
+	@echo "make release-rehearsal  Build, inspect and smoke-test this host's release artifacts"
+	@echo "make release-dispatch   Start the full no-publish CI rehearsal for the pushed HEAD"
+	@echo "                        (ALLOW_UNMERGED=true for a commit not on main yet)"
 
 build:
 	$(CARGO) build --locked --workspace
@@ -139,8 +144,9 @@ scale-gate:
 	$(UV_RUN) python scripts/check-scale.py --binary $(RELEASE_UROLLUP_BIN)
 
 # Everything CI enforces, in the order that fails fastest.
-check: toolchain uv-version supply-chain lint-policy fixtures-check fmt-check toml-fmt-check \
-	docs-format-check uv-lock-check clippy test docs dependency-guard msrv audit npm-audit gate-proofs
+check: toolchain uv-version supply-chain lint-policy fixtures-check release-check fmt-check \
+	toml-fmt-check docs-format-check uv-lock-check clippy test docs dependency-guard msrv audit npm-audit \
+	gate-proofs
 
 # A rustc other than the pin, a missing MSRV toolchain or a different cargo-deny each fail
 # later in a way that reads as something else; say so up front instead.
@@ -214,6 +220,33 @@ lint-policy:
 fixtures-check:
 	$(NODE) --test scripts/check-fixtures.test.mjs scripts/sanitize-claude-fixture.test.mjs
 	$(NODE) scripts/check-fixtures.mjs
+
+# The release machinery (docs/publishing.md): its decision logic is tested first, then the
+# release workflow's authority boundaries and the repository's release invariants (one
+# version source, the five-host matrix, CHANGELOG notes) are checked. No build, no network.
+RELEASE_TESTS := scripts/release-identity.test.mjs scripts/release-targets.test.mjs \
+	scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs \
+	scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs \
+	scripts/release.test.mjs scripts/check-release-workflow.test.mjs
+
+release-check: $(NODE_INSTALL_STAMP)
+	$(NODE) --test $(RELEASE_TESTS)
+	$(NODE) scripts/check-release-workflow.mjs
+	$(NODE) scripts/release.mjs check
+
+# A local, credential-free rehearsal: this host's archive and wheel and both Cargo packages
+# are built, inspected, installed into empty environments and smoke-tested under
+# RELEASE_DIR. Only CI has every host; `make release-dispatch` runs the full matrix there.
+RELEASE_DIR ?= target/release-rehearsal
+
+release-rehearsal: uv-version release-check
+	$(NODE) scripts/release.mjs rehearse-host --out $(RELEASE_DIR)
+
+# Start .github/workflows/release.yml's no-publish rehearsal for this branch's pushed HEAD.
+ALLOW_UNMERGED ?= false
+
+release-dispatch:
+	$(NODE) scripts/release.mjs dispatch --allow-unmerged $(ALLOW_UNMERGED)
 
 fmt-check:
 	$(CARGO) fmt --all --check

@@ -1,0 +1,545 @@
+# The urollup release workflow
+# (docs/project/specs/active/plan-2026-09-16-first-release-publishing.md, Workflow and
+# Permissions; runbook in docs/publishing.md).
+#
+# Two entry paths run the same plan, gate, package, validation, checksum, manifest, notes
+# and attestation preparation:
+#
+# - workflow_dispatch is the credential-free rehearsal for an explicit commit and version.
+#   Every job that could write anywhere is skipped, and none of the jobs that run has any
+#   authority beyond reading this repository.
+# - a pushed v* tag also attests the validated artifacts and then publishes through jobs
+#   that each enter the protected `release` environment.
+#
+# The workflow is orchestration only: identity, target mapping, archive construction,
+# package inspection, checksums, manifests, registry comparison and smoke tests live in
+# tested scripts (scripts/release*.mjs), and `make release-check` proves this file's
+# authority boundaries (scripts/check-release-workflow.mjs). Actions are pinned by commit
+# SHA, checkouts never persist credentials, and nothing writes a reusable cache.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full commit ID to rehearse; it must be the head of the dispatched ref
+        required: true
+        type: string
+      version:
+        description: Release version, equal to the workspace version (for example 0.1.0)
+        required: true
+        type: string
+      allow-unmerged:
+        description: Rehearse a commit that is not on main yet; the run is then marked not releasable
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# One run per version: a rehearsal and a publication of the same version never overlap,
+# and a second publication waits instead of racing the first.
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  NPM_CONFIG_IGNORE_SCRIPTS: "true"
+
+# Bash on every runner, Windows included, so each step's command is written once.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      commit: ${{ steps.plan.outputs.commit }}
+      mode: ${{ steps.plan.outputs.mode }}
+      publish: ${{ steps.plan.outputs.publish }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      hosts: ${{ steps.plan.outputs.hosts }}
+      source-date-epoch: ${{ steps.plan.outputs.source-date-epoch }}
+      allow-unmerged: ${{ steps.plan.outputs.allow-unmerged }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Test the release logic
+        run: node --test scripts/release-identity.test.mjs scripts/release-targets.test.mjs scripts/release-archive.test.mjs scripts/release-inspect.test.mjs scripts/release-manifest.test.mjs scripts/release-registry.test.mjs scripts/release-smoke.test.mjs scripts/release-crates.test.mjs scripts/release.test.mjs
+      - name: Resolve the release plan
+        id: plan
+        run: node scripts/release.mjs plan --out "$RUNNER_TEMP/release-plan"
+        env:
+          RELEASE_INPUT_COMMIT: ${{ inputs.commit }}
+          RELEASE_INPUT_VERSION: ${{ inputs.version }}
+          RELEASE_INPUT_ALLOW_UNMERGED: ${{ inputs.allow-unmerged }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan/
+          retention-days: 30
+          if-no-files-found: error
+
+  gate:
+    name: Gate (make check)
+    needs: plan
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.85.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Install the reviewed cargo-deny release
+        run: |
+          scripts/install-cargo-deny.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Check the commit is clean and on main
+        run: node scripts/release.mjs gate-git --commit "$RELEASE_COMMIT" --allow-unmerged "$RELEASE_ALLOW_UNMERGED"
+        env:
+          RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+          RELEASE_ALLOW_UNMERGED: ${{ needs.plan.outputs.allow-unmerged }}
+      - name: Run every repository gate
+        run: make check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Check make check left the tracked tree clean
+        run: node scripts/release.mjs gate-git --commit "$RELEASE_COMMIT" --allow-unmerged "$RELEASE_ALLOW_UNMERGED"
+        env:
+          RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+          RELEASE_ALLOW_UNMERGED: ${{ needs.plan.outputs.allow-unmerged }}
+
+  build:
+    name: Build ${{ matrix.id }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Prove this job holds no publishing authority
+        run: node scripts/release.mjs assert-no-authority
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.rust_target }}
+      - if: matrix.kind == 'wheel'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - name: Install the pinned musl toolchain
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends $APT_PACKAGES
+        env:
+          APT_PACKAGES: ${{ matrix.apt_packages }}
+      - name: Build and package
+        run: node scripts/release.mjs build --artifact "$ARTIFACT_ID" --out "$RUNNER_TEMP/release-artifact"
+        env:
+          ARTIFACT_ID: ${{ matrix.id }}
+          SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source-date-epoch }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.id }}
+          path: ${{ runner.temp }}/release-artifact/
+          retention-days: 30
+          if-no-files-found: error
+
+  crates:
+    name: Cargo packages
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Prove this job holds no publishing authority
+        run: node scripts/release.mjs assert-no-authority
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - name: Package, inspect, build outside the workspace and smoke-test an install
+        run: node scripts/release.mjs crates --out "$RUNNER_TEMP/release-artifact"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: crates
+          path: ${{ runner.temp }}/release-artifact/
+          retention-days: 30
+          if-no-files-found: error
+
+  validate:
+    name: Validate ${{ matrix.id }}
+    needs: [plan, build]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Prove this job holds no publishing authority
+        run: node scripts/release.mjs assert-no-authority
+      - if: matrix.kind == 'wheel'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.id }}
+          path: ${{ runner.temp }}/release-artifact
+      - name: Install the packaged artifact into an empty environment and smoke-test it
+        run: node scripts/release.mjs smoke --artifact "$ARTIFACT_ID" --input "$RUNNER_TEMP/release-artifact" --out "$RUNNER_TEMP/release-validation"
+        env:
+          ARTIFACT_ID: ${{ matrix.id }}
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: validation-${{ matrix.id }}
+          path: ${{ runner.temp }}/release-validation/
+          retention-days: 30
+          if-no-files-found: error
+
+  benchmark:
+    name: musl and glibc benchmark (informational)
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    # Evidence for the allocator decision (uro-uj8w), not a release gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Prove this job holds no publishing authority
+        run: node scripts/release.mjs assert-no-authority
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-linux-x86_64
+          path: ${{ runner.temp }}/benchmark-input
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-linux-x86_64
+          path: ${{ runner.temp }}/benchmark-input
+      - name: Time the static musl and manylinux executables on one synthetic corpus
+        run: node scripts/release.mjs benchmark --input "$RUNNER_TEMP/benchmark-input" --out "$RUNNER_TEMP/benchmark"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark
+          path: ${{ runner.temp }}/benchmark/
+          retention-days: 30
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble checksums, manifest and notes
+    needs: [plan, gate, crates, validate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Prove this job holds no publishing authority
+        run: node scripts/release.mjs assert-no-authority
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/release-input
+      - name: Check the complete matrix and write SHA256SUMS, the manifest, notes and channel actions
+        run: node scripts/release.mjs assemble --input "$RUNNER_TEMP/release-input" --out "$RUNNER_TEMP/release-bundle"
+        env:
+          RELEASE_READ_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle/
+          retention-days: 30
+          if-no-files-found: error
+
+  # Everything below runs only for a pushed v* tag. A rehearsal skips these jobs.
+
+  attest:
+    name: Attest build provenance
+    needs: [plan, assemble]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release-bundle/assets/*
+            ${{ runner.temp }}/release-bundle/SHA256SUMS
+            ${{ runner.temp }}/release-bundle/release-manifest.json
+
+  stage-github:
+    name: Stage the draft GitHub Release
+    needs: [plan, attest]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - run: node scripts/release.mjs stage-github --bundle "$RUNNER_TEMP/release-bundle"
+        env:
+          RELEASE_WRITE_TOKEN: ${{ github.token }}
+
+  publish-crates:
+    name: Publish crates.io
+    needs: [plan, stage-github]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      # The first release uses the bootstrap token; after 0.1.0 the crates move to trusted
+      # publishing and this job gains id-token: write instead (docs/publishing.md).
+      - run: node scripts/release.mjs publish-crates --bundle "$RUNNER_TEMP/release-bundle"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-pypi:
+    name: Publish PyPI
+    needs: [plan, stage-github]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - run: node scripts/release.mjs publish-pypi --bundle "$RUNNER_TEMP/release-bundle"
+
+  publish-github:
+    name: Publish the GitHub Release
+    needs: [plan, publish-crates, publish-pypi]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - run: node scripts/release.mjs publish-github --bundle "$RUNNER_TEMP/release-bundle"
+        env:
+          RELEASE_WRITE_TOKEN: ${{ github.token }}
+
+  probe:
+    name: Installation probe ${{ matrix.host }}
+    needs: [plan, publish-github]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # toolchain pinned below
+        with:
+          toolchain: 1.98.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.12.1"
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}/release-bundle
+      - name: Install from GitHub, PyPI and crates.io into clean environments and run each
+        run: node scripts/release.mjs probe --host "$PROBE_HOST" --bundle "$RUNNER_TEMP/release-bundle" --out "$RUNNER_TEMP/release-probe"
+        env:
+          PROBE_HOST: ${{ matrix.host }}
+          GH_TOKEN: ${{ github.token }}
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: probe-${{ matrix.host }}
+          path: ${{ runner.temp }}/release-probe/
+          retention-days: 90
+          if-no-files-found: error
+
+  evidence:
+    name: Write release evidence
+    needs: [plan, probe]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/release-input
+      - run: node scripts/release.mjs evidence --input "$RUNNER_TEMP/release-input" --out "$RUNNER_TEMP/release-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence
+          path: ${{ runner.temp }}/release-evidence/
+          retention-days: 90
+          if-no-files-found: error
+
+  attest-evidence:
+    name: Attest release evidence
+    needs: [plan, evidence]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-evidence
+          path: ${{ runner.temp }}/release-evidence
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-evidence/release-evidence.json
+
+  attach-evidence:
+    name: Attach release evidence
+    needs: [plan, attest-evidence]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/release-input
+      - run: node scripts/release.mjs attach-evidence --input "$RUNNER_TEMP/release-input"
+        env:
+          RELEASE_WRITE_TOKEN: ${{ github.token }}

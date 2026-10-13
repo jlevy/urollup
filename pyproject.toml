@@ -7,6 +7,10 @@ requires-python = ">=3.12"
 
 [dependency-groups]
 dev = ["softschema==0.8.1", "flowmark-rs==0.4.0"]
+# The release build tool: Maturin packages the urollup executable as a `bindings = "bin"`
+# wheel (crates/urollup/pyproject.toml). Installed only for release jobs, with
+# `--group release`.
+release = ["maturin==1.15.0"]
 
 [tool.uv]
 package = false

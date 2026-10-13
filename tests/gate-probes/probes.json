@@ -88,6 +88,66 @@
       "expect": "does not parse as a JSON object and is not declared malformed or pending"
     },
     {
+      "id": "release-build-job-oidc",
+      "gate": "release-check",
+      "violation": "a release build job asks for an OIDC token, the authority attestation and trusted publishing use",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "  build:\n    name: Build ${{ matrix.id }}\n    needs: plan\n",
+            "to": "  build:\n    name: Build ${{ matrix.id }}\n    needs: plan\n    permissions:\n      contents: read\n      id-token: write\n"
+          }
+        }
+      ],
+      "expect": "job build runs in rehearsals and must keep the read-only default"
+    },
+    {
+      "id": "release-target-dropped",
+      "gate": "release-check",
+      "violation": "the release matrix replaces the Windows x86_64 archive with an unplanned target",
+      "edits": [
+        {
+          "path": "scripts/release-targets.mjs",
+          "substitute": {
+            "from": "archive: { rustTarget: \"x86_64-pc-windows-msvc\", format: \"zip\", linkage: \"windows-static-crt\" },",
+            "to": "archive: { rustTarget: \"aarch64-pc-windows-msvc\", format: \"zip\", linkage: \"windows-static-crt\" },"
+          }
+        }
+      ],
+      "expect": "release archives must be exactly"
+    },
+    {
+      "id": "release-first-notes-list-fixes",
+      "gate": "release-check",
+      "violation": "the first release's notes list a fix for a defect that never shipped",
+      "edits": [
+        {
+          "path": "CHANGELOG.md",
+          "substitute": {
+            "from": "### Known Limitations\n",
+            "to": "### Fixed\n\n- Codex cache writes are counted once.\n\n### Known Limitations\n"
+          }
+        }
+      ],
+      "expect": "the first release's notes list fixes"
+    },
+    {
+      "id": "release-wheel-version-literal",
+      "gate": "release-check",
+      "violation": "the PyPI metadata writes a version literal that can drift from Cargo",
+      "edits": [
+        {
+          "path": "crates/urollup/pyproject.toml",
+          "substitute": {
+            "from": "dynamic = [\"version\"]\n",
+            "to": "version = \"0.1.0\"\n"
+          }
+        }
+      ],
+      "expect": "the PyPI version must not be a literal"
+    },
+    {
       "id": "rustfmt",
       "gate": "fmt-check",
       "violation": "Rust code rustfmt would reformat",

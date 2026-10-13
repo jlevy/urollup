@@ -673,6 +673,68 @@ export function validateBootstrapPin(filePath, text, item, versionSourceText = n
   }
 }
 
+/** Container images a file references by digest, as `registry/name@sha256:<digest>`. */
+export function imageReferences(text) {
+  return [...text.matchAll(/\b([a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?\/[a-z0-9._/-]+)@(sha256:[0-9a-f]{64})\b/g)].map((match) => ({
+    image: match[1],
+    digest: match[2],
+  }));
+}
+
+/**
+ * Every container image a release build runs must be pinned by digest and inventoried, and
+ * every inventoried image must still be what its files reference. A tag-only reference to a
+ * registry image fails closed.
+ */
+export function validateImagePins(files, inventory) {
+  for (const file of files) {
+    for (const reference of imageReferences(file.text)) {
+      if (!inventory.some((item) => item.image === reference.image && item.digest === reference.digest)) {
+        fail(`${file.path} uses container image ${reference.image}@${reference.digest}, which supply-chain-policy.json does not inventory`);
+      }
+    }
+    const unpinned = file.text.match(/\b(?:quay\.io|ghcr\.io|docker\.io|mcr\.microsoft\.com)\/[a-z0-9._/-]+:[A-Za-z0-9._-]+\b(?!@sha256)/);
+    if (unpinned) {
+      fail(`${file.path} references container image ${unpinned[0]} by tag; pin it by digest`);
+    }
+  }
+  for (const item of inventory) {
+    for (const filePath of item.files) {
+      const file = files.find((candidate) => candidate.path === filePath);
+      if (!file || !file.text.includes(`${item.image}@${item.digest}`)) {
+        fail(`${filePath} does not pin container image ${item.image}@${item.digest}`);
+      }
+    }
+  }
+}
+
+/**
+ * Every `apt-get install` in a workflow installs only pinned, inventoried packages, either
+ * as literal `name=version` arguments or through one environment variable whose value the
+ * inventoried files define; and each inventoried package is pinned in its files.
+ */
+export function validateAptPins(workflows, files, inventory) {
+  for (const workflow of workflows) {
+    for (const line of workflow.text.split("\n").filter((candidate) => /\bapt(?:-get)?\s+install\b/.test(candidate))) {
+      const words = line.slice(line.search(/\binstall\b/) + "install".length).trim().split(/\s+/).filter(Boolean);
+      for (const word of words.filter((candidate) => !candidate.startsWith("-") && !/^"?\$\{?[A-Z_]+\}?"?$/.test(candidate))) {
+        const [name, version] = word.split("=");
+        if (!inventory.some((item) => item.name === name && item.version === version)) {
+          fail(`${workflow.path} installs apt package ${word}, which is not a pinned, inventoried version`);
+        }
+      }
+    }
+  }
+  for (const item of inventory) {
+    for (const filePath of item.files) {
+      const file = files.find((candidate) => candidate.path === filePath);
+      if (!file || !file.text.includes(`"${item.name}=${item.version}"`)) {
+        fail(`${filePath} does not pin apt package ${item.name}=${item.version}`);
+      }
+    }
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -840,6 +902,65 @@ async function verifyBootstrap(policy, root, context) {
     }
   }
 
+  const pinnedFiles = await Promise.all(
+    [...new Set([...policy.bootstrap.containerImages, ...policy.bootstrap.aptPackages].flatMap((item) => item.files))].map(async (file) => ({
+      path: file,
+      text: await readFile(path.join(root, file), "utf8"),
+    })),
+  );
+  const workflows = await workflowFiles(root);
+  validateImagePins([...pinnedFiles, ...workflows], policy.bootstrap.containerImages);
+  validateAptPins(workflows, pinnedFiles, policy.bootstrap.aptPackages);
+
+  for (const item of policy.bootstrap.containerImages) {
+    const [registry, namespace, ...rest] = item.image.split("/");
+    if (registry !== "quay.io" || !namespace || rest.length !== 1) {
+      fail(`container image ${item.image} must be a quay.io namespace/repository, the only registry this gate can verify`);
+    }
+    const history = await fetchJson(
+      `https://quay.io/api/v1/repository/${namespace}/${rest[0]}/tag/?specificTag=${encodeURIComponent(item.tag)}&onlyActiveTags=false&limit=100`,
+    );
+    const matches = (history.tags ?? []).filter((tag) => tag.name === item.tag && tag.manifest_digest === item.digest);
+    if (matches.length === 0) {
+      fail(`container image ${item.image}:${item.tag} has never pointed at ${item.digest}`);
+    }
+    const first = Math.min(...matches.map((tag) => Number(tag.start_ts)));
+    assertAged(
+      { ecosystem: "container-image", name: item.image, version: item.digest, publishedAt: new Date(first * 1000).toISOString() },
+      context.now,
+      context.minimumAgeDays,
+      context.exceptions,
+      context.firstParty,
+    );
+  }
+
+  for (const item of policy.bootstrap.aptPackages) {
+    for (const architecture of item.architectures) {
+      const series = `https://api.launchpad.net/1.0/ubuntu/${item.distribution}/${architecture}`;
+      const published = await fetchJson(
+        `https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedBinaries&binary_name=${encodeURIComponent(item.name)}&exact_match=true&version=${encodeURIComponent(item.version)}&distro_arch_series=${encodeURIComponent(series)}&status=Published`,
+      );
+      const entries = (published.entries ?? []).filter(
+        (entry) => entry.binary_package_version === item.version && ["Release", "Updates", "Security"].includes(entry.pocket),
+      );
+      if (entries.length === 0) {
+        fail(`apt package ${item.name}=${item.version} is not published for ${item.distribution}/${architecture}`);
+      }
+      assertAged(
+        {
+          ecosystem: "apt",
+          name: `${item.name}/${item.distribution}/${architecture}`,
+          version: item.version,
+          publishedAt: entries.map((entry) => entry.date_published).sort()[0],
+        },
+        context.now,
+        context.minimumAgeDays,
+        context.exceptions,
+        context.firstParty,
+      );
+    }
+  }
+
   for (const group of policy.bootstrap.identicalFileGroups) {
     const contents = await Promise.all(group.map((file) => readFile(path.join(root, file), "utf8")));
     if (!contents.every((content) => content === contents[0])) {
@@ -859,6 +980,8 @@ export function validatePolicy(policy, now) {
     !Array.isArray(policy.bootstrap?.githubReleases) ||
     !Array.isArray(policy.bootstrap?.rustToolchains) ||
     !Array.isArray(policy.bootstrap?.nodeRuntimes) ||
+    !Array.isArray(policy.bootstrap?.containerImages) ||
+    !Array.isArray(policy.bootstrap?.aptPackages) ||
     !Array.isArray(policy.bootstrap?.identicalFileGroups)
   ) {
     fail("supply-chain policy is missing bootstrap inventories");

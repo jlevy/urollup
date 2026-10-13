@@ -7,15 +7,18 @@ import {
   assertNoExpiredExceptions,
   assertEqualProvenance,
   fetchWithRetry,
+  imageReferences,
   isNestedWorkingCopy,
   parseActionUses,
   parseCargoLock,
   parseUvLock,
   selectGithubToken,
+  validateAptPins,
   validateBootstrapPin,
   validateDownloadScripts,
   validateExceptions,
   validateFirstParty,
+  validateImagePins,
   validatePolicy,
   validateWorkflowSecurity,
 } from "./check-supply-chain.mjs";
@@ -395,7 +398,7 @@ test("an expired exception fails the policy even when no locked package uses it"
     minimumAgeDays: 14,
     exceptions: [EXPIRED],
     firstParty: [],
-    bootstrap: { npm: [], githubReleases: [], rustToolchains: [], nodeRuntimes: [], identicalFileGroups: [] },
+    bootstrap: { npm: [], githubReleases: [], rustToolchains: [], nodeRuntimes: [], containerImages: [], aptPackages: [], identicalFileGroups: [] },
   };
   assert.throws(() => validatePolicy(policy, NOW), /expired-example expired/);
   assert.doesNotThrow(() => validatePolicy({ ...policy, exceptions: [] }, NOW));
@@ -472,4 +475,32 @@ test("nested working copies are left to their own gate", () => {
   // An agent worktree under .claude/worktrees/ holds a mid-edit copy of this repository.
   assert.equal(isNestedWorkingCopy([".agents", ".claude", ".git", "Cargo.toml"]), true);
   assert.equal(isNestedWorkingCopy(["hooks", "scripts", "settings.json"]), false);
+});
+
+const IMAGE = "quay.io/pypa/manylinux2014_x86_64";
+const DIGEST = `sha256:${"a".repeat(64)}`;
+const IMAGES = [{ image: IMAGE, tag: "2026.09.26-1", digest: DIGEST, files: ["scripts/release-targets.mjs"] }];
+
+test("release container images are pinned by digest and inventoried", () => {
+  const pinned = { path: "scripts/release-targets.mjs", text: `x86_64: "${IMAGE}@${DIGEST}",\n` };
+  assert.deepEqual(imageReferences(pinned.text), [{ image: IMAGE, digest: DIGEST }]);
+  assert.doesNotThrow(() => validateImagePins([pinned], IMAGES));
+  const other = { path: "scripts/release-targets.mjs", text: `"${IMAGE}@sha256:${"b".repeat(64)}"\n` };
+  assert.throws(() => validateImagePins([other], IMAGES), /does not inventory/);
+  const byTag = { path: ".github/workflows/release.yml", text: "container: quay.io/pypa/manylinux2014_x86_64:latest\n" };
+  assert.throws(() => validateImagePins([pinned, byTag], IMAGES), /by tag; pin it by digest/);
+  assert.throws(() => validateImagePins([{ path: "scripts/release-targets.mjs", text: "" }], IMAGES), /does not pin container image/);
+  assert.throws(() => validateImagePins([], IMAGES), /does not pin container image/);
+});
+
+const APT = [{ name: "musl-tools", version: "1.2.4-2", distribution: "noble", architectures: ["amd64"], files: ["scripts/release-targets.mjs"] }];
+
+test("apt packages in release builds are exact, inventoried versions", () => {
+  const targets = { path: "scripts/release-targets.mjs", text: 'export const MUSL_APT_PACKAGES = ["musl-tools=1.2.4-2"];\n' };
+  const viaVariable = { path: ".github/workflows/release.yml", text: "        run: |\n          sudo apt-get install --yes --no-install-recommends $APT_PACKAGES\n" };
+  assert.doesNotThrow(() => validateAptPins([viaVariable], [targets], APT));
+  assert.doesNotThrow(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools=1.2.4-2\n" }], [targets], APT));
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools\n" }], [targets], APT), /installs apt package musl-tools, which is not a pinned/);
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt install gcc=13.2.0-4\n" }], [targets], APT), /gcc=13\.2\.0-4/);
+  assert.throws(() => validateAptPins([viaVariable], [{ ...targets, text: '"musl-tools=1.2.3-1"' }], APT), /does not pin apt package musl-tools=1\.2\.4-2/);
 });
