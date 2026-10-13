@@ -437,6 +437,9 @@ impl Corpus {
         narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query, &admission)?;
         stats.phase("discovery", started);
         let decoding = Decoding { admission: &admission, workers, slot };
+        // The threads decode runs on, which a budget can make fewer than the workers asked
+        // for; with this ledger's unlimited budget, the same count.
+        stats.workers = Some(decoding.threads());
 
         // Codex is the larger corpus. Index and drop its discovery tables before Claude
         // starts, so the peak is one ingest working set plus the other's compact ledger.

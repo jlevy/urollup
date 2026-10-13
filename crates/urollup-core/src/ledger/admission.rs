@@ -35,8 +35,12 @@
 //!   any holder has held at once in the current phase.
 //!
 //! [`model`] prices each unit of retained state and each phase, and [`deep_size`] measures
-//! committed state. The source reader takes the permit; nothing else in ingestion charges
-//! bytes yet, and adapters use the row ceiling only.
+//! committed state. In ingestion so far, the source reader takes the permit; each agent's
+//! decode checkpoint charges its worker slots and the parallel read's work order and
+//! releases the coordinating slot ([`Hold::Coordinating`]), which the CLI holds while it
+//! peeks at sources; and each worker charges its source's rows. Record, payload and thread
+//! charges arrive with slices 5 and 6, and the CLI's ledger refuses no bytes until slice 7
+//! gives it a budget; until then only the row ceiling refuses.
 
 pub mod deep_size;
 pub mod model;
@@ -483,9 +487,11 @@ impl MemoryAdmission {
     /// max(8, jobs))`, where `jobs` is an explicit `UROLLUP_JOBS`.
     ///
     /// The count depends on the budget and on an explicit `jobs` above 8, never on the
-    /// default worker count, so admission charges the same for one to eight workers.
+    /// default worker count, so admission charges the same for one to eight workers. The
+    /// default worker count never passes [`SLOT_CEILING`], so passing it as `jobs` is the
+    /// same as passing none.
     pub fn worker_slots(&self, slot_bytes: u64, jobs: Option<NonZeroUsize>) -> NonZeroUsize {
-        let ceiling = jobs.map_or(8, NonZeroUsize::get).max(8);
+        let ceiling = jobs.map_or(SLOT_CEILING, NonZeroUsize::get).max(SLOT_CEILING);
         let slots = match self.budget() {
             None => ceiling,
             Some(budget) => {
@@ -675,7 +681,7 @@ impl MemoryAdmission {
         estimate: u64,
         holds: &[(Hold, u64)],
     ) -> Result<(), CapacityError> {
-        self.transition(Some(phase), Some(estimate), holds)
+        self.transition(Some(phase), Some(estimate), |next| set_holds(next, holds))
     }
 
     /// Sets each hold in `changes` (zero releases one), keeping the current phase's
@@ -689,18 +695,23 @@ impl MemoryAdmission {
     /// only when the final total passes the budget, in either order. A refusal names the
     /// current phase, changes nothing, and is final.
     pub fn hold(&self, changes: &[(Hold, u64)]) -> Result<(), CapacityError> {
-        self.transition(None, None, changes)
+        self.transition(None, None, |next| set_holds(next, changes))
     }
 
-    /// Raises `hold` to `bytes` when it holds less, as [`Self::hold`] sets it; a hold that
-    /// already covers `bytes` is kept. The coordinating slot grows this way as discovery
-    /// finds compressed sources.
+    /// Raises `hold` to `bytes` when it holds less, keeping the current phase's charges; a
+    /// hold that already covers `bytes` is kept. The coordinating slot grows this way as
+    /// discovery finds compressed sources.
+    ///
+    /// The comparison and the change are one transition, so concurrent raises never lower
+    /// a hold. Like [`Self::hold`], call it on the coordinating thread while no worker
+    /// charges, and a refusal names the current phase, changes nothing, and is final.
     pub fn raise_hold(&self, hold: Hold, bytes: u64) -> Result<(), CapacityError> {
-        let current = lock(&self.holds).get(&hold).copied().unwrap_or(0);
-        if bytes <= current {
-            return self.refusal().map_or(Ok(()), Err);
-        }
-        self.hold(&[(hold, bytes)])
+        // The comparison and the change are one transition under the holds' lock.
+        self.transition(None, None, |next| {
+            if next.get(&hold).copied().unwrap_or(0) < bytes {
+                next.insert(hold, bytes);
+            }
+        })
     }
 
     /// Ends `agent`'s ingest in one transition: its phase charges and discovery metadata
@@ -708,11 +719,9 @@ impl MemoryAdmission {
     /// finalize. Charges are then attributed to finalizing that agent's ledger until the
     /// next checkpoint. Call it as [`Self::checkpoint`] is called.
     pub fn commit(&self, agent: Agent, retained: u64) -> Result<(), CapacityError> {
-        self.transition(
-            Some(Phase::Finalize(agent)),
-            Some(0),
-            &[(Hold::Discovery(agent), 0), (Hold::Ledger(agent), retained)],
-        )
+        self.transition(Some(Phase::Finalize(agent)), Some(0), |next| {
+            set_holds(next, &[(Hold::Discovery(agent), 0), (Hold::Ledger(agent), retained)]);
+        })
     }
 
     /// The current modeled heap `E`.
@@ -761,20 +770,14 @@ impl MemoryAdmission {
         &self,
         phase: Option<Phase>,
         estimate: Option<u64>,
-        changes: &[(Hold, u64)],
+        edit: impl FnOnce(&mut BTreeMap<Hold, u64>),
     ) -> Result<(), CapacityError> {
         let mut holds = lock(&self.holds);
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
         let mut next_holds = holds.clone();
-        for (hold, bytes) in changes {
-            if *bytes == 0 {
-                next_holds.remove(hold);
-            } else {
-                next_holds.insert(*hold, *bytes);
-            }
-        }
+        edit(&mut next_holds);
         let (held_before, held_after) = (sum(&holds), sum(&next_holds));
         let unlimited = self.limit.is_unlimited();
         let moved = self.update(|current| {
@@ -830,6 +833,14 @@ impl MemoryAdmission {
         first
     }
 }
+
+/// The most worker slots [`MemoryAdmission::worker_slots`] gives unless an explicit worker
+/// count passes it: the eight workers the design charges for, whatever the default count.
+pub const SLOT_CEILING: usize = 8;
+
+// Admission treats the default worker count as no explicit count only while the default
+// never passes the slot ceiling; raising it would make slot counts depend on the machine.
+const _: () = assert!(crate::sources::parallel::MAX_DEFAULT_WORKERS.get() <= SLOT_CEILING);
 
 /// How long a thread waiting for the large-record permit sleeps before it checks the stop
 /// flag again, should it miss the signal a refusal sends.
@@ -935,6 +946,17 @@ fn memory_error(budget: &MemoryBudget, phase: Phase, estimate: Option<u64>) -> C
         estimate,
         budget: budget.bytes(),
         label: budget.label().to_owned(),
+    }
+}
+
+/// Sets each hold in `changes`; zero releases one.
+fn set_holds(holds: &mut BTreeMap<Hold, u64>, changes: &[(Hold, u64)]) {
+    for (hold, bytes) in changes {
+        if *bytes == 0 {
+            holds.remove(hold);
+        } else {
+            holds.insert(*hold, *bytes);
+        }
     }
 }
 
@@ -1233,6 +1255,26 @@ mod tests {
                 let under = MemoryAdmission::new(MemoryBudget::exact(budget - 1, "T − 1"), model);
                 assert!(!run_invocation(&under, workers, seed));
             }
+        }
+    }
+
+    #[test]
+    fn raising_a_hold_never_lowers_it_even_when_raises_race() {
+        for _ in 0..20 {
+            let admission = ledger(1_000_000);
+            std::thread::scope(|scope| {
+                for worker in 0..8_u64 {
+                    let admission = &admission;
+                    scope.spawn(move || {
+                        for step in 0..200 {
+                            let bytes = (step * 8 + worker) % 1_000 + 1;
+                            admission.raise_hold(Hold::Coordinating, bytes).unwrap();
+                        }
+                    });
+                }
+            });
+            // The largest raise is 1,000 bytes, and no smaller raise replaced it.
+            assert_eq!(admission.charged(), 1_000);
         }
     }
 
