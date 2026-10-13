@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
 use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
 use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
+use urollup_core::ledger::admission::MemoryAdmission;
 use urollup_core::ledger::capacity::{
     ObservationCapacity, RamBudget, physical_memory_bytes, resolve_capacity,
 };
@@ -28,13 +29,16 @@ use urollup_core::selection::{
     Agent, CurrentEnvironment, Scope, SelectionError, SelectionQuery, SessionIndex,
     derive_agent_thread_id,
 };
+use urollup_core::sources::decode::strings_at;
 use urollup_core::sources::parallel;
-use urollup_core::sources::reader::{self, ReadOptions};
+use urollup_core::sources::reader::{self, PeekLine, PeekLines, ReadOptions};
 use urollup_core::sources::roots::{self, DiscoveredSource, Discovery};
 
 const STYLE_HEADING: AnsiStyle = AnsiColor::Cyan.on_default().bold();
 const STYLE_ERROR: AnsiStyle = AnsiColor::Red.on_default().bold();
 const MAX_CATALOG_HEADER_BYTES: u64 = ReadOptions::DEFAULT_MAX_RECORD_BYTES as u64;
+/// The longest line a catalog or classification peek buffers: one record.
+const MAX_CATALOG_LINE: usize = ReadOptions::DEFAULT_MAX_RECORD_BYTES;
 /// The environment variable that sets how many threads decode sources.
 const JOBS_VARIABLE: &str = "UROLLUP_JOBS";
 /// The most workers `UROLLUP_JOBS` may request, so a mistyped value cannot exhaust the
@@ -388,6 +392,10 @@ impl Corpus {
             physical_memory_bytes,
         )?;
         stats.workers = Some(workers);
+        // The peeks that classify `--source` roots and catalog session families read on
+        // this thread, under admission as a decoding worker reads. Until process-wide
+        // admission is wired in, this ledger never refuses.
+        let admission = MemoryAdmission::unlimited();
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
             (Vec::new(), false)
@@ -404,7 +412,7 @@ impl Corpus {
             (selected.roots, missing_is_error)
         };
         for source in &args.sources {
-            for explicit in classify_explicit_source(source)? {
+            for explicit in classify_explicit_source(source, &admission)? {
                 match explicit {
                     ExplicitDialect::Claude(root) => claude_roots.push(root),
                     ExplicitDialect::Codex(root) => codex_roots.push(root),
@@ -414,7 +422,7 @@ impl Corpus {
         let mut claude_discovery = roots::discover(&claude_roots);
         let codex_roots = codex_rollout::rollout_roots(&codex_roots);
         let mut codex_discovery = roots::discover(&codex_roots);
-        narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query)?;
+        narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query, &admission)?;
         stats.phase("discovery", started);
 
         // Codex is the larger corpus. Index and drop its discovery tables before Claude
@@ -672,6 +680,7 @@ fn narrow_discoveries(
     claude: &mut Discovery,
     codex: &mut Discovery,
     query: &SelectionQuery,
+    admission: &MemoryAdmission,
 ) -> Result<bool, Failure> {
     let mut selectors: Vec<(Option<Agent>, &OsStr)> = Vec::new();
     if let Some(current) = &query.current {
@@ -687,12 +696,16 @@ fn narrow_discoveries(
     let needs_codex =
         selectors.iter().any(|(agent, _)| agent.is_none_or(|agent| agent == Agent::Codex));
     let claude_catalog: Vec<_> = if needs_claude {
-        claude.sources.iter().map(claude_catalog_source).collect::<Result<_, _>>()?
+        claude
+            .sources
+            .iter()
+            .map(|source| claude_catalog_source(source, admission))
+            .collect::<Result<_, _>>()?
     } else {
         Vec::new()
     };
     let codex_catalog: Vec<_> =
-        if needs_codex { codex_catalog_sources(codex)? } else { Vec::new() };
+        if needs_codex { codex_catalog_sources(codex, admission)? } else { Vec::new() };
     let mut selected_families = BTreeSet::new();
     for (agent, selector) in selectors {
         let matching: Vec<_> = claude_catalog
@@ -739,7 +752,10 @@ fn retain_catalog_families(
         .collect();
 }
 
-fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Failure> {
+fn claude_catalog_source(
+    source: &DiscoveredSource,
+    admission: &MemoryAdmission,
+) -> Result<CatalogSource, Failure> {
     let locator = PathBuf::from(&source.locator);
     let components: Vec<_> = locator.components().collect();
     let subagents =
@@ -760,7 +776,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
             // (design §3.4), so a copy under another session's directory joins that
             // session's family as well as its own directory's.
             let mut families = vec![family.clone()];
-            let session = match read_claude_named_session(source) {
+            let session = match read_claude_named_session(source, admission) {
                 NamedSession::Named(named) => {
                     if named != located {
                         families.push(family.with_file_name(&named));
@@ -814,6 +830,7 @@ fn claude_catalog_source(source: &DiscoveredSource) -> Result<CatalogSource, Fai
 }
 
 /// What a Claude subagent transcript's lines say about the session it belongs to.
+#[derive(Debug, Eq, PartialEq)]
 enum NamedSession {
     /// The first session a line names.
     Named(String),
@@ -827,37 +844,46 @@ enum NamedSession {
 /// rule ([`claude_project::line_session`]): the `sessionId` of the first complete line that
 /// names one, within one record's worth of bytes. A source no file of which can be read is
 /// left to its directory, as before this read existed; ingestion reports it.
-fn read_claude_named_session(source: &DiscoveredSource) -> NamedSession {
-    reader::peek(&source.files, |reader| {
-        let mut window = reader.take(MAX_CATALOG_HEADER_BYTES);
-        let mut line = Vec::new();
+fn read_claude_named_session(
+    source: &DiscoveredSource,
+    admission: &MemoryAdmission,
+) -> NamedSession {
+    reader::peek(&source.files, admission, |lines| {
+        lines.set_window(MAX_CATALOG_HEADER_BYTES);
         loop {
-            line.clear();
-            let read = window.read_until(b'\n', &mut line).ok()?;
-            if read == 0 || line.last() != Some(&b'\n') {
-                // The end of the file, or an unfinished last line, which is not a record
-                // yet, names nothing; the end of the window leaves the session unknown.
-                return Some(if window.limit() == 0 {
-                    NamedSession::Unknown
-                } else {
-                    NamedSession::None
-                });
-            }
-            if let Some(named) = claude_project::line_session(&line) {
-                return Some(NamedSession::Named(named));
+            match lines.next_line(MAX_CATALOG_LINE).ok()? {
+                PeekLine::Complete(line) => {
+                    if let Some(named) = claude_project::line_session(line) {
+                        return Some(NamedSession::Named(named));
+                    }
+                }
+                // No line within the window is longer than the window, so none is
+                // oversized; the end of the file, or an unfinished last line, which is not
+                // a record yet, names nothing, and the end of the window leaves the session
+                // unknown.
+                PeekLine::End | PeekLine::Pending(_) | PeekLine::Oversized => {
+                    return Some(if lines.window() == 0 {
+                        NamedSession::Unknown
+                    } else {
+                        NamedSession::None
+                    });
+                }
             }
         }
     })
     .unwrap_or(NamedSession::None)
 }
 
-fn codex_catalog_sources(discovery: &Discovery) -> Result<Vec<CatalogSource>, Failure> {
+fn codex_catalog_sources(
+    discovery: &Discovery,
+    admission: &MemoryAdmission,
+) -> Result<Vec<CatalogSource>, Failure> {
     let mut headers = Vec::with_capacity(discovery.sources.len());
     let mut adjacency: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for source in &discovery.sources {
         let thread = codex_thread_from_locator(&source.locator);
         adjacency.entry(thread.clone()).or_default();
-        let links = read_codex_session_links(source);
+        let links = read_codex_session_links(source, admission);
         for linked in links.iter().flatten() {
             adjacency.entry(thread.clone()).or_default().insert(linked.clone());
             adjacency.entry(linked.clone()).or_default().insert(thread.clone());
@@ -922,36 +948,38 @@ fn codex_thread_from_locator(locator: &str) -> String {
 /// read under the reader's rules, so a primary compressed since discovery is read from its
 /// new file. `None` when no file has a complete first record, as while a compressor is
 /// still writing it or when it is damaged: ingest then reads the source or reports it.
-fn read_codex_session_links(source: &DiscoveredSource) -> Option<BTreeSet<String>> {
-    reader::peek(&source.files, |reader| {
-        let mut line = Vec::new();
-        reader
-            .take(MAX_CATALOG_HEADER_BYTES.saturating_add(1))
-            .read_until(b'\n', &mut line)
-            .ok()?;
+fn read_codex_session_links(
+    source: &DiscoveredSource,
+    admission: &MemoryAdmission,
+) -> Option<BTreeSet<String>> {
+    reader::peek(&source.files, admission, |lines| {
+        lines.set_window(MAX_CATALOG_HEADER_BYTES.saturating_add(1));
         // Only a terminated line within the record limit is a complete first record.
-        if line.last() != Some(&b'\n') {
+        let PeekLine::Complete(line) = lines.next_line(MAX_CATALOG_LINE).ok()? else {
             return None;
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
-            return Some(BTreeSet::new());
         };
-        if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
-            return Some(BTreeSet::new());
-        }
-        Some(
-            [
-                "/payload/session_id",
-                "/payload/parent_thread_id",
-                "/payload/forked_from_id",
-                "/payload/source/subagent/thread_spawn/parent_thread_id",
-            ]
-            .into_iter()
-            .filter_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
-            .map(str::to_owned)
-            .collect(),
-        )
+        Some(session_links(line))
     })
+}
+
+/// The thread IDs a rollout header line links: its `payload`'s `session_id`,
+/// `parent_thread_id`, `forked_from_id` and `source.subagent.thread_spawn.parent_thread_id`
+/// strings when its `type` is `session_meta`, read without building a document. A line
+/// that is not a valid JSON document links nothing.
+fn session_links(line: &[u8]) -> BTreeSet<String> {
+    const PATHS: [&[&str]; 5] = [
+        &["type"],
+        &["payload", "session_id"],
+        &["payload", "parent_thread_id"],
+        &["payload", "forked_from_id"],
+        &["payload", "source", "subagent", "thread_spawn", "parent_thread_id"],
+    ];
+    let Ok(strings) = strings_at(line, &PATHS) else { return BTreeSet::new() };
+    let mut strings = strings.into_iter();
+    if strings.next().flatten().as_deref() != Some("session_meta") {
+        return BTreeSet::new();
+    }
+    strings.flatten().collect()
 }
 
 enum ExplicitDialect {
@@ -959,7 +987,10 @@ enum ExplicitDialect {
     Codex(PathBuf),
 }
 
-fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failure> {
+fn classify_explicit_source(
+    source: &Path,
+    admission: &MemoryAdmission,
+) -> Result<Vec<ExplicitDialect>, Failure> {
     let mut standard_roots = Vec::new();
     if source.join("projects").is_dir() {
         standard_roots.push(ExplicitDialect::Claude(source.join("projects")));
@@ -987,8 +1018,8 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
         // A source that cannot be read, or that holds only records no dialect claims, such
         // as a lone title record, says nothing about the root; the other files decide it,
         // and ingest reports an unreadable one.
-        let Some(candidate) = reader::peek(&discovered.files, |reader| {
-            classify_records(reader, MAX_CATALOG_HEADER_BYTES)
+        let Some(candidate) = reader::peek(&discovered.files, admission, |lines| {
+            classify_records(lines, MAX_CATALOG_HEADER_BYTES)
         }) else {
             continue;
         };
@@ -1013,20 +1044,21 @@ fn classify_explicit_source(source: &Path) -> Result<Vec<ExplicitDialect>, Failu
 /// Classifies decoded records by the first recognized record type. `None` when none of
 /// the first 100 records belongs to a supported dialect, or when the records cannot be
 /// read, a record within `max_line_bytes` included, so such a file decides nothing.
-fn classify_records(reader: &mut dyn BufRead, max_line_bytes: u64) -> Option<Agent> {
-    let mut line = Vec::new();
+fn classify_records(lines: &mut PeekLines<'_>, max_line_bytes: u64) -> Option<Agent> {
+    let limit = usize::try_from(max_line_bytes).unwrap_or(usize::MAX);
     for _ in 0..100 {
-        line.clear();
-        let read =
-            reader.take(max_line_bytes.saturating_add(1)).read_until(b'\n', &mut line).ok()?;
-        if read == 0 {
-            break;
-        }
-        if u64::try_from(line.len()).unwrap_or(u64::MAX) > max_line_bytes {
-            return None;
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else { continue };
-        let kind = value.get("type").and_then(serde_json::Value::as_str);
+        // Each line is read within `max_line_bytes` and its terminator, and counts against
+        // the limit with its terminator, so a line of exactly `max_line_bytes` is too long.
+        lines.set_window(max_line_bytes.saturating_add(1));
+        let line = match lines.next_line(limit).ok()? {
+            PeekLine::End => break,
+            PeekLine::Complete(line) if line.len() < limit => line,
+            PeekLine::Pending(Some(line)) => line,
+            PeekLine::Complete(_) | PeekLine::Oversized | PeekLine::Pending(None) => return None,
+        };
+        let Ok(kind) = strings_at(line, &[&["type"]]) else { continue };
+        let kind = kind.into_iter().next().flatten();
+        let kind = kind.as_deref();
         if matches!(
             kind,
             Some(
@@ -1335,17 +1367,25 @@ mod tests {
     };
     use clap::Parser;
     use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
+    use urollup_core::ledger::admission::MemoryAdmission;
     use urollup_core::ledger::reconcile::ReconcileError;
     use urollup_core::selection::{CurrentSession, Scope, SelectionQuery, SessionIndex};
     use urollup_core::sources::manifest::Representation;
+    use urollup_core::sources::reader::LogicalSource;
     use urollup_core::sources::{reader, roots};
+
+    /// An admission that never refuses, as the CLI passes until process-wide admission is
+    /// wired in.
+    fn unlimited() -> MemoryAdmission {
+        MemoryAdmission::unlimited()
+    }
 
     /// Classifies one file's records, reading lines of at most `max_line_bytes`.
     fn classify_file(path: &std::path::Path, max_line_bytes: u64) -> Option<Agent> {
         let representation = Representation::of_path(path).expect("a source file name");
-        let file = fs::File::open(path).expect("the file opens");
-        let mut decoded = reader::decode(file, representation).expect("the decoder starts");
-        classify_records(&mut *decoded, max_line_bytes)
+        let mut files = LogicalSource::default();
+        files.insert(path.to_owned(), representation);
+        reader::peek(&files, &unlimited(), |lines| classify_records(lines, max_line_bytes))
     }
 
     struct Outcome {
@@ -1690,16 +1730,19 @@ mod tests {
     fn explicit_sources_detect_fixture_roots_and_compressed_artifacts() {
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../urollup-core/tests/fixtures");
-        let claude =
-            classify_explicit_source(&fixtures.join("claude-project/nested-null-tool-input"))
-                .expect("Claude fixture is detected");
+        let claude = classify_explicit_source(
+            &fixtures.join("claude-project/nested-null-tool-input"),
+            &unlimited(),
+        )
+        .expect("Claude fixture is detected");
         assert!(matches!(claude.as_slice(), [ExplicitDialect::Claude(_)]));
 
         let compressed = fixtures.join(
             "codex-rollout/zst-twin/sessions/2026/09/08/\
              rollout-2026-09-08T06-00-00-019f0000-0000-7000-8000-001000000001.jsonl.zst",
         );
-        let codex = classify_explicit_source(&compressed).expect("Codex artifact is detected");
+        let codex = classify_explicit_source(&compressed, &unlimited())
+            .expect("Codex artifact is detected");
         assert!(matches!(codex.as_slice(), [ExplicitDialect::Codex(path)] if path == &compressed));
     }
 
@@ -1742,7 +1785,7 @@ mod tests {
         fs::write(project.join("cccc.jsonl"), "{\"type\":\"user\",\"sessionId\":\"cccc\"}\n")
             .unwrap();
 
-        let classified = classify_explicit_source(&project).unwrap();
+        let classified = classify_explicit_source(&project, &unlimited()).unwrap();
         assert!(
             matches!(classified.as_slice(), [ExplicitDialect::Claude(path)] if path == &project)
         );
@@ -1794,8 +1837,13 @@ mod tests {
             ..SelectionQuery::default()
         };
         assert!(
-            narrow_discoveries(&mut analytical_claude, &mut analytical_codex, &analytical_query)
-                .unwrap()
+            narrow_discoveries(
+                &mut analytical_claude,
+                &mut analytical_codex,
+                &analytical_query,
+                &unlimited()
+            )
+            .unwrap()
         );
         assert_eq!(analytical_claude.sources.len(), 2);
 
@@ -1810,7 +1858,7 @@ mod tests {
             ..SelectionQuery::default()
         };
 
-        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap());
         assert_eq!(claude.sources.len(), 2);
 
         let ingested = claude_project::ingest_discovery(claude, false).unwrap();
@@ -1836,6 +1884,7 @@ mod tests {
         use urollup_core::sources::roots;
 
         use super::super::{Agent, derive_agent_thread_id, narrow_discoveries};
+        use super::unlimited;
 
         pub(super) const ORIGINAL: &str = "00000000-0000-4000-8000-001800000001";
         pub(super) const RESUMED: &str = "00000000-0000-4000-8000-001800000002";
@@ -1901,7 +1950,7 @@ mod tests {
             let mut claude = discovery;
             let mut codex = roots::Discovery::default();
             assert!(
-                narrow_discoveries(&mut claude, &mut codex, &query).unwrap(),
+                narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap(),
                 "{selector} narrows discovery"
             );
             let mut files: Vec<_> = claude
@@ -2071,7 +2120,7 @@ mod tests {
                 scope: Some(Scope::Descendants),
                 ..SelectionQuery::default()
             };
-            assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+            assert!(narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap());
             assert_eq!(codex.sources.len(), 2);
             let ingested = codex_rollout::ingest_discovery(codex, true).unwrap();
             let mut index = SessionIndex::default();
@@ -2095,7 +2144,7 @@ mod tests {
             ..SelectionQuery::default()
         };
 
-        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap());
         assert_eq!(codex.sources.len(), 1);
         codex_rollout::ingest_discovery(codex, true).unwrap();
     }
@@ -2152,7 +2201,7 @@ mod tests {
             ..SelectionQuery::default()
         };
 
-        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap());
         assert_eq!(codex.sources.len(), 3, "spawn and fork links form one support family");
         let ingested = codex_rollout::ingest_discovery(codex, true).unwrap();
         let mut index = SessionIndex::default();
@@ -2162,6 +2211,82 @@ mod tests {
             2,
             "fork support is ingested but fork is not a descendant"
         );
+    }
+
+    /// `contents` as a zstd frame that declares a 16 MiB window, past a worker slot's 8 MiB,
+    /// so it decodes under the large-record permit.
+    fn wide_window(contents: &[u8]) -> Vec<u8> {
+        assert!(contents.len() > 1024, "a frame larger than its window is multi-segment");
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        encoder.window_log(10).unwrap();
+        encoder.include_contentsize(true).unwrap();
+        encoder.set_pledged_src_size(Some(contents.len() as u64)).unwrap();
+        encoder.write_all(contents).unwrap();
+        let mut frame = encoder.finish().unwrap();
+        // The window descriptor follows the magic number and the frame header descriptor.
+        frame[5] = 14 << 3;
+        frame
+    }
+
+    #[test]
+    fn wide_window_sources_peek_as_their_plain_twins() {
+        let root = tempfile::tempdir().unwrap();
+        let header = serde_json::json!({"type": "session_meta", "payload": {
+            "id": "t", "session_id": "s", "parent_thread_id": "p", "forked_from_id": "f",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": "q"}}}}});
+        let mut codex = format!("{header}\n");
+        let mut claude = String::new();
+        for i in 0..5_000 {
+            codex.push_str(
+                &serde_json::json!({"type": "response_item", "payload": {"i": i}}).to_string(),
+            );
+            codex.push('\n');
+            let session = if i == 0 { serde_json::Value::Null } else { "named".into() };
+            let record =
+                serde_json::json!({"type": "user", "uuid": format!("u{i}"), "sessionId": session});
+            claude.push_str(&record.to_string());
+            claude.push('\n');
+        }
+        let source = |name: &str, representation: Representation| {
+            let path = root.path().join(format!("{name}{}", representation.suffix()));
+            let mut files = LogicalSource::default();
+            files.insert(path, representation);
+            roots::DiscoveredSource {
+                root: root.path().to_owned(),
+                locator: name.to_owned(),
+                files,
+            }
+        };
+        let admission = unlimited();
+        for (name, text) in [("codex", codex), ("claude", claude)] {
+            let plain = source(name, Representation::Plain);
+            let wide = source(name, Representation::Zstd);
+            fs::write(plain.files.primary().unwrap().0, &text).unwrap();
+            fs::write(wide.files.primary().unwrap().0, wide_window(text.as_bytes())).unwrap();
+            let (plain_path, wide_path) =
+                (plain.files.primary().unwrap().0, wide.files.primary().unwrap().0);
+            assert_eq!(
+                super::read_codex_session_links(&wide, &admission),
+                super::read_codex_session_links(&plain, &admission),
+                "{name}"
+            );
+            assert_eq!(
+                super::read_claude_named_session(&wide, &admission),
+                super::read_claude_named_session(&plain, &admission),
+                "{name}"
+            );
+            assert_eq!(classify_file(wide_path, 1024), classify_file(plain_path, 1024), "{name}");
+        }
+        let codex = source("codex", Representation::Zstd);
+        assert_eq!(
+            super::read_codex_session_links(&codex, &admission),
+            Some(["f", "p", "q", "s"].map(str::to_owned).into_iter().collect())
+        );
+        assert_eq!(
+            super::read_claude_named_session(&source("claude", Representation::Zstd), &admission),
+            super::NamedSession::Named("named".to_owned())
+        );
+        assert_eq!(classify_file(codex.files.primary().unwrap().0, 1024), Some(Agent::Codex));
     }
 
     #[test]
@@ -2213,7 +2338,7 @@ mod tests {
             scope: Some(Scope::Descendants),
             ..SelectionQuery::default()
         };
-        assert!(narrow_discoveries(&mut claude, &mut codex, &query).unwrap());
+        assert!(narrow_discoveries(&mut claude, &mut codex, &query, &unlimited()).unwrap());
         let kept: Vec<String> =
             codex.sources.iter().map(|source| codex_thread_from_locator(&source.locator)).collect();
         assert_eq!(

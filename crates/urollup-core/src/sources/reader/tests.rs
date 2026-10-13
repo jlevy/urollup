@@ -6,9 +6,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use super::{
-    LogicalSource, RawRecord, ReadOptions, RecordDisposition, ScanHooks, SourceReadError,
-    SourceSpec, peek, read_source, read_source_with_hooks,
+    LineBuffer, LogicalSource, PeekLine, RawRecord, ReadOptions, RecordDisposition, ScanHooks,
+    SourceReadError, SourceSpec, peek, read_source, read_source_with_hooks,
 };
+use crate::ledger::admission::MemoryAdmission;
 use crate::sources::evidence::EvidenceRef;
 use crate::sources::manifest::{
     CoverageFailure, ManifestEntry, PendingTail, Representation, SourceChange,
@@ -24,6 +25,12 @@ const SPEC: SourceSpec<'static> = SourceSpec {
 fn options() -> ReadOptions {
     // No sleeping in tests: the hooks make the filesystem race deterministic.
     ReadOptions { absent_retry_delay: Duration::ZERO, ..ReadOptions::new() }
+}
+
+/// An admission that never refuses, as the CLI passes until process-wide admission is
+/// wired in.
+fn unlimited() -> MemoryAdmission {
+    MemoryAdmission::unlimited()
 }
 
 fn write(path: &Path, contents: &[u8]) {
@@ -70,6 +77,7 @@ fn scan_with(
         &SPEC,
         files,
         options,
+        &unlimited(),
         |record: &RawRecord<'_>| {
             records.push((*record.evidence, String::from_utf8_lossy(record.bytes).into_owned()));
             if serde_json::from_slice::<serde_json::Value>(record.bytes).is_ok() {
@@ -298,6 +306,42 @@ fn a_plain_file_and_its_compressed_twin_are_one_source() {
             locator: SPEC.locator.to_owned(),
         }]
     );
+}
+
+/// `contents` as a zstd frame that declares a 16 MiB window, past the worker slot's 8 MiB.
+fn wide_window(contents: &[u8]) -> Vec<u8> {
+    assert!(contents.len() > 1024, "a frame larger than its window is multi-segment");
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    encoder.window_log(10).unwrap();
+    encoder.include_contentsize(true).unwrap();
+    encoder.set_pledged_src_size(Some(contents.len() as u64)).unwrap();
+    encoder.write_all(contents).unwrap();
+    let mut frame = encoder.finish().unwrap();
+    // The window descriptor follows the magic number and the frame header descriptor.
+    frame[5] = 14 << 3;
+    frame
+}
+
+#[test]
+fn a_wide_window_twin_reads_and_verifies_like_its_plain_twin() {
+    let root = TempDir::new().unwrap();
+    let contents: Vec<u8> =
+        (0..200).flat_map(|i| format!("{{\"i\":{i}}}\n").into_bytes()).collect();
+    let plain_path = root.path().join("session.jsonl");
+    let wide_path = root.path().join("session.jsonl.zst");
+    write(&plain_path, &contents);
+    write(&wide_path, &wide_window(&contents));
+
+    let (from_plain, plain_records) = scan(&plain(&plain_path));
+    let (from_wide, wide_records) = scan(&compressed(&wide_path));
+    assert_eq!(wide_records, plain_records);
+    assert_eq!(from_wide.source, from_plain.source);
+    assert!(from_wide.is_complete(), "{:?}", from_wide.failures);
+    // Each file's first record is re-read through the frame loop to verify the other.
+    let both = LogicalSource { plain: Some(plain_path), zstd: Some(wide_path.clone()), gzip: None };
+    let (entry, _) = scan(&both);
+    assert_eq!(twin_paths(&entry), vec![wide_path]);
+    assert!(entry.failures.is_empty(), "{:?}", entry.failures);
 }
 
 fn twin_paths(entry: &ManifestEntry) -> Vec<PathBuf> {
@@ -923,8 +967,9 @@ fn unreadable_and_unnamed_sources_are_errors() {
         // A process that bypasses mode bits, such as root, opens the file anyway, so the
         // error cannot occur there; decide that up front rather than from the result.
         let bypasses_modes = fs::File::open(&closed).is_ok();
-        let result =
-            read_source(&SPEC, &plain(&closed), &options(), |_| RecordDisposition::Skipped);
+        let result = read_source(&SPEC, &plain(&closed), &options(), &unlimited(), |_| {
+            RecordDisposition::Skipped
+        });
         fs::set_permissions(&closed, fs::Permissions::from_mode(0o644)).unwrap();
         if bypasses_modes {
             eprintln!("skipped the open error: this process can open a mode-000 file");
@@ -937,15 +982,17 @@ fn unreadable_and_unnamed_sources_are_errors() {
 
     let empty = LogicalSource::default();
     assert!(matches!(
-        read_source(&SPEC, &empty, &options(), |_| RecordDisposition::Skipped),
+        read_source(&SPEC, &empty, &options(), &unlimited(), |_| RecordDisposition::Skipped),
         Err(SourceReadError::NoFile)
     ));
 
     let path = root.path().join("session.jsonl");
     write(&path, THREE_RECORDS);
     let bad_spec = SourceSpec { environment: "Local Host", ..SPEC };
-    let bad = read_source(&bad_spec, &plain(&path), &options(), |_| RecordDisposition::Skipped)
-        .unwrap_err();
+    let bad = read_source(&bad_spec, &plain(&path), &options(), &unlimited(), |_| {
+        RecordDisposition::Skipped
+    })
+    .unwrap_err();
     assert!(matches!(bad, SourceReadError::Key { .. }));
 }
 
@@ -1039,7 +1086,7 @@ fn a_stopped_visitor_aborts_without_visiting_the_tail_or_returning_a_snapshot() 
     write(&compressed_path, &compress(bytes));
     for files in [plain(&plain_path), compressed(&compressed_path)] {
         let mut visited = 0;
-        let result = read_source(&SPEC, &files, &options(), |_| {
+        let result = read_source(&SPEC, &files, &options(), &unlimited(), |_| {
             visited += 1;
             if visited == 2 { RecordDisposition::Stop } else { RecordDisposition::Decoded }
         });
@@ -1050,11 +1097,103 @@ fn a_stopped_visitor_aborts_without_visiting_the_tail_or_returning_a_snapshot() 
 
 #[test]
 fn spare_capacity_after_a_long_line_is_released() {
-    let mut buffer = Vec::with_capacity(2 * 1024 * 1024);
-    buffer.resize(8, 1);
-    super::shrink_line_buffer(&mut buffer);
-    assert!(buffer.capacity() <= ReadOptions::RETAINED_LINE_CAPACITY);
-    assert_eq!(buffer, [1; 8]);
+    let admission = unlimited();
+    let mut buffer = LineBuffer::new(&admission);
+    assert_eq!(buffer.capacity(), ReadOptions::RETAINED_LINE_CAPACITY);
+    let line = vec![b'x'; 2 * 1024 * 1024];
+    buffer.extend(&line, usize::MAX).unwrap();
+    assert_eq!(buffer.capacity(), 2 * 1024 * 1024);
+    buffer.reset();
+    assert_eq!(buffer.capacity(), ReadOptions::RETAINED_LINE_CAPACITY);
+    assert!(buffer.bytes().is_empty());
+}
+
+/// Appends `total` bytes to a fresh line buffer in read-buffer chunks, returning every
+/// capacity it took, whether it holds the permit, and the permit's charge.
+fn line_growth(total: usize, limit: usize) -> (Vec<usize>, bool, u64) {
+    let admission = unlimited();
+    let mut buffer = LineBuffer::new(&admission);
+    let chunk = vec![b'a'; 128 * 1024];
+    let mut capacities = vec![buffer.capacity()];
+    let mut written = 0;
+    while written < total {
+        let piece = &chunk[..(total - written).min(chunk.len())];
+        buffer.extend(piece, limit).unwrap();
+        written += piece.len();
+        if capacities.last() != Some(&buffer.capacity()) {
+            capacities.push(buffer.capacity());
+        }
+    }
+    let charge = admission.charged_by(crate::ledger::admission::Component::Slots);
+    (capacities, buffer.holds_permit(), charge)
+}
+
+#[test]
+fn a_line_buffer_grows_only_by_doubling_within_the_record_limit() {
+    const MIB: usize = 1024 * 1024;
+    // 256 KiB, then doubling: a 3 MiB line ends at 4 MiB, inside the slot.
+    let (capacities, permit, charge) = line_growth(3 * MIB, 64 * MIB);
+    assert_eq!(capacities, [MIB / 4, MIB / 2, MIB, 2 * MIB, 4 * MIB]);
+    assert!(!permit && charge == 0, "a 4 MiB buffer stays within the worker slot");
+    // Past 4 MiB the buffer takes the large-record permit for 4 × C′ before it grows.
+    let (capacities, permit, charge) = line_growth(5 * MIB, 64 * MIB);
+    assert_eq!(capacities.last(), Some(&(8 * MIB)));
+    assert!(permit);
+    assert_eq!(charge, 32 * 1024 * 1024);
+    // Each further doubling raises the share to the new need.
+    let (_, _, charge) = line_growth(9 * MIB, 64 * MIB);
+    assert_eq!(charge, 64 * 1024 * 1024);
+    // The last doubling stops at the record limit, which need not be a power of two.
+    let (capacities, permit, _) = line_growth(3 * MIB, 3 * MIB);
+    assert_eq!(capacities, [MIB / 4, MIB / 2, MIB, 2 * MIB, 3 * MIB]);
+    assert!(!permit);
+}
+
+#[test]
+fn a_long_line_charges_its_need_and_releases_the_permit_once_the_visitor_returns() {
+    const MIB: u64 = 1024 * 1024;
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("session.jsonl");
+    let long = format!("{{\"pad\":\"{}\"}}", "x".repeat(5 * 1024 * 1024));
+    write(&path, format!("{{\"n\":1}}\n{long}\n{{\"n\":2}}\n").as_bytes());
+    let admission = unlimited();
+    let me = std::thread::current().id();
+    let mut held_during = Vec::new();
+    let entry = read_source(&SPEC, &plain(&path), &options(), &admission, |record| {
+        held_during.push((record.bytes.len(), admission.permit_holder() == Some(me)));
+        RecordDisposition::Decoded
+    })
+    .unwrap();
+    assert_eq!(entry.counters.decoded, 3);
+    // The long line's buffer of 8 MiB needs 4 × 8 MiB while it is visited, and only then.
+    assert_eq!(held_during.iter().map(|(_, held)| *held).collect::<Vec<_>>(), [false, true, false]);
+    assert_eq!(admission.charged_by(crate::ledger::admission::Component::Slots), 32 * MIB);
+    assert_eq!(admission.permit_holder(), None);
+}
+
+#[test]
+fn a_read_waiting_for_the_permit_stops_when_admission_refuses() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("session.jsonl");
+    let long = format!("{{\"pad\":\"{}\"}}", "x".repeat(5 * 1024 * 1024));
+    write(&path, format!("{long}\n").as_bytes());
+    let admission = crate::ledger::admission::MemoryAdmission::new(
+        crate::ledger::capacity::MemoryBudget::exact(u64::MAX / 4, "test"),
+        crate::ledger::admission::ProcessModel::DEFAULT,
+    );
+    // Another thread holds the permit, so the scan waits until a refusal stops it.
+    let held = admission.large_record(1).unwrap();
+    std::thread::scope(|scope| {
+        let scan = scope.spawn(|| {
+            read_source(&SPEC, &plain(&path), &options(), &admission, |_| {
+                RecordDisposition::Decoded
+            })
+        });
+        std::thread::sleep(crate::ledger::admission::PERMIT_POLL * 2);
+        assert!(!admission.charge(crate::ledger::admission::Component::Records, u64::MAX / 2));
+        assert!(matches!(scan.join().unwrap(), Err(SourceReadError::Stopped)));
+    });
+    drop(held);
 }
 
 #[test]
@@ -1078,13 +1217,52 @@ fn a_peek_reads_the_first_file_of_the_source_that_the_look_accepts() {
     write(&plain_path, b"{\"i\":1");
     write(&gzip_path, &gzip(THREE_RECORDS));
     let files = LogicalSource { plain: Some(plain_path), zstd: None, gzip: Some(gzip_path) };
-    let first_line = |reader: &mut dyn std::io::BufRead| {
-        let mut line = Vec::new();
-        reader.read_until(b'\n', &mut line).ok()?;
-        line.ends_with(b"\n").then_some(line)
+    let first_line = |lines: &mut super::PeekLines<'_>| match lines.next_line(1024).ok()? {
+        PeekLine::Complete(line) => Some(line.to_vec()),
+        PeekLine::End | PeekLine::Oversized | PeekLine::Pending(_) => None,
     };
 
-    assert_eq!(peek(&files, first_line), Some(b"{\"i\":1}\n".to_vec()));
-    assert_eq!(peek(&files, |_| None::<()>), None, "a look that accepts nothing finds nothing");
-    assert_eq!(peek(&LogicalSource::default(), first_line), None);
+    let admission = unlimited();
+    assert_eq!(peek(&files, &admission, first_line), Some(b"{\"i\":1}".to_vec()));
+    assert_eq!(
+        peek(&files, &admission, |_| None::<()>),
+        None,
+        "a look that accepts nothing finds nothing"
+    );
+    assert_eq!(peek(&LogicalSource::default(), &admission, first_line), None);
+}
+
+#[test]
+fn peeked_lines_follow_the_scan_rule_within_a_window() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("session.jsonl");
+    write(&path, b"{\"a\":1}\n\n0123456789\n{\"b\":2}\ntail");
+    let admission = unlimited();
+    let lines = peek(&plain(&path), &admission, |lines| {
+        let mut seen = Vec::new();
+        for limit in [100, 100, 5, 100] {
+            seen.push(format!("{:?}", lines.next_line(limit).ok()?));
+        }
+        // The window counts decoded bytes from here: 2 of the 4 the unfinished tail holds.
+        lines.set_window(2);
+        let line = format!("{:?}", lines.next_line(100).ok()?);
+        seen.push(format!("{line} {}", lines.window()));
+        lines.set_window(u64::MAX);
+        seen.push(format!("{:?}", lines.next_line(100).ok()?));
+        seen.push(format!("{:?}", lines.next_line(100).ok()?));
+        Some(seen)
+    })
+    .unwrap();
+    assert_eq!(
+        lines,
+        [
+            "Complete([123, 34, 97, 34, 58, 49, 125])",
+            "Complete([])",
+            "Oversized",
+            "Complete([123, 34, 98, 34, 58, 50, 125])",
+            "Pending(Some([116, 97])) 0",
+            "Pending(Some([105, 108]))",
+            "End",
+        ]
+    );
 }

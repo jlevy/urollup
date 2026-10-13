@@ -106,6 +106,168 @@ impl<'de> Visitor<'de> for Skip {
     }
 }
 
+/// The most paths [`strings_at`] reads at once.
+pub const MAX_PATHS: usize = 64;
+
+/// The strings at `paths` in one record's bytes, read without building a document.
+///
+/// It is exact with respect to parsing a `serde_json::Value` and asking each path's
+/// [`text`]: it fails exactly when that parse would, reading every value through
+/// `deserialize_any` as [`validate_record`] does, and a path's result is `None` when any
+/// step is missing or not an object, or the value is not a string. A key that repeats
+/// takes its last value, so a repeated object replaces every string read from the earlier
+/// one. Paths name object keys only, and no path may be a prefix of another.
+///
+/// # Panics
+///
+/// In debug builds, when `paths` holds more than [`MAX_PATHS`] paths, an empty path, or a
+/// path that is a prefix of another.
+pub fn strings_at(bytes: &[u8], paths: &[&[&str]]) -> Result<Vec<Option<String>>, MalformedRecord> {
+    debug_assert!(paths.len() <= MAX_PATHS && paths.iter().all(|path| !path.is_empty()));
+    debug_assert!(paths.iter().enumerate().all(|(index, path)| {
+        paths.iter().enumerate().all(|(other, longer)| index == other || !longer.starts_with(path))
+    }));
+    let invalid = |error: serde_json::Error| MalformedRecord { message: error.to_string() };
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let shift = u32::try_from(MAX_PATHS.saturating_sub(paths.len())).unwrap_or(u32::MAX);
+    let all = u64::MAX.checked_shr(shift).unwrap_or(0);
+    let found = PathStrings { paths, selected: all, depth: 0 }
+        .deserialize(&mut deserializer)
+        .map_err(invalid)?;
+    deserializer.end().map_err(invalid)?;
+    Ok(found)
+}
+
+/// Reads the strings at the `selected` paths, below their first `depth` keys, from one
+/// value; see [`strings_at`]. Its result holds an entry per path, `None` for the paths it
+/// does not select.
+#[derive(Clone, Copy)]
+struct PathStrings<'p> {
+    paths: &'p [&'p [&'p str]],
+    /// A bit per path index.
+    selected: u64,
+    depth: usize,
+}
+
+impl PathStrings<'_> {
+    /// Whether every selected path ends at this depth, so the value is the string itself.
+    fn at_leaf(&self) -> bool {
+        selected(self.selected, self.paths.len())
+            .all(|index| self.paths.get(index).is_some_and(|path| path.len() == self.depth))
+    }
+
+    fn none(&self) -> Vec<Option<String>> {
+        vec![None; self.paths.len()]
+    }
+}
+
+/// The path indexes set in `mask`.
+fn selected(mask: u64, paths: usize) -> impl Iterator<Item = usize> {
+    (0..paths.min(MAX_PATHS)).filter(move |index| mask & (1 << index) != 0)
+}
+
+impl<'de> DeserializeSeed<'de> for PathStrings<'_> {
+    type Value = Vec<Option<String>>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PathStrings<'_> {
+    type Value = Vec<Option<String>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(self.none())
+    }
+
+    fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(self.none())
+    }
+
+    fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(self.none())
+    }
+
+    fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(self.none())
+    }
+
+    fn visit_str<E: Error>(self, text: &str) -> Result<Self::Value, E> {
+        let mut found = self.none();
+        if self.at_leaf() {
+            for index in selected(self.selected, self.paths.len()) {
+                if let Some(slot) = found.get_mut(index) {
+                    *slot = Some(text.to_owned());
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok(self.none())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        Skip.visit_seq(seq)?;
+        Ok(self.none())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut found = self.none();
+        if self.at_leaf() {
+            Skip.visit_map(map)?;
+            return Ok(found);
+        }
+        while let Some(under) = map.next_key_seed(KeyMatch(self))? {
+            if under == 0 {
+                map.next_value_seed(Skip)?;
+                continue;
+            }
+            let child = PathStrings { selected: under, depth: self.depth + 1, ..self };
+            let values = map.next_value_seed(child)?;
+            // A repeated key replaces what the earlier value gave every path below it.
+            for index in selected(under, self.paths.len()) {
+                if let (Some(slot), Some(value)) = (found.get_mut(index), values.get(index)) {
+                    slot.clone_from(value);
+                }
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// Reads an object key and gives the selected paths whose next step it is.
+struct KeyMatch<'p>(PathStrings<'p>);
+
+impl<'de> DeserializeSeed<'de> for KeyMatch<'_> {
+    type Value = u64;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<u64, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for KeyMatch<'_> {
+    type Value = u64;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: Error>(self, key: &str) -> Result<u64, E> {
+        let PathStrings { paths, selected: mask, depth } = self.0;
+        Ok(selected(mask, paths.len())
+            .filter(|index| paths.get(*index).and_then(|path| path.get(depth)) == Some(&key))
+            .fold(0, |under, index| under | (1 << index)))
+    }
+}
+
 /// The value at `path`, or `None` when any step is missing, null or not an object.
 pub fn field<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = value;
@@ -201,8 +363,11 @@ where
 mod tests {
     use serde::Deserialize;
 
+    use proptest::prelude::*;
+
     use super::{
-        field, null_as_default, parse_record, parse_timestamp, text, unsigned, validate_record,
+        field, null_as_default, parse_record, parse_timestamp, strings_at, text, unsigned,
+        validate_record,
     };
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -306,5 +471,149 @@ mod tests {
         assert!(validate_record(br#"{"content":"\ud800"}"#).is_err());
         assert!(validate_record(br#"{"size":1e400}"#).is_err());
         assert!(validate_record(deep.as_bytes()).is_err());
+    }
+
+    /// The paths a Codex catalog peek reads.
+    const LINK_PATHS: [&[&str]; 5] = [
+        &["type"],
+        &["payload", "session_id"],
+        &["payload", "parent_thread_id"],
+        &["payload", "forked_from_id"],
+        &["payload", "source", "subagent", "thread_spawn", "parent_thread_id"],
+    ];
+
+    /// Asserts that [`strings_at`] reads `bytes` as a parsed document and its paths do.
+    fn assert_strings_match_document(bytes: &[u8]) {
+        let read = strings_at(bytes, &LINK_PATHS);
+        match parse_record(bytes) {
+            Err(_) => assert!(read.is_err(), "{}", String::from_utf8_lossy(bytes)),
+            Ok(document) => {
+                let expected: Vec<Option<String>> = LINK_PATHS
+                    .iter()
+                    .map(|path| text(&document, path).map(str::to_owned))
+                    .collect();
+                assert_eq!(read.unwrap(), expected, "{}", String::from_utf8_lossy(bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn strings_are_read_as_a_document_reads_them() {
+        for line in [
+            r#"{"type":"session_meta","payload":{"session_id":"s","parent_thread_id":"p"}}"#,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"q"}}}}}"#,
+            // A repeated key takes its last value; a repeated object replaces the earlier.
+            r#"{"type":"turn_context","type":"session_meta","payload":{"session_id":"a"},"payload":{"forked_from_id":"f"}}"#,
+            r#"{"payload":{"session_id":"a","session_id":7},"type":"session_meta"}"#,
+            r#"{"payload":{"source":"cli","source":{"subagent":"review"}}}"#,
+            r#"{"ty\u0070e":"session_meta","payload":{"session_id":"\u0073"}}"#,
+            r#"["type","session_meta"]"#,
+            r#""session_meta""#,
+            r#"{"type":null,"payload":[{"session_id":"s"}]}"#,
+            r#"{"type":"session_meta","payload":{"session_id":"\ud800"}}"#,
+            r#"{"type":"session_meta","x":1e400}"#,
+            r#"{"type":"session_meta"} trailing"#,
+            r#"{"type":"session_meta""#,
+        ] {
+            assert_strings_match_document(line.as_bytes());
+        }
+        let deep = format!("{{\"payload\":{}{}}}", "[".repeat(200), "]".repeat(200));
+        assert_strings_match_document(deep.as_bytes());
+        assert_eq!(strings_at(b"{\"a\":\"b\"}", &[]).unwrap(), Vec::<Option<String>>::new());
+    }
+
+    fn json_object(
+        entries: BoxedStrategy<(&'static str, String)>,
+        size: std::ops::Range<usize>,
+    ) -> BoxedStrategy<String> {
+        prop::collection::vec(entries, size)
+            .prop_map(|entries| {
+                let fields: Vec<String> =
+                    entries.into_iter().map(|(key, value)| format!("\"{key}\":{value}")).collect();
+                format!("{{{}}}", fields.join(","))
+            })
+            .boxed()
+    }
+
+    /// Any value a field might hold, mostly valid, sometimes one a document rejects.
+    fn json_leaf() -> BoxedStrategy<String> {
+        prop_oneof![
+            8 => prop_oneof![
+                Just("null"),
+                Just("true"),
+                Just("\"session_meta\""),
+                Just("\"s\\u0065ssion_meta\""),
+                Just("\"thread\""),
+                Just("2.5"),
+                Just("[]"),
+                Just("[\"session_meta\"]"),
+                Just("{}"),
+            ]
+            .prop_map(str::to_owned),
+            1 => prop_oneof![Just("\"\\ud800\""), Just("1e400"), Just("01")].prop_map(str::to_owned),
+        ]
+        .boxed()
+    }
+
+    fn json_line() -> BoxedStrategy<String> {
+        let spawn = json_object(
+            prop_oneof![
+                3 => json_leaf().prop_map(|value| ("parent_thread_id", value)),
+                1 => json_leaf().prop_map(|value| ("depth", value)),
+            ]
+            .boxed(),
+            0..3,
+        );
+        let subagent = json_object(
+            prop_oneof![
+                3 => spawn.prop_map(|value| ("thread_spawn", value)),
+                1 => json_leaf().prop_map(|value| ("thread_spawn", value)),
+            ]
+            .boxed(),
+            0..3,
+        );
+        let source = json_object(
+            prop_oneof![
+                3 => subagent.prop_map(|value| ("subagent", value)),
+                1 => json_leaf().prop_map(|value| ("subagent", value)),
+            ]
+            .boxed(),
+            0..3,
+        );
+        let payload = json_object(
+            prop_oneof![
+                2 => json_leaf().prop_map(|value| ("session_id", value)),
+                2 => json_leaf().prop_map(|value| ("parent_thread_id", value)),
+                2 => json_leaf().prop_map(|value| ("forked_from_id", value)),
+                1 => json_leaf().prop_map(|value| ("type", value)),
+                3 => source.prop_map(|value| ("source", value)),
+                1 => json_leaf().prop_map(|value| ("source", value)),
+            ]
+            .boxed(),
+            0..6,
+        );
+        let entries = prop_oneof![
+            3 => json_leaf().prop_map(|value| ("type", value)),
+            1 => json_leaf().prop_map(|value| ("ty\\u0070e", value)),
+            4 => payload.prop_map(|value| ("payload", value)),
+            1 => json_leaf().prop_map(|value| ("payload", value)),
+            1 => json_leaf().prop_map(|value| ("other", value)),
+        ];
+        prop_oneof![1 => json_leaf(), 12 => json_object(entries.boxed(), 0..5)].boxed()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        #[test]
+        fn generated_lines_read_their_strings_as_documents_read_them(
+            line in json_line(),
+            cut in any::<prop::sample::Index>(),
+            truncate in prop::bool::weighted(0.1),
+        ) {
+            let bytes = line.as_bytes();
+            let bytes = if truncate { &bytes[..cut.index(bytes.len() + 1)] } else { bytes };
+            assert_strings_match_document(bytes);
+        }
     }
 }

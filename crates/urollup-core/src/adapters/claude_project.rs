@@ -632,7 +632,7 @@ fn decode_source(
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
@@ -782,12 +782,17 @@ impl SourceDecoder {
         if !head.bears_usage() {
             return RecordDisposition::Skipped;
         }
+        // The head's copies of escaped strings go before the body pass parses the line
+        // again, so the two passes never hold them beside the body's scratch, and a line
+        // stays within its admission need (`4 × C′`).
+        let line_type = head.line_type;
+        drop(head);
         // The head proved the line is a valid document that bears usage. The body pass
         // keeps accounting fields and never builds a parent document.
         let Ok(body) = UsageBody::read(raw.bytes) else {
             return RecordDisposition::Malformed;
         };
-        let (fields, session, forced_copy, request_record) = match head.line_type {
+        let (fields, session, forced_copy, request_record) = match line_type {
             LineType::Assistant => {
                 let synthetic_error = body.top.message.model.as_deref() == Some("<synthetic>")
                     && body.top.request_id.is_none();
@@ -1829,6 +1834,27 @@ pub(crate) fn located_native_id(path: &Path) -> String {
         (session, Some(agent)) => format!("{session}/{agent}"),
         (session, None) => session,
     }
+}
+
+/// Reads one transcript line's fields as decoding does: its head, keeping the version,
+/// working directory and session, and, once the head is dropped, the body of a line that
+/// can bear a request. Builds no document; `false` when the line is not a valid JSON
+/// document.
+///
+/// Decoding does more with the fields; this is the parse alone, whose heap beside a long
+/// line the admission model-bound harness measures.
+pub fn read_line_fields(line: &[u8]) -> bool {
+    let Ok(head) = LineHead::read(line, true, true, true) else { return false };
+    let bears_usage = head.bears_usage();
+    drop(head);
+    !bears_usage || UsageBody::read(line).is_ok()
+}
+
+/// Reads and parses the `.meta.json` sidecar beside the subagent transcript `transcript`
+/// as decoding does; `true` when there is one and it parses. The admission model-bound
+/// harness measures its heap.
+pub fn read_sidecar(transcript: &Path) -> bool {
+    matches!(read_subagent_meta(transcript), Ok(Some(_)))
 }
 
 /// The session a Claude transcript line names: its `sessionId` string, read by the rule

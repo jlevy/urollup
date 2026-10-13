@@ -23,6 +23,10 @@
 //!   and the caches a fresh thread that coordinates the ingest keeps afterwards.
 //! - **Query and slots:** query documents and their rendering, each decoder's heap, a long
 //!   line's scan, and zstd's context and stream.
+//! - **Readers:** lines of 3.9 MiB and 63 MiB parsed by `validate_record` and both
+//!   adapters' line parsers, with and without a kept copy, against the line need of
+//!   their buffer; a Claude sidecar against the line allowance; and eight workers reading
+//!   5 MiB lines, of which the large-record permit lets one buffer past 4 MiB live at once.
 //!
 //! Each check names its terms. A check fails when measured heap exceeds their sum, and the
 //! harness fails unless every term is necessary somewhere: dropping it would make some
@@ -48,6 +52,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::json;
 use urollup_core::adapters::{Ingested, claude_project, codex_rollout};
+use urollup_core::ledger::admission::MemoryAdmission;
 use urollup_core::ledger::admission::deep_size::DeepSize;
 use urollup_core::ledger::admission::model::{
     self, PhaseEstimate, ReconcileCounts, allocation, btree_collected, btree_entry, btree_map,
@@ -92,6 +97,15 @@ static REQUESTED: AtomicU64 = AtomicU64::new(0);
 /// allocation since the last reset.
 static LIMIT: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXCESS: AtomicU64 = AtomicU64::new(0);
+/// Live allocations larger than a worker slot's 4 MiB line buffer, and their most at once
+/// since the last reset: what the large-record permit allows one thread at a time.
+static LARGE_LIVE: AtomicU64 = AtomicU64::new(0);
+static LARGE_PEAK: AtomicU64 = AtomicU64::new(0);
+
+/// Whether an allocation of `size` bytes is larger than a worker slot's line buffer.
+fn large(size: usize) -> bool {
+    size as u64 > model::SLOT_LINE_CAPACITY
+}
 
 /// The costing rule's charge for one allocation of `size` bytes.
 fn cost(size: usize) -> u64 {
@@ -106,11 +120,18 @@ fn grow(size: usize) {
     if live > limit {
         EXCESS.fetch_max(live - limit, Ordering::Relaxed);
     }
+    if large(size) {
+        let large = LARGE_LIVE.fetch_add(1, Ordering::Relaxed) + 1;
+        LARGE_PEAK.fetch_max(large, Ordering::Relaxed);
+    }
 }
 
 fn shrink(size: usize) {
     REQUESTED.fetch_sub(size as u64, Ordering::Relaxed);
     LIVE.fetch_sub(cost(size), Ordering::Relaxed);
+    if large(size) {
+        LARGE_LIVE.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// The system allocator, counting every live allocation.
@@ -1702,6 +1723,7 @@ fn check_query(report: &mut Report, case: &str, sources: &[(Agent, &Ingested)]) 
 
 /// Each decoder's Rust heap once it starts, a long line's scan, and zstd's C state.
 fn check_decoders(report: &mut Report) {
+    let admission = MemoryAdmission::unlimited();
     let line = "y".repeat(7 << 19);
     let plain = format!("{{\"a\":1}}\n{line}\n");
     // A gzip member whose header carries the longest name, comment and extra field.
@@ -1734,7 +1756,7 @@ fn check_decoders(report: &mut Report) {
         ),
     ] {
         let ((), measured) = measure(|| {
-            let mut reader = decode(bytes, representation).expect("the decoder starts");
+            let mut reader = decode(bytes, representation, &admission).expect("the decoder starts");
             let first = reader.fill_buf().expect("the stream decodes").len();
             reader.consume(first);
         });
@@ -1753,8 +1775,10 @@ fn check_decoders(report: &mut Report) {
         stable_locator: true,
     };
     let (entry, measured) = measure(|| {
-        read_source(&spec, &files, &ReadOptions::default(), |_| RecordDisposition::Skipped)
-            .expect("the source reads")
+        read_source(&spec, &files, &ReadOptions::default(), &admission, |_| {
+            RecordDisposition::Skipped
+        })
+        .expect("the source reads")
     });
     // The scan's line buffer stays within the slot's line need at its 4 MiB capacity; the
     // read buffer, the boxed reader and the manifest entry the scan returns are beside it.
@@ -1784,6 +1808,159 @@ fn check_decoders(report: &mut Report) {
         "8 MiB window",
         stream.sizeof() as u64,
         &[("zstd_stream", model::zstd_stream(model::SLOT_ZSTD_WINDOW))],
+    );
+}
+
+/// A source spec for the harness's own files.
+const HARNESS_SPEC: SourceSpec<'static> =
+    SourceSpec { environment: "local", dialect: "test", locator: "harness", stable_locator: true };
+
+/// A string field of about `length` bytes whose one escape comes late, so `serde_json`
+/// copies most of it into its scratch at once and then grows the scratch: the
+/// costliest string for the line need.
+fn late_escape(length: usize) -> String {
+    let escape_at = length - length / 32;
+    format!("{}\\n{}", "a".repeat(escape_at), "b".repeat(length - escape_at - 2))
+}
+
+/// The capacity the reader's line buffer reaches for a line of `length` bytes: doubling
+/// from the retained capacity up to the default record limit.
+fn line_capacity(length: u64) -> u64 {
+    let limit = ReadOptions::DEFAULT_MAX_RECORD_BYTES as u64;
+    let mut capacity = ReadOptions::RETAINED_LINE_CAPACITY as u64;
+    while capacity < length {
+        capacity = model::next_line_capacity(capacity, limit);
+    }
+    capacity
+}
+
+/// Lines of 3.9 MiB and 63 MiB, each with one long string whose first escape comes late,
+/// read by the scan and parsed by `validate_record` and both adapters' line parsers, with
+/// and without a copy the parser keeps: each stays within the line need `4 × C′` of the
+/// buffer's capacity `C′`, beside the read buffer and the manifest entry the scan returns.
+/// A buffer past 4 MiB is the large-record permit's need; one within it is the slot's.
+fn check_long_lines(report: &mut Report) {
+    type Parse = fn(&[u8]) -> bool;
+    let validate: Parse = |line| urollup_core::sources::decode::validate_record(line).is_ok();
+    let parsers: [(&str, Parse, &str, &str); 5] = [
+        ("validate_record", validate, r#"{"padding":"#, "}"),
+        (
+            "Codex",
+            codex_rollout::read_line_fields,
+            r#"{"type":"session_meta","payload":{"content":"#,
+            "}}",
+        ),
+        (
+            "Codex kept",
+            codex_rollout::read_line_fields,
+            r#"{"type":"session_meta","payload":{"cwd":"#,
+            "}}",
+        ),
+        (
+            "Claude",
+            claude_project::read_line_fields,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":1}},"padding":"#,
+            "}",
+        ),
+        (
+            "Claude kept",
+            claude_project::read_line_fields,
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":1}},"cwd":"#,
+            "}",
+        ),
+    ];
+    let admission = MemoryAdmission::unlimited();
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let read_buffer: Term =
+        ("read buffer", allocation(model::READ_BUFFER) + allocation(model::READER_STATE));
+    for (size, length) in [("3.9 MiB", (39 << 20) / 10), ("63 MiB", 63 << 20)] {
+        for (parser, parse, before, after) in parsers {
+            let line = format!("{before}\"{}\"{after}\n", late_escape(length));
+            assert!(parse(line.trim_end().as_bytes()), "{parser}: the line is a document");
+            let path = directory.path().join("long.jsonl");
+            fs::write(&path, &line).expect("the long line is written");
+            drop(line);
+            let files = LogicalSource { plain: Some(path), ..LogicalSource::default() };
+            let (entry, measured) = measure(|| {
+                read_source(&HARNESS_SPEC, &files, &ReadOptions::default(), &admission, |raw| {
+                    assert!(parse(raw.bytes));
+                    RecordDisposition::Decoded
+                })
+                .expect("the source reads")
+            });
+            let capacity = line_capacity(entry.cutoff.complete_through);
+            let need: Term = if capacity > model::SLOT_LINE_CAPACITY {
+                ("large_record", model::large_record(capacity, 0, 0))
+            } else {
+                ("line_need", model::line_need(model::SLOT_LINE_CAPACITY))
+            };
+            report.bound_beside(
+                "long line",
+                &format!("{size} {parser}"),
+                measured.peak,
+                &[read_buffer, need],
+                entry.heap(),
+            );
+        }
+    }
+}
+
+/// A Claude subagent's `.meta.json` sidecar of about 1 MiB, the most decoding reads, whose
+/// one kept string escapes late: read and parsed after the scan drops its line buffer, it
+/// stays within the slot's line allowance.
+fn check_sidecar(report: &mut Report) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let transcript = directory.path().join("agent-a1.jsonl");
+    let sidecar =
+        format!("{{\"agentType\":\"{}\",\"toolUseId\":\"toolu_1\"}}", late_escape((1 << 20) - 64));
+    assert!(sidecar.len() <= 1 << 20);
+    fs::write(transcript.with_extension("meta.json"), &sidecar).expect("the sidecar is written");
+    drop(sidecar);
+    let (read, measured) = measure(|| claude_project::read_sidecar(&transcript));
+    assert!(read, "the sidecar parses");
+    report.bound(
+        "sidecar",
+        "1 MiB",
+        measured.peak,
+        &[("line_need", model::line_need(model::SLOT_LINE_CAPACITY))],
+    );
+}
+
+/// Eight workers read sources that each hold a 5 MiB line: the large-record permit lets
+/// one buffer past a slot's 4 MiB be live at a time.
+fn check_permit(report: &mut Report) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let sources: Vec<LogicalSource> = (0..8)
+        .map(|index| {
+            let path = directory.path().join(format!("source-{index}.jsonl"));
+            let line = format!("{{\"i\":{index},\"pad\":\"{}\"}}\n", "x".repeat(5 << 20));
+            fs::write(&path, line).expect("the source is written");
+            LogicalSource { plain: Some(path), ..LogicalSource::default() }
+        })
+        .collect();
+    let admission = MemoryAdmission::unlimited();
+    LARGE_PEAK.store(LARGE_LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+    let read = urollup_core::sources::parallel::read_in_parallel(
+        &sources,
+        workers(8),
+        |_| 0,
+        |files| {
+            read_source(&HARNESS_SPEC, files, &ReadOptions::default(), &admission, |raw| {
+                assert!(urollup_core::sources::decode::validate_record(raw.bytes).is_ok());
+                RecordDisposition::Decoded
+            })
+            .expect("the source reads")
+            .counters
+            .decoded
+        },
+    )
+    .expect("the workers join");
+    assert_eq!(read, [1; 8]);
+    report.bound(
+        "permit",
+        "8 workers, 5 MiB lines",
+        LARGE_PEAK.load(Ordering::Relaxed),
+        &[("one large buffer", 1)],
     );
 }
 
@@ -1897,6 +2074,9 @@ fn main() {
     }
     check_query_reserve(&mut report);
     check_decoders(&mut report);
+    check_long_lines(&mut report);
+    check_sidecar(&mut report);
+    check_permit(&mut report);
     report.require_necessary_terms();
     let mut out = String::new();
     writeln!(out, "memory model harness ({} ms)", started.elapsed().as_millis()).expect("writes");

@@ -739,7 +739,7 @@ fn decode_source(
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
     let mut decoder = SourceDecoder::new(&rollout.thread_id);
-    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path, source })?;
@@ -1013,6 +1013,15 @@ fn rate_limits(
     });
     *last = Some(Arc::clone(&limits));
     Some(limits)
+}
+
+/// Reads one rollout line's fields as decoding reads a line that may be relevant, building
+/// no document; `false` when the line is not a valid JSON document.
+///
+/// Decoding does more with the fields; this is the parse alone, whose heap beside a long
+/// line the admission model-bound harness measures.
+pub fn read_line_fields(line: &[u8]) -> bool {
+    Line::read(line).is_ok()
 }
 
 /// Expands Codex homes to the rollout directories the adapter actually reads.

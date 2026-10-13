@@ -20,8 +20,8 @@
 //! Each map and B-tree term states the precondition under which it bounds the standard
 //! structure; the model-bound harness checks every primitive against a counting allocator
 //! at every count up to a few thousand. Totals are monotone in their counts, so a push site
-//! can charge the difference between the total after and before it. Nothing in ingestion
-//! charges these yet.
+//! can charge the difference between the total after and before it. Only the large-record
+//! permit charges from them so far, in the source reader.
 
 use std::mem::size_of;
 
@@ -616,9 +616,10 @@ pub const GZIP_DECODER: u64 =
     (80 << 10) + allocation(GZIP_HEADER_FIELD) + 2 * grown_vec(GZIP_HEADER_FIELD, 1);
 
 /// The read buffer `sources::reader::decode` wraps each source in.
-pub const READ_BUFFER: u64 = 128 << 10;
+pub const READ_BUFFER: u64 = crate::sources::reader::READ_BUFFER_BYTES as u64;
 
-/// The boxed reader `sources::reader::decode` returns and the decoder struct it wraps.
+/// The boxed reader `sources::reader::decode` returns and the decoder struct it wraps, its
+/// zstd frame loop included.
 pub const READER_STATE: u64 = 512;
 
 /// The default thread stack of a decoding worker.
