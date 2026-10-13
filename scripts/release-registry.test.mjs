@@ -90,6 +90,43 @@ test("GitHub: drafts resume, a public release never takes new or different asset
   assert.equal(decideGithubRelease(assets, { status: "present", draft: true, assets: [...assets, { name: "notes.txt", sha256: digest("3") }] }).state, "conflict");
   assert.equal(decideGithubRelease(assets, { status: "unavailable", reason: "x" }).blocking, true);
   assert.match(describeDecision(draftPartial), /github: identical-partial; would publish SHA256SUMS; already identical: urollup-0\.1\.0/);
+  const withEvidence = { status: "present", draft: false, assets: [...assets, { name: "release-evidence.json", sha256: digest("4") }] };
+  assert.equal(decideGithubRelease(assets, withEvidence).state, "identical-complete", "evidence attached after publication is never a conflict");
+  assert.equal(decideGithubRelease(assets, withEvidence, { late: [] }).state, "conflict");
+});
+
+test("an interrupted upload in a draft is removed and uploaded again; a public release is never repaired", async () => {
+  const files = [{ name: "a.tar.gz", sha256: digest("1"), data: Buffer.from("a") }];
+  const release = { id: 7, tag_name: "v0.1.0", draft: true, assets: [{ id: 70, name: "a.tar.gz", state: "starter", digest: null }] };
+  const deleted = [];
+  const { impl } = fakeFetch([
+    { match: (url, method) => method === "GET" && url.endsWith("/releases?per_page=100"), respond: () => ({ status: 200, body: [release] }) },
+    {
+      match: (url, method) => method === "DELETE" && url.endsWith("/releases/assets/70"),
+      respond: () => {
+        deleted.push(70);
+        release.assets = [];
+        return { status: 204, body: null };
+      },
+    },
+    {
+      match: (url, method) => method === "POST" && url.includes("/releases/7/assets"),
+      respond: () => {
+        release.assets.push({ id: 71, name: "a.tar.gz", state: "uploaded", digest: `sha256:${digest("1")}` });
+        return { status: 201, body: {} };
+      },
+    },
+  ]);
+  const staged = await stageGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "t", notes: "n", prerelease: false, files, token: "t", fetchImpl: impl });
+  assert.deepEqual(deleted, [70]);
+  assert.deepEqual(staged.repaired, ["a.tar.gz"]);
+  release.draft = false;
+  release.assets = [{ id: 72, name: "a.tar.gz", state: "starter", digest: null }];
+  await assert.rejects(
+    stageGithubRelease({ repository: "jlevy/urollup", tag: "v0.1.0", commit: "c", title: "t", notes: "n", prerelease: false, files, token: "t", fetchImpl: impl }),
+    /conflict/,
+  );
+  assert.deepEqual(deleted, [70]);
 });
 
 function fakeFetch(routes) {
@@ -177,7 +214,7 @@ test("a read-only token sees published releases only; drafts need the write toke
     { match: (url) => url.endsWith("/releases/tags/v0.1.0"), respond: { status: 200, body: { id: 1, draft: false, assets: [{ id: 2, name: "x", digest: `sha256:${digest("1")}` }] } } },
   ]);
   const observed = await observeGithubRelease("jlevy/urollup", "v0.1.0", { token: "read", fetchImpl: impl });
-  assert.deepEqual(observed, { status: "present", id: 1, draft: false, assets: [{ name: "x", sha256: digest("1"), id: 2 }] });
+  assert.deepEqual(observed, { status: "present", id: 1, draft: false, assets: [{ name: "x", sha256: digest("1"), id: 2, state: "uploaded" }] });
   assert.match(calls[0].url, /\/releases\/tags\/v0\.1\.0$/);
   const many = fakeFetch([{ match: (url) => url.endsWith("/releases?per_page=100"), respond: { status: 200, body: [{ tag_name: "v0.1.0" }, { tag_name: "v0.1.0" }] } }]);
   assert.equal((await observeGithubRelease("jlevy/urollup", "v0.1.0", { token: "w", includeDrafts: true, fetchImpl: many.impl })).status, "unavailable");

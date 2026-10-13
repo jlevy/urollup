@@ -50,10 +50,12 @@ proves the workflow’s authority boundaries (`scripts/check-release-workflow.mj
 | `publish-crates` | Tag, `release` | `CARGO_REGISTRY_TOKEN` secret | Publishes the crates, or resumes a partial publication |
 | `publish-pypi` | Tag, `release` | `id-token: write` | Uploads missing wheels through trusted publishing |
 | `publish-github` | Tag, `release` | `contents: write` | Makes the draft public once both registries verify |
-| `probe` (5) | Tag | Read | Installs from GitHub, PyPI and crates.io on clean hosts |
+| `probe` (5) | Tag | Read, `attestations: read` | Installs from GitHub, PyPI and crates.io on clean hosts and verifies attestations |
 | `evidence`, `attest-evidence`, `attach-evidence` | Tag | Read, then attest, then `contents: write` in `release` | Writes, attests and attaches `release-evidence.json` |
 
 Each publish job asks for its own environment approval.
+One publication runs per tag; rehearsals use a concurrency group of their own, so
+dispatching one never displaces a pending publication.
 
 ## Rehearsing
 
@@ -126,8 +128,9 @@ Record only non-secret identifiers in the repository.
    expiry, only the `publish-new` endpoint scope, and crate scopes exactly
    `urollup-core` and `urollup`. Store it as the **environment** secret
    `CARGO_REGISTRY_TOKEN` of `release`, never as a repository secret.
-6. Optionally enable immutable releases in the repository settings, so a published
-   release’s assets cannot change.
+6. Leave GitHub’s immutable releases off for now: `attach-evidence` adds
+   `release-evidence.json` after the release is public, which an immutable release
+   refuses. Turning it on needs the evidence published elsewhere first.
 
 ## Publishing a Release
 
@@ -176,7 +179,7 @@ Each publish job observes its registry first and classifies it:
 | identical-complete | Every planned file is published with its digest | Skip |
 | identical-partial | What is published matches; some files are missing | Publish only the missing files |
 | conflict | A published file differs or is unplanned, or the version is yanked | Stop |
-| unavailable | The registry could not be read | Stop; unknown is never absent |
+| unavailable | The registry could not be read | Stop, in a rehearsal too; unknown is never absent |
 
 - **A job failed before anything published**: fix the problem on a new commit, rehearse
   it, and move the tag only if nothing was published or consumed from it.
@@ -185,6 +188,11 @@ Each publish job observes its registry first and classifies it:
   That reuses the validated bundle, so identical files are skipped and missing ones
   published. Do not use **Re-run all jobs**: rebuilt artifacts and a new manifest would
   conflict with what is already public, and the run stops.
+  A rerun uses the tagged commit’s scripts, so it cannot pick up a fix to the release
+  machinery itself. If the cause is such a defect, finish the remaining channels by hand
+  from the run’s `release-bundle` artifact with the same checks the job makes (observe,
+  compare digests, upload only what is missing), or publish a patch version.
+  A failed publish step records what the registry held afterwards in the run summary.
 - **A published artifact is defective**: yank the crates.io and PyPI versions, add a
   prominent notice to the GitHub release, keep the artifacts and evidence, and publish a
   patch version. Never upload different bytes as the same version.

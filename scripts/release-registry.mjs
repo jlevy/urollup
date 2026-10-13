@@ -19,6 +19,12 @@ export const USER_AGENT = "urollup-release-tooling";
 
 export const STATES = ["absent", "identical-complete", "identical-partial", "conflict", "unavailable"];
 
+/**
+ * GitHub Release assets added after the release is public, never staged: every GitHub
+ * decision ignores them, so a rerun after evidence is attached still sees the planned set.
+ */
+export const LATE_ASSETS = ["release-evidence.json"];
+
 function decision(channel, state, details) {
   const blocking = state === "conflict" || state === "unavailable";
   return { ...details, channel, state, blocking };
@@ -71,9 +77,13 @@ function classifyFiles(channel, planned, observedFiles, extraFacts = {}) {
 /**
  * GitHub Release: `observed` is `{status: "absent"}`, `{status: "unavailable", reason}` or
  * `{status: "present", draft, assets: [{name, sha256}]}`. A published (non-draft) release
- * that is not identical and complete is a conflict, because its assets are public.
+ * that is not identical and complete is a conflict, because its assets are public. Assets
+ * named in `late` are ignored.
  */
-export function decideGithubRelease(planned, observed) {
+export function decideGithubRelease(planned, observed, { late = LATE_ASSETS } = {}) {
+  if (observed.status === "present") {
+    observed = { ...observed, assets: (observed.assets ?? []).filter((asset) => !late.includes(asset.name)) };
+  }
   if (observed.status === "unavailable") {
     return decision("github", "unavailable", { publish: [], skip: [], conflicts: [observed.reason ?? "GitHub could not be read"] });
   }
@@ -246,11 +256,18 @@ function assetDigest(asset) {
  */
 export async function observeGithubRelease(repository, tag, { token, includeDrafts = false, fetchImpl = fetch } = {}) {
   if (includeDrafts) {
-    const listed = await getJson(fetchImpl, `https://api.github.com/repos/${repository}/releases?per_page=100`, githubHeaders(token));
-    if (listed.status !== "present") {
-      return listed.status === "absent" ? { status: "unavailable", reason: `${repository} has no releases endpoint` } : listed;
+    const releases = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const listed = await getJson(fetchImpl, `https://api.github.com/repos/${repository}/releases?per_page=100${page > 1 ? `&page=${page}` : ""}`, githubHeaders(token));
+      if (listed.status !== "present") {
+        return listed.status === "absent" ? { status: "unavailable", reason: `${repository} has no releases endpoint` } : listed;
+      }
+      releases.push(...listed.body);
+      if (listed.body.length < 100) {
+        break;
+      }
     }
-    const matches = listed.body.filter((release) => release.tag_name === tag);
+    const matches = releases.filter((release) => release.tag_name === tag);
     if (matches.length > 1) {
       return { status: "unavailable", reason: `${matches.length} releases name tag ${tag}` };
     }
@@ -268,7 +285,7 @@ function releaseObservation(release) {
     status: "present",
     id: release.id,
     draft: Boolean(release.draft),
-    assets: (release.assets ?? []).map((asset) => ({ name: asset.name, sha256: assetDigest(asset), id: asset.id })),
+    assets: (release.assets ?? []).map((asset) => ({ name: asset.name, sha256: assetDigest(asset), id: asset.id, state: asset.state ?? "uploaded" })),
   };
 }
 
@@ -294,7 +311,22 @@ async function githubWrite(fetchImpl, url, { method, token, body, contentType })
  */
 export async function stageGithubRelease({ repository, tag, commit, title, notes, prerelease, files, token, fetchImpl = fetch }) {
   const planned = files.map((file) => ({ name: file.name, sha256: file.sha256 }));
-  const observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
+  let observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
+  // An upload interrupted in an earlier attempt leaves a planned asset with no digest or an
+  // unfinished state. While the release is still a private draft, remove it so this run can
+  // upload it again; on a public release it stays a conflict.
+  const repaired = [];
+  if (observed.status === "present" && observed.draft) {
+    for (const asset of observed.assets.filter((candidate) => planned.some((item) => item.name === candidate.name))) {
+      if (asset.state !== "uploaded" || asset.sha256 === null) {
+        await githubWrite(fetchImpl, `https://api.github.com/repos/${repository}/releases/assets/${asset.id}`, { method: "DELETE", token });
+        repaired.push(asset.name);
+      }
+    }
+    if (repaired.length > 0) {
+      observed = await observeGithubRelease(repository, tag, { token, includeDrafts: true, fetchImpl });
+    }
+  }
   const result = decideGithubRelease(planned, observed);
   if (result.blocking) {
     throw new Error(describeDecision(result));
@@ -321,7 +353,7 @@ export async function stageGithubRelease({ repository, tag, commit, title, notes
   if (after.state !== "identical-complete") {
     throw new Error(`after staging, ${describeDecision(after)}`);
   }
-  return { releaseId, staged: result };
+  return { releaseId, staged: result, repaired };
 }
 
 /** Make the staged draft public, only when it is identical and complete. */

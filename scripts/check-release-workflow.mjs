@@ -35,23 +35,50 @@ export const ASSERTING_JOBS = ["build", "crates", "validate", "benchmark", "asse
 
 /**
  * Tag-only jobs and the exact authority each holds. `permissions: null` inherits the
- * read-only top level. `environment` names the protected environment, and `secrets` the
- * secrets the job may reference.
+ * read-only top level. `environment` names the protected environment, `secrets` the
+ * secrets the job may reference, and `needs` its exact predecessors, which fix the
+ * plan's order: attest, stage the draft, both registries, make the release public, probe,
+ * then write, attest and attach the evidence.
  */
 export const PUBLICATION_JOBS = {
-  attest: { permissions: { contents: "read", "id-token": "write", attestations: "write" }, environment: null, secrets: [] },
-  "stage-github": { permissions: { contents: "write" }, environment: "release", secrets: [] },
-  "publish-crates": { permissions: null, environment: "release", secrets: ["CARGO_REGISTRY_TOKEN"] },
-  "publish-pypi": { permissions: { contents: "read", "id-token": "write" }, environment: "release", secrets: [] },
-  "publish-github": { permissions: { contents: "write" }, environment: "release", secrets: [] },
-  probe: { permissions: null, environment: null, secrets: [] },
-  evidence: { permissions: null, environment: null, secrets: [] },
-  "attest-evidence": { permissions: { contents: "read", "id-token": "write", attestations: "write" }, environment: null, secrets: [] },
-  "attach-evidence": { permissions: { contents: "write" }, environment: "release", secrets: [] },
+  attest: { permissions: { contents: "read", "id-token": "write", attestations: "write" }, environment: null, secrets: [], needs: ["plan", "assemble"] },
+  "stage-github": { permissions: { contents: "write" }, environment: "release", secrets: [], needs: ["plan", "attest"] },
+  "publish-crates": { permissions: null, environment: "release", secrets: ["CARGO_REGISTRY_TOKEN"], needs: ["plan", "stage-github"] },
+  "publish-pypi": { permissions: { contents: "read", "id-token": "write" }, environment: "release", secrets: [], needs: ["plan", "stage-github"] },
+  "publish-github": { permissions: { contents: "write" }, environment: "release", secrets: [], needs: ["plan", "publish-crates", "publish-pypi"] },
+  probe: { permissions: { contents: "read", attestations: "read" }, environment: null, secrets: [], needs: ["plan", "publish-github"] },
+  evidence: { permissions: null, environment: null, secrets: [], needs: ["plan", "probe"] },
+  "attest-evidence": { permissions: { contents: "read", "id-token": "write", attestations: "write" }, environment: null, secrets: [], needs: ["plan", "evidence"] },
+  "attach-evidence": { permissions: { contents: "write" }, environment: "release", secrets: [], needs: ["plan", "attest-evidence"] },
 };
 
 /** Jobs whose steps may read the workflow token, all for reads except the release writers. */
-export const TOKEN_JOBS = ["plan", "gate", "assemble", "stage-github", "publish-github", "probe", "attach-evidence"];
+export const TOKEN_JOBS = ["plan", "gate", "assemble", "stage-github", "publish-github", "probe", "evidence", "attach-evidence"];
+
+/** Plan outputs every later job trusts, which must come from the tested plan step. */
+export const PLAN_OUTPUTS = ["version", "tag", "commit", "mode", "publish", "matrix", "hosts", "source-date-epoch", "allow-unmerged"];
+
+const EXPRESSION = /\$\{\{[\s\S]*?\}\}/g;
+const TOKEN_EXPRESSION = /\bgithub\s*(?:\.\s*token\b|\[\s*['"]token['"]\s*\])|\bsecrets\s*(?:\.\s*GITHUB_TOKEN\b|\[\s*['"]GITHUB_TOKEN['"]\s*\])/;
+
+/**
+ * The secrets an expression text references. A reference this cannot name, such as
+ * `toJSON(secrets)` or a computed index, is reported as `*`, which no rule allows.
+ */
+export function secretReferences(text) {
+  const names = [];
+  for (const [expression] of [...text.matchAll(EXPRESSION)].filter(([candidate]) => /\bsecrets\b/.test(candidate))) {
+    let rest = expression;
+    for (const match of expression.matchAll(/\bsecrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*['"]([A-Za-z0-9_]+)['"]\s*\])/g)) {
+      names.push(match[1] ?? match[2]);
+      rest = rest.replace(match[0], "");
+    }
+    if (/\bsecrets\b/.test(rest)) {
+      names.push("*");
+    }
+  }
+  return names;
+}
 
 export const PUBLISH_CONDITION = "needs.plan.outputs.publish == 'true'";
 
@@ -121,6 +148,18 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
   if (/pull_request_target|\bsecrets\s*:\s*inherit/.test(text)) {
     problems.push("the release workflow must not use pull_request_target or inherit secrets");
   }
+  for (const key of ["env", "defaults"]) {
+    const body = JSON.stringify(workflow[key] ?? {});
+    if (secretReferences(body).length > 0 || TOKEN_EXPRESSION.test(body)) {
+      problems.push(`the workflow-level ${key} must not carry a secret or the workflow token, which every job would inherit`);
+    }
+  }
+  const planOutputs = workflow.jobs?.plan?.outputs ?? {};
+  for (const name of PLAN_OUTPUTS) {
+    if (planOutputs[name] !== `\${{ steps.plan.outputs.${name} }}`) {
+      problems.push(`plan output ${name} must come from the tested plan step (\${{ steps.plan.outputs.${name} }})`);
+    }
+  }
 
   const jobs = isObject(workflow.jobs) ? workflow.jobs : {};
   const known = [...REHEARSAL_JOBS, ...Object.keys(PUBLICATION_JOBS)];
@@ -141,8 +180,8 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
     }
     const body = JSON.stringify(job);
     const rule = PUBLICATION_JOBS[name];
-    const secrets = [...body.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]);
-    const usesToken = /github\.token|secrets\.GITHUB_TOKEN/.test(body);
+    const secrets = secretReferences(body);
+    const usesToken = TOKEN_EXPRESSION.test(body);
     if (REHEARSAL_JOBS.includes(name)) {
       if (job.permissions !== undefined) {
         problems.push(`job ${name} runs in rehearsals and must keep the read-only default, but grants ${describePermissions(job.permissions)}`);
@@ -172,6 +211,9 @@ export function checkReleaseWorkflow(workflow, text = JSON.stringify(workflow)) 
       }
       if (!needsList(job).includes("plan")) {
         problems.push(`job ${name} must need plan directly, so its condition reads the plan`);
+      }
+      if (JSON.stringify([...needsList(job)].sort()) !== JSON.stringify([...rule.needs].sort())) {
+        problems.push(`job ${name} must need exactly ${rule.needs.join(", ")}, found ${needsList(job).join(", ") || "nothing"}`);
       }
       if (!ancestors(jobs, name).has("assemble")) {
         problems.push(`job ${name} must come after assemble, so nothing publishes before every artifact is validated`);

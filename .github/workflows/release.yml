@@ -40,10 +40,11 @@ on:
 permissions:
   contents: read
 
-# One run per version: a rehearsal and a publication of the same version never overlap,
-# and a second publication waits instead of racing the first.
+# One publication per version: a second run for the same tag waits instead of racing the
+# first. Rehearsals have a group of their own, so dispatching one can never displace a
+# pending publication (GitHub keeps one pending run per group and cancels older ones).
 concurrency:
-  group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+  group: ${{ github.event_name == 'push' && format('release-publish-{0}', github.ref_name) || format('release-rehearsal-v{0}', inputs.version) }}
   cancel-in-progress: false
 
 env:
@@ -444,6 +445,10 @@ jobs:
     needs: [plan, publish-github]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ${{ matrix.runner }}
+    # gh attestation verify reads the attestations API.
+    permissions:
+      contents: read
+      attestations: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.hosts) }}
@@ -496,6 +501,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/release-input
       - run: node scripts/release.mjs evidence --input "$RUNNER_TEMP/release-input" --out "$RUNNER_TEMP/release-evidence"
+        env:
+          RELEASE_READ_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-evidence

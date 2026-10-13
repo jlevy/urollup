@@ -66,6 +66,7 @@ import {
   decideGithubRelease,
   decidePypi,
   describeDecision,
+  LATE_ASSETS,
   observeCrate,
   observeGithubRelease,
   observePypi,
@@ -90,8 +91,7 @@ import {
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Release artifacts whose GitHub Release asset is added after publication, not staged. */
-export const LATE_ASSETS = ["release-evidence.json"];
+export { LATE_ASSETS };
 
 /** Credentials and the OIDC endpoint: a build, validation or assembly job must hold none. */
 export const AUTHORITY_VARIABLES = [
@@ -668,6 +668,8 @@ function smoke(argv) {
       record.checks.push(...result.checks);
       record.problems.push(...result.problems);
     }
+  } catch (error) {
+    record.problems.push(error.message);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -732,7 +734,8 @@ function benchmark(argv) {
   exec("uv", ["--config-file", "uv.toml", "run", "--frozen", "python", "scripts/generate-synthetic-corpus.py", "--out", corpus, "--max-bytes", options.maxBytes ?? String(256 * 1024 * 1024), "--seed", "1"], {
     label: "generate the synthetic corpus",
   });
-  const args = ["report", "--source", corpus, "--no-default-sources", "--format", "json", "--timezone", "UTC"];
+  // One root per agent, as the scale gate passes them (scripts/measure-scale.py).
+  const args = ["report", "--all", "--source", path.join(corpus, "claude", "projects"), "--source", path.join(corpus, "codex"), "--no-default-sources", "--format", "json", "--timezone", "UTC"];
   const time = existsSync("/usr/bin/time") ? "/usr/bin/time" : null;
   const samples = { musl: [], glibc: [] };
   const rss = { musl: [], glibc: [] };
@@ -757,7 +760,7 @@ function benchmark(argv) {
     schema: "urollup-release-benchmark/v1",
     host: hostId(),
     runner_image: runnerImage(),
-    command: `urollup ${args.join(" ").replace(corpus, "<corpus>")}`,
+    command: `urollup ${args.join(" ").split(corpus).join("<corpus>")}`,
     corpus: { generator: "scripts/generate-synthetic-corpus.py", seed: 1, max_bytes: Number(options.maxBytes ?? 256 * 1024 * 1024) },
     runs,
     musl: { median_seconds: median(samples.musl), samples: samples.musl, median_peak_rss_kib: rss.musl.length ? median(rss.musl) : null },
@@ -815,8 +818,6 @@ async function channelDecisions({ manifest, assets, repository, token, includeDr
   const observed = await observeAll({ version: manifest.version, pep440: manifest.pep440_version, tag: manifest.tag, repository, token, includeDrafts });
   const wheels = manifest.artifacts.filter((artifact) => artifact.kind === "wheel").map((artifact) => ({ name: artifact.name, sha256: artifact.sha256 }));
   const crates = manifest.cargo_packages.map((item) => ({ name: item.name, sha256: item.sha256 }));
-  const githubObserved =
-    observed.github.status === "present" ? { ...observed.github, assets: observed.github.assets.filter((asset) => !LATE_ASSETS.includes(asset.name)) } : observed.github;
   return {
     observed,
     decisions: [
@@ -824,7 +825,7 @@ async function channelDecisions({ manifest, assets, repository, token, includeDr
       decidePypi(wheels, observed.pypi),
       decideGithubRelease(
         assets.map((asset) => ({ name: asset.name, sha256: asset.sha256 })),
-        githubObserved,
+        observed.github,
       ),
     ],
   };
@@ -947,7 +948,9 @@ async function assemble(argv) {
     decisions,
   };
   writeJson(path.join(out, "channel-actions.json"), actions);
-  const blocking = decisions.filter((decision) => decision.state === "conflict" || (decision.state === "unavailable" && identity.mode === "publish"));
+  // Unknown registry state stops a rehearsal too: a rehearsal must show the exact actions a
+  // publication would take, and it cannot while a registry is unreadable.
+  const blocking = decisions.filter((decision) => decision.blocking);
   summary([
     `## Release bundle: ${identity.tag} (${identity.mode})`,
     "",
@@ -1049,13 +1052,42 @@ async function publishCrates(argv) {
   }
   const command = cratesPublishCommand(before);
   if (command) {
-    exec(command[0], command.slice(1), { label: command.join(" ") });
+    // `cargo publish` packages again; prove first that this commit packages to exactly the
+    // rehearsed bytes, so an upload can never differ from the manifest.
+    const target = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "urollup-publish-package-"));
+    exec("cargo", ["package", "--locked", "--workspace", "--no-verify"], { env: { ...process.env, CARGO_TARGET_DIR: target }, label: "cargo package (pre-publish digest check)" });
+    for (const item of manifest.cargo_packages) {
+      const digest = sha256(readFileSync(path.join(target, "package", item.file)));
+      if (digest !== item.sha256) {
+        fail(`${item.file} packages to ${digest}, not the rehearsed ${item.sha256}; refusing to publish`);
+      }
+    }
+    await recordingChannelState("crates.io", decide, () => exec(command[0], command.slice(1), { label: command.join(" ") }));
   }
   const after = await waitFor(decide);
   if (after.state !== "identical-complete") {
     fail(`crates.io does not show the planned packages after publishing: ${describeDecision(after)}`);
   }
   summary([`- crates.io: ${describeDecision(before)}; now ${after.state}`]);
+}
+
+/**
+ * Run a publishing command; if it fails, observe the registry again and record exactly
+ * what it now holds before failing, so a partial publication is never left unrecorded.
+ */
+async function recordingChannelState(channel, decide, publish) {
+  try {
+    publish();
+  } catch (error) {
+    let state;
+    try {
+      state = describeDecision(await decide());
+    } catch (observeError) {
+      state = `unknown (${observeError.message})`;
+    }
+    summary([`- ${channel} publishing failed; the registry now reads: ${state}`]);
+    throw error;
+  }
 }
 
 async function publishPypi(argv) {
@@ -1070,7 +1102,14 @@ async function publishPypi(argv) {
   }
   if (before.publish.length > 0) {
     const files = before.publish.map((name) => path.join(bundle, "assets", name));
-    exec("uv", ["publish", "--trusted-publishing", "always", "--check-url", "https://pypi.org/simple/", ...files], { label: "uv publish" });
+    // No configuration file: uv.toml's resolution cool-off would hide the just-uploaded
+    // files from --check-url, and publishing must not read user configuration either.
+    await recordingChannelState("PyPI", decide, () =>
+      exec("uv", ["publish", "--trusted-publishing", "always", "--check-url", "https://pypi.org/simple/", ...files], {
+        env: { ...process.env, UV_NO_CONFIG: "1" },
+        label: "uv publish",
+      }),
+    );
   }
   const after = await waitFor(decide);
   if (after.state !== "identical-complete") {
@@ -1094,6 +1133,20 @@ async function publishGithub(argv) {
 
 // ---------------------------------------------------------------------------------------
 // Post-publication probes and evidence
+
+/** Retry an installation while a registry's index catches up with a new publication. */
+async function retrying(attempt, { attempts = 10, delayMs = 30_000 } = {}) {
+  for (let index = 1; ; index += 1) {
+    try {
+      return attempt();
+    } catch (error) {
+      if (index >= attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
 
 async function download(url, file) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -1156,7 +1209,7 @@ async function probe(argv) {
   await channel("pypi", async () => {
     const dir = path.join(work, "pypi");
     const ephemeral = ephemeralUv({ from: `${PRODUCT}@${manifest.pep440_version}`, dir: path.join(dir, "uvx"), version: manifest.version, index: true });
-    const installed = installWheel({ dir: path.join(dir, "install"), index: true, requirement: `${PRODUCT}==${manifest.pep440_version}` });
+    const installed = await retrying(() => installWheel({ dir: path.join(dir, "install"), index: true, requirement: `${PRODUCT}==${manifest.pep440_version}` }));
     const smoked = smokeInstalled({ expected: installed.installed, installDirs: [installed.binDir], version: manifest.version, label: "uv tool install" });
     const digest = sha256(readFileSync(realpathSync(installed.installed)));
     const problems = [...ephemeral.problems, ...smoked.problems];
@@ -1167,10 +1220,13 @@ async function probe(argv) {
   });
   await channel("crates", async () => {
     const root = path.join(work, "cargo-root");
-    exec("cargo", ["install", "--locked", `${PRODUCT}@${manifest.version}`, "--root", root], {
-      env: { ...process.env, CARGO_TARGET_DIR: path.join(work, "cargo-target") },
-      label: "cargo install --locked",
-    });
+    await retrying(() =>
+      exec("cargo", ["install", "--locked", `${PRODUCT}@${manifest.version}`, "--root", root], {
+        env: { ...process.env, CARGO_TARGET_DIR: path.join(work, "cargo-target") },
+        label: "cargo install --locked",
+        capture: true,
+      }),
+    );
     const binDir = path.join(root, "bin");
     return smokeInstalled({ expected: path.join(binDir, executableName(targetArchive.os)), installDirs: [binDir], version: manifest.version, label: "cargo install" });
   });
@@ -1193,7 +1249,7 @@ async function evidence(argv) {
     const file = findFile(input, `probe-${target.id}.json`);
     return file ? readJson(file) : { host: target.id, status: "missing" };
   });
-  const { decisions } = await channelDecisions({ manifest, assets, repository: process.env.GITHUB_REPOSITORY, token: undefined, includeDrafts: false });
+  const { decisions } = await channelDecisions({ manifest, assets, repository: process.env.GITHUB_REPOSITORY, token: readToken(), includeDrafts: false });
   const incomplete = [
     ...probes.filter((record) => record.status !== "passed").map((record) => `probe ${record.host} is ${record.status}`),
     ...decisions.filter((decision) => decision.state !== "identical-complete").map(describeDecision),

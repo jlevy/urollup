@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { parse } from "yaml";
 
-import { PUBLICATION_JOBS, PUBLISH_CONDITION, REHEARSAL_JOBS, WORKFLOW, checkReleaseWorkflow } from "./check-release-workflow.mjs";
+import { PUBLICATION_JOBS, PUBLISH_CONDITION, REHEARSAL_JOBS, WORKFLOW, checkReleaseWorkflow, secretReferences } from "./check-release-workflow.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEXT = readFileSync(path.join(ROOT, WORKFLOW), "utf8");
@@ -101,4 +101,25 @@ test("checkouts, caches and artifact retention follow the release rules", () => 
   assert.match(problemsAfter((copy) => (copy.jobs.build.strategy.matrix = { include: [{ id: "archive-linux-x86_64" }] })), /job build must take its matrix from the plan/);
   assert.match(problemsAfter((copy) => (copy.jobs.assemble.needs = ["plan", "validate", "crates"])), /assemble must come after gate/);
   assert.match(checkReleaseWorkflow(workflow(), `${TEXT}\non:\n  pull_request_target: {}\n`).join("\n"), /pull_request_target/);
+});
+
+test("secrets and the workflow token are found however an expression spells them", () => {
+  assert.deepEqual(secretReferences("${{ secrets.CARGO_REGISTRY_TOKEN }}"), ["CARGO_REGISTRY_TOKEN"]);
+  assert.deepEqual(secretReferences("${{ secrets['PYPI_TOKEN'] }}"), ["PYPI_TOKEN"]);
+  assert.deepEqual(secretReferences("${{ toJSON(secrets) }}"), ["*"]);
+  assert.deepEqual(secretReferences("${{ secrets[format('{0}', 'X')] }}"), ["*"]);
+  assert.deepEqual(secretReferences("no expression mentions secrets here"), []);
+  assert.match(problemsAfter((copy) => copy.jobs.build.steps.push({ run: "x", env: { ALL: "${{ toJSON(secrets) }}" } })), /job build runs in rehearsals and must not read secrets \(\*\)/);
+  assert.match(problemsAfter((copy) => copy.jobs.validate.steps.push({ run: "x", env: { T: "${{ secrets['CARGO_REGISTRY_TOKEN'] }}" } })), /job validate runs in rehearsals and must not read secrets/);
+  assert.match(problemsAfter((copy) => copy.jobs.benchmark.steps.push({ run: "x", env: { T: "${{ github['token'] }}" } })), /job benchmark must not read the workflow token/);
+  assert.match(problemsAfter((copy) => (copy.env.CARGO_REGISTRY_TOKEN = "${{ secrets.CARGO_REGISTRY_TOKEN }}")), /workflow-level env must not carry a secret/);
+  assert.match(problemsAfter((copy) => (copy.env.GH_TOKEN = "${{ github.token }}")), /workflow-level env must not carry a secret or the workflow token/);
+});
+
+test("the publish condition and order come only from the plan and the plan's job graph", () => {
+  assert.match(problemsAfter((copy) => (copy.jobs.plan.outputs.publish = "true")), /plan output publish must come from the tested plan step/);
+  assert.match(problemsAfter((copy) => (copy.jobs.plan.outputs.matrix = '{"include":[]}')), /plan output matrix must come from the tested plan step/);
+  assert.match(problemsAfter((copy) => (copy.jobs["publish-crates"].needs = ["plan", "assemble"])), /job publish-crates must need exactly plan, stage-github/);
+  assert.match(problemsAfter((copy) => (copy.jobs["publish-github"].needs = ["plan", "stage-github"])), /job publish-github must need exactly plan, publish-crates, publish-pypi/);
+  assert.match(problemsAfter((copy) => (copy.jobs.probe.permissions = { contents: "read" })), /job probe must hold exactly/);
 });
