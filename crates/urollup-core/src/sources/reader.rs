@@ -958,10 +958,14 @@ impl<'a> LineBuffer<'a> {
             let capacity = self.bytes.capacity();
             let next = usize::try_from(next_line_capacity(as_bytes(capacity), as_bytes(limit)))
                 .unwrap_or(usize::MAX);
+            // The line would pass the read's limit, which `read_line` rules out before it
+            // extends; growing anyway would bypass the permit.
+            debug_assert!(next > capacity, "a line buffer was extended past its read's limit");
             if next <= capacity {
-                // Only a caller that passed its own limit gets here; grow to fit.
-                self.bytes.reserve_exact(needed - self.bytes.len());
-                break;
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a line buffer was extended past its read's limit",
+                ));
             }
             if as_bytes(next) > SLOT_LINE_CAPACITY {
                 let need = line_need(as_bytes(next));

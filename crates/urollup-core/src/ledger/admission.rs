@@ -43,6 +43,7 @@ pub mod model;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -542,7 +543,8 @@ impl MemoryAdmission {
     /// the permit once its holder holds nothing.
     ///
     /// A waiting thread holds nothing of the permit, so it cannot block the holder; it
-    /// returns within [`PERMIT_POLL`] of a refusal anywhere in the invocation.
+    /// returns within 20 ms of a refusal anywhere in the invocation. A share belongs to the
+    /// thread that took it, which the type enforces: it cannot move to another thread.
     pub fn large_record(&self, need: u64) -> Option<LargeRecord<'_>> {
         let me = std::thread::current().id();
         let mut permit = lock(&self.permit);
@@ -557,17 +559,19 @@ impl MemoryAdmission {
                 }
                 Some(holder) if holder == me => break,
                 Some(_) => {
+                    permit.waiting = permit.waiting.saturating_add(1);
                     permit = self
                         .permit_released
                         .wait_timeout(permit, PERMIT_POLL)
                         .unwrap_or_else(PoisonError::into_inner)
                         .0;
+                    permit.waiting = permit.waiting.saturating_sub(1);
                 }
             }
         }
         if self.raise_permit(&mut permit, need) {
             permit.shares = permit.shares.saturating_add(1);
-            return Some(LargeRecord { admission: self, need });
+            return Some(LargeRecord { admission: self, need, _thread: PhantomData });
         }
         if permit.shares == 0 {
             permit.holder = None;
@@ -598,6 +602,20 @@ impl MemoryAdmission {
     #[cfg(test)]
     pub(crate) fn permit_holder(&self) -> Option<ThreadId> {
         lock(&self.permit).holder
+    }
+
+    /// Whether a thread starts waiting for the large-record permit within `within`, for
+    /// tests. It never panics, so a test can still stop the thread it waited for.
+    #[cfg(test)]
+    pub(crate) fn permit_waiter_within(&self, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while lock(&self.permit).waiting == 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
     }
 
     /// Reserves one request-bearing observation of `agent` against the row ceiling.
@@ -795,7 +813,7 @@ impl MemoryAdmission {
 
 /// How long a thread waiting for the large-record permit sleeps before it checks the stop
 /// flag again, should it miss the signal a refusal sends.
-pub const PERMIT_POLL: Duration = Duration::from_millis(20);
+pub(crate) const PERMIT_POLL: Duration = Duration::from_millis(20);
 
 /// The large-record permit's state.
 #[derive(Debug, Default)]
@@ -808,15 +826,21 @@ struct Permit {
     held: u64,
     /// The permit's charge: the largest `held` since the last checkpoint.
     level: u64,
+    /// The threads waiting for the permit.
+    waiting: usize,
 }
 
 /// A share of the large-record permit, from [`MemoryAdmission::large_record`]; dropping it
 /// releases its need, and the permit once its holder holds no other share.
+///
+/// Re-entrance is keyed by the thread that took the permit, so a share never moves to
+/// another thread: the type is neither `Send` nor `Sync`.
 #[derive(Debug)]
 #[must_use = "dropping the share releases the large-record permit"]
 pub struct LargeRecord<'a> {
     admission: &'a MemoryAdmission,
     need: u64,
+    _thread: PhantomData<*const ()>,
 }
 
 impl LargeRecord<'_> {
@@ -829,6 +853,7 @@ impl LargeRecord<'_> {
             return !self.admission.stopped();
         }
         let mut permit = lock(&self.admission.permit);
+        debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
         let raised = self.admission.raise_permit(&mut permit, need - self.need);
         if raised {
             self.need = need;
@@ -845,6 +870,7 @@ impl LargeRecord<'_> {
 impl Drop for LargeRecord<'_> {
     fn drop(&mut self) {
         let mut permit = lock(&self.admission.permit);
+        debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
         permit.held = permit.held.saturating_sub(self.need);
         permit.shares = permit.shares.saturating_sub(1);
         if permit.shares == 0 {
@@ -1397,12 +1423,16 @@ mod tests {
     fn a_thread_waiting_for_the_permit_returns_when_a_refusal_stops_the_invocation() {
         let admission = ledger(1000);
         let held = admission.large_record(10).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| admission.large_record(5).is_none());
-            // Let the waiter block on the held permit, then refuse elsewhere.
-            std::thread::sleep(PERMIT_POLL * 2);
+            scope.spawn(|| sender.send(admission.large_record(5).is_none()).unwrap());
+            // Once the other thread waits on the held permit, refuse elsewhere. The refusal
+            // comes whatever happens, so the thread always stops and the scope ends.
+            let waited = admission.permit_waiter_within(Duration::from_secs(60));
             assert!(!admission.charge(Component::Records, 2000));
-            assert!(waiter.join().unwrap(), "the waiter gets no share once stopped");
+            let stopped = receiver.recv_timeout(Duration::from_secs(60));
+            assert!(waited, "the other thread waits for the held permit");
+            assert_eq!(stopped, Ok(true), "the waiter returns, with no share once stopped");
         });
         drop(held);
         assert_eq!(admission.permit_holder(), None);

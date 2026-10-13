@@ -1183,15 +1183,21 @@ fn a_read_waiting_for_the_permit_stops_when_admission_refuses() {
     );
     // Another thread holds the permit, so the scan waits until a refusal stops it.
     let held = admission.large_record(1).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
-        let scan = scope.spawn(|| {
-            read_source(&SPEC, &plain(&path), &options(), &admission, |_| {
+        scope.spawn(|| {
+            let read = read_source(&SPEC, &plain(&path), &options(), &admission, |_| {
                 RecordDisposition::Decoded
-            })
+            });
+            sender.send(matches!(read, Err(SourceReadError::Stopped))).unwrap();
         });
-        std::thread::sleep(crate::ledger::admission::PERMIT_POLL * 2);
+        // Once the scan waits on the held permit, refuse elsewhere. The refusal comes
+        // whatever happens, so the scan always stops and the scope ends.
+        let waited = admission.permit_waiter_within(Duration::from_secs(60));
         assert!(!admission.charge(crate::ledger::admission::Component::Records, u64::MAX / 2));
-        assert!(matches!(scan.join().unwrap(), Err(SourceReadError::Stopped)));
+        let stopped = receiver.recv_timeout(Duration::from_secs(60));
+        assert!(waited, "the scan waits for the held permit");
+        assert_eq!(stopped, Ok(true), "the scan stops with the admission");
     });
     drop(held);
 }
