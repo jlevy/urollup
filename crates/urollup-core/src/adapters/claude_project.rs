@@ -26,7 +26,7 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
-use super::{AdapterError, Ingested};
+use super::{AdapterError, Decoding, Ingested};
 use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
@@ -572,12 +572,34 @@ pub fn ingest_discovery_with_workers(
     )
 }
 
-/// Reads discovered Claude Code transcripts with an explicit observation ceiling.
+/// Reads discovered Claude Code transcripts with an explicit observation ceiling, under an
+/// admission ledger of its own that never refuses bytes.
 pub fn ingest_discovery_with_capacity(
     discovery: Discovery,
     missing_is_error: bool,
     workers: NonZeroUsize,
     capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
+    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let slot = super::worker_slot(&[&discovery]);
+    ingest_discovery_with_admission(
+        discovery,
+        missing_is_error,
+        &Decoding { admission: &admission, workers, slot },
+    )
+}
+
+/// Reads discovered Claude Code transcripts under the invocation's admission ledger.
+///
+/// The decode checkpoint charges the worker slots and releases the coordinating slot;
+/// transcripts then decode on `min(workers, slots)` threads, each read under the ledger,
+/// and each transcript's source rows are charged before its worker returns it
+/// ([`Decoding`]). A refusal returns [`AdapterError::Capacity`], or, for the row
+/// ceiling, [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
+pub fn ingest_discovery_with_admission(
+    discovery: Discovery,
+    missing_is_error: bool,
+    decoding: &Decoding<'_>,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
@@ -589,19 +611,19 @@ pub fn ingest_discovery_with_capacity(
         });
     }
 
-    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let threads = decoding.begin(Agent::Claude)?;
     let decoded = try_read_in_parallel(
         &discovery.sources,
-        workers,
+        threads,
         |source| source_weight(&source.files),
-        |source| decode_source(source, &admission),
+        |source| decode_source(source, decoding),
     );
-    if let Some(refusal) = admission.refusal() {
+    if let Some(refusal) = decoding.admission.refusal() {
         return Err(refusal.into());
     }
     let decoded = decoded?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
-    normalize(corpus, manifest, capacity)
+    normalize(corpus, manifest, &decoding.row_ceiling())
 }
 
 /// Everything one transcript contributes before normalization.
@@ -616,11 +638,13 @@ struct DecodedSource {
     strings: Strings,
 }
 
-/// Reads one transcript and its subagent sidecar, independently of every other source.
+/// Reads one transcript and its subagent sidecar, independently of every other source,
+/// and charges its source rows.
 fn decode_source(
     source: &DiscoveredSource,
-    admission: &MemoryAdmission,
+    decoding: &Decoding<'_>,
 ) -> Result<DecodedSource, AdapterError> {
+    let admission = decoding.admission;
     let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
         environment: "local",
@@ -657,6 +681,7 @@ fn decode_source(
             });
         }
     }
+    decoding.charge_source_rows(&entry, facts.version.as_deref(), &path)?;
     Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
 }
 

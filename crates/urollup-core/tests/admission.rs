@@ -5,8 +5,9 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use serde_json::json;
-use urollup_core::adapters::{AdapterError, claude_project, codex_rollout};
-use urollup_core::ledger::capacity::ObservationCapacity;
+use urollup_core::adapters::{AdapterError, Decoding, claude_project, codex_rollout, worker_slot};
+use urollup_core::ledger::admission::{Component, Hold, MemoryAdmission, ProcessModel, model};
+use urollup_core::ledger::capacity::{MemoryBudget, ObservationCapacity};
 use urollup_core::ledger::reconcile::{ReconcileError, RequestObservation};
 use urollup_core::sources::roots::discover;
 
@@ -170,5 +171,85 @@ fn a_wide_second_frame_decodes_in_one_pass_and_rows_stay_exact() {
             ),
             "{error}"
         );
+    }
+}
+
+/// Each fixture case of `dialect`, with the roots its adapter reads.
+fn fixture_cases(dialect: &str) -> Vec<(String, Vec<std::path::PathBuf>)> {
+    let root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(dialect);
+    let mut cases: Vec<_> = fs::read_dir(root)
+        .expect("the fixture directory is readable")
+        .map(|entry| entry.expect("a fixture entry").path())
+        .filter(|path| path.is_dir())
+        .map(|path| {
+            let name = path.file_name().expect("a case name").to_string_lossy().into_owned();
+            let roots = if dialect == "codex-rollout" {
+                codex_rollout::rollout_roots(&[path])
+            } else {
+                vec![path]
+            };
+            (name, roots)
+        })
+        .collect();
+    cases.sort();
+    cases
+}
+
+type IngestWithAdmission = fn(
+    urollup_core::sources::roots::Discovery,
+    bool,
+    &Decoding<'_>,
+) -> Result<urollup_core::adapters::Ingested, AdapterError>;
+
+const DIALECTS: [(&str, IngestWithAdmission); 2] = [
+    ("claude-project", claude_project::ingest_discovery_with_admission),
+    ("codex-rollout", codex_rollout::ingest_discovery_with_admission),
+];
+
+#[test]
+fn source_rows_cover_every_sources_manifest_entry_source_row_and_join_copies() {
+    use urollup_core::ledger::admission::deep_size::DeepSize as _;
+    for (dialect, ingest) in DIALECTS {
+        for (case, roots) in fixture_cases(dialect) {
+            let discovery = discover(&roots);
+            let slot = worker_slot(&[&discovery]);
+            let admission = MemoryAdmission::unlimited();
+            let workers = NonZeroUsize::new(2).expect("positive workers");
+            let ingested =
+                ingest(discovery, true, &Decoding { admission: &admission, workers, slot })
+                    .expect("the fixture ingests");
+            let sources = ingested.manifest.entries.len() as u64;
+            let held = ingested.manifest.entries.heap()
+                + ingested.sources.heap()
+                + sources * model::join_copies();
+            let charged = admission.charged_by(Component::Sources);
+            assert!(charged >= held, "{dialect}/{case}: {charged} charged for {held} held");
+        }
+    }
+}
+
+#[test]
+fn fewer_slots_decode_on_fewer_threads_with_the_same_result() {
+    for (dialect, ingest) in DIALECTS {
+        for (case, roots) in fixture_cases(dialect) {
+            let slot = worker_slot(&[&discover(&roots)]);
+            let run = |admission: &MemoryAdmission| {
+                admission.raise_hold(Hold::Coordinating, slot).expect("the coordinating slot fits");
+                let workers = NonZeroUsize::new(8).expect("positive workers");
+                ingest(discover(&roots), true, &Decoding { admission, workers, slot })
+                    .expect("the fixture ingests")
+            };
+            let unlimited = run(&MemoryAdmission::unlimited());
+            // ⌊B / (8 × 1.5 × b)⌋ is one slot: a single decoding thread.
+            let one_slot = MemoryAdmission::new(
+                MemoryBudget::exact(12 * slot - 1, "one slot"),
+                ProcessModel::DEFAULT,
+            );
+            assert_eq!(one_slot.worker_slots(slot, NonZeroUsize::new(8)).get(), 1);
+            let narrow = run(&one_slot);
+            assert_eq!(narrow.ledger, unlimited.ledger, "{dialect}/{case}");
+            assert_eq!(narrow.threads, unlimited.threads, "{dialect}/{case}");
+        }
     }
 }

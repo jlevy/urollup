@@ -333,6 +333,10 @@ pub enum Hold {
     Ledger(Agent),
     /// The session index.
     SessionIndex,
+    /// The coordinating thread's worker slot, for the peeks that read sources on that
+    /// thread before decode: catalog links for `--session` and `--source`
+    /// classification. The first decode checkpoint releases it.
+    Coordinating,
 }
 
 /// What bounds `E`.
@@ -441,6 +445,11 @@ impl MemoryAdmission {
     pub fn with_row_ceiling(mut self, ceiling: ObservationCapacity) -> Self {
         self.row_ceiling = Some(ceiling);
         self
+    }
+
+    /// The per-agent ceiling on request-bearing observations, when there is one.
+    pub const fn row_ceiling(&self) -> Option<&ObservationCapacity> {
+        self.row_ceiling.as_ref()
     }
 
     /// The byte budget, or `None` for an unlimited ledger.
@@ -681,6 +690,17 @@ impl MemoryAdmission {
     /// current phase, changes nothing, and is final.
     pub fn hold(&self, changes: &[(Hold, u64)]) -> Result<(), CapacityError> {
         self.transition(None, None, changes)
+    }
+
+    /// Raises `hold` to `bytes` when it holds less, as [`Self::hold`] sets it; a hold that
+    /// already covers `bytes` is kept. The coordinating slot grows this way as discovery
+    /// finds compressed sources.
+    pub fn raise_hold(&self, hold: Hold, bytes: u64) -> Result<(), CapacityError> {
+        let current = lock(&self.holds).get(&hold).copied().unwrap_or(0);
+        if bytes <= current {
+            return self.refusal().map_or(Ok(()), Err);
+        }
+        self.hold(&[(hold, bytes)])
     }
 
     /// Ends `agent`'s ingest in one transition: its phase charges and discovery metadata
@@ -941,6 +961,7 @@ impl fmt::Display for Hold {
             Self::Discovery(agent) => write!(f, "{} discovery", agent.token()),
             Self::Ledger(agent) => write!(f, "{} ledger", agent.token()),
             Self::SessionIndex => f.write_str("session index"),
+            Self::Coordinating => f.write_str("coordinating slot"),
         }
     }
 }

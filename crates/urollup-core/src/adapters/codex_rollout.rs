@@ -24,7 +24,7 @@ use std::sync::Arc;
 use self::line::{
     DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
 };
-use super::{AdapterError, Ingested};
+use super::{AdapterError, Decoding, Ingested};
 use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
@@ -684,12 +684,34 @@ pub fn ingest_discovery_with_workers(
     )
 }
 
-/// Reads discovered Codex rollouts with an explicit observation ceiling.
+/// Reads discovered Codex rollouts with an explicit observation ceiling, under an
+/// admission ledger of its own that never refuses bytes.
 pub fn ingest_discovery_with_capacity(
     discovery: Discovery,
     missing_is_error: bool,
     workers: NonZeroUsize,
     capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
+    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let slot = super::worker_slot(&[&discovery]);
+    ingest_discovery_with_admission(
+        discovery,
+        missing_is_error,
+        &Decoding { admission: &admission, workers, slot },
+    )
+}
+
+/// Reads discovered Codex rollouts under the invocation's admission ledger.
+///
+/// The decode checkpoint charges the worker slots and releases the coordinating slot;
+/// rollouts then decode on `min(workers, slots)` threads, each read under the ledger, and
+/// each rollout's source rows are charged before its worker returns it
+/// ([`Decoding`]). A refusal returns [`AdapterError::Capacity`], or, for the row
+/// ceiling, [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
+pub fn ingest_discovery_with_admission(
+    discovery: Discovery,
+    missing_is_error: bool,
+    decoding: &Decoding<'_>,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
@@ -701,31 +723,39 @@ pub fn ingest_discovery_with_capacity(
         });
     }
 
-    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let threads = decoding.begin(Agent::Codex)?;
     let thread_ids = Arc::new(thread_ids_from_locators(
         discovery.sources.iter().map(|source| source.locator.as_str()),
     )?);
     let decoded = try_read_in_parallel(
         &discovery.sources,
-        workers,
+        threads,
         |source| source_weight(&source.files),
-        |source| decode_rollout(source, &thread_ids, &admission),
+        |source| decode_rollout(source, &thread_ids, decoding),
     );
-    if let Some(refusal) = admission.refusal() {
+    if let Some(refusal) = decoding.admission.refusal() {
         return Err(refusal.into());
     }
     let decoded = decoded?;
-    let (entries, rollouts): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
+    // Sized once, as each source's rows were charged: `unzip` would reserve at least four
+    // rows, the standard minimum capacity, for fewer sources.
+    let mut entries = Vec::with_capacity(decoded.len());
+    let mut rollouts = Vec::with_capacity(decoded.len());
+    for (entry, rollout) in decoded {
+        entries.push(entry);
+        rollouts.push(rollout);
+    }
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
-    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids), capacity)
+    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids), &decoding.row_ceiling())
 }
 
-/// Reads one rollout, independently of every other source.
+/// Reads one rollout, independently of every other source, and charges its source rows.
 fn decode_source(
     source: &DiscoveredSource,
-    admission: &MemoryAdmission,
+    decoding: &Decoding<'_>,
 ) -> Result<(ManifestEntry, ParsedSource), AdapterError> {
+    let admission = decoding.admission;
     let rollout = rollout_name(&source.locator);
     let stable_locator = format!("{}/{}", rollout.thread_id, rollout.rollout_id);
     let spec = SourceSpec {
@@ -742,10 +772,11 @@ fn decode_source(
     let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
     })
-    .map_err(|source| AdapterError::Read { path, source })?;
+    .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
     let mut parsed = decoder.finish();
     parsed.id = entry.source.as_ref().map(|source| source.id.clone());
     parsed.locator.clone_from(&source.locator);
+    decoding.charge_source_rows(&entry, parsed.metas.cli_version.as_deref(), &path)?;
     Ok((entry, parsed))
 }
 
@@ -1243,9 +1274,9 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) ->
 fn decode_rollout(
     source: &DiscoveredSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
-    admission: &MemoryAdmission,
+    decoding: &Decoding<'_>,
 ) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
-    let (entry, parsed) = decode_source(source, admission)?;
+    let (entry, parsed) = decode_source(source, decoding)?;
     // Only a rollout without usage records may infer where a legacy copied prefix ends
     // from other rollouts' turn IDs, so only it waits for every rollout to decode.
     if parsed.counter_scope == CounterScope::All {

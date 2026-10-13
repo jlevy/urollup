@@ -1948,6 +1948,63 @@ fn check_sidecar(report: &mut Report) {
     );
 }
 
+/// The parallel join of `try_read_in_parallel`, eight workers and one, with a result pair
+/// of the model's largest `JOIN_PAIR` bytes: its peak stays within each worker's `done`
+/// vector at its minimum capacity (`JOIN_DONE`, in the worker slot) and each source's
+/// `join_copies`. Some reads stall, so workers take uneven shares, and each case repeats,
+/// keeping its largest peak, since the shares vary from run to run.
+fn check_join(report: &mut Report) {
+    use urollup_core::sources::parallel::{ParallelReadError, try_read_in_parallel};
+    /// Result bytes that make the `(index, result)` pair `JOIN_PAIR` bytes on this target:
+    /// the index and the result's tag take the other 16.
+    #[expect(clippy::cast_possible_truncation, reason = "the join pair is under 1 KiB")]
+    const RESULT_BYTES: usize = model::JOIN_PAIR as usize - 16;
+    type Result = [u8; RESULT_BYTES];
+    assert_eq!(
+        std::mem::size_of::<(usize, Option<std::result::Result<Result, ParallelReadError>>)>()
+            as u64,
+        model::JOIN_PAIR
+    );
+    for (count, threads) in [(1, 1), (8, 8), (9, 8), (64, 8), (1_000, 8), (1_000, 1)] {
+        let items: Vec<usize> = (0..count).collect();
+        // With as many sources as workers, each worker waits for the others, so each takes
+        // one source and holds its `done` vector at the minimum capacity.
+        let barrier = (count == threads).then(|| std::sync::Barrier::new(threads));
+        let mut peak = 0;
+        for round in 0..10 {
+            let (values, measured) = measure(|| {
+                try_read_in_parallel(
+                    &items,
+                    workers(threads),
+                    |item| *item as u64,
+                    |item| {
+                        if let Some(barrier) = &barrier {
+                            barrier.wait();
+                        }
+                        if (item + round) % 61 == 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        Ok::<Result, ParallelReadError>([1; RESULT_BYTES])
+                    },
+                )
+                .expect("the workers join")
+            });
+            assert_eq!(values.len(), count);
+            drop(values);
+            peak = peak.max(measured.peak);
+        }
+        report.bound(
+            "join",
+            &format!("{count} sources on {threads} workers"),
+            peak,
+            &[
+                ("JOIN_DONE", threads as u64 * model::JOIN_DONE),
+                ("join_copies", count as u64 * model::join_copies()),
+            ],
+        );
+    }
+}
+
 /// Eight workers read sources that each hold a 5 MiB line: the large-record permit lets
 /// one buffer past a slot's 4 MiB be live at a time.
 fn check_permit(report: &mut Report) {
@@ -2099,6 +2156,7 @@ fn main() {
     check_long_lines(&mut report);
     check_sidecar(&mut report);
     check_permit(&mut report);
+    check_join(&mut report);
     report.require_necessary_terms();
     let mut out = String::new();
     writeln!(out, "memory model harness ({} ms)", started.elapsed().as_millis()).expect("writes");

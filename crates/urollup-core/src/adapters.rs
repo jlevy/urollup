@@ -5,17 +5,20 @@
 //! decoding separate from selection and accounting.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use crate::ledger::admission::CapacityError;
+use crate::ledger::admission::{CapacityError, Component, Hold, MemoryAdmission, Phase, model};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{ProviderLimitObservation, Relationship, SourceArtifact, Thread};
 use crate::ledger::identity::AnalyticalId;
 use crate::ledger::reconcile::{Ledger, ReconcileError};
+use crate::selection::Agent;
 use crate::sources::evidence::EvidenceRef;
-use crate::sources::manifest::{ManifestEntry, SnapshotManifest};
+use crate::sources::manifest::{ManifestEntry, Representation, SnapshotManifest};
 use crate::sources::reader::SourceReadError;
+use crate::sources::roots::Discovery;
 
 pub mod claude_project;
 pub mod codex_rollout;
@@ -203,5 +206,159 @@ impl From<CapacityError> for AdapterError {
                 Self::Capacity(error)
             }
         }
+    }
+}
+
+/// How one agent's sources decode under process-wide admission (scalable-ingestion plan,
+/// "Admission Determinism").
+#[derive(Clone, Copy, Debug)]
+pub struct Decoding<'a> {
+    /// The invocation's ledger: it charges the worker slots, every read, and each source's
+    /// rows, and its row ceiling, when it has one, also bounds reconciliation.
+    pub admission: &'a MemoryAdmission,
+    /// The configured worker count: `UROLLUP_JOBS`, or the default bound, which is at
+    /// most eight, so it changes the slot count only when an explicit count passes eight.
+    pub workers: NonZeroUsize,
+    /// One worker slot `b` in bytes, the same for both agents ([`worker_slot`]).
+    pub slot: u64,
+}
+
+impl Decoding<'_> {
+    /// The decode checkpoint for `agent`: charges its worker slots,
+    /// `clamp(⌊B / (8 × H × b)⌋, 1, max(8, workers))` of them, releases the coordinating
+    /// slot, and returns the threads decode runs on, `min(workers, slots)`. Fewer threads
+    /// never change the result.
+    pub(crate) fn begin(&self, agent: Agent) -> Result<NonZeroUsize, AdapterError> {
+        let slots = self.admission.worker_slots(self.slot, Some(self.workers));
+        let charge = u64::try_from(slots.get()).unwrap_or(u64::MAX).saturating_mul(self.slot);
+        self.admission.checkpoint(Phase::Decode(agent), charge, &[(Hold::Coordinating, 0)])?;
+        Ok(self.workers.min(slots))
+    }
+
+    /// Charges a source's rows apart from its threads ([`model::source_rows`]) before the
+    /// worker returns its result; a refusal ends the source as admission stopping it.
+    pub(crate) fn charge_source_rows(
+        &self,
+        entry: &ManifestEntry,
+        version: Option<&str>,
+        path: &std::path::Path,
+    ) -> Result<(), AdapterError> {
+        use crate::ledger::admission::deep_size::DeepSize as _;
+        let version = version.map(|version| u64::try_from(version.len()).unwrap_or(u64::MAX));
+        if self.admission.charge(Component::Sources, model::source_rows(entry.heap(), version)) {
+            Ok(())
+        } else {
+            Err(AdapterError::Read { path: path.to_owned(), source: SourceReadError::Stopped })
+        }
+    }
+
+    /// The row ceiling reconciliation checks again, or none.
+    pub(crate) fn row_ceiling(&self) -> crate::ledger::capacity::ObservationCapacity {
+        self.admission
+            .row_ceiling()
+            .cloned()
+            .unwrap_or_else(|| crate::ledger::capacity::ObservationCapacity::from_rows(usize::MAX))
+    }
+}
+
+/// The worker slot `b` for an invocation whose discovery found `discoveries`: the plain
+/// slot, plus the zstd decoder when any source has a `.zst` file and the gzip decoder when
+/// any has a `.gz` file ([`model::worker_slot`]). Both agents' slots are this size.
+pub fn worker_slot(discoveries: &[&Discovery]) -> u64 {
+    let has = |representation: Representation| {
+        discoveries.iter().any(|discovery| {
+            discovery
+                .sources
+                .iter()
+                .any(|source| source.files.files().any(|(_, held)| held == representation))
+        })
+    };
+    model::worker_slot(has(Representation::Zstd), has(Representation::Gzip))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+    use std::path::PathBuf;
+
+    use super::{Decoding, worker_slot};
+    use crate::ledger::admission::{
+        CapacityError, Hold, MemoryAdmission, Phase, ProcessModel, model,
+    };
+    use crate::ledger::capacity::MemoryBudget;
+    use crate::selection::Agent;
+    use crate::sources::manifest::Representation;
+    use crate::sources::reader::LogicalSource;
+    use crate::sources::roots::{DiscoveredSource, Discovery};
+
+    fn workers(count: usize) -> NonZeroUsize {
+        NonZeroUsize::new(count).unwrap()
+    }
+
+    fn discovery(representations: &[Representation]) -> Discovery {
+        let mut discovery = Discovery::default();
+        for (index, representation) in representations.iter().enumerate() {
+            let mut files = LogicalSource::default();
+            files.insert(
+                PathBuf::from(format!("s{index}{}", representation.suffix())),
+                *representation,
+            );
+            discovery.sources.push(DiscoveredSource {
+                root: PathBuf::from("root"),
+                locator: format!("s{index}"),
+                files,
+            });
+        }
+        discovery
+    }
+
+    #[test]
+    fn the_slot_carries_the_decoders_discovery_found_in_either_agent() {
+        let plain = discovery(&[Representation::Plain]);
+        let zstd = discovery(&[Representation::Plain, Representation::Zstd]);
+        let gzip = discovery(&[Representation::Gzip]);
+        assert_eq!(worker_slot(&[]), model::worker_slot(false, false));
+        assert_eq!(worker_slot(&[&plain]), model::worker_slot(false, false));
+        assert_eq!(worker_slot(&[&plain, &zstd]), model::worker_slot(true, false));
+        assert_eq!(worker_slot(&[&gzip, &zstd]), model::worker_slot(true, true));
+    }
+
+    #[test]
+    fn the_decode_checkpoint_charges_the_slots_and_releases_the_coordinating_slot() {
+        let slot = model::worker_slot(false, false);
+        // ⌊B / (8 × 1.5 × b)⌋ = 2 slots, so eight workers decode on two threads.
+        let admission = MemoryAdmission::new(
+            MemoryBudget::exact(24 * slot + slot, "test"),
+            ProcessModel::DEFAULT,
+        );
+        admission.raise_hold(Hold::Coordinating, slot).unwrap();
+        admission.raise_hold(Hold::Coordinating, slot / 2).unwrap();
+        assert_eq!(admission.charged(), slot, "a smaller hold keeps the larger");
+        let decoding = Decoding { admission: &admission, workers: workers(8), slot };
+        assert_eq!(decoding.begin(Agent::Codex).unwrap(), workers(2));
+        assert_eq!(admission.charged(), 2 * slot, "the slots replace the coordinating slot");
+        // One worker needs only one thread, and without a budget an explicit count past
+        // eight decodes on every thread it names.
+        let one = Decoding { workers: workers(1), ..decoding };
+        assert_eq!(one.begin(Agent::Claude).unwrap(), workers(1));
+        let unlimited = MemoryAdmission::unlimited();
+        let many = Decoding { admission: &unlimited, workers: workers(16), slot };
+        assert_eq!(many.begin(Agent::Codex).unwrap(), workers(16));
+    }
+
+    #[test]
+    fn a_budget_without_room_for_one_slot_refuses_at_the_decode_checkpoint() {
+        let slot = model::worker_slot(true, false);
+        let budget = ProcessModel::DEFAULT.baseline + slot;
+        let admission =
+            MemoryAdmission::new(MemoryBudget::exact(budget, "test"), ProcessModel::DEFAULT);
+        let decoding = Decoding { admission: &admission, workers: workers(8), slot };
+        let error = decoding.begin(Agent::Codex).unwrap_err();
+        let super::AdapterError::Capacity(CapacityError::Memory { phase, estimate, .. }) = error
+        else {
+            unreachable!("expected a memory refusal, got {error}");
+        };
+        assert_eq!(phase, Phase::Decode(Agent::Codex));
+        assert_eq!(estimate, Some(ProcessModel::DEFAULT.whole_process(slot)));
     }
 }

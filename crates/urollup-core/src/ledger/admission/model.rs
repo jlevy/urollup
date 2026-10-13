@@ -309,6 +309,10 @@ pub mod sizes {
     pub const STRING: u64 = size_of::<String>() as u64;
     /// A `Vec`, as a group's parts are held.
     pub const LIST: u64 = size_of::<Vec<usize>>() as u64;
+    /// A source's snapshot manifest entry, as the manifest holds it.
+    pub const MANIFEST_ENTRY: u64 = size_of::<crate::sources::manifest::ManifestEntry>() as u64;
+    /// A source entity row, with the copy of its manifest entry it holds inline.
+    pub const SOURCE_ARTIFACT: u64 = size_of::<crate::ledger::entities::SourceArtifact>() as u64;
 }
 
 /// The most key-graph nodes one observation of `agent` can add, including the
@@ -657,10 +661,36 @@ pub const JOIN_PAIR: u64 = max(
 /// result ([`join_copies`]).
 pub const JOIN_DONE: u64 = grown_vec(1, JOIN_PAIR);
 
-/// The copies the join makes of one source's result pair: the worker's doubling `done`
-/// vector, then `results` beside `values`, then `values` beside the unzipped vectors.
+/// The work order the join keeps per source while workers run: its weight and its place
+/// in the heaviest-first order, each in a vector sized once.
+pub const JOIN_ORDER: u64 = 2 * sizes::POINTER;
+
+/// The copies the join makes of one source's result pair, and its share of the work
+/// order: the worker's doubling `done` vector, then the finished `done` vectors, at most
+/// twice their pairs, beside `results`, which the join allocates only once every worker has
+/// finished, then `results` beside `values`, then `values` beside the unzipped vectors.
 pub const fn join_copies() -> u64 {
-    3 * JOIN_PAIR
+    3 * JOIN_PAIR + JOIN_ORDER
+}
+
+/// One source's rows apart from its threads, charged before the worker returns the
+/// source's result: its manifest entry, whose heap is `entry_heap`, in the manifest; its
+/// source entity row, which holds a copy of the entry and, as `version` bytes, the
+/// dialect version its records declared; and the join's copies of its result pair.
+///
+/// A vector of `n` rows sized once costs at most `n` single-row allocations, so each row
+/// is charged one. A cloned entry's strings and vectors are sized to their length, so the
+/// copy's heap is at most `entry_heap`.
+pub const fn source_rows(entry_heap: u64, version: Option<u64>) -> u64 {
+    let version = match version {
+        Some(bytes) => allocation(bytes),
+        None => 0,
+    };
+    allocation(sizes::MANIFEST_ENTRY)
+        .saturating_add(allocation(sizes::SOURCE_ARTIFACT))
+        .saturating_add(entry_heap.saturating_mul(2))
+        .saturating_add(version)
+        .saturating_add(join_copies())
 }
 
 /// One worker slot `b`: the read buffer and boxed reader, the retained line, the line need

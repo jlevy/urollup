@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 use clap::builder::styling::{AnsiColor, Style as AnsiStyle, Styles};
 use clap::{Args, ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use urollup_core::adapters::discovery::DiscoveryEnvironment;
-use urollup_core::adapters::{AdapterError, Ingested, claude_project, codex_rollout};
-use urollup_core::ledger::admission::MemoryAdmission;
+use urollup_core::adapters::{
+    self, AdapterError, Decoding, Ingested, claude_project, codex_rollout,
+};
+use urollup_core::ledger::admission::{Hold, MemoryAdmission};
 use urollup_core::ledger::capacity::{
     ObservationCapacity, RamBudget, physical_memory_bytes, resolve_capacity,
 };
@@ -392,10 +394,14 @@ impl Corpus {
             physical_memory_bytes,
         )?;
         stats.workers = Some(workers);
-        // The peeks that classify `--source` roots and catalog session families read on
-        // this thread, under admission as a decoding worker reads. Until process-wide
-        // admission is wired in, this ledger never refuses.
-        let admission = MemoryAdmission::unlimited();
+        // One ledger for the invocation. Until process-wide admission is wired in, it
+        // never refuses bytes and keeps the per-agent row ceiling. The peeks that classify
+        // `--source` roots and catalog session families read on this thread under the
+        // coordinating slot, which the first decode checkpoint releases.
+        let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity);
+        admission
+            .raise_hold(Hold::Coordinating, adapters::worker_slot(&[]))
+            .map_err(|error| Failure::adapter(&error.into()))?;
         let environment = DiscoveryEnvironment::from_process();
         let (mut claude_roots, claude_missing_is_error) = if args.no_default_sources {
             (Vec::new(), false)
@@ -422,8 +428,15 @@ impl Corpus {
         let mut claude_discovery = roots::discover(&claude_roots);
         let codex_roots = codex_rollout::rollout_roots(&codex_roots);
         let mut codex_discovery = roots::discover(&codex_roots);
+        // Every worker slot, the coordinating one included, carries the decoders of the
+        // compressed sources discovery found.
+        let slot = adapters::worker_slot(&[&claude_discovery, &codex_discovery]);
+        admission
+            .raise_hold(Hold::Coordinating, slot)
+            .map_err(|error| Failure::adapter(&error.into()))?;
         narrow_discoveries(&mut claude_discovery, &mut codex_discovery, query, &admission)?;
         stats.phase("discovery", started);
+        let decoding = Decoding { admission: &admission, workers, slot };
 
         // Codex is the larger corpus. Index and drop its discovery tables before Claude
         // starts, so the peak is one ingest working set plus the other's compact ledger.
@@ -431,11 +444,10 @@ impl Corpus {
         let mut index_elapsed = Duration::ZERO;
 
         let started = Instant::now();
-        let mut codex = codex_rollout::ingest_discovery_with_capacity(
+        let mut codex = codex_rollout::ingest_discovery_with_admission(
             codex_discovery,
             codex_missing_is_error,
-            workers,
-            &capacity,
+            &decoding,
         )
         .map_err(|error| Failure::adapter(&error))?;
         stats.phase("codex_ingest", started);
@@ -446,11 +458,10 @@ impl Corpus {
         index_elapsed += started.elapsed();
 
         let started = Instant::now();
-        let mut claude = claude_project::ingest_discovery_with_capacity(
+        let mut claude = claude_project::ingest_discovery_with_admission(
             claude_discovery,
             claude_missing_is_error,
-            workers,
-            &capacity,
+            &decoding,
         )
         .map_err(|error| Failure::adapter(&error))?;
         stats.phase("claude_ingest", started);
@@ -1013,6 +1024,10 @@ fn classify_explicit_source(
             unreadable.kind
         )));
     }
+    // The coordinating slot carries the decoders these peeks build.
+    admission
+        .raise_hold(Hold::Coordinating, adapters::worker_slot(&[&discovery]))
+        .map_err(|error| Failure::adapter(&error.into()))?;
     let mut dialect = None;
     for discovered in &discovery.sources {
         // A source that cannot be read, or that holds only records no dialect claims, such
