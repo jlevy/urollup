@@ -11,7 +11,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-include = ["src/**", "Cargo.toml", "README.md"]
+# Anchored: an unanchored "README.md" also matches every fixture README under tests/.
+include = ["/src/**", "/Cargo.toml", "/README.md"]
 
 [lib]
 name = "urollup_core"

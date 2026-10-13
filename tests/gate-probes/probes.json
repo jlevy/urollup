@@ -49,6 +49,51 @@
       "expect": "actions/cache@v4 must pin an exact 40-character commit"
     },
     {
+      "id": "supply-chain-unpinned-apt",
+      "gate": "supply-chain",
+      "violation": "the release plan's apt list gains a package that is not pinned and inventoried",
+      "edits": [
+        {
+          "path": "scripts/release-targets.mjs",
+          "substitute": {
+            "from": "\"musl-tools=1.2.4-2\"];",
+            "to": "\"musl-tools=1.2.4-2\", \"gcc\"];"
+          }
+        }
+      ],
+      "expect": "must equal the inventory exactly; not inventoried: gcc"
+    },
+    {
+      "id": "supply-chain-apt-option-before-install",
+      "gate": "supply-chain",
+      "violation": "a workflow installs an unpinned apt package with options before the install verb",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "          sudo apt-get update\n",
+            "to": "          sudo apt-get update\n          sudo apt-get -y install gcc\n"
+          }
+        }
+      ],
+      "expect": "installs apt package gcc, which is not a pinned, inventoried version"
+    },
+    {
+      "id": "supply-chain-apt-upgrade",
+      "gate": "supply-chain",
+      "violation": "a workflow upgrades every installed package with apt-get, pinning nothing",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "          sudo apt-get update\n",
+            "to": "          sudo apt-get update\n          sudo apt-get -y upgrade\n"
+          }
+        }
+      ],
+      "expect": "runs apt-get upgrade; release workflows run only apt-get update and apt-get install of pinned packages"
+    },
+    {
       "id": "lint-policy-member-opts-out",
       "gate": "lint-policy",
       "violation": "a workspace member drops its [lints] table",
@@ -86,6 +131,96 @@
         }
       ],
       "expect": "does not parse as a JSON object and is not declared malformed or pending"
+    },
+    {
+      "id": "release-build-job-oidc",
+      "gate": "release-check",
+      "violation": "a release build job asks for an OIDC token, the authority attestation and trusted publishing use",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "  build:\n    name: Build ${{ matrix.id }}\n    needs: plan\n",
+            "to": "  build:\n    name: Build ${{ matrix.id }}\n    needs: plan\n    permissions:\n      contents: read\n      id-token: write\n"
+          }
+        }
+      ],
+      "expect": "job build runs in rehearsals and must keep the read-only default"
+    },
+    {
+      "id": "release-target-dropped",
+      "gate": "release-check",
+      "violation": "the release matrix replaces the Windows x86_64 archive with an unplanned target",
+      "edits": [
+        {
+          "path": "scripts/release-targets.mjs",
+          "substitute": {
+            "from": "archive: { rustTarget: \"x86_64-pc-windows-msvc\", format: \"zip\", linkage: \"windows-static-crt\" },",
+            "to": "archive: { rustTarget: \"aarch64-pc-windows-msvc\", format: \"zip\", linkage: \"windows-static-crt\" },"
+          }
+        }
+      ],
+      "expect": "release archives must be exactly"
+    },
+    {
+      "id": "release-first-notes-list-fixes",
+      "gate": "release-check",
+      "violation": "the first release's notes list a fix for a defect that never shipped",
+      "edits": [
+        {
+          "path": "CHANGELOG.md",
+          "substitute": {
+            "from": "### Known Limitations\n",
+            "to": "### Fixed\n\n- Codex cache writes are counted once.\n\n### Known Limitations\n"
+          }
+        }
+      ],
+      "expect": "the first release's notes list fixes"
+    },
+    {
+      "id": "release-wheel-version-literal",
+      "gate": "release-check",
+      "violation": "the PyPI metadata writes a version literal that can drift from Cargo",
+      "edits": [
+        {
+          "path": "crates/urollup/pyproject.toml",
+          "substitute": {
+            "from": "dynamic = [\"version\"]\n",
+            "to": "version = \"0.1.0\"\n"
+          }
+        }
+      ],
+      "expect": "the PyPI version must not be a literal"
+    },
+    {
+      "id": "release-gate-continue-on-error",
+      "gate": "release-check",
+      "violation": "the release gate job may fail without failing the run",
+      "edits": [
+        {
+          "path": ".github/workflows/release.yml",
+          "substitute": {
+            "from": "  gate:\n    name: Gate (make check)\n    needs: plan\n",
+            "to": "  gate:\n    name: Gate (make check)\n    needs: plan\n    continue-on-error: true\n"
+          }
+        }
+      ],
+      "expect": "job gate must not continue on error"
+    },
+    {
+      "id": "release-crates-publish-verifies",
+      "gate": "release-check",
+      "violation": "cargo publish verifies, compiling every build script while the crates.io token is in its environment",
+      "edits": [
+        {
+          "path": "scripts/release-registry.mjs",
+          "substitute": {
+            "from": "return [\"cargo\", \"publish\", \"--locked\", \"--no-verify\", \"--workspace\"];",
+            "to": "return [\"cargo\", \"publish\", \"--locked\", \"--workspace\"];"
+          }
+        }
+      ],
+      "expect": "must not build"
     },
     {
       "id": "rustfmt",

@@ -11,7 +11,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-include = ["src/**", "tests/**", "Cargo.toml"]
+# The integration tests read fixtures from urollup-core's tests/, which no package ships, so
+# they stay in the repository; the extracted package is built and installed, not tested.
+include = ["/src/**", "/Cargo.toml"]
 
 [[bin]]
 name = "urollup"

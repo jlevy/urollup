@@ -104,7 +104,7 @@ test("the bootstrap policy enforces one reviewed uv version in Make and CI", () 
   assert(uvRelease);
   assert.deepEqual(
     new Set(uvRelease.files),
-    new Set([".github/workflows/ci.yml", "Makefile"]),
+    new Set([".github/workflows/ci.yml", ".github/workflows/release.yml", "Makefile"]),
   );
 
   const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");

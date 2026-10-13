@@ -1,0 +1,45 @@
+# PyPI distribution of the urollup executable: a Maturin `bindings = "bin"` wheel that
+# carries the compiled Rust binary as its one console script. There is no Python code,
+# wrapper, extension module or downloader, and no sdist is published
+# (docs/project/specs/active/plan-2026-09-16-first-release-publishing.md, PyPI Binary
+# Package).
+#
+# The repository root's pyproject.toml is the separate, development-only `urollup-dev`
+# project; nothing here is a Rust build or runtime dependency. The version is not written
+# here: Maturin reads it from the workspace's Cargo version, and the release plan checks the
+# built wheel against the tag (scripts/release-identity.mjs).
+[build-system]
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "urollup"
+dynamic = ["version"]
+description = "Trustworthy token and usage rollups from Claude Code and Codex session logs"
+readme = "../../README.md"
+license = "MIT"
+authors = [{ name = "urollup contributors" }]
+keywords = ["usage", "tokens", "claude", "codex", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
+  "Topic :: Software Development",
+]
+
+[project.urls]
+Repository = "https://github.com/jlevy/urollup"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
+
+# Maturin's default CycloneDX SBOM embeds the absolute build path, a random serial number
+# and the build time, so two builds of one commit would differ. The release manifest and
+# provenance attestations identify each wheel instead.
+[tool.maturin.sbom]
+rust = false

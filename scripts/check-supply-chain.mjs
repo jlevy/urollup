@@ -673,6 +673,170 @@ export function validateBootstrapPin(filePath, text, item, versionSourceText = n
   }
 }
 
+/** Container images a file references by digest, as `registry/name@sha256:<digest>`. */
+export function imageReferences(text) {
+  return [...text.matchAll(/\b([a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?\/[a-z0-9._/-]+)@(sha256:[0-9a-f]{64})\b/g)].map((match) => ({
+    image: match[1],
+    digest: match[2],
+  }));
+}
+
+/**
+ * Every container image a release build runs must be pinned by digest and inventoried, and
+ * every inventoried image must still be what its files reference. A tag-only reference to a
+ * registry image fails closed.
+ */
+export function validateImagePins(files, inventory) {
+  for (const file of files) {
+    for (const reference of imageReferences(file.text)) {
+      if (!inventory.some((item) => item.image === reference.image && item.digest === reference.digest)) {
+        fail(`${file.path} uses container image ${reference.image}@${reference.digest}, which supply-chain-policy.json does not inventory`);
+      }
+    }
+    const unpinned = file.text.match(/\b(?:quay\.io|ghcr\.io|docker\.io|mcr\.microsoft\.com)\/[a-z0-9._/-]+:[A-Za-z0-9._-]+\b(?!@sha256)/);
+    if (unpinned) {
+      fail(`${file.path} references container image ${unpinned[0]} by tag; pin it by digest`);
+    }
+  }
+  for (const item of inventory) {
+    for (const filePath of item.files) {
+      const file = files.find((candidate) => candidate.path === filePath);
+      if (!file || !file.text.includes(`${item.image}@${item.digest}`)) {
+        fail(`${filePath} does not pin container image ${item.image}@${item.digest}`);
+      }
+    }
+  }
+}
+
+/** Package tools a workflow could install or change system packages with. */
+export const PACKAGE_TOOLS = ["apt", "apt-get", "aptitude", "dpkg"];
+
+/** apt-get options that take a separate argument, which is not the verb. */
+const APT_OPTIONS_WITH_ARGUMENT = new Set(["-o", "--option", "-c", "--config-file", "-t", "--target-release", "--default-release"]);
+
+/** Workflow lines with backslash continuations joined, so a wrapped install is read whole. */
+function logicalLines(text) {
+  return text.replace(/\\\r?\n\s*/g, " ").split("\n");
+}
+
+/**
+ * The shell commands on one workflow line, as word lists: a leading YAML key (`run:`,
+ * `- run:`, an env name) is dropped, a word starting with `#` ends the line, and
+ * `&&`, `||`, `;`, `|`, `&`, `$(`, backquotes and parentheses separate commands.
+ * Step names and descriptions are prose, not commands, and are skipped.
+ */
+function shellCommands(line) {
+  if (/^\s*(?:-\s+)?(?:name|description):\s/.test(line)) {
+    return [];
+  }
+  const words = line.replace(/^\s*(?:-\s+)?[A-Za-z0-9_-]+:(?:\s+|$)/, "").split(/\s+/).filter(Boolean);
+  const comment = words.findIndex((word) => word.startsWith("#"));
+  const text = (comment >= 0 ? words.slice(0, comment) : words).join(" ");
+  return text
+    .split(/&&|\|\||[;|&()`]|\$\(/)
+    .map((command) => command.trim().split(/\s+/).filter(Boolean).map((word) => word.replace(/^['"]+|['"]+$/g, "")))
+    .filter((command) => command.length > 0);
+}
+
+/**
+ * Read one command that names a package tool. Only two forms are allowed, run directly or
+ * under `sudo` or `env` with variable assignments: `apt-get update`, and `apt-get
+ * install` naming at least one package. Options may sit before or after the verb.
+ * Returns `{packages}` for an install, `{}` for an update, or `{problem}` for anything
+ * else, including a tool this cannot read (review C3).
+ */
+export function readPackageCommand(words) {
+  const at = words.findIndex((word) => PACKAGE_TOOLS.includes(word.split("/").pop()));
+  if (at < 0) {
+    return null;
+  }
+  const tool = words[at].split("/").pop();
+  const command = words.join(" ");
+  const before = words.slice(0, at);
+  if (!before.every((word) => word === "sudo" || word === "env" || word.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word))) {
+    return { problem: `"${command}" runs ${tool} in a form this gate cannot read; run apt-get directly, under sudo or env only` };
+  }
+  if (tool !== "apt-get") {
+    return { problem: `"${command}" runs ${tool}; release workflows change packages only with apt-get update and an apt-get install of pinned packages` };
+  }
+  const rest = [];
+  for (let index = at + 1; index < words.length; index += 1) {
+    if (APT_OPTIONS_WITH_ARGUMENT.has(words[index])) {
+      index += 1;
+    } else if (!words[index].startsWith("-")) {
+      rest.push(words[index]);
+    }
+  }
+  const [verb, ...packages] = rest;
+  if (verb === "update" && packages.length === 0) {
+    return {};
+  }
+  if (verb !== "install") {
+    return { problem: `"${command}" runs apt-get ${verb ?? "with no verb"}; release workflows run only apt-get update and apt-get install of pinned packages` };
+  }
+  if (packages.length === 0) {
+    return { problem: `"${command}" is an apt-get install that names no package, so nothing pins what it installs` };
+  }
+  return { packages };
+}
+
+/**
+ * The only variable a workflow `apt-get install` may expand, and the value it must take:
+ * the release plan's matrix, which carries `MUSL_APT_PACKAGES` from
+ * scripts/release-targets.mjs.
+ */
+export const APT_VARIABLE = { name: "APT_PACKAGES", value: "${{ matrix.apt_packages }}" };
+
+/**
+ * Every `apt-get install` in a workflow installs only pinned, inventoried packages:
+ * literal `name=version` arguments from the inventory, or `$APT_PACKAGES` set from the
+ * plan's matrix. `planned` is the plan's package list (`MUSL_APT_PACKAGES`), which must
+ * equal the inventory exactly, and each inventoried package must be pinned in its files.
+ */
+export function validateAptPins(workflows, files, inventory, planned) {
+  const pinned = new Set(inventory.map((item) => `${item.name}=${item.version}`));
+  for (const workflow of workflows) {
+    for (const command of logicalLines(workflow.text).flatMap(shellCommands)) {
+      const read = readPackageCommand(command);
+      if (read === null) {
+        continue;
+      }
+      if (read.problem) {
+        fail(`${workflow.path}: ${read.problem}`);
+      }
+      for (const word of read.packages ?? []) {
+        const variable = word.match(/^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/)?.[1];
+        if (variable !== undefined) {
+          if (variable !== APT_VARIABLE.name) {
+            fail(`${workflow.path} installs apt packages through $${variable}; only $${APT_VARIABLE.name} from the plan's matrix is allowed`);
+          }
+          if (!new RegExp(`^\\s*${APT_VARIABLE.name}:\\s*${escapeRegExp(APT_VARIABLE.value)}\\s*$`, "m").test(workflow.text)) {
+            fail(`${workflow.path} must set ${APT_VARIABLE.name}: ${APT_VARIABLE.value}`);
+          }
+          continue;
+        }
+        if (!pinned.has(word)) {
+          fail(`${workflow.path} installs apt package ${word}, which is not a pinned, inventoried version`);
+        }
+      }
+    }
+  }
+  const plannedSet = new Set(planned);
+  const unplanned = planned.filter((entry) => !pinned.has(entry));
+  const uninstalled = [...pinned].filter((entry) => !plannedSet.has(entry));
+  if (unplanned.length > 0 || uninstalled.length > 0) {
+    fail(`the release's apt packages (MUSL_APT_PACKAGES) must equal the inventory exactly; not inventoried: ${unplanned.join(", ") || "none"}; not planned: ${uninstalled.join(", ") || "none"}`);
+  }
+  for (const item of inventory) {
+    for (const filePath of item.files) {
+      const file = files.find((candidate) => candidate.path === filePath);
+      if (!file || !file.text.includes(`"${item.name}=${item.version}"`)) {
+        fail(`${filePath} does not pin apt package ${item.name}=${item.version}`);
+      }
+    }
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -840,6 +1004,56 @@ async function verifyBootstrap(policy, root, context) {
     }
   }
 
+
+  for (const item of policy.bootstrap.containerImages) {
+    const [registry, namespace, ...rest] = item.image.split("/");
+    if (registry !== "quay.io" || !namespace || rest.length !== 1) {
+      fail(`container image ${item.image} must be a quay.io namespace/repository, the only registry this gate can verify`);
+    }
+    const history = await fetchJson(
+      `https://quay.io/api/v1/repository/${namespace}/${rest[0]}/tag/?specificTag=${encodeURIComponent(item.tag)}&onlyActiveTags=false&limit=100`,
+    );
+    const matches = (history.tags ?? []).filter((tag) => tag.name === item.tag && tag.manifest_digest === item.digest);
+    if (matches.length === 0) {
+      fail(`container image ${item.image}:${item.tag} has never pointed at ${item.digest}`);
+    }
+    const first = Math.min(...matches.map((tag) => Number(tag.start_ts)));
+    assertAged(
+      { ecosystem: "container-image", name: item.image, version: item.digest, publishedAt: new Date(first * 1000).toISOString() },
+      context.now,
+      context.minimumAgeDays,
+      context.exceptions,
+      context.firstParty,
+    );
+  }
+
+  for (const item of policy.bootstrap.aptPackages) {
+    for (const architecture of item.architectures) {
+      const series = `https://api.launchpad.net/1.0/ubuntu/${item.distribution}/${architecture}`;
+      const published = await fetchJson(
+        `https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedBinaries&binary_name=${encodeURIComponent(item.name)}&exact_match=true&version=${encodeURIComponent(item.version)}&distro_arch_series=${encodeURIComponent(series)}&status=Published`,
+      );
+      const entries = (published.entries ?? []).filter(
+        (entry) => entry.binary_package_version === item.version && ["Release", "Updates", "Security"].includes(entry.pocket),
+      );
+      if (entries.length === 0) {
+        fail(`apt package ${item.name}=${item.version} is not published for ${item.distribution}/${architecture}`);
+      }
+      assertAged(
+        {
+          ecosystem: "apt",
+          name: `${item.name}/${item.distribution}/${architecture}`,
+          version: item.version,
+          publishedAt: entries.map((entry) => entry.date_published).sort()[0],
+        },
+        context.now,
+        context.minimumAgeDays,
+        context.exceptions,
+        context.firstParty,
+      );
+    }
+  }
+
   for (const group of policy.bootstrap.identicalFileGroups) {
     const contents = await Promise.all(group.map((file) => readFile(path.join(root, file), "utf8")));
     if (!contents.every((content) => content === contents[0])) {
@@ -859,10 +1073,29 @@ export function validatePolicy(policy, now) {
     !Array.isArray(policy.bootstrap?.githubReleases) ||
     !Array.isArray(policy.bootstrap?.rustToolchains) ||
     !Array.isArray(policy.bootstrap?.nodeRuntimes) ||
+    !Array.isArray(policy.bootstrap?.containerImages) ||
+    !Array.isArray(policy.bootstrap?.aptPackages) ||
     !Array.isArray(policy.bootstrap?.identicalFileGroups)
   ) {
     fail("supply-chain policy is missing bootstrap inventories");
   }
+}
+
+/**
+ * The release build inputs' static pins, checked before any network request so a bad pin
+ * fails fast and offline: container images by digest, and apt packages as exact versions
+ * that the workflow and the release plan's list both match.
+ */
+async function validateReleaseInputs(policy, root, workflows) {
+  const pinnedFiles = await Promise.all(
+    [...new Set([...policy.bootstrap.containerImages, ...policy.bootstrap.aptPackages].flatMap((item) => item.files))].map(async (file) => ({
+      path: file,
+      text: await readFile(path.join(root, file), "utf8"),
+    })),
+  );
+  validateImagePins([...pinnedFiles, ...workflows], policy.bootstrap.containerImages);
+  const { MUSL_APT_PACKAGES } = await import(pathToFileURL(path.join(root, "scripts", "release-targets.mjs")).href);
+  validateAptPins(workflows, pinnedFiles, policy.bootstrap.aptPackages, MUSL_APT_PACKAGES);
 }
 
 async function main() {
@@ -886,6 +1119,7 @@ async function main() {
   const python = uvTexts.flatMap((text) => parseUvLock(text));
   const actions = parseActionUses(workflows);
   validateWorkflowSecurity(workflows);
+  await validateReleaseInputs(policy, ROOT, workflows);
 
   await Promise.all([
     verifyCargo(cargo, context),

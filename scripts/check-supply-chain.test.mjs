@@ -7,15 +7,18 @@ import {
   assertNoExpiredExceptions,
   assertEqualProvenance,
   fetchWithRetry,
+  imageReferences,
   isNestedWorkingCopy,
   parseActionUses,
   parseCargoLock,
   parseUvLock,
   selectGithubToken,
+  validateAptPins,
   validateBootstrapPin,
   validateDownloadScripts,
   validateExceptions,
   validateFirstParty,
+  validateImagePins,
   validatePolicy,
   validateWorkflowSecurity,
 } from "./check-supply-chain.mjs";
@@ -395,7 +398,7 @@ test("an expired exception fails the policy even when no locked package uses it"
     minimumAgeDays: 14,
     exceptions: [EXPIRED],
     firstParty: [],
-    bootstrap: { npm: [], githubReleases: [], rustToolchains: [], nodeRuntimes: [], identicalFileGroups: [] },
+    bootstrap: { npm: [], githubReleases: [], rustToolchains: [], nodeRuntimes: [], containerImages: [], aptPackages: [], identicalFileGroups: [] },
   };
   assert.throws(() => validatePolicy(policy, NOW), /expired-example expired/);
   assert.doesNotThrow(() => validatePolicy({ ...policy, exceptions: [] }, NOW));
@@ -472,4 +475,75 @@ test("nested working copies are left to their own gate", () => {
   // An agent worktree under .claude/worktrees/ holds a mid-edit copy of this repository.
   assert.equal(isNestedWorkingCopy([".agents", ".claude", ".git", "Cargo.toml"]), true);
   assert.equal(isNestedWorkingCopy(["hooks", "scripts", "settings.json"]), false);
+});
+
+const IMAGE = "quay.io/pypa/manylinux2014_x86_64";
+const DIGEST = `sha256:${"a".repeat(64)}`;
+const IMAGES = [{ image: IMAGE, tag: "2026.09.26-1", digest: DIGEST, files: ["scripts/release-targets.mjs"] }];
+
+test("release container images are pinned by digest and inventoried", () => {
+  const pinned = { path: "scripts/release-targets.mjs", text: `x86_64: "${IMAGE}@${DIGEST}",\n` };
+  assert.deepEqual(imageReferences(pinned.text), [{ image: IMAGE, digest: DIGEST }]);
+  assert.doesNotThrow(() => validateImagePins([pinned], IMAGES));
+  const other = { path: "scripts/release-targets.mjs", text: `"${IMAGE}@sha256:${"b".repeat(64)}"\n` };
+  assert.throws(() => validateImagePins([other], IMAGES), /does not inventory/);
+  const byTag = { path: ".github/workflows/release.yml", text: "container: quay.io/pypa/manylinux2014_x86_64:latest\n" };
+  assert.throws(() => validateImagePins([pinned, byTag], IMAGES), /by tag; pin it by digest/);
+  assert.throws(() => validateImagePins([{ path: "scripts/release-targets.mjs", text: "" }], IMAGES), /does not pin container image/);
+  assert.throws(() => validateImagePins([], IMAGES), /does not pin container image/);
+});
+
+const APT = [{ name: "musl-tools", version: "1.2.4-2", distribution: "noble", architectures: ["amd64"], files: ["scripts/release-targets.mjs"] }];
+
+test("apt packages in release builds are exact, inventoried versions", () => {
+  const targets = { path: "scripts/release-targets.mjs", text: 'export const MUSL_APT_PACKAGES = ["musl-tools=1.2.4-2"];\n' };
+  const planned = ["musl-tools=1.2.4-2"];
+  const step = (install, env = "          APT_PACKAGES: ${{ matrix.apt_packages }}\n") => ({
+    path: ".github/workflows/release.yml",
+    text: `      - run: |\n          sudo apt-get update\n          ${install}\n        env:\n${env}`,
+  });
+  const viaVariable = step("sudo apt-get install --yes --no-install-recommends $APT_PACKAGES");
+  assert.doesNotThrow(() => validateAptPins([viaVariable], [targets], APT, planned));
+  assert.doesNotThrow(() => validateAptPins([step('sudo apt-get install -y "${APT_PACKAGES}"')], [targets], APT, planned));
+  assert.doesNotThrow(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools=1.2.4-2\n" }], [targets], APT, planned));
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt-get install -y musl-tools\n" }], [targets], APT, planned), /installs apt package musl-tools, which is not a pinned/);
+  assert.throws(() => validateAptPins([{ path: "w.yml", text: "      - run: sudo apt install gcc=13.2.0-4\n" }], [targets], APT, planned), /gcc=13\.2\.0-4/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y $APT_PACKAGES $EXTRA_PACKAGES")], [targets], APT, planned), /through \$EXTRA_PACKAGES; only \$APT_PACKAGES/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y $APT_PACKAGES", "          APT_PACKAGES: gcc\n")], [targets], APT, planned), /must set APT_PACKAGES: \$\{\{ matrix\.apt_packages \}\}/);
+  assert.throws(() => validateAptPins([step("sudo apt-get install -y \\\n            gcc")], [targets], APT, planned), /installs apt package gcc/, "a continuation line is read with its install");
+  assert.throws(() => validateAptPins([viaVariable], [targets], APT, [...planned, "gcc"]), /must equal the inventory exactly; not inventoried: gcc/);
+  assert.throws(() => validateAptPins([viaVariable], [targets], APT, []), /not planned: musl-tools=1\.2\.4-2/);
+  assert.throws(() => validateAptPins([viaVariable], [{ ...targets, text: '"musl-tools=1.2.3-1"' }], APT, planned), /does not pin apt package musl-tools=1\.2\.4-2/);
+  // Review B3: options may come before the install verb.
+  for (const install of ["sudo apt-get -y install gcc", "sudo apt-get --yes install gcc", "sudo apt-get -qq install gcc", "sudo DEBIAN_FRONTEND=noninteractive apt-get -y install gcc", "sudo apt-get -o Dpkg::Options::=--force-confold install gcc"]) {
+    assert.throws(() => validateAptPins([step(install)], [targets], APT, planned), /installs apt package gcc/, install);
+  }
+  assert.doesNotThrow(() => validateAptPins([step("sudo apt-get update --no-install-recommends")], [targets], APT, planned), "an install-like option is not the verb");
+  assert.throws(() => validateAptPins([step("sudo dpkg -i musl.deb")], [targets], APT, planned), /runs dpkg; release workflows change packages only with apt-get update/);
+  // Review C3: only apt-get update and a pinned apt-get install are allowed; every other
+  // verb, tool or unreadable form is refused rather than skipped.
+  const refusals = {
+    "sudo apt-get satisfy -y 'gcc (>= 1)'": /runs apt-get satisfy/,
+    "sudo apt-get build-dep -y gcc": /runs apt-get build-dep/,
+    "sudo apt-get -y upgrade": /runs apt-get upgrade/,
+    "sudo apt-get -y dist-upgrade": /runs apt-get dist-upgrade/,
+    "sudo apt-get -y reinstall gcc": /runs apt-get reinstall/,
+    "sudo apt-get -y -f install": /names no package/,
+    "sudo apt-get -y": /runs apt-get with no verb/,
+    "sudo aptitude -y install gcc": /runs aptitude/,
+    "sudo apt install -y musl-tools=1.2.4-2": /runs apt;/,
+    "echo gcc | xargs sudo apt-get install -y": /"xargs sudo apt-get install -y" runs apt-get in a form this gate cannot read/,
+    "sudo apt-get update && sudo apt-get upgrade -y": /runs apt-get upgrade/,
+    "pkgs=$(apt-get -s upgrade)": /runs apt-get upgrade/,
+    "sudo /usr/bin/apt-get -y upgrade": /runs apt-get upgrade/,
+    "sudo apt-get install -y ./musl.deb": /installs apt package \.\/musl\.deb/,
+  };
+  for (const [command, message] of Object.entries(refusals)) {
+    assert.throws(() => validateAptPins([step(command)], [targets], APT, planned), message, command);
+  }
+  const env = (value) => ({ path: "w.yml", text: `      - run: sudo $CMD\n        env:\n          CMD: ${value}\n` });
+  assert.throws(() => validateAptPins([env("apt-get -y upgrade")], [targets], APT, planned), /runs apt-get upgrade/, "an env value that runs apt-get is read too");
+  const prose = { path: "w.yml", text: "      # apt-get upgrade is never run here\n      - name: Install the apt packages\n        run: sudo apt-get update # refresh the apt lists\n" };
+  assert.doesNotThrow(() => validateAptPins([prose], [targets], APT, planned), "comments and step names are prose, not commands");
+  assert.doesNotThrow(() => validateAptPins([step("sudo -E env DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 install -y musl-tools=1.2.4-2")], [targets], APT, planned));
 });
