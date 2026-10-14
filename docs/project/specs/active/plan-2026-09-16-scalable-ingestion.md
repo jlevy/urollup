@@ -347,17 +347,17 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 to 5 (budget source, ledger, model
-and harness, readers and workers, and Codex) implemented.
+**Status:** design accepted (2026-10-09); slices 1 to 6 (budget source, ledger, model
+and harness, readers and workers, Codex and Claude) implemented.
 The CLI passes one ledger that never refuses bytes, so only the row ceiling refuses; the
 permit, worker slots, the coordinating slot and source rows are charged for both agents,
-and Codex charges its decode, construction, reconciliation and commit, which slice 6
-does for Claude. `F` rests on CI’s Linux intercept and the query constants stay guesses
-until slice 8. [Implementation Notes](#implementation-notes) records choices the slices
-made where this design left room.
-The maintainer settled the policy [decisions](#decisions) on 2026-10-09. Values marked
-*guess* are placeholders that the [slices](#implementation-slices) measure or calibrate;
-*derived* values follow from type sizes and growth patterns in the current code.
+and both adapters charge their decode, construction, reconciliation and commit.
+`F` rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
+[Implementation Notes](#implementation-notes) records choices the slices made where this
+design left room. The maintainer settled the policy [decisions](#decisions) on
+2026-10-09. Values marked *guess* are placeholders that the
+[slices](#implementation-slices) measure or calibrate; *derived* values follow from type
+sizes and growth patterns in the current code.
 
 One byte ledger per invocation replaces the per-agent row-shell ceiling described under
 [Memory Model](#memory-model).
@@ -1607,11 +1607,88 @@ Choices made while implementing, where this design left room:
     start cold, at one and eight workers across repeated runs; the CLI stays unlimited
     until slice 7, which moves them to the binary.
 
-- **Left to later slices.** Slice 6: the same for Claude, including its thread graph,
-  which uses `with_capacity` and removes entries, so it is charged by capacity and by
-  cumulative inserts. Slice 7: the statistics line from `PhaseEstimate`, the discovery
-  and coordinating holds (`COORDINATING_CACHES`, `uro-2hzh`), and the session-index
-  checkpoint, which replaces the index reserve.
+- **Claude (slice 6).** The Claude adapter charges every phase of its ingest on the
+  invocation’s ledger; with the CLI’s unlimited ledger, output is unchanged.
+  - **Interns.** Each transcript’s decode is scoped to the ledger on its worker
+    (`MemoryAdmission::scope`), and the merge, observation building and reconciliation
+    on the coordinating thread, so new process interns are charged as for Codex.
+  - **Decode.** Before a usage line’s record is built it is charged `decoded_record`
+    (with the record vector’s base at the first) and, for a request record, κ; its
+    extras (`extras_cost`: the box, the advisors and their model names, a `quotaLimits`
+    object’s sorted view, native text and limit name, and a usage-limit message), its
+    tool uses at 3 × with the vector’s base at the first, its evidence in its thread’s
+    row, a fork relationship when it replays a record under another session, and one
+    limit row per limit it reports.
+    What a line adds to its transcript’s tables exists once the line is read, so it is
+    charged just after, within the line’s own need, for skipped lines too: each new
+    string’s shared text and its slots in this table, the merged table and the merge’s
+    remapping (`charges::SYMBOL`), the dialect version’s copy, and each run of sidechain
+    records. The transcript’s string table and its path’s strings are charged before the
+    read, and a subagent sidecar’s kept agent type after it.
+  - **`quotaLimits`.** The body pass builds the object through `line::QuotaCost`, a
+    counting visitor that charges each node before allocating it: an object’s B-tree
+    entry and first node, an array element at 3 × a value with the array’s base, and
+    each key and string at its allocation.
+    Within 640 KiB the worker slot holds the running cost; past it the visitor takes
+    `admission.large_record(cost)`, re-entrant with the line buffer’s share, and raises
+    it as the cost grows, until the line’s body is dropped.
+    A refusal fails the parse and stops the decode, so it is a capacity error rather
+    than a malformed line.
+    A value that is not an object is read as a document reads it and builds nothing.
+    A repeated key frees its earlier object before the next is built; the earlier cost
+    stays charged. `quota_limits` now writes the native text once into a buffer of the
+    length a counting serializer reports (`native_length`), which changes no output.
+  - **Thread rows** (`transcript_rows`), charged to `Sources` before the worker returns
+    a transcript: for each native thread it names (its own, each record’s, the main
+    thread of each session its records name, and each inline thread) the row
+    `thread_graph` builds (now `native_thread_row`, built on the worker to size it, with
+    the transcript’s longest project) and the session index’s copy, the entries
+    `thread_graph` and the index hold for it (`charges::THREAD_ENTRIES`) and the
+    transcript’s paths twice; two relationships per sidechain run and one for a
+    subagent’s spawn, with its sidecar’s entries (`charges::SIDECAR`); and the
+    transcript’s evidence, version entry, source-table share, and the gap and loss
+    summary its snapshot can raise.
+    A thread several transcripts name is charged per transcript, so `thread_graph`’s
+    presized maps and the entries it removes are covered by cumulative inserts.
+  - **Construction.** After workers join, the construction checkpoint replaces decode’s
+    charges, slots and permit with `construction_estimate` over the decoded records,
+    request records, limit rows and the payloads the transcripts own (string tables,
+    tool uses, facts, extras and sidecars), plus, held once, each transcript’s rows as
+    decode charged them, each advisor record’s per-model usage list, the merge’s vectors
+    and largest remapping, `charges::CONSTRUCTION_BASES`, one key derivation and the
+    manifest. The merge charges each record that reports a spawning tool use where it
+    pushes it; `reconcile_input` charges the cache-breakdown diagnostics and the
+    ambiguity diagnostics’ evidence and maps where it pushes them, and shrinks the
+    observation vector before grouping, which changes no output.
+  - **Reconciliation and commit** go through `Decoding::reconcile` and
+    `Decoding::commit` as for Codex, with the manifest and the dialect versions held
+    beside the input, the source rows built from them at finalize, and the diagnostics
+    sort’s scratch charged before it is allocated.
+  - **Harness.** The harness ingests every Claude fixture and generated project (up to 8
+    sessions of 600 records, with block records, progress copies that replay the session
+    before, two models and distinct quota snapshots, plain and padded) under the decode
+    bound at one and eight workers, and a generated Codex home and Claude project on one
+    ledger, Claude second.
+    All pass; on 8 sessions of 600 records the peak is 40% of the largest `E`.
+    `quotaLimits` documents measure 72–80% of the visitor’s cost, and the densest 4 KiB
+    document costs 292,608 B by the visitor, within the 640 KiB allowance.
+    Removing the decode charges for records and κ fails the decode bound, removing the
+    construction checkpoint’s held terms fails the later bound on three fixtures, and
+    halving the visitor’s cost fails the document check.
+    κ alone, at decode or in the construction estimate, is not necessary on these
+    corpora: decode’s κ covers the record, and construction frees records as it builds
+    observations.
+  - **Tests.** A committed Claude ingest holds exactly its `Retained` total, releases
+    its discovery hold and charges every component; thresholds are exact and identical
+    at one and eight workers, in process and in fresh processes; a dense project refuses
+    at the budget its plain twin needs, whose row-shell count admits every request, and
+    padding changes no charge; a Codex home and a Claude project that each fit a budget
+    alone refuse it together during the Claude ingest; and a `quotaLimits` object past
+    the allowance takes the permit while an array of the same size builds nothing.
+
+- **Left to later slices.** Slice 7: the statistics line from `PhaseEstimate`, the
+  discovery and coordinating holds (`COORDINATING_CACHES`, `uro-2hzh`), and the
+  session-index checkpoint, which replaces the index reserve.
   Slice 8: per-allocator `F` and `H`, with `F` measured on Linux directly, and the query
   constants from the calibration matrix.
 

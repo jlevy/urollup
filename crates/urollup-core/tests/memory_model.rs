@@ -18,15 +18,17 @@
 //!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
 //!   largest linked set's from `Order`, then finalize; and the pushes reconciliation
 //!   reports cover what it pushed.
-//! - **Ingests:** an adapter that charges its decode ingests every fixture and generated
-//!   corpora, at one and eight workers, under a ledger whose `E` the allocator compares
-//!   with live heap at every allocation, from before discovery to the commit: live heap
-//!   must stay within `E`, plus the Rust heap of the slots in use while workers decode
-//!   (read buffers, retained lines, join vectors, caches and decoder state; thread stacks,
-//!   zstd's C state and the unused line allowance are left out). The largest generated
-//!   corpora make `E` at least ten times that slot term on one worker. The other adapter's
-//!   peak is reported beside the forward estimate computable after the fact, until slice 6
-//!   charges its decode.
+//! - **Ingests:** each adapter ingests every fixture and generated corpora, and both agents
+//!   ingest generated corpora one after the other, at one and eight workers, under a ledger
+//!   whose `E` the allocator compares with live heap at every allocation, from before
+//!   discovery to the commit: live heap must stay within `E`, plus the Rust heap of the
+//!   slots in use while workers decode (read buffers, retained lines, join vectors, caches
+//!   and decoder state; thread stacks, zstd's C state and the unused line allowance are left
+//!   out). The largest generated corpora make `E` at least ten times that slot term on one
+//!   worker.
+//! - **`quotaLimits` documents:** Claude's counting visitor's cost covers the heap of each
+//!   document it builds, and the densest document of 4 KiB of text fits the slot's
+//!   allowance.
 //! - **Retained state:** each ingest's ledger, discovery and the session index against
 //!   their deep sizes, and the caches a fresh thread that coordinates the ingest keeps
 //!   afterwards.
@@ -1510,31 +1512,65 @@ fn check_query_reserve(report: &mut Report) {
     );
 }
 
-/// Request-bearing records and decoded records of an ingest, read after the fact.
-struct IngestCounts {
-    decoded: u64,
-    observations: u64,
-    limit_rows: u64,
+/// Ingests a Codex home and then a Claude project under one ledger whose `E` the
+/// allocator compares with live heap at every allocation, as [`ingest_tracked`] does for
+/// one agent: the Codex ledger stays held, committed, while Claude decodes and reconciles.
+fn ingest_both_tracked(codex: &Path, claude: &Path, count: usize) -> (Tracked, Ingested) {
+    let start = live();
+    let codex_discovery = discover(&roots(Agent::Codex, codex));
+    let claude_discovery = discover(&roots(Agent::Claude, claude));
+    let holds = [
+        (Hold::Discovery(Agent::Codex), codex_rollout::discovery_heap(&codex_discovery)),
+        (Hold::Discovery(Agent::Claude), claude_discovery.heap()),
+    ];
+    let threads = count.min(codex_discovery.sources.len().max(claude_discovery.sources.len()));
+    let slot_term =
+        slot_heap(&codex_discovery).max(slot_heap(&claude_discovery)) * threads.max(1) as u64;
+    let admission = MemoryAdmission::unlimited().with_heap_mirror(&MIRROR);
+    admission.hold(&holds).expect("an unlimited ledger holds");
+    LEDGER_BASE.store(start + LEDGER_HOLDS, Ordering::Relaxed);
+    SLOT_TERM.store(slot_term, Ordering::Relaxed);
+    DECODE_EXCESS.store(0, Ordering::Relaxed);
+    LATER_EXCESS.store(0, Ordering::Relaxed);
+    TRACKING.store(true, Ordering::Relaxed);
+    let decoding = Decoding { admission: &admission, workers: workers(count), slot: 0 };
+    let codex = codex_rollout::ingest_discovery_with_admission(codex_discovery, true, &decoding)
+        .expect("the Codex home ingests");
+    let claude = claude_project::ingest_discovery_with_admission(claude_discovery, true, &decoding)
+        .expect("the Claude project ingests");
+    TRACKING.store(false, Ordering::Relaxed);
+    let tracked = Tracked {
+        ingested: claude,
+        decode_excess: DECODE_EXCESS.load(Ordering::Relaxed),
+        later_excess: LATER_EXCESS.load(Ordering::Relaxed),
+        largest: admission.largest(),
+        slot_term,
+    };
+    (tracked, codex)
 }
 
-fn counts(ingested: &Ingested) -> IngestCounts {
-    IngestCounts {
-        decoded: ingested.manifest.entries.iter().map(|entry| entry.counters.decoded).sum(),
-        observations: ingested.ledger.coverage.observations,
-        limit_rows: ingested.limit_observations.len() as u64,
+/// Both agents' generated corpora ingested under one ledger, at one and eight workers.
+fn check_both(report: &mut Report, case: &str, codex: &Path, claude: &Path) {
+    // Warm both corpora's interns and lazily initialized state first.
+    drop(ingest(Agent::Codex, codex, 1));
+    drop(ingest(Agent::Claude, claude, 1));
+    for count in [1, 8] {
+        let label = format!("both/{case} ({count}w)");
+        let (tracked, codex) = ingest_both_tracked(codex, claude, count);
+        report.bound_total("decode above E", &label, tracked.decode_excess, 0);
+        report.bound_total("later above E", &label, tracked.later_excess, 0);
+        report.note(
+            "ingest E",
+            &label,
+            format!("largest E {} and slot term {}", tracked.largest, tracked.slot_term),
+        );
+        drop((tracked, codex));
     }
 }
 
-/// Whether `agent`'s adapter charges its decode, so that its ingest is checked against
-/// `E`; the other adapter's peak is reported beside the forward estimate instead.
-fn charges_decode(agent: Agent) -> bool {
-    matches!(agent, Agent::Codex)
-}
-
 /// Discovers and ingests `root`, checking discovery and the retained ledger against their
-/// deep heap, then reports the peak beside the forward estimate that can be computed
-/// after the fact, and checks what a fresh coordinating thread keeps once the result is
-/// dropped.
+/// deep heap and live heap against the ledger's `E` at every allocation, and checks what a
+/// fresh coordinating thread keeps once the result is dropped.
 fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
     // The first run warms lazily initialized state: interned names, timezone data and
     // thread-local caches, which belong to the baseline or to process interns.
@@ -1560,47 +1596,18 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
             measured.retained,
             ingested.heap() + new_interns,
         );
-        if charges_decode(agent) {
-            // Live heap stays within `E` at every allocation, plus the slots' Rust heap
-            // while workers decode.
-            report.bound_total("decode above E", &label, tracked.decode_excess, 0);
-            report.bound_total("later above E", &label, tracked.later_excess, 0);
-            report.note(
-                "ingest E",
-                &label,
-                format!(
-                    "peak {} with largest E {} and slot term {} ({} requested retained)",
-                    measured.peak, tracked.largest, tracked.slot_term, measured.retained_requested
-                ),
-            );
-        } else {
-            let counts = counts(ingested);
-            // Metadata stays beside the request structure that κ covers.
-            let metadata = [
-                ingested.manifest.heap(),
-                ingested.sources.heap(),
-                ingested.threads.heap(),
-                ingested.relationships.heap(),
-                ingested.ledger.diagnostics.heap(),
-                ingested.ledger.gaps.heap(),
-                ingested.ledger.source_table.heap(),
-            ]
-            .into_iter()
-            .sum::<u64>();
-            let forward = counts.decoded * model::decoded_record(agent)
-                + counts.observations * model::kappa(agent)
-                + counts.limit_rows * model::limit_row()
-                + metadata
-                + new_interns;
-            report.note(
-                "ingest peak",
-                &label,
-                format!(
-                    "peak {} vs forward estimate {forward} without payloads or worker slots ({} requested retained)",
-                    measured.peak, measured.retained_requested
-                ),
-            );
-        }
+        // Live heap stays within `E` at every allocation, plus the slots' Rust heap while
+        // workers decode.
+        report.bound_total("decode above E", &label, tracked.decode_excess, 0);
+        report.bound_total("later above E", &label, tracked.later_excess, 0);
+        report.note(
+            "ingest E",
+            &label,
+            format!(
+                "peak {} with largest E {} and slot term {} ({} requested retained)",
+                measured.peak, tracked.largest, tracked.slot_term, measured.retained_requested
+            ),
+        );
         drop(tracked);
     }
     // A fresh thread coordinates the ingest, as the main thread does once the discovery
@@ -2104,6 +2111,57 @@ fn check_join(report: &mut Report) {
     );
 }
 
+/// `quotaLimits` documents read by Claude's body pass: building each stays within the cost
+/// its counting visitor charges node by node, and a document of 4 KiB of the densest text,
+/// one-entry objects side by side, within the worker slot's allowance; a value that is not
+/// an object builds nothing.
+fn check_quota(report: &mut Report) {
+    let line = |quota: &str| {
+        format!(
+            r#"{{"type":"assistant","message":{{"usage":{{"output_tokens":1}}}},"quotaLimits":{quota}}}"#
+        )
+    };
+    // Each `"kNNNNN":{"a":1},` is 16 bytes of text and one B-tree node.
+    let dense = |text: usize| {
+        let entries: Vec<String> =
+            (0..text / 16).map(|index| format!(r#""k{index:05}":{{"a":1}}"#)).collect();
+        format!("{{{}}}", entries.join(","))
+    };
+    let nested = |depth: usize| format!("{}1{}", r#"{"a":"#.repeat(depth), "}".repeat(depth));
+    let array = |items: usize| {
+        let values: Vec<String> = (0..items).map(|index| index.to_string()).collect();
+        format!(r#"{{"a":[{}],"b":"{}"}}"#, values.join(","), "x".repeat(items))
+    };
+    let not_object = |items: usize| {
+        let values: Vec<String> = (0..items).map(|_| r#"{"a":1}"#.to_owned()).collect();
+        format!("[{}]", values.join(","))
+    };
+    let cases = [
+        ("4 KiB densest", line(&dense(4 << 10))),
+        ("64 KiB densest", line(&dense(64 << 10))),
+        ("nested 100 deep", line(&nested(100))),
+        ("array of 10,000", line(&array(10_000))),
+        ("not an object", line(&not_object(10_000))),
+    ];
+    for (case, text) in cases {
+        let (cost, measured) = measure(|| claude_project::read_quota_cost(text.as_bytes()));
+        let cost = cost.expect("the line is a document");
+        if case == "not an object" {
+            report.bound_total("quota document", case, measured.peak + cost, 0);
+            continue;
+        }
+        report.bound("quota document", case, measured.peak, &[("quota visitor", cost)]);
+        if case == "4 KiB densest" {
+            report.bound(
+                "quota allowance",
+                case,
+                cost,
+                &[("QUOTA_DOCUMENT_ALLOWANCE", model::QUOTA_DOCUMENT_ALLOWANCE)],
+            );
+        }
+    }
+}
+
 /// Eight workers read sources that each hold a 5 MiB line: the large-record permit lets
 /// one buffer past a slot's 4 MiB be live at a time.
 fn check_permit(report: &mut Report) {
@@ -2225,7 +2283,9 @@ fn main() {
             check_ingest(&mut report, agent, &name, &case);
         }
     }
-    for (sessions, records, padding) in [(2, 200, 0), (4, 200, 0), (4, 200, 2048)] {
+    for (sessions, records, padding) in
+        [(2, 200, 0), (4, 200, 0), (4, 200, 2048), (8, 600, 0), (8, 600, 512)]
+    {
         let corpus = claude_corpus(sessions, records, padding);
         let case = format!("generated {sessions}×{records} pad {padding}");
         check_ingest(&mut report, Agent::Claude, &case, corpus.path());
@@ -2236,6 +2296,11 @@ fn main() {
         let corpus = codex_corpus(rollouts, records, period, padding);
         let case = format!("generated {rollouts}×{records} limits/{period} pad {padding}");
         check_ingest(&mut report, Agent::Codex, &case, corpus.path());
+    }
+    {
+        let claude = claude_corpus(8, 600, 0);
+        let codex = codex_corpus(8, 600, 50, 0);
+        check_both(&mut report, "generated 8×600", codex.path(), claude.path());
     }
     report.note("time", "ingest", format!("{} ms", started.elapsed().as_millis()));
     {
@@ -2254,6 +2319,7 @@ fn main() {
     check_decoders(&mut report);
     check_long_lines(&mut report);
     check_sidecar(&mut report);
+    check_quota(&mut report);
     check_permit(&mut report);
     check_join(&mut report);
     report.require_necessary_terms();
