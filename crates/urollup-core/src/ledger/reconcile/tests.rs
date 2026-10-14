@@ -230,6 +230,104 @@ fn codes(ledger: &super::Ledger) -> Vec<DiagnosticCode> {
     ledger.diagnostics.iter().map(|d| d.code).collect()
 }
 
+/// Reconciliation reports what it pushes beyond its counts at the stage where it pushes it:
+/// a conflicting re-read's diagnostic before `Canonical`, then each group's diagnostics, its
+/// split key's candidate structures and its ambiguous owners, and the unresolved candidate's
+/// diagnostic once requests are sorted; every one stays until the ledger is finalized. A
+/// refused push stops reconciliation there.
+#[test]
+fn pushed_state_is_reported_where_it_is_pushed_and_a_refused_push_stops() {
+    use crate::ledger::admission::{CapacityError, Component, Phase, model};
+    use crate::selection::Agent;
+    let input = || {
+        let mut reread = observed(0, 10, "msg_reread", 7);
+        let mut changed = reread.clone();
+        changed.usage = Some(usage(100, 8));
+        reread.owner = OwnerEvidence::Proven(thread("t1"));
+        let mut split_a = observed(1, 10, "msg_split", 3);
+        split_a.invariants.push(("session", "s-a".into()));
+        let mut split_b = observed(2, 10, "msg_split", 3);
+        split_b.invariants.push(("session", "s-b".into()));
+        let mut owned_a = observed(3, 10, "msg_owned", 1);
+        owned_a.owner = OwnerEvidence::Proven(thread("t2"));
+        let owned_b = observed(4, 10, "msg_owned", 1);
+        ReconcileInput {
+            requests: vec![reread, changed, split_a, split_b, owned_a, owned_b],
+            source_table: test_sources(),
+            ..ReconcileInput::default()
+        }
+    };
+    let capacity = crate::ledger::capacity::ObservationCapacity::from_rows(usize::MAX);
+    let mut seen = Vec::new();
+    let ledger = reconcile_with_stages(input(), &LatestRevision, &capacity, &mut |stage| {
+        seen.push(stage);
+        Ok(())
+    })
+    .unwrap();
+    let pushed: Vec<(Component, u64, bool)> = seen
+        .iter()
+        .filter_map(|stage| {
+            if let ReconcileStage::Pushed { component, bytes, kept } = *stage {
+                Some((component, bytes, kept))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let diagnostic = |code: DiagnosticCode| {
+        ledger.diagnostics.iter().filter(|d| d.code == code).map(model::diagnostic_of).sum::<u64>()
+    };
+    // The re-read's diagnostic comes before `Canonical`, the others after `Order`.
+    let canonical = seen.iter().position(|stage| *stage == ReconcileStage::Canonical).unwrap();
+    assert!(matches!(
+        seen[canonical - 1],
+        ReconcileStage::Pushed { component: Component::Payloads, kept: true, .. }
+    ));
+    // The split key's parts also grow the request vector past its presized capacity,
+    // which the finalize estimate covers, so it is not kept.
+    let growth = model::split_growth(u64::try_from(ledger.requests.len()).unwrap());
+    assert_eq!(
+        pushed.iter().filter(|(component, ..)| *component == Component::Kappa).count(),
+        3,
+        "the split key's structures, the ambiguous owners and the growth: {pushed:?}"
+    );
+    assert!(pushed.contains(&(Component::Kappa, growth, false)), "{pushed:?}");
+    let ambiguous = model::ambiguous_owners(2);
+    let structures = model::conflicting_key(2);
+    assert!(pushed.contains(&(Component::Kappa, ambiguous, true)), "{pushed:?}");
+    assert!(pushed.contains(&(Component::Kappa, structures, true)), "{pushed:?}");
+    let reported: u64 = pushed
+        .iter()
+        .filter(|(component, ..)| *component == Component::Payloads)
+        .map(|(_, bytes, _)| bytes)
+        .sum();
+    // Compaction keeps each diagnostic's evidence and detail, so the pushes cover them.
+    assert!(reported >= diagnostic(DiagnosticCode::ConflictingReread), "{reported}");
+    assert!(pushed.iter().all(|(_, bytes, kept)| *bytes > 0 && (*kept || *bytes == growth)));
+    assert!(seen.windows(2).any(|pair| {
+        pair[0] == ReconcileStage::Sorted && matches!(pair[1], ReconcileStage::Pushed { .. })
+    }));
+    // Without stages, the ledger is the same.
+    assert_eq!(ledger, reconcile(input(), &LatestRevision).unwrap());
+
+    let refusal = ReconcileError::Admission(CapacityError::Memory {
+        phase: Phase::Grouping(Agent::Codex),
+        estimate: None,
+        budget: 1,
+        label: "test".into(),
+    });
+    let mut after = Vec::new();
+    let result = reconcile_with_stages(input(), &LatestRevision, &capacity, &mut |stage| {
+        if matches!(stage, ReconcileStage::Pushed { component: Component::Kappa, .. }) {
+            return Err(refusal.clone());
+        }
+        after.push(stage);
+        Ok(())
+    });
+    assert_eq!(result, Err(refusal));
+    assert!(!after.contains(&ReconcileStage::Requests), "{after:?}");
+}
+
 #[test]
 fn linked_sets_count_runs_of_one_root_and_the_longest() {
     assert_eq!(linked_sets(&[]), (0, 0));

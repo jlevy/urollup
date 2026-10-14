@@ -303,3 +303,350 @@ fn fewer_slots_decode_on_fewer_threads_with_the_same_result() {
         }
     }
 }
+
+/// A Codex home of `families` root rollouts of `records` token counts each, every one
+/// after a line of `padding` bytes of content the adapter skips, and a legacy fork of
+/// each root that copies the root's first half before counting on its own; plus one
+/// rollout that reports usage records. The rate limits change on every token count when
+/// `distinct_limits`, and every tenth turn names a model of its own when
+/// `distinct_models`; otherwise every count repeats one snapshot and one model.
+fn codex_families(
+    families: usize,
+    records: usize,
+    padding: usize,
+    distinct_limits: bool,
+    distinct_models: bool,
+) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("a synthetic Codex home");
+    let sessions = root.path().join("sessions/2026/09/02");
+    fs::create_dir_all(&sessions).expect("a sessions directory");
+    let write = |thread: &str, lines: &[serde_json::Value]| {
+        let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        fs::write(sessions.join(format!("rollout-2026-09-02T17-00-00-{thread}.jsonl")), text)
+            .expect("a rollout is written");
+    };
+    let turn = |family: usize, record: usize| {
+        let model =
+            if distinct_models { format!("gpt-{family}-{record}") } else { "gpt-test".to_owned() };
+        json!({"type": "turn_context",
+            "payload": {"turn_id": format!("turn-{family}-{record}"), "model": model, "effort": "high"}})
+    };
+    let count = |record: usize, total: usize| {
+        let used = if distinct_limits { record } else { 1 };
+        json!({"timestamp": "2026-09-02T17:00:02.000Z", "type": "event_msg",
+            "payload": {"type": "token_count",
+                "info": {"total_token_usage": {"input_tokens": total * 100, "output_tokens": total * 10,
+                    "total_tokens": total * 110},
+                    "last_token_usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}},
+                "rate_limits": {"limit_id": "codex",
+                    "primary": {"used_percent": used, "window_minutes": 300},
+                    "secondary": {"used_percent": 1, "window_minutes": 10080}}}})
+    };
+    let content = json!({"type": "response_item",
+        "payload": {"type": "message", "content": [{"type": "output_text", "text": "x".repeat(padding)}]}});
+    for family in 0..families {
+        let parent = format!("019f0000-0000-7000-8000-{family:012}");
+        let child = format!("019f0000-0000-7000-8000-{:012}", 1_000 + family);
+        let meta = |id: &str| {
+            json!({"type": "session_meta", "payload": {"id": id, "cwd": "/home/example/project",
+                "cli_version": "0.150.0", "source": "cli", "model_provider": "openai"}})
+        };
+        let mut lines = vec![meta(&parent)];
+        let mut copied = Vec::new();
+        for record in 0..records {
+            if record % 10 == 0 {
+                lines.push(turn(family, record));
+            }
+            lines.push(content.clone());
+            lines.push(count(record, record + 1));
+            if record < records / 2 {
+                copied.clone_from(&lines);
+            }
+        }
+        write(&parent, &lines);
+        let mut fork = vec![json!({"type": "session_meta", "payload": {"id": child,
+            "forked_from_id": parent, "cwd": "/home/example/project", "cli_version": "0.150.0"}})];
+        fork.extend(copied);
+        let base = records / 2;
+        for record in 0..records / 2 {
+            if record % 10 == 0 {
+                fork.push(turn(1_000 + family, record));
+            }
+            fork.push(content.clone());
+            fork.push(count(base + record, base + record + 1));
+        }
+        write(&child, &fork);
+    }
+    let direct = "019f0000-0000-7000-8000-999999999999";
+    let mut lines = vec![json!({"type": "session_meta", "payload": {"id": direct}})];
+    for record in 0..records {
+        lines.push(json!({"type": "token_usage_record", "payload": {"thread_id": direct,
+            "response_id": format!("resp-{record}"),
+            "usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}}}));
+    }
+    write(direct, &lines);
+    root
+}
+
+fn workers(count: usize) -> NonZeroUsize {
+    NonZeroUsize::new(count).expect("positive workers")
+}
+
+/// Ingests the Codex home at `root` under `admission` on `count` workers, with the slot
+/// size its discovery implies.
+fn ingest_codex(
+    root: &std::path::Path,
+    admission: &MemoryAdmission,
+    count: usize,
+) -> Result<urollup_core::adapters::Ingested, AdapterError> {
+    let discovery = discover(&codex_rollout::rollout_roots(&[root.to_owned()]));
+    let slot = worker_slot(&[&discovery]);
+    codex_rollout::ingest_discovery_with_admission(
+        discovery,
+        true,
+        &Decoding { admission, workers: workers(count), slot },
+    )
+}
+
+fn budget(bytes: u64) -> MemoryAdmission {
+    MemoryAdmission::new(
+        MemoryBudget::exact(bytes, format!("--max-ram {bytes}")),
+        ProcessModel::DEFAULT,
+    )
+}
+
+/// The smallest whole-process budget at which `run` succeeds, from a successful run's
+/// largest heap term (`F + H × largest`): probed again at that budget until the slot
+/// count it implies is the one the run charged, since the slots' charge depends on it.
+fn threshold(slot: u64, run: impl Fn(&MemoryAdmission) -> bool) -> u64 {
+    let slots = |bytes: u64| budget(bytes).worker_slots(slot, Some(workers(8)));
+    let mut probe = u64::MAX / 4;
+    loop {
+        let admission = budget(probe);
+        assert!(run(&admission), "the probe at {probe} succeeds");
+        let threshold = ProcessModel::DEFAULT.whole_process(admission.largest());
+        if slots(threshold) == slots(probe) {
+            return threshold;
+        }
+        probe = threshold;
+    }
+}
+
+fn slot_of(root: &std::path::Path) -> u64 {
+    worker_slot(&[&discover(&codex_rollout::rollout_roots(&[root.to_owned()]))])
+}
+
+#[test]
+fn a_codex_ingest_commits_what_it_retains_and_releases_its_decode() {
+    use urollup_core::adapters::Retained;
+    use urollup_core::ledger::admission::deep_size::DeepSize as _;
+    use urollup_core::selection::Agent;
+    let root = codex_families(2, 40, 0, true, true);
+    for count in [1, 8] {
+        let admission = MemoryAdmission::unlimited();
+        admission.hold(&[(Hold::Discovery(Agent::Codex), 1_000)]).expect("the hold fits");
+        let ingested = ingest_codex(root.path(), &admission, count).expect("the home ingests");
+        // The forks copy their roots' history and wait for every rollout to decode.
+        assert_eq!(ingested.relationships.len(), 2);
+        assert!(ingested.ledger.coverage.copies > 0);
+        let retained = Retained::of(Agent::Codex, &ingested);
+        assert_eq!(retained.ledger, ingested.heap());
+        assert_eq!(
+            retained.query_reserve,
+            ingested.ledger.requests.len() as u64 * model::QUERY_RESERVE
+        );
+        assert!(retained.index_reserve > 0);
+        // The commit holds what the ledger retains, releases the discovery hold, and keeps
+        // only the interns besides.
+        assert_eq!(admission.held(Hold::Ledger(Agent::Codex)), retained.total());
+        assert_eq!(admission.held(Hold::Discovery(Agent::Codex)), 0);
+        assert_eq!(admission.held(Hold::Coordinating), 0);
+        assert_eq!(
+            admission.charged(),
+            retained.total() + admission.charged_by(Component::Interns)
+        );
+        // Decode charged every component a record, its κ, its payloads, its limit rows and
+        // its source and thread rows pay for.
+        for component in [
+            Component::Records,
+            Component::Kappa,
+            Component::Payloads,
+            Component::Limits,
+            Component::Sources,
+        ] {
+            assert!(admission.charged_by(component) > 0, "{component:?}");
+        }
+        assert!(admission.largest() > admission.charged());
+    }
+}
+
+/// The budget at which a Codex ingest succeeds is exact and the same for one and eight
+/// workers: one byte less refuses with the same error, and a budget that holds one worker
+/// slot and the work order but not the first record refuses while reading, naming no
+/// estimate.
+#[test]
+fn codex_refusal_is_exact_and_independent_of_the_worker_count() {
+    use urollup_core::ledger::admission::{CapacityError, Phase};
+    use urollup_core::selection::Agent;
+    let root = codex_families(3, 120, 0, true, true);
+    let slot = slot_of(root.path());
+    // A first run interns the home's names, which later runs in this process share.
+    let expected = ingest_codex(root.path(), &MemoryAdmission::unlimited(), 1).expect("ingests");
+    let threshold = threshold(slot, |admission| ingest_codex(root.path(), admission, 1).is_ok());
+    let mut refusals = Vec::new();
+    for count in [1, 8] {
+        for _ in 0..3 {
+            let at = ingest_codex(root.path(), &budget(threshold), count)
+                .expect("the threshold budget succeeds");
+            assert_eq!(at.ledger, expected.ledger, "{count} workers");
+            let error = ingest_codex(root.path(), &budget(threshold - 1), count)
+                .expect_err("one byte less refuses");
+            let AdapterError::Capacity(CapacityError::Memory { budget, .. }) = &error else {
+                panic!("{count} workers: unexpected error {error}");
+            };
+            assert_eq!(*budget, threshold - 1);
+            refusals.push(error.to_string());
+        }
+    }
+    refusals.dedup();
+    assert_eq!(refusals.len(), 1, "{refusals:#?}");
+
+    // One slot and the work order, and not the first record.
+    let sources = discover(&codex_rollout::rollout_roots(&[root.path().to_owned()])).sources.len();
+    let floor = ProcessModel::DEFAULT.whole_process(slot + model::work_order(sources as u64));
+    let error = ingest_codex(root.path(), &budget(floor), 1).expect_err("decode refuses");
+    let AdapterError::Capacity(CapacityError::Memory { phase, estimate, .. }) = error else {
+        panic!("unexpected error {error}");
+    };
+    assert_eq!((phase, estimate), (Phase::Decode(Agent::Codex), None));
+}
+
+/// Distinct rate-limit snapshots on every token count and a model per turn cost a Codex
+/// history more than the same requests with one snapshot and one model: at the budget the
+/// plain history needs, whose row-shell count admits every request, the dense one refuses.
+/// Padding the skipped content changes nothing admission charges.
+#[test]
+fn high_cardinality_codex_histories_refuse_where_row_shells_admitted_them() {
+    use urollup_core::ledger::admission::CapacityError;
+    let plain = codex_families(4, 200, 0, false, false);
+    let dense = codex_families(4, 200, 0, true, true);
+    let padded = codex_families(4, 200, 4_096, true, true);
+    let slot = slot_of(plain.path());
+    let mut observations = 0;
+    for root in [&plain, &dense, &padded] {
+        let ingested =
+            ingest_codex(root.path(), &MemoryAdmission::unlimited(), 1).expect("ingests");
+        observations = ingested.ledger.coverage.observations;
+    }
+    let plain_threshold =
+        threshold(slot, |admission| ingest_codex(plain.path(), admission, 1).is_ok());
+    let dense_threshold =
+        threshold(slot, |admission| ingest_codex(dense.path(), admission, 1).is_ok());
+    assert!(dense_threshold > plain_threshold, "{dense_threshold} ≤ {plain_threshold}");
+    // The row-shell count the plain history's budget implies admits every request.
+    let rows = ObservationCapacity::from_byte_budget(plain_threshold, "row shells");
+    assert!(rows.maximum() as u64 >= observations);
+    let admission = budget(plain_threshold).with_row_ceiling(rows);
+    let error = ingest_codex(dense.path(), &admission, 1).expect_err("the dense history refuses");
+    assert!(matches!(error, AdapterError::Capacity(CapacityError::Memory { .. })), "{error}");
+    // Skipped content of any size is never charged.
+    let measure = |root: &tempfile::TempDir| {
+        let admission = MemoryAdmission::unlimited();
+        ingest_codex(root.path(), &admission, 1).expect("ingests");
+        (admission.largest(), Component::ALL.map(|component| admission.charged_by(component)))
+    };
+    let (dense_largest, dense_charged) = measure(&dense);
+    let (padded_largest, padded_charged) = measure(&padded);
+    assert_eq!(padded_largest, dense_largest);
+    assert_eq!(padded_charged, dense_charged);
+}
+
+/// The variable that makes [`threshold_child`] ingest once in a fresh process: the agent,
+/// the home, the budget in bytes or `unlimited`, and the worker count, separated by tabs.
+const CHILD: &str = "UROLLUP_ADMISSION_THRESHOLD_CHILD";
+
+/// Ingests once and prints the outcome, when [`in_child`] runs this binary for it: in a
+/// fresh process, no other ingest has interned a name, so every run charges the same new
+/// interns, whichever worker interns each first. Without the variable it does nothing.
+#[test]
+fn threshold_child() {
+    let Some(request) = std::env::var_os(CHILD) else { return };
+    let request = request.into_string().expect("the request is UTF-8");
+    let fields: Vec<&str> = request.split('\t').collect();
+    let [agent, root, bytes, count] = fields[..] else { panic!("four fields: {request}") };
+    let admission = match bytes {
+        "unlimited" => MemoryAdmission::unlimited(),
+        bytes => budget(bytes.parse().expect("a byte budget")),
+    };
+    let count = count.parse().expect("a worker count");
+    let result = match agent {
+        "codex" => ingest_codex(std::path::Path::new(root), &admission, count),
+        agent => panic!("no adapter for {agent}"),
+    };
+    match result {
+        Ok(_) => println!("outcome: ok largest {}", admission.largest()),
+        Err(error) => println!("outcome: refused {error}"),
+    }
+}
+
+/// Runs [`threshold_child`] in a fresh process of this binary and returns its outcome.
+fn in_child(agent: &str, root: &std::path::Path, bytes: Option<u64>, count: usize) -> String {
+    let bytes = bytes.map_or_else(|| "unlimited".to_owned(), |bytes| bytes.to_string());
+    let request = format!("{agent}\t{}\t{bytes}\t{count}", root.display());
+    let output = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", "threshold_child", "--nocapture", "--test-threads", "1"])
+        .env(CHILD, request)
+        .output()
+        .expect("the child runs");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(output.status.success(), "the child fails: {stdout}");
+    stdout
+        .lines()
+        .find_map(|line| line.split_once("outcome: ").map(|(_, outcome)| outcome))
+        .unwrap_or_else(|| panic!("the child reports no outcome: {stdout}"))
+        .to_owned()
+}
+
+/// The largest heap term a successful child outcome reports.
+fn largest_of(outcome: &str) -> u64 {
+    outcome
+        .strip_prefix("ok largest ")
+        .and_then(|largest| largest.parse().ok())
+        .unwrap_or_else(|| panic!("not a success: {outcome}"))
+}
+
+/// Admission's determinism in fresh processes (scalable-ingestion plan, "Admission
+/// Tests", worker determinism): the threshold `T` computed from a successful run's
+/// largest heap term succeeds and `T` − 1 refuses, with identical outcomes, on one and
+/// eight workers across repeated runs, while new interns are charged cold in each.
+#[test]
+fn codex_thresholds_hold_in_fresh_processes_at_one_and_eight_workers() {
+    let root = codex_families(3, 120, 0, true, true);
+    let slot = slot_of(root.path());
+    let slots = |bytes: Option<u64>| {
+        bytes.map_or(8, |bytes| budget(bytes).worker_slots(slot, Some(workers(8))).get())
+    };
+    let mut probe = None;
+    let threshold = loop {
+        let largest = largest_of(&in_child("codex", root.path(), probe, 1));
+        let threshold = ProcessModel::DEFAULT.whole_process(largest);
+        if slots(Some(threshold)) == slots(probe) {
+            break threshold;
+        }
+        probe = Some(threshold);
+    };
+    let mut at = Vec::new();
+    let mut below = Vec::new();
+    for count in [1, 8] {
+        for _ in 0..3 {
+            at.push(in_child("codex", root.path(), Some(threshold), count));
+            below.push(in_child("codex", root.path(), Some(threshold - 1), count));
+        }
+    }
+    at.dedup();
+    below.dedup();
+    assert_eq!(at.len(), 1, "{at:#?}");
+    assert!(at[0].starts_with("ok "), "{at:#?}");
+    assert_eq!(below.len(), 1, "{below:#?}");
+    assert!(below[0].starts_with("refused estimated memory"), "{below:#?}");
+}
