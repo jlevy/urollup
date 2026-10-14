@@ -29,6 +29,13 @@
 //! - **Oversized records.** A record over [`ReadOptions::max_record_bytes`] is never
 //!   silently skipped: it is counted and recorded as [`CoverageFailure::Oversized`], and
 //!   the scan continues at the next record without buffering it.
+//! - **Memory admission.** Every read takes a [`MemoryAdmission`]. A line buffer starts at
+//!   [`ReadOptions::RETAINED_LINE_CAPACITY`] and grows only by doubling, up to
+//!   [`ReadOptions::max_record_bytes`]; past the worker slot's 4 MiB it takes the
+//!   large-record permit for its need (`4 × C′`) before it grows, and keeps it until the
+//!   scan shrinks the buffer once the visitor returns. A zstd frame whose window passes
+//!   the slot's 8 MiB takes the permit too (`frames`). A read that waits for the permit
+//!   while admission refuses the invocation stops with [`SourceReadError::Stopped`].
 //! - **Compression.** `.jsonl`, `.jsonl.zst` and `.jsonl.gz` decode to the same bytes, so
 //!   evidence offsets are decoded offsets and a `.jsonl` file and its compressed twins are
 //!   one logical source with one `src-` ID. Each other file of the source is a verified
@@ -39,8 +46,9 @@
 //!   neither. When the file read has no complete record but another file of the source
 //!   has one, that file is read instead, and the file read keeps any failure other than
 //!   an early end. First records are found as the scan finds them, passing over blank and
-//!   oversized lines. [`decode`] is the one place a representation maps to a decoder. A
-//!   compressed stream that ends inside a frame or member is
+//!   oversized lines. [`decode`] is the one place a representation maps to a decoder, for
+//!   the scan, its first-record checks and [`peek`] alike. A compressed stream that ends
+//!   inside a frame or member is
 //!   [`CoverageFailure::IncompleteCompressedFrame`], distinct from
 //!   [`CoverageFailure::CorruptCompressedData`]. Only structural damage fails a zstd
 //!   decoder: a zstd frame carries a content checksum only when its writer asked for one,
@@ -56,6 +64,8 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::ledger::admission::model::{SLOT_LINE_CAPACITY, line_need, next_line_capacity};
+use crate::ledger::admission::{LargeRecord, MemoryAdmission};
 use crate::ledger::identity::{IdentityError, KeyComponent, StoredIdentity};
 use crate::ledger::scope::{KeyScopeError, KeySpec};
 use crate::sources::evidence::EvidenceRef;
@@ -211,6 +221,10 @@ pub enum SourceReadError {
     /// The visitor refused further input; no partial snapshot is returned.
     #[error("source visitor stopped the scan")]
     VisitorStopped,
+    /// Memory admission stopped the invocation while the scan waited for the large-record
+    /// permit or was refused its charge; no partial snapshot is returned.
+    #[error("memory admission stopped the scan")]
+    Stopped,
     /// The logical source names no file.
     #[error("logical source has no plain or compressed file")]
     NoFile,
@@ -237,17 +251,21 @@ pub enum SourceReadError {
     Identity(#[from] IdentityError),
 }
 
-/// Reads one logical source, streaming its complete records to `visit`.
+/// Reads one logical source under `admission`, streaming its complete records to `visit`.
+///
+/// The scan and its first-record checks run on the calling thread, which `admission`'s
+/// worker slot pays for; a long line or a wide zstd frame takes the large-record permit.
 pub fn read_source<F>(
     spec: &SourceSpec<'_>,
     files: &LogicalSource,
     options: &ReadOptions,
+    admission: &MemoryAdmission,
     visit: F,
 ) -> Result<ManifestEntry, SourceReadError>
 where
     F: FnMut(&RawRecord<'_>) -> RecordDisposition,
 {
-    read_source_with_hooks(spec, files, options, visit, &mut NoHooks)
+    read_source_with_hooks(spec, files, options, admission, visit, &mut NoHooks)
 }
 
 /// Points where a test can change the filesystem mid-scan; a deterministic replacement,
@@ -269,6 +287,7 @@ pub(crate) fn read_source_with_hooks<F>(
     spec: &SourceSpec<'_>,
     files: &LogicalSource,
     options: &ReadOptions,
+    admission: &MemoryAdmission,
     mut visit: F,
     hooks: &mut dyn ScanHooks,
 ) -> Result<ManifestEntry, SourceReadError>
@@ -284,11 +303,12 @@ where
     else {
         return Ok(vanished_entry(spec, primary, primary_representation));
     };
-    let mut read = scan_file(spec, path, representation, opened, options, &mut visit, hooks)?;
+    let reading = Reading { spec, options, admission };
+    let mut read = reading.scan_file(path, representation, opened, &mut visit, hooks)?;
     let mut skipped = None;
     if read.scan.fingerprint.is_none() {
         if let Some(mut substitute) =
-            read_twin_with_record(spec, files, &read.file.path, options, &mut visit, hooks)?
+            reading.read_twin_with_record(files, &read.file.path, &mut visit, hooks)?
         {
             changes.retain(|change| {
                 !matches!(change, SourceChange::ReadFromOtherRepresentation { .. })
@@ -312,24 +332,18 @@ where
     let Scanned { file, representation, opened, snapshot_len, modified, captured_at, mut scan } =
         read;
 
-    let twins = twin_identities(
+    let twins = reading.twin_identities(
         files,
         &file.path,
         skipped.as_deref(),
         scan.fingerprint,
-        spec,
-        options,
         &mut scan.failures,
     );
-    detect_changes(
+    reading.detect_changes(
         &file.path,
         representation,
         &opened,
-        &file,
-        snapshot_len,
-        modified,
-        scan.fingerprint,
-        options,
+        Snapshot { file: &file, len: snapshot_len, modified, fingerprint: scan.fingerprint },
         hooks,
         &mut changes,
     )?;
@@ -367,75 +381,93 @@ struct Scanned {
     scan: Scan,
 }
 
-/// Streams the complete records of one open file within its extent at open.
-fn scan_file<F>(
-    spec: &SourceSpec<'_>,
-    path: PathBuf,
-    representation: Representation,
-    opened: File,
-    options: &ReadOptions,
-    visit: &mut F,
-    hooks: &mut dyn ScanHooks,
-) -> Result<Scanned, SourceReadError>
-where
-    F: FnMut(&RawRecord<'_>) -> RecordDisposition,
-{
-    let captured_at = SystemTime::now();
-    // The open file's own metadata fixes the extent, so a replacement of the path after
-    // this point cannot change what this snapshot covers.
-    let metadata =
-        opened.metadata().map_err(|source| SourceReadError::Open { path: path.clone(), source })?;
-    hooks.after_open(&path);
-
-    let snapshot_len = metadata.len();
-    let file = FileIdentity { device: device_of(&metadata), inode: inode_of(&metadata), path };
-    let modified = metadata.modified().ok();
-
-    let mut scan = Scan {
-        counters: RecordCounters::default(),
-        failures: Vec::new(),
-        first_malformed: None,
-        fingerprint: None,
-        source: None,
-        offset: 0,
-        lines: 0,
-        pending: None,
-    };
-    let mut reader = reader_for(&opened, snapshot_len, representation);
-    scan.run(&mut reader, spec, options, visit, representation)?;
-    drop(reader);
-    hooks.after_scan(&file.path);
-    Ok(Scanned { file, representation, opened, snapshot_len, modified, captured_at, scan })
+/// What one source's scan reads with: the source, the limits and the admission that pays
+/// for the calling thread's buffers.
+#[derive(Clone, Copy)]
+struct Reading<'r> {
+    spec: &'r SourceSpec<'r>,
+    options: &'r ReadOptions,
+    admission: &'r MemoryAdmission,
 }
 
-/// Reads, in place of a file that held no complete record, the first other discovered
-/// file of the source that holds one; `None` when none does.
-///
-/// The file read yields no record that file lacks, as while a decompressor or a Codex
-/// resume has created the plain file and not yet written its first line. Without this,
-/// every such twin would go unread. Nothing was visited yet, since a record is visited
-/// only after the first complete one fixes the source ID.
-fn read_twin_with_record<F>(
-    spec: &SourceSpec<'_>,
-    files: &LogicalSource,
-    read: &Path,
-    options: &ReadOptions,
-    visit: &mut F,
-    hooks: &mut dyn ScanHooks,
-) -> Result<Option<Scanned>, SourceReadError>
-where
-    F: FnMut(&RawRecord<'_>) -> RecordDisposition,
-{
-    for (twin, representation) in files.files().filter(|(path, _)| *path != read) {
-        let first = first_record_fingerprint(twin, representation, options.max_record_bytes);
-        if !matches!(first, FirstRecord::Record(_)) {
-            continue;
-        }
-        let Some(opened) = open_once(twin)? else { continue };
-        return scan_file(spec, twin.to_owned(), representation, opened, options, visit, hooks)
-            .map(Some);
+/// What the scan saw of the file it read, to compare with the file after the scan.
+#[derive(Clone, Copy)]
+struct Snapshot<'s> {
+    file: &'s FileIdentity,
+    len: u64,
+    modified: Option<SystemTime>,
+    fingerprint: Option<Fingerprint>,
+}
+
+impl Reading<'_> {
+    /// Streams the complete records of one open file within its extent at open.
+    fn scan_file<F>(
+        self,
+        path: PathBuf,
+        representation: Representation,
+        opened: File,
+        visit: &mut F,
+        hooks: &mut dyn ScanHooks,
+    ) -> Result<Scanned, SourceReadError>
+    where
+        F: FnMut(&RawRecord<'_>) -> RecordDisposition,
+    {
+        let captured_at = SystemTime::now();
+        // The open file's own metadata fixes the extent, so a replacement of the path after
+        // this point cannot change what this snapshot covers.
+        let metadata = opened
+            .metadata()
+            .map_err(|source| SourceReadError::Open { path: path.clone(), source })?;
+        hooks.after_open(&path);
+
+        let snapshot_len = metadata.len();
+        let file = FileIdentity { device: device_of(&metadata), inode: inode_of(&metadata), path };
+        let modified = metadata.modified().ok();
+
+        let mut scan = Scan {
+            counters: RecordCounters::default(),
+            failures: Vec::new(),
+            first_malformed: None,
+            fingerprint: None,
+            source: None,
+            offset: 0,
+            lines: 0,
+            pending: None,
+        };
+        let mut reader = reader_for(&opened, snapshot_len, representation, self.admission);
+        scan.run(&mut reader, self, visit, representation)?;
+        drop(reader);
+        hooks.after_scan(&file.path);
+        Ok(Scanned { file, representation, opened, snapshot_len, modified, captured_at, scan })
     }
-    Ok(None)
+
+    /// Reads, in place of a file that held no complete record, the first other discovered
+    /// file of the source that holds one; `None` when none does.
+    ///
+    /// The file read yields no record that file lacks, as while a decompressor or a Codex
+    /// resume has created the plain file and not yet written its first line. Without this,
+    /// every such twin would go unread. Nothing was visited yet, since a record is visited
+    /// only after the first complete one fixes the source ID.
+    fn read_twin_with_record<F>(
+        self,
+        files: &LogicalSource,
+        read: &Path,
+        visit: &mut F,
+        hooks: &mut dyn ScanHooks,
+    ) -> Result<Option<Scanned>, SourceReadError>
+    where
+        F: FnMut(&RawRecord<'_>) -> RecordDisposition,
+    {
+        for (twin, representation) in files.files().filter(|(path, _)| *path != read) {
+            let first = self.first_record_fingerprint(twin, representation);
+            if !matches!(first, FirstRecord::Record(_)) {
+                continue;
+            }
+            let Some(opened) = open_once(twin)? else { continue };
+            return self.scan_file(twin.to_owned(), representation, opened, visit, hooks).map(Some);
+        }
+        Ok(None)
+    }
 }
 
 /// Opens the file to read: the primary with retries, then, when it is gone, its
@@ -502,17 +534,72 @@ fn fallbacks(files: &LogicalSource, primary: &Path) -> Vec<Candidate> {
 /// falls back to, opened under the same rules. A file that is absent, cannot be opened or
 /// decoded, or that `look` rejects, as when it has no complete first record, is skipped,
 /// so one damaged file never stops the look. `None` when no file is accepted.
+///
+/// `look` reads lines by the scan's rule ([`PeekLines`]), under `admission` as a scan
+/// does: the calling thread's slot pays for the decoder and a line up to 4 MiB, and a
+/// longer line or a wider zstd frame takes the large-record permit.
 pub fn peek<T>(
     files: &LogicalSource,
-    mut look: impl FnMut(&mut dyn BufRead) -> Option<T>,
+    admission: &MemoryAdmission,
+    mut look: impl FnMut(&mut PeekLines<'_>) -> Option<T>,
 ) -> Option<T> {
     let (primary, representation) = files.primary()?;
     let first = Candidate { path: primary.to_owned(), representation, discovered: true };
     std::iter::once(first).chain(fallbacks(files, primary)).find_map(|candidate| {
         let file = candidate.open().ok()??;
-        let mut reader = decode(file, candidate.representation).ok()?;
-        look(&mut *reader)
+        let reader = decode(file, candidate.representation, admission).ok()?;
+        look(&mut PeekLines { reader: reader.take(u64::MAX), buffer: LineBuffer::new(admission) })
     })
+}
+
+/// The decoded lines of one file, for a [`peek`] at its first records: each read follows
+/// the scan's line rule and buffer, within a window of decoded bytes the look may set.
+pub struct PeekLines<'a> {
+    reader: io::Take<Box<dyn BufRead + 'a>>,
+    buffer: LineBuffer<'a>,
+}
+
+/// One line a [`PeekLines`] read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeekLine<'b> {
+    /// The stream or the window ended exactly at a line boundary.
+    End,
+    /// A newline-terminated line, without its terminator.
+    Complete(&'b [u8]),
+    /// A newline-terminated line longer than the read's limit, whose bytes were skipped.
+    Oversized,
+    /// Bytes after the last terminator, up to the end of the stream or the window: the
+    /// bytes, or `None` when they passed the read's limit and were skipped.
+    Pending(Option<&'b [u8]>),
+}
+
+impl PeekLines<'_> {
+    /// Lets the following reads consume at most `bytes` more decoded bytes.
+    pub fn set_window(&mut self, bytes: u64) {
+        self.reader.set_limit(bytes);
+    }
+
+    /// The decoded bytes the window still allows.
+    pub fn window(&self) -> u64 {
+        self.reader.limit()
+    }
+
+    /// Reads the next line by the scan's rule, buffering at most `limit` bytes of it.
+    ///
+    /// # Errors
+    ///
+    /// The stream's read or decoding error, or one that says admission stopped the
+    /// invocation while the read waited for the large-record permit.
+    pub fn next_line(&mut self, limit: usize) -> io::Result<PeekLine<'_>> {
+        self.buffer.reset();
+        Ok(match read_line(&mut self.reader, &mut self.buffer, limit)? {
+            Line::Eof => PeekLine::End,
+            Line::Complete { .. } => PeekLine::Complete(self.buffer.bytes()),
+            Line::Oversized { .. } => PeekLine::Oversized,
+            Line::Pending { oversized: true, .. } => PeekLine::Pending(None),
+            Line::Pending { oversized: false, .. } => PeekLine::Pending(Some(self.buffer.bytes())),
+        })
+    }
 }
 
 /// Opens a file discovery never saw, only when it is a regular file, as discovery requires.
@@ -596,25 +683,28 @@ impl Scan {
     fn run<F>(
         &mut self,
         reader: &mut dyn BufRead,
-        spec: &SourceSpec<'_>,
-        options: &ReadOptions,
+        reading: Reading<'_>,
         visit: &mut F,
         representation: Representation,
     ) -> Result<(), SourceReadError>
     where
         F: FnMut(&RawRecord<'_>) -> RecordDisposition,
     {
-        let mut buffer = Vec::new();
+        let Reading { spec, options, admission } = reading;
+        let mut buffer = LineBuffer::new(admission);
         loop {
-            buffer.clear();
-            shrink_line_buffer(&mut buffer);
+            // Once the visitor has returned, a grown buffer shrinks back and releases the
+            // large-record permit.
+            buffer.reset();
             let line = match read_line(reader, &mut buffer, options.max_record_bytes) {
                 Ok(line) => line,
+                Err(error) if is_stopped(&error) => return Err(SourceReadError::Stopped),
                 Err(error) => {
                     self.failures.push(read_failure(&error, self.offset, representation));
                     return Ok(());
                 }
             };
+            let bytes = buffer.bytes();
             match line {
                 Line::Eof => return Ok(()),
                 Line::Pending { length, oversized } => {
@@ -635,13 +725,13 @@ impl Scan {
                 }
                 Line::Complete { length } => {
                     self.lines = self.lines.saturating_add(1);
-                    if buffer.iter().all(u8::is_ascii_whitespace) {
+                    if bytes.iter().all(u8::is_ascii_whitespace) {
                         self.counters.blank_lines = self.counters.blank_lines.saturating_add(1);
                         self.advance(length);
                         continue;
                     }
                     if self.fingerprint.is_none() {
-                        let fingerprint = Fingerprint::of(&buffer);
+                        let fingerprint = Fingerprint::of(bytes);
                         self.fingerprint = Some(fingerprint);
                         self.source = Some(source_identity(spec, fingerprint)?);
                     }
@@ -650,7 +740,7 @@ impl Scan {
                     }
                     let evidence = EvidenceRef::new(0, self.offset, length);
                     let disposition =
-                        visit(&RawRecord { evidence: &evidence, bytes: &buffer, line: self.lines });
+                        visit(&RawRecord { evidence: &evidence, bytes, line: self.lines });
                     self.counters.records = self.counters.records.saturating_add(1);
                     match disposition {
                         RecordDisposition::Stop => return Err(SourceReadError::VisitorStopped),
@@ -698,18 +788,29 @@ fn source_identity(
     Ok(StoredIdentity::derive(key.key)?)
 }
 
-fn reader_for(file: &File, extent: u64, representation: Representation) -> Box<dyn BufRead + '_> {
+fn reader_for<'a>(
+    file: &'a File,
+    extent: u64,
+    representation: Representation,
+    admission: &'a MemoryAdmission,
+) -> Box<dyn BufRead + 'a> {
     // A decoder is only built here; a failure is a corrupt or empty stream, which the scan
     // reports as a read failure at offset 0.
-    decode(file.take(extent), representation)
+    decode(file.take(extent), representation, admission)
         .unwrap_or_else(|error| Box::new(FailingReader(Some(error))))
 }
 
+/// The read buffer [`decode`] wraps every decoder in.
+pub const READ_BUFFER_BYTES: usize = 128 * 1024;
+
 /// Decodes `stored`, a source's bytes in `representation`, into a buffered reader of its
-/// records: the one mapping from a representation to its decoder.
+/// records under `admission`: the one mapping from a representation to its decoder, and
+/// the only way the reader opens one.
 ///
 /// zstd and gzip decoding read every frame or member, so files concatenated by `cat` or
-/// appended to by a streaming compressor decode whole.
+/// appended to by a streaming compressor decode whole. zstd decodes through the reader's
+/// own frame loop, which gives a frame whose window passes the worker slot's 8 MiB a
+/// second decoder under `admission`'s large-record permit (`frames`).
 ///
 /// # Errors
 ///
@@ -717,17 +818,34 @@ fn reader_for(file: &File, extent: u64, representation: Representation) -> Box<d
 pub fn decode<'a, R: Read + 'a>(
     stored: R,
     representation: Representation,
+    admission: &'a MemoryAdmission,
 ) -> io::Result<Box<dyn BufRead + 'a>> {
-    const CAPACITY: usize = 128 * 1024;
     Ok(match representation {
-        Representation::Plain => Box::new(BufReader::with_capacity(CAPACITY, stored)),
-        Representation::Zstd => {
-            Box::new(BufReader::with_capacity(CAPACITY, zstd::stream::read::Decoder::new(stored)?))
-        }
-        Representation::Gzip => {
-            Box::new(BufReader::with_capacity(CAPACITY, flate2::read::MultiGzDecoder::new(stored)))
-        }
+        Representation::Plain => Box::new(BufReader::with_capacity(READ_BUFFER_BYTES, stored)),
+        Representation::Zstd => Box::new(BufReader::with_capacity(
+            READ_BUFFER_BYTES,
+            frames::ZstdFrames::new(stored, admission)?,
+        )),
+        Representation::Gzip => Box::new(BufReader::with_capacity(
+            READ_BUFFER_BYTES,
+            flate2::read::MultiGzDecoder::new(stored),
+        )),
     })
+}
+
+/// The error a read returns once admission has stopped the invocation, while it waited
+/// for the large-record permit or when the permit's charge was refused.
+#[derive(Debug, thiserror::Error)]
+#[error("memory admission stopped the read")]
+struct AdmissionStopped;
+
+fn stopped() -> io::Error {
+    io::Error::other(AdmissionStopped)
+}
+
+/// Whether `error` is [`stopped`]'s, which ends a read without being a source failure.
+fn is_stopped(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(<dyn std::error::Error + Send + Sync>::is::<AdmissionStopped>)
 }
 
 /// A reader that yields one error, so a decoder that cannot start is reported like any
@@ -786,15 +904,110 @@ enum Line {
     Pending { length: u64, oversized: bool },
 }
 
-/// Drops spare capacity after a long line so one huge record does not pin the worker.
-pub(super) fn shrink_line_buffer(buffer: &mut Vec<u8>) {
-    if buffer.capacity() > ReadOptions::RETAINED_LINE_CAPACITY {
-        buffer.shrink_to(ReadOptions::RETAINED_LINE_CAPACITY);
+/// One reader's line buffer under memory admission.
+///
+/// It starts at [`ReadOptions::RETAINED_LINE_CAPACITY`] and grows only by doubling, from
+/// capacity `C` to `C′ = min(2 × C, limit)` with `reserve_exact`, so its capacity never
+/// passes the read's limit and its need is the model's `line_need(C′)`. A capacity past the
+/// worker slot's 4 MiB takes the large-record permit for that need before the buffer
+/// grows, and [`LineBuffer::reset`] shrinks the buffer and releases the permit once the
+/// line is no longer needed.
+struct LineBuffer<'a> {
+    bytes: Vec<u8>,
+    admission: &'a MemoryAdmission,
+    permit: Option<LargeRecord<'a>>,
+}
+
+impl<'a> LineBuffer<'a> {
+    /// An empty buffer at the retained capacity.
+    fn new(admission: &'a MemoryAdmission) -> Self {
+        Self {
+            bytes: Vec::with_capacity(ReadOptions::RETAINED_LINE_CAPACITY),
+            admission,
+            permit: None,
+        }
+    }
+
+    /// The line read so far.
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The buffer's capacity.
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    /// Whether this buffer holds a share of the large-record permit.
+    #[cfg(test)]
+    const fn holds_permit(&self) -> bool {
+        self.permit.is_some()
+    }
+
+    /// Drops the line read so far, keeping the capacity.
+    fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
+    /// Appends `chunk`, doubling the capacity until it fits within `limit`. The caller
+    /// has checked that the line stays within `limit`.
+    fn extend(&mut self, chunk: &[u8], limit: usize) -> io::Result<()> {
+        let needed = self.bytes.len().saturating_add(chunk.len());
+        while self.bytes.capacity() < needed {
+            let capacity = self.bytes.capacity();
+            let next = usize::try_from(next_line_capacity(as_bytes(capacity), as_bytes(limit)))
+                .unwrap_or(usize::MAX);
+            // The line would pass the read's limit, which `read_line` rules out before it
+            // extends; growing anyway would bypass the permit.
+            debug_assert!(next > capacity, "a line buffer was extended past its read's limit");
+            if next <= capacity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a line buffer was extended past its read's limit",
+                ));
+            }
+            if as_bytes(next) > SLOT_LINE_CAPACITY {
+                let need = line_need(as_bytes(next));
+                match &mut self.permit {
+                    Some(permit) => {
+                        if !permit.raise(need) {
+                            return Err(stopped());
+                        }
+                    }
+                    None => {
+                        self.permit = Some(self.admission.large_record(need).ok_or_else(stopped)?);
+                    }
+                }
+            }
+            self.bytes.reserve_exact(next - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Drops the line, shrinks a grown buffer back to the retained capacity so one huge
+    /// record does not pin the worker, and releases the large-record permit.
+    fn reset(&mut self) {
+        self.bytes.clear();
+        if self.bytes.capacity() > ReadOptions::RETAINED_LINE_CAPACITY {
+            self.bytes.shrink_to(ReadOptions::RETAINED_LINE_CAPACITY);
+        }
+        self.permit = None;
     }
 }
 
+/// A byte count as the cost model's `u64`.
+fn as_bytes(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
 /// Reads one line into `buffer` without its terminator, buffering at most `limit` bytes.
-fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io::Result<Line> {
+fn read_line(
+    reader: &mut dyn BufRead,
+    buffer: &mut LineBuffer<'_>,
+    limit: usize,
+) -> io::Result<Line> {
     let mut length: u64 = 0;
     let mut oversized = false;
     loop {
@@ -808,11 +1021,11 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
         }
         if let Some(newline) = memchr::memchr(b'\n', available) {
             if !oversized {
-                if buffer.len().saturating_add(newline) > limit {
+                if buffer.bytes.len().saturating_add(newline) > limit {
                     oversized = true;
                     buffer.clear();
                 } else if let Some(line) = available.get(..newline) {
-                    buffer.extend_from_slice(line);
+                    buffer.extend(line, limit)?;
                 }
             }
             length = length.saturating_add(newline as u64);
@@ -825,11 +1038,11 @@ fn read_line(reader: &mut dyn BufRead, buffer: &mut Vec<u8>, limit: usize) -> io
         }
         let taken = available.len();
         if !oversized {
-            if buffer.len().saturating_add(taken) > limit {
+            if buffer.bytes.len().saturating_add(taken) > limit {
                 oversized = true;
                 buffer.clear();
             } else {
-                buffer.extend_from_slice(available);
+                buffer.extend(available, limit)?;
             }
         }
         length = length.saturating_add(taken as u64);
@@ -877,70 +1090,160 @@ fn open_once(path: &Path) -> Result<Option<File>, SourceReadError> {
     }
 }
 
-/// Compares the source after its scan with its snapshot: the path's identity, length and
-/// modification time, and its first record. When the path is gone after its retries, the
-/// open file is examined instead, since it is what the snapshot read.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site; splitting it would only move the arguments"
-)]
-fn detect_changes(
-    path: &Path,
-    representation: Representation,
-    opened: &File,
-    snapshot: &FileIdentity,
-    snapshot_len: u64,
-    snapshot_modified: Option<SystemTime>,
-    fingerprint: Option<Fingerprint>,
-    options: &ReadOptions,
-    hooks: &mut dyn ScanHooks,
-    changes: &mut Vec<SourceChange>,
-) -> Result<(), SourceReadError> {
-    let mut attempts = 0;
-    let metadata = loop {
-        match std::fs::metadata(path) {
-            Ok(metadata) => break Some(metadata),
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound && attempts < options.absent_retries =>
-            {
-                attempts = attempts.saturating_add(1);
-                hooks.before_retry(path, attempts);
-                if !options.absent_retry_delay.is_zero() {
-                    std::thread::sleep(options.absent_retry_delay);
+impl Reading<'_> {
+    /// Compares the source after its scan with its snapshot: the path's identity, length
+    /// and modification time, and its first record. When the path is gone after its
+    /// retries, the open file is examined instead, since it is what the snapshot read.
+    fn detect_changes(
+        self,
+        path: &Path,
+        representation: Representation,
+        opened: &File,
+        snapshot: Snapshot<'_>,
+        hooks: &mut dyn ScanHooks,
+        changes: &mut Vec<SourceChange>,
+    ) -> Result<(), SourceReadError> {
+        let options = self.options;
+        let mut attempts = 0;
+        let metadata = loop {
+            match std::fs::metadata(path) {
+                Ok(metadata) => break Some(metadata),
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && attempts < options.absent_retries =>
+                {
+                    attempts = attempts.saturating_add(1);
+                    hooks.before_retry(path, attempts);
+                    if !options.absent_retry_delay.is_zero() {
+                        std::thread::sleep(options.absent_retry_delay);
+                    }
                 }
+                Err(_) => break None,
             }
-            Err(_) => break None,
+        };
+        let fingerprint = snapshot.fingerprint;
+        let Some(metadata) = metadata else {
+            // A compressor that finished or an agent that expired the file removed the
+            // path, but the open file supplied the snapshot, so only a change to it loses
+            // records.
+            let held = opened
+                .metadata()
+                .map_err(|source| SourceReadError::Open { path: path.to_owned(), source })?;
+            compare_extent(&held, snapshot.len, snapshot.modified, changes);
+            let first = self.first_record_of(opened, representation);
+            if fingerprint.is_some_and(|ours| first != FirstRecord::Record(ours)) {
+                changes.push(SourceChange::FirstRecordChanged);
+            }
+            changes.push(SourceChange::RemovedAfterScan);
+            return Ok(());
+        };
+        if attempts > 0
+            && !changes.iter().any(|change| matches!(change, SourceChange::BrieflyAbsent { .. }))
+        {
+            changes.push(SourceChange::BrieflyAbsent { attempts });
         }
-    };
-    let Some(metadata) = metadata else {
-        // A compressor that finished or an agent that expired the file removed the path,
-        // but the open file supplied the snapshot, so only a change to it loses records.
-        let held = opened
-            .metadata()
-            .map_err(|source| SourceReadError::Open { path: path.to_owned(), source })?;
-        compare_extent(&held, snapshot_len, snapshot_modified, changes);
-        let first = first_record_of(opened, representation, options.max_record_bytes);
+        if device_of(&metadata) != snapshot.file.device
+            || inode_of(&metadata) != snapshot.file.inode
+        {
+            changes.push(SourceChange::Replaced);
+            return Ok(());
+        }
+        compare_extent(&metadata, snapshot.len, snapshot.modified, changes);
+        let first = self.first_record_fingerprint(path, representation);
         if fingerprint.is_some_and(|ours| first != FirstRecord::Record(ours)) {
             changes.push(SourceChange::FirstRecordChanged);
         }
-        changes.push(SourceChange::RemovedAfterScan);
-        return Ok(());
-    };
-    if attempts > 0
-        && !changes.iter().any(|change| matches!(change, SourceChange::BrieflyAbsent { .. }))
-    {
-        changes.push(SourceChange::BrieflyAbsent { attempts });
+        Ok(())
     }
-    if device_of(&metadata) != snapshot.device || inode_of(&metadata) != snapshot.inode {
-        changes.push(SourceChange::Replaced);
-        return Ok(());
+
+    /// Re-reads a file's first record by path, to check that the bytes the source ID
+    /// covers did not change or to compare a twin with the file read.
+    fn first_record_fingerprint(self, path: &Path, representation: Representation) -> FirstRecord {
+        match File::open(path) {
+            Ok(file) => self.first_record_of(&file, representation),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => FirstRecord::NotYet,
+            Err(_) => FirstRecord::Unreadable,
+        }
     }
-    compare_extent(&metadata, snapshot_len, snapshot_modified, changes);
-    let first = first_record_fingerprint(path, representation, options.max_record_bytes);
-    if fingerprint.is_some_and(|ours| first != FirstRecord::Record(ours)) {
-        changes.push(SourceChange::FirstRecordChanged);
+
+    /// The first record of an open file, read from its start through [`decode`] and the
+    /// scan's line buffer, on the calling worker's slot. A read that admission stops is
+    /// unreadable; the invocation reports the refusal instead.
+    fn first_record_of(self, mut file: &File, representation: Representation) -> FirstRecord {
+        if file.seek(SeekFrom::Start(0)).is_err() {
+            return FirstRecord::Unreadable;
+        }
+        let Ok(mut reader) = decode(file, representation, self.admission) else {
+            return FirstRecord::Unreadable;
+        };
+        let mut buffer = LineBuffer::new(self.admission);
+        let mut passed_oversized = false;
+        // An oversized record is a record that cannot be compared, unlike an early end.
+        let ended = |passed_oversized: bool| {
+            if passed_oversized { FirstRecord::Unreadable } else { FirstRecord::NotYet }
+        };
+        loop {
+            buffer.reset();
+            match read_line(&mut reader, &mut buffer, self.options.max_record_bytes) {
+                Ok(Line::Complete { .. }) => {
+                    if !buffer.bytes().iter().all(u8::is_ascii_whitespace) {
+                        return FirstRecord::Record(Fingerprint::of(buffer.bytes()));
+                    }
+                }
+                Ok(Line::Oversized { .. }) => passed_oversized = true,
+                Ok(Line::Pending { oversized, .. }) => return ended(passed_oversized || oversized),
+                Ok(Line::Eof) => return ended(passed_oversized),
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                    return ended(passed_oversized);
+                }
+                Err(_) => return FirstRecord::Unreadable,
+            }
+        }
     }
-    Ok(())
+
+    /// Checks each other discovered file of the source against the file read, except a
+    /// primary read in place of which `skipped` names, whose own failures were kept.
+    ///
+    /// A twin whose first record matches is recorded as verified, one whose first record
+    /// differs is a different logical source this scan did not read, and one whose first
+    /// record cannot be read is unreadable; both are coverage failures. A twin with no
+    /// complete record yet is neither: it is gone with the primary, empty, or a
+    /// compressor's unfinished output, which ends early rather than failing to decode.
+    fn twin_identities(
+        self,
+        files: &LogicalSource,
+        read: &Path,
+        skipped: Option<&Path>,
+        fingerprint: Option<Fingerprint>,
+        failures: &mut Vec<CoverageFailure>,
+    ) -> Vec<FileIdentity> {
+        let mut identities = Vec::new();
+        for (twin, representation) in
+            files.files().filter(|(path, _)| *path != read && Some(*path) != skipped)
+        {
+            let theirs = self.first_record_fingerprint(twin, representation);
+            let path = twin.to_owned();
+            let locator = self.spec.locator.to_owned();
+            match theirs {
+                FirstRecord::NotYet => {}
+                FirstRecord::Unreadable => {
+                    failures.push(CoverageFailure::UnreadableTwin { path, locator });
+                }
+                FirstRecord::Record(theirs) if fingerprint != Some(theirs) => {
+                    failures.push(CoverageFailure::TwinFingerprintMismatch { path, locator });
+                }
+                FirstRecord::Record(_) => {
+                    let metadata = std::fs::metadata(twin).ok();
+                    identities.push(FileIdentity {
+                        path,
+                        device: metadata.as_ref().and_then(device_of_opt),
+                        inode: metadata.as_ref().and_then(inode_of_opt),
+                    });
+                }
+            }
+        }
+        identities
+    }
 }
 
 /// Records a change in a file's length or, at the same length, its modification time.
@@ -974,100 +1277,6 @@ enum FirstRecord {
     /// The file cannot be opened, its data does not decode, or it holds an oversized record
     /// and no record within the bound, so its first record cannot be compared.
     Unreadable,
-}
-
-/// Re-reads a file's first record by path, to check that the bytes the source ID covers
-/// did not change or to compare a twin with the file read.
-fn first_record_fingerprint(
-    path: &Path,
-    representation: Representation,
-    max_record_bytes: usize,
-) -> FirstRecord {
-    match File::open(path) {
-        Ok(file) => first_record_of(&file, representation, max_record_bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => FirstRecord::NotYet,
-        Err(_) => FirstRecord::Unreadable,
-    }
-}
-
-/// The first record of an open file, read from its start.
-fn first_record_of(
-    mut file: &File,
-    representation: Representation,
-    max_record_bytes: usize,
-) -> FirstRecord {
-    if file.seek(SeekFrom::Start(0)).is_err() {
-        return FirstRecord::Unreadable;
-    }
-    let Ok(mut reader) = decode(file, representation) else { return FirstRecord::Unreadable };
-    let mut buffer = Vec::new();
-    let mut passed_oversized = false;
-    // An oversized record is a record that cannot be compared, unlike an early end.
-    let ended = |passed_oversized: bool| {
-        if passed_oversized { FirstRecord::Unreadable } else { FirstRecord::NotYet }
-    };
-    loop {
-        buffer.clear();
-        match read_line(&mut reader, &mut buffer, max_record_bytes) {
-            Ok(Line::Complete { .. }) => {
-                if !buffer.iter().all(u8::is_ascii_whitespace) {
-                    return FirstRecord::Record(Fingerprint::of(&buffer));
-                }
-            }
-            Ok(Line::Oversized { .. }) => passed_oversized = true,
-            Ok(Line::Pending { oversized, .. }) => return ended(passed_oversized || oversized),
-            Ok(Line::Eof) => return ended(passed_oversized),
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                return ended(passed_oversized);
-            }
-            Err(_) => return FirstRecord::Unreadable,
-        }
-    }
-}
-
-/// Checks each other discovered file of the source against the file read, except a
-/// primary read in place of which `skipped` names, whose own failures were kept.
-///
-/// A twin whose first record matches is recorded as verified, one whose first record
-/// differs is a different logical source this scan did not read, and one whose first
-/// record cannot be read is unreadable; both are coverage failures. A twin with no
-/// complete record yet is neither: it is gone with the primary, empty, or a compressor's
-/// unfinished output, which ends early rather than failing to decode.
-fn twin_identities(
-    files: &LogicalSource,
-    read: &Path,
-    skipped: Option<&Path>,
-    fingerprint: Option<Fingerprint>,
-    spec: &SourceSpec<'_>,
-    options: &ReadOptions,
-    failures: &mut Vec<CoverageFailure>,
-) -> Vec<FileIdentity> {
-    let mut identities = Vec::new();
-    for (twin, representation) in
-        files.files().filter(|(path, _)| *path != read && Some(*path) != skipped)
-    {
-        let theirs = first_record_fingerprint(twin, representation, options.max_record_bytes);
-        let path = twin.to_owned();
-        let locator = spec.locator.to_owned();
-        match theirs {
-            FirstRecord::NotYet => {}
-            FirstRecord::Unreadable => {
-                failures.push(CoverageFailure::UnreadableTwin { path, locator });
-            }
-            FirstRecord::Record(theirs) if fingerprint != Some(theirs) => {
-                failures.push(CoverageFailure::TwinFingerprintMismatch { path, locator });
-            }
-            FirstRecord::Record(_) => {
-                let metadata = std::fs::metadata(twin).ok();
-                identities.push(FileIdentity {
-                    path,
-                    device: metadata.as_ref().and_then(device_of_opt),
-                    inode: metadata.as_ref().and_then(inode_of_opt),
-                });
-            }
-        }
-    }
-    identities
 }
 
 // The Option is the platform-independent shape: Windows reports neither value.
@@ -1104,6 +1313,8 @@ fn device_of_opt(metadata: &Metadata) -> Option<u64> {
 fn inode_of_opt(metadata: &Metadata) -> Option<u64> {
     inode_of(metadata)
 }
+
+mod frames;
 
 #[cfg(test)]
 mod tests;

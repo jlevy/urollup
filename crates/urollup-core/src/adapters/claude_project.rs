@@ -26,7 +26,7 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
-use super::{AdapterError, Ingested};
+use super::{AdapterError, Decoding, Ingested};
 use crate::ledger::admission::MemoryAdmission;
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
@@ -572,12 +572,34 @@ pub fn ingest_discovery_with_workers(
     )
 }
 
-/// Reads discovered Claude Code transcripts with an explicit observation ceiling.
+/// Reads discovered Claude Code transcripts with an explicit observation ceiling, under an
+/// admission ledger of its own that never refuses bytes.
 pub fn ingest_discovery_with_capacity(
     discovery: Discovery,
     missing_is_error: bool,
     workers: NonZeroUsize,
     capacity: &ObservationCapacity,
+) -> Result<Ingested, AdapterError> {
+    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let slot = super::worker_slot(&[&discovery]);
+    ingest_discovery_with_admission(
+        discovery,
+        missing_is_error,
+        &Decoding { admission: &admission, workers, slot },
+    )
+}
+
+/// Reads discovered Claude Code transcripts under the invocation's admission ledger.
+///
+/// The decode checkpoint charges the worker slots and releases the coordinating slot;
+/// transcripts then decode on `min(workers, slots)` threads, each read under the ledger,
+/// and each transcript's source rows are charged before its worker returns it
+/// ([`Decoding`]). A refusal returns [`AdapterError::Capacity`], or, for the row
+/// ceiling, [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
+pub fn ingest_discovery_with_admission(
+    discovery: Discovery,
+    missing_is_error: bool,
+    decoding: &Decoding<'_>,
 ) -> Result<Ingested, AdapterError> {
     if let (true, Some(root)) = (missing_is_error, discovery.missing_roots.first()) {
         return Err(AdapterError::MissingRoot(root.clone()));
@@ -589,19 +611,24 @@ pub fn ingest_discovery_with_capacity(
         });
     }
 
-    let admission = MemoryAdmission::unlimited().with_row_ceiling(capacity.clone());
+    let threads = decoding.begin(Agent::Claude, discovery.sources.len())?;
     let decoded = try_read_in_parallel(
         &discovery.sources,
-        workers,
+        threads,
         |source| source_weight(&source.files),
-        |source| decode_source(source, &admission),
+        |source| decode_source(source, decoding),
     );
-    if let Some(refusal) = admission.refusal() {
+    if let Some(refusal) = decoding.admission.refusal() {
         return Err(refusal.into());
     }
     let decoded = decoded?;
+    decoding.charge_shared_versions(
+        decoded
+            .iter()
+            .map(|source| (source.facts.source_id.as_ref(), source.facts.version.as_deref())),
+    )?;
     let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
-    normalize(corpus, manifest, capacity)
+    normalize(corpus, manifest, &decoding.row_ceiling())
 }
 
 /// Everything one transcript contributes before normalization.
@@ -616,11 +643,13 @@ struct DecodedSource {
     strings: Strings,
 }
 
-/// Reads one transcript and its subagent sidecar, independently of every other source.
+/// Reads one transcript and its subagent sidecar, independently of every other source,
+/// and charges its source rows.
 fn decode_source(
     source: &DiscoveredSource,
-    admission: &MemoryAdmission,
+    decoding: &Decoding<'_>,
 ) -> Result<DecodedSource, AdapterError> {
+    let admission = decoding.admission;
     let mut decoder = SourceDecoder::new(&source.locator);
     let spec = SourceSpec {
         environment: "local",
@@ -632,7 +661,7 @@ fn decode_source(
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
-    let entry = read_source(&spec, &source.files, &ReadOptions::default(), |raw| {
+    let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
@@ -657,6 +686,7 @@ fn decode_source(
             });
         }
     }
+    decoding.charge_source_rows(&entry, facts.version.as_deref(), &path)?;
     Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
 }
 
@@ -782,12 +812,17 @@ impl SourceDecoder {
         if !head.bears_usage() {
             return RecordDisposition::Skipped;
         }
+        // The head's copies of escaped strings go before the body pass parses the line
+        // again, so the two passes never hold them beside the body's scratch, and a line
+        // stays within its admission need (`4 × C′`).
+        let line_type = head.line_type;
+        drop(head);
         // The head proved the line is a valid document that bears usage. The body pass
         // keeps accounting fields and never builds a parent document.
         let Ok(body) = UsageBody::read(raw.bytes) else {
             return RecordDisposition::Malformed;
         };
-        let (fields, session, forced_copy, request_record) = match head.line_type {
+        let (fields, session, forced_copy, request_record) = match line_type {
             LineType::Assistant => {
                 let synthetic_error = body.top.message.model.as_deref() == Some("<synthetic>")
                     && body.top.request_id.is_none();
@@ -1829,6 +1864,29 @@ pub(crate) fn located_native_id(path: &Path) -> String {
         (session, Some(agent)) => format!("{session}/{agent}"),
         (session, None) => session,
     }
+}
+
+/// Reads one transcript line's fields as decoding does: its head, keeping the version,
+/// working directory and session, and, once the head is dropped, the body of a line that
+/// can bear a request. Builds no document; `false` when the line is not a valid JSON
+/// document.
+///
+/// Decoding does more with the fields; this is the parse alone, whose heap beside a long
+/// line the admission model-bound harness measures. It is not part of the supported API.
+#[doc(hidden)]
+pub fn read_line_fields(line: &[u8]) -> bool {
+    let Ok(head) = LineHead::read(line, true, true, true) else { return false };
+    let bears_usage = head.bears_usage();
+    drop(head);
+    !bears_usage || UsageBody::read(line).is_ok()
+}
+
+/// Reads and parses the `.meta.json` sidecar beside the subagent transcript `transcript`
+/// as decoding does; `true` when there is one and it parses. The admission model-bound
+/// harness measures its heap. It is not part of the supported API.
+#[doc(hidden)]
+pub fn read_sidecar(transcript: &Path) -> bool {
+    matches!(read_subagent_meta(transcript), Ok(Some(_)))
 }
 
 /// The session a Claude transcript line names: its `sessionId` string, read by the rule

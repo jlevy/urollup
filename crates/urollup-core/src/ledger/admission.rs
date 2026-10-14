@@ -27,19 +27,32 @@
 //! - **Rows:** the per-agent ceiling on request-bearing observations (`--max-rows`, and
 //!   until process-wide admission is wired in, the row ceiling derived from `--max-ram`)
 //!   is counted here too, separately from bytes.
+//! - **The large-record permit** ([`MemoryAdmission::large_record`]) lets one thread at a
+//!   time hold a line buffer, zstd window or `quotaLimits` document larger than a worker
+//!   slot allows. It is re-entrant for its holder, whose need is the sum of the shares it
+//!   holds, and is free again once the holder drops its last share. Other threads wait,
+//!   and stop waiting once a refusal sets the stop flag. Its charge is the largest need
+//!   any holder has held at once in the current phase.
 //!
 //! [`model`] prices each unit of retained state and each phase, and [`deep_size`] measures
-//! committed state. Nothing in ingestion charges bytes yet; adapters use the row ceiling
-//! only.
+//! committed state. In ingestion so far, the source reader takes the permit; each agent's
+//! decode checkpoint charges its worker slots and the parallel read's work order and
+//! releases the coordinating slot ([`Hold::Coordinating`]), which the CLI holds while it
+//! peeks at sources; and each worker charges its source's rows. Record, payload and thread
+//! charges arrive with slices 5 and 6, and the CLI's ledger refuses no bytes until slice 7
+//! gives it a budget; until then only the row ceiling refuses.
 
 pub mod deep_size;
 pub mod model;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread::ThreadId;
+use std::time::Duration;
 
 use super::capacity::{MemoryBudget, ObservationCapacity, Rounding, format_memory};
 use crate::selection::Agent;
@@ -208,8 +221,8 @@ pub enum Component {
     Sources,
     /// The query and session-index reserves.
     Reserves,
-    /// Worker slots and the large-record permit, which
-    /// [`MemoryAdmission::charge_large_record`] charges.
+    /// Worker slots and the large-record permit, whose charge
+    /// [`MemoryAdmission::large_record`] raises.
     Slots,
 }
 
@@ -324,6 +337,10 @@ pub enum Hold {
     Ledger(Agent),
     /// The session index.
     SessionIndex,
+    /// The coordinating thread's worker slot, for the peeks that read sources on that
+    /// thread before decode: catalog links for `--session` and `--source`
+    /// classification. The first decode checkpoint releases it.
+    Coordinating,
 }
 
 /// What bounds `E`.
@@ -380,8 +397,10 @@ pub struct MemoryAdmission {
     holds: Mutex<BTreeMap<Hold, u64>>,
     /// The phase charges are attributed to.
     phase: Mutex<Phase>,
-    /// The large-record permit's charge: the largest need seen in the current decode.
-    large_record: Mutex<u64>,
+    /// The large-record permit: its holder, what the holder holds, and its charge.
+    permit: Mutex<Permit>,
+    /// Signaled when the permit is released or the invocation stops.
+    permit_released: Condvar,
     stopped: AtomicBool,
     refusal: OnceLock<CapacityError>,
     rows: [AtomicUsize; 3],
@@ -416,7 +435,8 @@ impl MemoryAdmission {
             components: std::array::from_fn(|_| AtomicU64::new(0)),
             holds: Mutex::new(BTreeMap::new()),
             phase: Mutex::new(Phase::Discovery),
-            large_record: Mutex::new(0),
+            permit: Mutex::new(Permit::default()),
+            permit_released: Condvar::new(),
             stopped: AtomicBool::new(false),
             refusal: OnceLock::new(),
             rows: std::array::from_fn(|_| AtomicUsize::new(0)),
@@ -429,6 +449,11 @@ impl MemoryAdmission {
     pub fn with_row_ceiling(mut self, ceiling: ObservationCapacity) -> Self {
         self.row_ceiling = Some(ceiling);
         self
+    }
+
+    /// The per-agent ceiling on request-bearing observations, when there is one.
+    pub const fn row_ceiling(&self) -> Option<&ObservationCapacity> {
+        self.row_ceiling.as_ref()
     }
 
     /// The byte budget, or `None` for an unlimited ledger.
@@ -462,9 +487,11 @@ impl MemoryAdmission {
     /// max(8, jobs))`, where `jobs` is an explicit `UROLLUP_JOBS`.
     ///
     /// The count depends on the budget and on an explicit `jobs` above 8, never on the
-    /// default worker count, so admission charges the same for one to eight workers.
+    /// default worker count, so admission charges the same for one to eight workers. The
+    /// default worker count never passes [`SLOT_CEILING`], so passing it as `jobs` is the
+    /// same as passing none.
     pub fn worker_slots(&self, slot_bytes: u64, jobs: Option<NonZeroUsize>) -> NonZeroUsize {
-        let ceiling = jobs.map_or(8, NonZeroUsize::get).max(8);
+        let ceiling = jobs.map_or(SLOT_CEILING, NonZeroUsize::get).max(SLOT_CEILING);
         let slots = match self.budget() {
             None => ceiling,
             Some(budget) => {
@@ -519,20 +546,91 @@ impl MemoryAdmission {
         true
     }
 
-    /// Raises the large-record permit's charge to `need` when it is larger than any need
-    /// seen in this decode, charging only the increase to [`Component::Slots`], so the
-    /// final charge is the input's largest need in any order.
-    #[must_use]
-    pub fn charge_large_record(&self, need: u64) -> bool {
-        let mut level = lock(&self.large_record);
-        if need <= *level {
-            return !self.stopped();
+    /// Takes a share of the large-record permit for `need` bytes, waiting while another
+    /// thread holds the permit; `None` once the invocation is stopped, while waiting or
+    /// because the charge is refused.
+    ///
+    /// The permit is re-entrant: a thread that already holds it adds `need` to what it
+    /// holds, as a long line inside a wide zstd frame does. The permit's charge is raised
+    /// to the holder's total when that passes every need held at once since the last
+    /// checkpoint, charging only the increase to [`Component::Slots`], so the final charge
+    /// is the input's largest need in any order. Dropping the share releases its need, and
+    /// the permit once its holder holds nothing.
+    ///
+    /// A waiting thread holds nothing of the permit, so it cannot block the holder; it
+    /// returns within 20 ms of a refusal anywhere in the invocation. A share belongs to the
+    /// thread that took it, which the type enforces: it cannot move to another thread.
+    pub fn large_record(&self, need: u64) -> Option<LargeRecord<'_>> {
+        let me = std::thread::current().id();
+        let mut permit = lock(&self.permit);
+        loop {
+            if self.stopped() {
+                return None;
+            }
+            match permit.holder {
+                None => {
+                    permit.holder = Some(me);
+                    break;
+                }
+                Some(holder) if holder == me => break,
+                Some(_) => {
+                    permit.waiting = permit.waiting.saturating_add(1);
+                    permit = self
+                        .permit_released
+                        .wait_timeout(permit, PERMIT_POLL)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                    permit.waiting = permit.waiting.saturating_sub(1);
+                }
+            }
         }
-        let charged = self.charge(Component::Slots, need - *level);
-        if charged {
-            *level = need;
+        if self.raise_permit(&mut permit, need) {
+            permit.shares = permit.shares.saturating_add(1);
+            return Some(LargeRecord { admission: self, need, _thread: PhantomData });
         }
-        charged
+        if permit.shares == 0 {
+            permit.holder = None;
+            drop(permit);
+            self.permit_released.notify_all();
+        }
+        None
+    }
+
+    /// Adds `more` to what the permit's holder holds and raises the permit's charge to
+    /// that total when it passes every earlier one; `false`, changing nothing, when the
+    /// charge is refused or the invocation is already stopped.
+    fn raise_permit(&self, permit: &mut Permit, more: u64) -> bool {
+        let held = permit.held.saturating_add(more);
+        if held > permit.level {
+            if !self.charge(Component::Slots, held - permit.level) {
+                return false;
+            }
+            permit.level = held;
+        } else if self.stopped() {
+            return false;
+        }
+        permit.held = held;
+        true
+    }
+
+    /// The large-record permit's holder, for tests.
+    #[cfg(test)]
+    pub(crate) fn permit_holder(&self) -> Option<ThreadId> {
+        lock(&self.permit).holder
+    }
+
+    /// Whether a thread starts waiting for the large-record permit within `within`, for
+    /// tests. It never panics, so a test can still stop the thread it waited for.
+    #[cfg(test)]
+    pub(crate) fn permit_waiter_within(&self, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while lock(&self.permit).waiting == 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
     }
 
     /// Reserves one request-bearing observation of `agent` against the row ceiling.
@@ -583,7 +681,7 @@ impl MemoryAdmission {
         estimate: u64,
         holds: &[(Hold, u64)],
     ) -> Result<(), CapacityError> {
-        self.transition(Some(phase), Some(estimate), holds)
+        self.transition(Some(phase), Some(estimate), |next| set_holds(next, holds))
     }
 
     /// Sets each hold in `changes` (zero releases one), keeping the current phase's
@@ -597,7 +695,23 @@ impl MemoryAdmission {
     /// only when the final total passes the budget, in either order. A refusal names the
     /// current phase, changes nothing, and is final.
     pub fn hold(&self, changes: &[(Hold, u64)]) -> Result<(), CapacityError> {
-        self.transition(None, None, changes)
+        self.transition(None, None, |next| set_holds(next, changes))
+    }
+
+    /// Raises `hold` to `bytes` when it holds less, keeping the current phase's charges; a
+    /// hold that already covers `bytes` is kept. The coordinating slot grows this way as
+    /// discovery finds compressed sources.
+    ///
+    /// The comparison and the change are one transition, so concurrent raises never lower
+    /// a hold. Like [`Self::hold`], call it on the coordinating thread while no worker
+    /// charges, and a refusal names the current phase, changes nothing, and is final.
+    pub fn raise_hold(&self, hold: Hold, bytes: u64) -> Result<(), CapacityError> {
+        // The comparison and the change are one transition under the holds' lock.
+        self.transition(None, None, |next| {
+            if next.get(&hold).copied().unwrap_or(0) < bytes {
+                next.insert(hold, bytes);
+            }
+        })
     }
 
     /// Ends `agent`'s ingest in one transition: its phase charges and discovery metadata
@@ -605,11 +719,9 @@ impl MemoryAdmission {
     /// finalize. Charges are then attributed to finalizing that agent's ledger until the
     /// next checkpoint. Call it as [`Self::checkpoint`] is called.
     pub fn commit(&self, agent: Agent, retained: u64) -> Result<(), CapacityError> {
-        self.transition(
-            Some(Phase::Finalize(agent)),
-            Some(0),
-            &[(Hold::Discovery(agent), 0), (Hold::Ledger(agent), retained)],
-        )
+        self.transition(Some(Phase::Finalize(agent)), Some(0), |next| {
+            set_holds(next, &[(Hold::Discovery(agent), 0), (Hold::Ledger(agent), retained)]);
+        })
     }
 
     /// The current modeled heap `E`.
@@ -658,20 +770,14 @@ impl MemoryAdmission {
         &self,
         phase: Option<Phase>,
         estimate: Option<u64>,
-        changes: &[(Hold, u64)],
+        edit: impl FnOnce(&mut BTreeMap<Hold, u64>),
     ) -> Result<(), CapacityError> {
         let mut holds = lock(&self.holds);
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
         let mut next_holds = holds.clone();
-        for (hold, bytes) in changes {
-            if *bytes == 0 {
-                next_holds.remove(hold);
-            } else {
-                next_holds.insert(*hold, *bytes);
-            }
-        }
+        edit(&mut next_holds);
         let (held_before, held_after) = (sum(&holds), sum(&next_holds));
         let unlimited = self.limit.is_unlimited();
         let moved = self.update(|current| {
@@ -702,7 +808,7 @@ impl MemoryAdmission {
                     *lock(&self.phase) = phase;
                 }
                 if estimate.is_some() {
-                    *lock(&self.large_record) = 0;
+                    lock(&self.permit).level = 0;
                 }
                 self.largest.fetch_max(previous.max(next), Ordering::Relaxed);
                 Ok(())
@@ -721,7 +827,116 @@ impl MemoryAdmission {
     fn refuse(&self, error: CapacityError) -> CapacityError {
         let first = self.refusal.get_or_init(|| error).clone();
         self.stopped.store(true, Ordering::Release);
+        // Without the permit's lock, which the refusing thread may hold: a waiter that
+        // misses this signal sees the flag at its next poll.
+        self.permit_released.notify_all();
         first
+    }
+}
+
+/// The most worker slots [`MemoryAdmission::worker_slots`] gives unless an explicit worker
+/// count passes it: the eight workers the design charges for, whatever the default count.
+pub const SLOT_CEILING: usize = 8;
+
+// Admission treats the default worker count as no explicit count only while the default
+// never passes the slot ceiling; raising it would make slot counts depend on the machine.
+const _: () = assert!(crate::sources::parallel::MAX_DEFAULT_WORKERS.get() <= SLOT_CEILING);
+
+/// How long a thread waiting for the large-record permit sleeps before it checks the stop
+/// flag again, should it miss the signal a refusal sends.
+pub(crate) const PERMIT_POLL: Duration = Duration::from_millis(20);
+
+/// The large-record permit's state.
+#[derive(Debug, Default)]
+struct Permit {
+    /// The thread holding the permit.
+    holder: Option<ThreadId>,
+    /// The shares the holder holds.
+    shares: usize,
+    /// The sum of their needs.
+    held: u64,
+    /// The permit's charge: the largest `held` since the last checkpoint.
+    level: u64,
+    /// The threads waiting for the permit.
+    waiting: usize,
+}
+
+/// A share of the large-record permit, from [`MemoryAdmission::large_record`]; dropping it
+/// releases its need, and the permit once its holder holds no other share.
+///
+/// Re-entrance is keyed by the thread that took the permit, so a share never moves to
+/// another thread: the type is neither `Send` nor `Sync`.
+///
+/// ```
+/// use urollup_core::ledger::admission::MemoryAdmission;
+///
+/// let admission = MemoryAdmission::unlimited();
+/// let share = admission.large_record(1 << 20).expect("an unlimited ledger admits it");
+/// assert_eq!(share.need(), 1 << 20);
+/// ```
+///
+/// A share cannot be sent to another thread:
+///
+/// ```compile_fail,E0277
+/// use urollup_core::ledger::admission::LargeRecord;
+///
+/// fn release_elsewhere(share: LargeRecord<'static>) {
+///     std::thread::spawn(move || drop(share));
+/// }
+/// ```
+///
+/// nor shared with one:
+///
+/// ```compile_fail,E0277
+/// use urollup_core::ledger::admission::LargeRecord;
+///
+/// fn shared<T: Sync>() {}
+/// shared::<LargeRecord<'static>>();
+/// ```
+#[derive(Debug)]
+#[must_use = "dropping the share releases the large-record permit"]
+pub struct LargeRecord<'a> {
+    admission: &'a MemoryAdmission,
+    need: u64,
+    _thread: PhantomData<*const ()>,
+}
+
+impl LargeRecord<'_> {
+    /// Raises this share's need to `need`, as a line buffer that doubles again does;
+    /// `false`, leaving the share unchanged, when the charge is refused or the invocation
+    /// is stopped. A smaller need changes nothing.
+    #[must_use]
+    pub fn raise(&mut self, need: u64) -> bool {
+        if need <= self.need {
+            return !self.admission.stopped();
+        }
+        let mut permit = lock(&self.admission.permit);
+        debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
+        let raised = self.admission.raise_permit(&mut permit, need - self.need);
+        if raised {
+            self.need = need;
+        }
+        raised
+    }
+
+    /// The need this share holds.
+    pub const fn need(&self) -> u64 {
+        self.need
+    }
+}
+
+impl Drop for LargeRecord<'_> {
+    fn drop(&mut self) {
+        let mut permit = lock(&self.admission.permit);
+        debug_assert_eq!(permit.holder, Some(std::thread::current().id()), "a share's holder");
+        permit.held = permit.held.saturating_sub(self.need);
+        permit.shares = permit.shares.saturating_sub(1);
+        if permit.shares == 0 {
+            permit.holder = None;
+            permit.held = 0;
+            drop(permit);
+            self.admission.permit_released.notify_all();
+        }
     }
 }
 
@@ -731,6 +946,17 @@ fn memory_error(budget: &MemoryBudget, phase: Phase, estimate: Option<u64>) -> C
         estimate,
         budget: budget.bytes(),
         label: budget.label().to_owned(),
+    }
+}
+
+/// Sets each hold in `changes`; zero releases one.
+fn set_holds(holds: &mut BTreeMap<Hold, u64>, changes: &[(Hold, u64)]) {
+    for (hold, bytes) in changes {
+        if *bytes == 0 {
+            holds.remove(hold);
+        } else {
+            holds.insert(*hold, *bytes);
+        }
     }
 }
 
@@ -757,6 +983,7 @@ impl fmt::Display for Hold {
             Self::Discovery(agent) => write!(f, "{} discovery", agent.token()),
             Self::Ledger(agent) => write!(f, "{} ledger", agent.token()),
             Self::SessionIndex => f.write_str("session index"),
+            Self::Coordinating => f.write_str("coordinating slot"),
         }
     }
 }
@@ -983,7 +1210,7 @@ mod tests {
                                     return;
                                 }
                             }
-                            if !admission.charge_large_record(*need)
+                            if admission.large_record(*need).is_none()
                                 || !admission.charge_until_exit(3)
                             {
                                 return;
@@ -1028,6 +1255,26 @@ mod tests {
                 let under = MemoryAdmission::new(MemoryBudget::exact(budget - 1, "T − 1"), model);
                 assert!(!run_invocation(&under, workers, seed));
             }
+        }
+    }
+
+    #[test]
+    fn raising_a_hold_never_lowers_it_even_when_raises_race() {
+        for _ in 0..20 {
+            let admission = ledger(1_000_000);
+            std::thread::scope(|scope| {
+                for worker in 0..8_u64 {
+                    let admission = &admission;
+                    scope.spawn(move || {
+                        for step in 0..200 {
+                            let bytes = (step * 8 + worker) % 1_000 + 1;
+                            admission.raise_hold(Hold::Coordinating, bytes).unwrap();
+                        }
+                    });
+                }
+            });
+            // The largest raise is 1,000 bytes, and no smaller raise replaced it.
+            assert_eq!(admission.charged(), 1_000);
         }
     }
 
@@ -1191,17 +1438,95 @@ mod tests {
     #[test]
     fn the_large_record_permit_charges_only_the_largest_need() {
         let admission = ledger(1000);
-        assert!(admission.charge_large_record(300));
-        assert!(admission.charge_large_record(200));
-        assert!(admission.charge_large_record(500));
+        for need in [300, 200, 500] {
+            drop(admission.large_record(need).unwrap());
+        }
         assert_eq!(admission.charged(), 500);
         // A checkpoint ends the decode: the permit's charge is replaced, and the next
         // decode charges its own largest need again.
         admission.checkpoint(Phase::Decode(Agent::Claude), 0, &[]).unwrap();
-        assert!(admission.charge_large_record(100));
+        drop(admission.large_record(100).unwrap());
         assert_eq!(admission.charged(), 100);
         assert_eq!(admission.charged_by(Component::Slots), 600);
-        assert!(!admission.charge_large_record(1001));
+        // A refused share leaves the permit free and the charge unchanged.
+        assert!(admission.large_record(1001).is_none());
+        assert_eq!(admission.permit_holder(), None);
+        assert_eq!(admission.charged(), 100);
+    }
+
+    #[test]
+    fn the_permit_is_re_entrant_and_its_need_is_the_sum_its_holder_holds() {
+        let admission = ledger(10_000);
+        let me = std::thread::current().id();
+        // A wide frame, then a long line inside it whose buffer doubles twice.
+        let frame = admission.large_record(1000).unwrap();
+        let mut line = admission.large_record(400).unwrap();
+        assert!(line.raise(800));
+        assert_eq!(line.need(), 800);
+        assert!(line.raise(100), "a smaller need changes nothing");
+        assert_eq!(admission.charged(), 1800);
+        assert_eq!(admission.permit_holder(), Some(me));
+        // The line's buffer shrinks; the frame still holds the permit.
+        drop(line);
+        assert_eq!(admission.permit_holder(), Some(me));
+        let again = admission.large_record(300).unwrap();
+        assert_eq!(admission.charged(), 1800, "1300 held at once never passes 1800");
+        drop(again);
+        drop(frame);
+        assert_eq!(admission.permit_holder(), None);
+        // A refused raise leaves the share's need, and the charge, unchanged.
+        let mut share = admission.large_record(100).unwrap();
+        assert!(!share.raise(20_000));
+        assert_eq!(share.need(), 100);
+        assert!(admission.stopped());
+        assert!(!share.raise(50), "a stopped invocation refuses even a smaller need");
+    }
+
+    #[test]
+    fn one_thread_at_a_time_holds_the_permit() {
+        let admission = MemoryAdmission::unlimited();
+        let holding = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for worker in 0..8_u64 {
+                let (admission, holding, most) = (&admission, &holding, &most);
+                scope.spawn(move || {
+                    for round in 0..50 {
+                        let outer = admission.large_record(worker * 10 + round).unwrap();
+                        let now = holding.fetch_add(1, Ordering::SeqCst) + 1;
+                        most.fetch_max(now, Ordering::SeqCst);
+                        let inner = admission.large_record(1).unwrap();
+                        std::thread::yield_now();
+                        holding.fetch_sub(1, Ordering::SeqCst);
+                        drop((inner, outer));
+                    }
+                });
+            }
+        });
+        assert_eq!(most.load(Ordering::SeqCst), 1);
+        assert_eq!(admission.permit_holder(), None);
+        // The charge is the largest single holder's total: 70 + 49 + 1.
+        assert_eq!(admission.charged_by(Component::Slots), 120);
+    }
+
+    #[test]
+    fn a_thread_waiting_for_the_permit_returns_when_a_refusal_stops_the_invocation() {
+        let admission = ledger(1000);
+        let held = admission.large_record(10).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| sender.send(admission.large_record(5).is_none()).unwrap());
+            // Once the other thread waits on the held permit, refuse elsewhere. The refusal
+            // comes whatever happens, so the thread always stops and the scope ends.
+            let waited = admission.permit_waiter_within(Duration::from_secs(60));
+            assert!(!admission.charge(Component::Records, 2000));
+            let stopped = receiver.recv_timeout(Duration::from_secs(60));
+            assert!(waited, "the other thread waits for the held permit");
+            assert_eq!(stopped, Ok(true), "the waiter returns, with no share once stopped");
+        });
+        drop(held);
+        assert_eq!(admission.permit_holder(), None);
+        assert!(admission.large_record(1).is_none());
     }
 
     #[test]
@@ -1212,7 +1537,7 @@ mod tests {
         admission.checkpoint(Phase::Construction(Agent::Codex), 10, &[]).unwrap();
         assert!(admission.charge(Component::Records, 5));
         assert!(admission.charge_until_exit(7));
-        assert!(admission.charge_large_record(11));
+        drop(admission.large_record(11).unwrap());
         // A refused charge adds nothing.
         assert!(!admission.charge(Component::Payloads, 1000));
         assert_eq!(
@@ -1274,7 +1599,7 @@ mod tests {
         assert!(admission.charge(Component::Records, 1));
         assert_eq!(admission.charged(), u64::MAX);
         assert!(admission.charge_until_exit(u64::MAX));
-        assert!(admission.charge_large_record(u64::MAX));
+        drop(admission.large_record(u64::MAX).unwrap());
         admission.hold(&[(Hold::SessionIndex, u64::MAX)]).unwrap();
         admission.commit(Agent::Codex, u64::MAX).unwrap();
         admission.checkpoint(Phase::Query, u64::MAX, &[]).unwrap();

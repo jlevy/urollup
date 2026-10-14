@@ -7,7 +7,7 @@
 //! size only orders the work ([`source_weight`]) instead of silently treating an
 //! unreadable file as empty, workers pull items from one shared queue instead of fixed
 //! chunks, a fallible read stops starting items after a failure, and the results keep
-//! input order.
+//! input order and are placed only once every worker has finished.
 //!
 //! Workers pull items heaviest first from one queue, so an underestimated weight, such as a
 //! compressed file that expands more than expected, leaves the other workers free to take
@@ -249,23 +249,28 @@ where
                 done
             }));
         }
-        let mut results: Vec<Option<U>> = Vec::new();
-        results.resize_with(items.len(), || None);
+        // Every worker finishes before `results` is allocated, so a worker's `done` vector,
+        // which doubles as it grows, never sits beside them (the admission model's
+        // `join_copies`).
+        let mut finished = Vec::with_capacity(handles.len());
         let mut panicked = false;
         for handle in handles {
             match handle.join() {
-                Ok(done) => {
-                    for (index, value) in done {
-                        if let Some(slot) = results.get_mut(index) {
-                            *slot = Some(value);
-                        }
-                    }
-                }
+                Ok(done) => finished.push(done),
                 Err(_) => panicked = true,
             }
         }
         if panicked {
             return Err(ParallelReadError);
+        }
+        let mut results: Vec<Option<U>> = Vec::new();
+        results.resize_with(items.len(), || None);
+        for done in finished {
+            for (index, value) in done {
+                if let Some(slot) = results.get_mut(index) {
+                    *slot = Some(value);
+                }
+            }
         }
         results.into_iter().collect::<Option<Vec<U>>>().ok_or(ParallelReadError)
     })

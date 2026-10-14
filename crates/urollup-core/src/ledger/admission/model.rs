@@ -20,8 +20,8 @@
 //! Each map and B-tree term states the precondition under which it bounds the standard
 //! structure; the model-bound harness checks every primitive against a counting allocator
 //! at every count up to a few thousand. Totals are monotone in their counts, so a push site
-//! can charge the difference between the total after and before it. Nothing in ingestion
-//! charges these yet.
+//! can charge the difference between the total after and before it. Only the large-record
+//! permit charges from them so far, in the source reader.
 
 use std::mem::size_of;
 
@@ -309,6 +309,10 @@ pub mod sizes {
     pub const STRING: u64 = size_of::<String>() as u64;
     /// A `Vec`, as a group's parts are held.
     pub const LIST: u64 = size_of::<Vec<usize>>() as u64;
+    /// A source's snapshot manifest entry, as the manifest holds it.
+    pub const MANIFEST_ENTRY: u64 = size_of::<crate::sources::manifest::ManifestEntry>() as u64;
+    /// A source entity row, with the copy of its manifest entry it holds inline.
+    pub const SOURCE_ARTIFACT: u64 = size_of::<crate::ledger::entities::SourceArtifact>() as u64;
 }
 
 /// The most key-graph nodes one observation of `agent` can add, including the
@@ -616,9 +620,10 @@ pub const GZIP_DECODER: u64 =
     (80 << 10) + allocation(GZIP_HEADER_FIELD) + 2 * grown_vec(GZIP_HEADER_FIELD, 1);
 
 /// The read buffer `sources::reader::decode` wraps each source in.
-pub const READ_BUFFER: u64 = 128 << 10;
+pub const READ_BUFFER: u64 = crate::sources::reader::READ_BUFFER_BYTES as u64;
 
-/// The boxed reader `sources::reader::decode` returns and the decoder struct it wraps.
+/// The boxed reader `sources::reader::decode` returns and the decoder struct it wraps, its
+/// zstd frame loop included.
 pub const READER_STATE: u64 = 512;
 
 /// The default thread stack of a decoding worker.
@@ -656,10 +661,44 @@ pub const JOIN_PAIR: u64 = max(
 /// result ([`join_copies`]).
 pub const JOIN_DONE: u64 = grown_vec(1, JOIN_PAIR);
 
+/// The work order of a parallel read of `sources` sources, which `run_in_parallel` builds
+/// before any worker starts and keeps while they run: each source's weight and its place in
+/// the heaviest-first order, each vector sized once, and the stable sort of the order
+/// beside them. The decode checkpoint charges it whatever the thread count.
+pub const fn work_order(sources: u64) -> u64 {
+    let weights = sized_vec(sources, size_of::<u64>() as u64);
+    let order = sized_vec(sources, sizes::POINTER);
+    weights.saturating_add(order).saturating_add(sort_scratch(sources, sizes::POINTER))
+}
+
 /// The copies the join makes of one source's result pair: the worker's doubling `done`
-/// vector, then `results` beside `values`, then `values` beside the unzipped vectors.
+/// vector, then the finished `done` vectors, at most twice their pairs, beside `results`,
+/// which the join allocates only once every worker has finished, then `results` beside
+/// `values`, then `values` beside the unzipped vectors.
 pub const fn join_copies() -> u64 {
     3 * JOIN_PAIR
+}
+
+/// One source's rows apart from its threads, charged before the worker returns the
+/// source's result: its manifest entry, whose heap is `entry_heap`, in the manifest; its
+/// source entity row, which holds a copy of the entry and, as `version` bytes, the
+/// dialect version its records declared; and the join's copies of its result pair. A
+/// source row that copies a longer version from an earlier source with the same source ID
+/// is charged the difference after the join (`adapters::Decoding`).
+///
+/// A vector of `n` rows sized once costs at most `n` single-row allocations, so each row
+/// is charged one. A cloned entry's strings and vectors are sized to their length, so the
+/// copy's heap is at most `entry_heap`.
+pub const fn source_rows(entry_heap: u64, version: Option<u64>) -> u64 {
+    let version = match version {
+        Some(bytes) => allocation(bytes),
+        None => 0,
+    };
+    allocation(sizes::MANIFEST_ENTRY)
+        .saturating_add(allocation(sizes::SOURCE_ARTIFACT))
+        .saturating_add(entry_heap.saturating_mul(2))
+        .saturating_add(version)
+        .saturating_add(join_copies())
 }
 
 /// One worker slot `b`: the read buffer and boxed reader, the retained line, the line need

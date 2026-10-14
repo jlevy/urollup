@@ -347,9 +347,12 @@ memory.
 
 ### Process-Wide Admission (uro-6pi8)
 
-**Status:** design accepted (2026-10-09); slices 1 to 3 (budget source, ledger, and
-model and harness) implemented, with only the row ceiling wired into ingestion; `F`
-rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
+**Status:** design accepted (2026-10-09); slices 1 to 4 (budget source, ledger, model
+and harness, and readers and workers) implemented.
+The CLI passes one ledger that never refuses bytes, so only the row ceiling refuses; the
+permit, worker slots, the coordinating slot and source rows are charged, and the thread
+rows slices 5 and 6 own are not.
+`F` rests on CI’s Linux intercept and the query constants stay guesses until slice 8.
 [Implementation Notes](#implementation-notes) records choices the slices made where this
 design left room. The maintainer settled the policy [decisions](#decisions) on
 2026-10-09. Values marked *guess* are placeholders that the
@@ -606,12 +609,14 @@ committed; then query and render.
   `window_log_max(23)`. A window above 8 MiB and up to 2^27 takes the permit first,
   charged that window’s decoder, and decodes that one frame with a second decoder opened
   with `window_log_max(27)`, zstd’s default limit, which is dropped when the frame ends.
-  A window above 2^27 decodes with `window_log_max(27)` and fails as it does today, a
-  `CorruptCompressedData` failure with zstd’s message, so no decoder error has to be
-  told apart from damage.
-  A header the loop cannot parse (a bad magic number, a reserved bit, or a header cut
-  off at the end of the file) goes to the slot’s decoder unchanged, so its failure kind
-  and message stay as today.
+  A window above 2^27 goes to the slot’s decoder, which fails it as zstd’s default limit
+  did, a `CorruptCompressedData` failure with zstd’s own message, so no decoder error
+  has to be told apart from damage (see the Readers notes under
+  [Implementation Notes](#implementation-notes)). A header the loop cannot parse (a bad
+  magic number, a reserved bit, or a header cut off at the end of the file) goes to the
+  slot’s decoder unchanged, so its failure kind and message stay as today.
+  As in zstd, as much of the magic number as there is decides, so 1 to 3 bytes that
+  cannot begin a zstd frame go there at once, without reading further.
   Skippable frames are skipped, as today.
   A decoder’s size comes from zstd 1.5.7’s `ZSTD_estimateDStreamSize` formula, computed
   in Rust because zstd-sys exposes that function only behind its `experimental` feature;
@@ -1327,15 +1332,190 @@ Choices made while implementing, where this design left room:
     sessions document of 201 rows holds about 650 bytes per row beyond its per-request
     lists, its fixed part included, and an empty report holds under 1 KiB.
 
-- **Left to later slices.** Slice 4: the doubling `read_line` with the permit, the 3.9
-  MiB and 63 MiB line tests, and the eight-worker join test against `JOIN_DONE`. Slices
-  5 and 6: the decode charges, which make the reported ingest bound fail rather than
-  report, on corpora where `E` is at least 10 × the slots’ Rust-heap term; the
-  construction checkpoint, which first measures `construction_estimate`; the grouping
-  checkpoints before the key graph and at `Order`, which return their refusal through
-  the stage callback, and a check of thread reconciliation’s precondition; and Claude’s
-  thread graph, which uses `with_capacity` and removes entries, so it is charged by
-  capacity and by cumulative inserts.
+- **Readers (slice 4).** Every read takes the invocation’s `MemoryAdmission`:
+  `read_source(spec, files, options, admission, visit)`, `peek(files, admission, look)`
+  and `decode(stored, representation, admission)`, the only decoder constructor, which
+  the scan, `first_record_of` and `peek` all use.
+  - **The permit.** `MemoryAdmission::large_record(need)` returns a `LargeRecord` share,
+    which replaces slice 2’s `charge_large_record`. The permit is held by one thread at
+    a time, by `ThreadId`, and is re-entrant for it; the holder’s need is the sum of its
+    shares, and `LargeRecord::raise` grows one share, as a doubling line does.
+    The charge stays the largest need held at once since the last checkpoint.
+    Dropping the last share frees the permit and signals waiters.
+    A waiter also polls the stop flag every 20 ms, because a refusal signals without the
+    permit’s lock, which the refusing thread may hold inside a charge.
+    A share is neither `Send` nor `Sync`, since re-entrance is keyed by the thread that
+    took it, and debug builds assert that its holder raises and drops it.
+    `compile_fail` doctests on `LargeRecord` pin both.
+    A refused or stopped share is `None`, and the read ends with the new
+    `SourceReadError::Stopped`, which the adapters already rank below the refusal.
+  - **Line buffers.** The scan’s, `first_record_of`’s and a peek’s line buffer starts at
+    the 256 KiB retained capacity and doubles with `reserve_exact` to
+    `next_line_capacity(C, limit)`, the read’s own limit (`max_record_bytes` for the
+    scan). Past 4 MiB it takes a share for `line_need(C′)` (`4 × C′`) before it grows and
+    raises it at each later doubling.
+    `LineBuffer::reset` shrinks it to the retained capacity and drops the share at the
+    start of the next read, after the visitor has returned, or when the buffer drops.
+    A line past the read’s limit is an error rather than growth without the permit;
+    `read_line` never asks for one.
+  - **The zstd frame loop** (`sources/reader/frames.rs`) keeps
+    `zstd::stream::read::Decoder`’s loop: one input buffer of `ZSTD_DStreamInSize()`,
+    the same reads, the empty-input flush before each read, the session reset between
+    frames and the `incomplete frame` error at an early end.
+    It reads each frame’s header (`frame_header`, RFC 8878 §3.1.1.1, with the mantissa)
+    before the decoder sees the frame.
+    When the input buffer ends inside a zstd frame’s header, with bytes that can begin
+    one, the loop moves the header’s start to an 18-byte side buffer and reads the next
+    buffer as the old decoder would have, then offers that start as a chunk of its own,
+    so the decoder sees the same chunks as before.
+    That matters: how much a decoder emits before a damaged block depends on its input
+    chunks, and a test that damages raw blocks after a split header fails when the loop
+    compacts the header instead, or reads 7 bytes less per buffer.
+    A read that fails, `Interrupted` included, changes nothing, as `BufReader`’s does,
+    so a caller that retries resumes exactly: a refill sets its bounds only once the
+    read returns, and a failed look-ahead puts the header’s start back.
+    A look-ahead read that returns nothing is the end of the input, as `BufReader`’s
+    would have been, so nothing is read after it.
+    Bytes that cannot begin a zstd frame are routed without a look-ahead, however few:
+    zstd checks as much of the magic number as it is offered and fails on bytes that
+    begin no frame before it reads again, so the loop makes no read the stock decoder
+    does not. Tests compare the loop with the stock decoder over scripted readers that
+    fail or return `Interrupted` at each read in turn, scribbling over the buffer as
+    `Read` allows, interrupt every read once, and return short reads, and check that
+    both make the same reads, including none past bytes that cannot begin a frame.
+    One deviation remains: a short read before the end of the input that leaves a header
+    incomplete routes the frame by the bytes it has, so a window above 8 MiB goes to the
+    slot’s decoder and fails there, where the stock decoder would decode it.
+    A local regular file returns a short read only at its end, but a network or FUSE
+    file system, or another reader `decode` is given, may not.
+  - **Deviation: windows above 2^27** go to the slot’s decoder (`window_log_max(23)`)
+    rather than a decoder opened with `window_log_max(27)`. zstd reports the same
+    `frameParameter_windowTooLarge` error, `Frame requires too much memory for
+    decoding`, under either limit, so the kind and message are as before and no second
+    context is opened for a frame that cannot decode.
+    A skippable frame, a bad magic number (or 1 to 3 bytes that cannot begin one), a
+    reserved bit or a header cut off at the end of the file also goes to the slot’s
+    decoder unchanged.
+  - **zstd’s single-pass path.** A frame whose content size fits the read buffer and
+    whose bytes are all in the input buffer decodes in one pass, which never checks the
+    window, so such a frame declaring 2^28 still decodes, as it did before.
+    The loop still takes the permit for such a frame when its declared window passes 8
+    MiB, an over-charge that keeps the rule per header.
+  - **Field-only peeks.** `sources::decode::strings_at(bytes, paths)` reads the strings
+    at object paths with a lenient visitor that is exact with respect to parsing a
+    `serde_json::Value` and asking each path’s `text`, last key winning; a property test
+    checks it against documents.
+    The Codex catalog links and `--source` classification use it, and Claude’s
+    named-session peek keeps `line_session`. All three read through
+    `PeekLines::next_line(limit)` within a window of decoded bytes (`set_window`) that
+    reproduces the old `take(…).read_until` bounds exactly, including classification’s
+    count of a line’s terminator against its limit.
+    The design lists these peeks under slice 7 as well.
+    Slice 4 did the reading and parsing, under the coordinating slot on the invocation’s
+    ledger (see Workers); slice 7 gives that ledger its budget.
+  - **Claude’s head before its body.** The model-bound harness found Claude’s decode
+    holding the line head’s copy of an escaped string beside the body pass’s
+    `serde_json` scratch: 120% of `4 × C′` for a kept `cwd` (20,428,144 bytes against
+    16,909,312 for a 3.9 MiB line, 327,352,864 against 268,567,552 for 63 MiB). Decode
+    now drops the head before the body pass.
+    The copies decoding keeps from head fields (version, project and session names) are
+    retained payloads, which slice 6 charges.
+  - **Harness.** `codex_rollout::read_line_fields`, `claude_project::read_line_fields`
+    and `claude_project::read_sidecar` expose the line and sidecar parses alone; they
+    are hidden from the documentation and are not part of the supported API. Lines of
+    3.9 MiB and 63 MiB, each a string whose one escape comes at 31/32 of its length,
+    read by the scan, measure 95–97% of their need through `validate_record` and both
+    parsers, with and without a kept copy.
+    A 1 MiB sidecar with a late-escaped kept string measures 24% of the slot’s line
+    allowance. Eight workers reading 5 MiB lines hold at most one allocation above 4 MiB
+    at a time; without the permit, eight.
+    zstd’s streaming context measures within `zstd_stream` for the 8 MiB slot window and
+    for the 16 MiB and 2^27 windows the permit pays for.
+  - **Tests** compare the frame loop with `zstd::stream::read::Decoder`, output bytes
+    and error kind and message, on windows from 2^10 to 2^27 with mantissas 0, 1 and 7,
+    on single-segment frames of 230 B, about 850 KB and about 8.6 MB, on every prefix of
+    a damaged stream, flipped bytes, a bad magic number, a reserved bit, trailing bytes,
+    damaged blocks, and headers split across input buffers by 1 to 18 bytes.
+    A 9 MiB descriptor (exponent 13, mantissa 1) takes the permit for its frame only.
+    A Codex rollout whose second frame declares 16 MiB ingests at one and eight workers
+    with `--max-rows` exact at 5 and refusing at 4, and matches its plain twin.
+    Twin checks, catalog peeks and classification of wide-window files match their plain
+    twins. The tests of a thread waiting for the permit wait until it is waiting, by a
+    count of waiters, before they refuse.
+
+- **Workers (slice 4).** `adapters::Decoding` carries an ingest’s ledger, the configured
+  worker count and the slot size `b`; each adapter’s new
+  `ingest_discovery_with_admission` takes it, and `ingest_discovery_with_capacity`
+  builds one over its own unlimited ledger.
+  The CLI now creates one unlimited ledger with the row ceiling for the invocation, so
+  both agents’ ingests and the peeks share it.
+  Rows stay counted per agent, so output and refusals are unchanged.
+  - **Worker slots.** `Decoding::begin` is the decode checkpoint:
+    `checkpoint(Phase::Decode(agent), slots × b + work_order(n), [(Hold::Coordinating,
+    0)])` with `slots = worker_slots(b, workers)` for `n` sources, and decode runs on
+    `Decoding::threads()`, `min(workers, slots)`, which the CLI also reports as
+    `stats: workers=`. `model::work_order` is the parallel read’s weights and order,
+    each sized once, and the stable sort of the order, which the read builds before any
+    worker starts; it is charged whatever the thread count.
+    The configured count stands in for an explicit `UROLLUP_JOBS`: the default is at
+    most eight, so it changes the slot count only when an explicit count does, and a
+    compile-time assertion ties `MAX_DEFAULT_WORKERS` to the new `SLOT_CEILING` (8).
+  - **One `b`.** `adapters::worker_slot(discoveries)` adds the zstd and gzip decoders
+    when any source of either agent’s discovery, before narrowing, has such a file.
+  - **The coordinating slot** is the new `Hold::Coordinating`. The CLI raises it with
+    the new `MemoryAdmission::raise_hold`: to the plain slot before any peek, to cover a
+    `--source` root’s decoders before its classification peeks, and to `b` before the
+    catalog peeks. Codex’s decode checkpoint releases it.
+    A raise compares and changes the hold in one transition, so racing raises never
+    lower it. Charging the coordinating thread’s caches from that checkpoint
+    (`COORDINATING_CACHES`, `uro-2hzh`) stays with slice 7, beside the discovery holds.
+  - **Source rows.** Before a worker returns a source’s result it charges
+    `model::source_rows` to `Component::Sources`: one allocation for its manifest entry
+    and one for its source entity row, twice the entry’s deep heap (the entry and the
+    row’s copy), the dialect version the row copies, and the join’s three copies of the
+    result pair. A refusal ends the source as `SourceReadError::Stopped`. Each row is
+    charged one allocation, which bounds a vector sized once.
+    Codex’s `unzip` reserved the standard minimum of four entries for fewer sources, so
+    Codex now presizes its entry and rollout vectors.
+    `normalize` gives every source row of a source ID the version of its first source
+    that declared one, and two roots holding the same transcript or rollout share an ID,
+    so a source can hold a longer version than its worker charged.
+    After the join, before the rows are built, `Decoding::charge_shared_versions`
+    charges what each source’s copied version costs beyond its own.
+    A test checks the charge, less the join’s copies, against the deep heap of the
+    entries and source rows of every fixture and of a shared-ID case in each dialect,
+    which fails without that charge.
+  - **Deviation: thread rows.** The design charges each source’s thread and relationship
+    rows and each thread’s session-index reserve with the source rows.
+    Those rows are built in `normalize` from per-adapter state: Codex’s session metadata
+    strings, and Claude’s per-record thread evidence, sidechain runs and subagent
+    sidecars. They move to slices 5 and 6, which wire each adapter’s decode charges and
+    make the decode bound fail.
+  - **The join.** The harness measures `try_read_in_parallel` with a result pair of
+    `JOIN_PAIR` bytes against `JOIN_DONE` per worker and `join_copies` per source.
+    Its first run found the join’s peak at the bound: the join allocated `results` while
+    workers were still filling their doubling `done` vectors, which `3 × JOIN_PAIR` per
+    source does not cover.
+    The join now places results only once every worker has finished, and the work order
+    is charged at the decode checkpoint (`model::work_order`). Over ten runs per case,
+    with some reads stalled so that workers take uneven shares, the peaks measure
+    14–85%, from one source on one worker to 1,000 sources on eight; eight sources on
+    eight workers that wait for one another make `JOIN_DONE` necessary.
+    Before the first read, 100,000 sources hold 2,400,048 bytes, 96% of `work_order`.
+  - **Tests.** Under a budget of two slots, eight workers decode on two threads, the
+    checkpoint holds `2 × b` and the coordinating slot is gone; a budget below one slot
+    refuses at the decode checkpoint with its whole-process estimate.
+    Every fixture ingests on one slot to the same ledger and threads as on eight
+    unlimited workers.
+
+- **Left to later slices.** Slices 5 and 6: thread and relationship rows and the
+  session-index reserve (see Workers); the decode charges, which make the reported
+  ingest bound fail rather than report, on corpora where `E` is at least 10 × the slots’
+  Rust-heap term; the construction checkpoint, which first measures
+  `construction_estimate`; the grouping checkpoints before the key graph and at `Order`,
+  which return their refusal through the stage callback, and a check of thread
+  reconciliation’s precondition; and Claude’s thread graph, which uses `with_capacity`
+  and removes entries, so it is charged by capacity and by cumulative inserts.
   Slice 7: the statistics line from `PhaseEstimate`. Slice 8: per-allocator `F` and `H`,
   with `F` measured on Linux directly, and the query constants from the calibration
   matrix.
