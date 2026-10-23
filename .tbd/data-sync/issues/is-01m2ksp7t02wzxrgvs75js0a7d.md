@@ -5,16 +5,18 @@ title: Verify the unverified Claude transcript shapes in the fixtures
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
   - milestone-0.1
   - fixtures
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:56.272Z
-updated_at: 2026-09-16T00:25:56.272Z
+updated_at: 2026-10-23T23:02:38.191Z
 ---
 Two shapes in crates/urollup-core/tests/fixtures/claude-project/ are modeled, not observed, and are flagged in their cases:
 

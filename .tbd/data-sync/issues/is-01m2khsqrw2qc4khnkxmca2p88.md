@@ -5,7 +5,7 @@ title: Extend ccusage reconciliation harness to costs
 kind: task
 status: open
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -18,9 +18,11 @@ dependencies:
     target: is-01m2ksy3sr8ges0ra56f92ftxg
   - type: blocks
     target: is-01m2kt2ta16w8bgb4150fkktks
+  - type: blocks
+    target: is-01m5nfwrjysbgvzjy9b6y1axxd
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-15T22:08:02.330Z
-updated_at: 2026-09-16T00:32:48.443Z
+updated_at: 2026-10-23T23:02:38.900Z
 ---
 Milestone 0.4: extend the ccusage reconciliation harness to costs, per the plan's "ccusage reconciliation harness" section and design §4.5.
 

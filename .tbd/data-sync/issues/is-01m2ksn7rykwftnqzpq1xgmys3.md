@@ -5,15 +5,17 @@ title: Decide whether an idle source's unterminated final record is read
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
   - design-decision
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:23.476Z
-updated_at: 2026-09-16T00:25:23.476Z
+updated_at: 2026-10-23T23:02:38.175Z
 ---
 Design 2.2 says an unfinished last line is recorded as pending, and uro-26dh implements exactly that: bytes after the last newline become a PendingTail and are never parsed.
 

@@ -5,16 +5,18 @@ title: Settle the fixture cases' open reconciliation questions
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
   - milestone-0.1
   - fixtures
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:41.285Z
-updated_at: 2026-09-16T00:25:41.285Z
+updated_at: 2026-10-23T23:02:38.186Z
 ---
 Three expectations in crates/urollup-core/tests/fixtures/ are interpretations, flagged in each case's expected.json notes, and the ledger and adapters must confirm or change them (and then the fixtures).
 

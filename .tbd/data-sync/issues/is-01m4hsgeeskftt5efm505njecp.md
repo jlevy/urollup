@@ -5,13 +5,15 @@ title: Codex forks and subagents drop counter-only usage beside usage records an
 kind: bug
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels: []
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-10-10T02:15:41.266Z
-updated_at: 2026-10-10T02:15:41.266Z
+updated_at: 2026-10-23T23:02:38.067Z
 ---
 PR #26 (uro-h2sf) counts Codex counter-only usage beside token_usage_record lines in root rollouts only: rollouts whose every session_meta is their own, with no parent_thread_id, forked_from_id or subagent_history_start_ordinal, and whose settings events and usage records name no other thread. Forks and subagents keep main's accounting, which leaves these gaps (synthetic shapes in crates/urollup-core/tests/codex_mixed_usage.rs; review C on PR #26: https://github.com/jlevy/urollup/pull/26#pullrequestreview-5476922038):
 

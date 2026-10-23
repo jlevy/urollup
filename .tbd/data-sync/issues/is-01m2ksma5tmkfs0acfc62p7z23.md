@@ -5,15 +5,17 @@ title: Decide how observations of a conflicting shared key are partitioned
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
   - design-decision
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:24:53.177Z
-updated_at: 2026-09-16T00:24:53.177Z
+updated_at: 2026-10-23T23:02:38.170Z
 ---
 Design 3.6 (Identity Basis and Linking, Candidate 9.1 Conflicting Shared Keys) says a shared key whose observations disagree on revision-invariant fields is ambiguous and yields a diagnostic, not a merge. uro-spce implements that strictly: every observation in the conflicting group gets its own artifact-local ID and they form one candidate set, so only one member counts and the rest are unresolved.
 

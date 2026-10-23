@@ -5,15 +5,17 @@ title: Confirm the cache-write category for writes with no recorded lifetime
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
   - design-decision
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:07.579Z
-updated_at: 2026-09-16T00:25:07.579Z
+updated_at: 2026-10-23T23:02:38.180Z
 ---
 Design 4.1 names 5-minute and 1-hour cache writes as separate measures, but several records report a cache write without its lifetime: a Codex cache_write_tokens value, and a Claude cache_creation_input_tokens without its cache_creation breakdown. uro-spce added a third disjoint category, cache_write_unspecified, so the categories still sum and an unknown lifetime is never silently counted as 5-minute (pricing a 1-hour write as 5-minute would understate cost).
 

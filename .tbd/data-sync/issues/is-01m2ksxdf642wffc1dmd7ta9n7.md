@@ -5,7 +5,7 @@ title: Add --sessions-from, --latest, --agent, --project, --cwd and --whole-sess
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -13,7 +13,7 @@ labels:
 dependencies: []
 parent_id: is-01m2ke5h6e0v5vq32nfbmy6rs2
 created_at: 2026-09-16T00:29:51.442Z
-updated_at: 2026-09-16T00:29:51.442Z
+updated_at: 2026-10-23T23:03:05.576Z
 ---
 Milestone 0.5: the remaining selection flags. Design §6.1 and §6.2; --sessions-from and --whole-sessions are Candidate (§9.1 CLI Surface).
 
@@ -23,3 +23,7 @@ Acceptance:
 - --latest is the only heuristic and never runs implicitly, including in interactive terminals: it picks the session whose latest record's cwd equals the working directory, explains the choice on stderr, and exits 2 when another session for that directory was active within 10 minutes.
 - --scope still defaults to descendants for session selections and self for filter selections.
 - CLI goldens cover concurrent sessions in one directory, worktrees, forks and archived rollouts.
+
+## Notes
+
+2026-10-23: --agent is split out for the alpha as uro-n4f0 under the alpha stabilization plan (pending the scope confirmation in uro-04vk); the remaining flags stay here in milestone 0.5.

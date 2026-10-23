@@ -5,7 +5,7 @@ title: "Implement price matching: dates, tiers, context bands and cache-write du
 kind: task
 status: in_progress
 priority: 1
-version: 16
+version: 18
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
@@ -21,9 +21,13 @@ dependencies:
     target: is-01m2yrherhddnx2j22g3xtqedr
   - type: blocks
     target: is-01m3jzhnnk1xk472z6y6gfj5be
+  - type: blocks
+    target: is-01m5nfzr2hb8zc0ffjya85fesn
+  - type: blocks
+    target: is-01m5nfwr7vgz75j01zt8p449kk
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:35.415Z
-updated_at: 2026-10-11T21:24:57.665Z
+updated_at: 2026-10-23T23:02:38.539Z
 ---
 Milestone 0.4: apply the price table to requests. Design §4.5 and §4.1 (Candidate, §9.1 Pricing Policy).
 

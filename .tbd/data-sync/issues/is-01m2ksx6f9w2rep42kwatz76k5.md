@@ -5,15 +5,17 @@ title: Add golden repricing tests
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - phase-1
   - milestone-0.4
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwr7vgz75j01zt8p449kk
 parent_id: is-01m2ke55tfcy92ct96d9446j5p
 created_at: 2026-09-16T00:29:44.277Z
-updated_at: 2026-09-16T00:29:44.277Z
+updated_at: 2026-10-23T23:02:38.552Z
 ---
 Milestone 0.4: prove historical repricing is exact and stable, so a table update is reviewable. Design §4.5.
 

@@ -5,7 +5,7 @@ title: Enforce a conservative process-wide memory admission budget
 kind: task
 status: open
 priority: 1
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-16-scalable-ingestion.md
 labels:
   - milestone-0.1
@@ -19,7 +19,7 @@ parent_id: is-01m2pkgv1mh7268dh4sxbptdmg
 child_order_hints:
   - is-01m4p720gxeqghmsm4dyz3zj03
 created_at: 2026-09-27T07:16:07.152Z
-updated_at: 2026-10-14T01:54:13.126Z
+updated_at: 2026-10-23T23:03:06.153Z
 ---
 Required for 0.1 under the approved scalability policy. Replace per-agent row-shell estimates with one invocation-wide conservative reservation model covering both retained ledgers, observations and pending rows, request/reconciliation construction, variable payloads, intern tables, discovery metadata and worker buffers, with explicit headroom for allocator/measurement overhead. Preserve max-rows as a separate observation ceiling and define migration of max-ram semantics honestly. Respect container/process allowances where discoverable; document fallback and overrides. Refuse before allocating beyond the budget with an actionable diagnostic and no partial successful report. Test combined-agent, high-cardinality, dense-record and low-budget cases; preserve exact output and worker determinism. Measured footprint must stay within the validated envelope. A sampled watchdog is a validation backstop, not the runtime budget.
 
@@ -30,3 +30,6 @@ Required for 0.1 under the approved scalability policy. Replace per-agent row-sh
 2026-10-11 (PR #34 review C, C4): PR #34 replaces the Claude merge's tool_owners with tool_records: each spawning tool use has a 40 B map entry plus a Vec<(usize, usize)> of one 16 B pair per reporting record (minimum capacity 4), about 400 B per sidecar tool use under the model's costing rule (was about 100 B), per subagent rather than per record; tool_uses entries shrink from 28 to 24 B. PR #29's model charges neither map yet (model.rs: "Nothing in ingestion charges these yet"). Slice 6 (Claude wiring) must name tool_records beside tool-use digests and the merge and owner state.
 
 2026-10-13: slice 4 (#37 readers, #38 workers) merged to main at beaede2 via stack #39. Slices 5 (#40, Codex decode-to-commit charges) and 6 (#41, Claude charges incl. quotaLimits counting visitor) rebased onto beaede2; make check and CI 16/16 green on both; fixture differential against main shows byte-identical output. Round-1 combined reviews in progress. Slice 7 (CLI checkpoints, coordinating caches uro-2hzh, stats lines, --max-ram whole-process flip, removal of the row conversion) started as a stacked layer above #41. Slice 8 (calibration) follows.
+
+
+2026-10-23 alpha readiness review: (1) the macOS line-buffer shrink-and-regrow growth (uro-kpup) undermines the model's assumption that releasing the large-record permit frees its buffers; (2) the CLI still passes MemoryAdmission::unlimited().with_row_ceiling, so --max-ram help overpromises until slice 7 (uro-r55i). Whether slices 7-8, uro-z1h1 and uro-erqo stay alpha gates is decision uro-jzje. Mapped into alpha Phase 1 (uro-q2jo) through uro-zrr0.

@@ -5,16 +5,18 @@ title: "Decide the UROLLUP_* override namespace: a config-directory override and
 kind: task
 status: open
 priority: 2
-version: 1
+version: 2
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
   - decision
   - golden
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:17:42.121Z
-updated_at: 2026-09-16T00:17:42.121Z
+updated_at: 2026-10-23T23:02:38.196Z
 ---
 Two questions the golden testing audit (docs/project/research/research-2026-09-15-golden-testing-audit.md) raised and did not settle; they belong with the maintainer decision review (uro-b7kc).
 

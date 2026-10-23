@@ -5,15 +5,17 @@ title: Decide how a request observed only as copies is reported
 kind: task
 status: open
 priority: 2
-version: 4
+version: 5
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
   - design-decision
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:25:08.437Z
-updated_at: 2026-10-09T09:35:49.086Z
+updated_at: 2026-10-23T23:02:38.165Z
 ---
 Design 3.3 says a copy nested inside another record never counts, and 2.1 says usage that never reaches local logs is an unobserved coverage gap rather than zero. A request whose only observations are copies sits between the two: the usage was really consumed, the original file is gone (Claude Code deletes transcripts after cleanupPeriodDays, and a Codex parent rollout can be archived away), and the copy states what it was.
 

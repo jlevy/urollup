@@ -5,15 +5,17 @@ title: Write README, CHANGELOG and the release publishing runbook
 kind: task
 status: in_progress
 priority: 2
-version: 7
+version: 8
 spec_path: docs/project/specs/active/plan-2026-09-16-first-release-publishing.md
 labels:
   - release
   - docs
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwrjysbgvzjy9b6y1axxd
 parent_id: is-01m2ksyxh3c3qvgg8qhp5fgbsx
 created_at: 2026-09-16T00:30:48.518Z
-updated_at: 2026-10-13T09:48:40.817Z
+updated_at: 2026-10-23T23:02:38.906Z
 ---
 Release documentation for the first public alpha.\n\nAcceptance:\n- README states what urollup is and is not, install instructions for each supported channel, the 0.1.0 command surface, known limitations and the privacy posture.\n- CHANGELOG.md records 0.1.0 and, separately, its report, bundle, query and identity contract versions.\n- The publishing runbook covers the protected release environment, credential-free rehearsal, rerun rules, PyPI pending publishing, the narrowly scoped first crates.io token, trusted-publishing-only migration and partial-channel recovery.\n- Release notes describe the aggregate first-release feature set and known limitations, not bugs introduced and fixed before publication.\n- Docs follow the repository common documentation guidelines and pass the flowmark gate in make check.
 

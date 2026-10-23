@@ -5,7 +5,7 @@ title: "Acceptance G1: roll up this project's own Claude Code sessions end to en
 kind: task
 status: open
 priority: 1
-version: 9
+version: 10
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels:
   - milestone-0.1
@@ -19,9 +19,11 @@ dependencies:
     target: is-01m2pkgva22qd452me3cdjc1fq
   - type: blocks
     target: is-01m3jzhnnk1xk472z6y6gfj5be
+  - type: blocks
+    target: is-01m5nfwrjysbgvzjy9b6y1axxd
 parent_id: is-01m2ke36qgfvdvnhw7c7v5esm6
 created_at: 2026-09-16T00:20:59.482Z
-updated_at: 2026-10-13T07:42:26.007Z
+updated_at: 2026-10-23T23:02:38.875Z
 ---
 Run urollup against the maintainer's real local logs for this repository: report --current inside a session, sessions and daily over every Claude Code session of this project including its subagent sessions. Verify subagent usage attributes to the parent under --scope descendants, nothing is double counted, coverage gaps are explicit, and exit codes are correct. Reconcile token totals per session and per day against pinned ccusage, explaining every difference. Record aggregates only; never commit log content, paths or IDs.
 

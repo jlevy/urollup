@@ -5,7 +5,7 @@ title: Organize core CLI delivery scope and merge stack
 kind: task
 status: in_progress
 priority: 1
-version: 13
+version: 14
 spec_path: docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md
 delegate: claude-code@spud10.local
 labels: []
@@ -16,7 +16,7 @@ child_order_hints:
 hold: null
 hold_until: null
 created_at: 2026-09-28T03:04:45.490Z
-updated_at: 2026-10-11T21:24:58.012Z
+updated_at: 2026-10-23T23:03:06.756Z
 started_at: 2026-09-28T03:04:59.752Z
 ---
 Own the frozen alpha delivery slice and merge stack: reliable per-session and whole-machine Codex/Claude usage and supported cost rollups with explicit incomplete and unpriced coverage. PR15 is the planning foundation; prior implementation PRs 4,8,10,11,12 are merged; PR14 Cursor stays independent and outside scope. Required layers: accounting correctness and CLI honesty (kpbp,gop8,oz6w), process-wide memory safety and scale validation (6pi8,z1h1,erqo), pricing context/table/matcher (381f,wuby,neii), bounded local QA and acceptance (qg1a,d36a,ky6c). Broader joint-query artifacts, reporting skill, UI, additional adapters and optional optimization are deferred by the maintainer scope freeze; their beads remain open but do not block this alpha slice. Verify actual GitHub bases, layer-specific review, full make check, end-to-end private evidence and hosted CI on published heads. Preserve historical branches and private evidence. Prepare mergeable PRs, but do not merge or publish releases.
@@ -91,3 +91,6 @@ Deliver G5 in the linked plan: one reconciled snapshot, reusable artifacts, join
 2026-10-09 progress. Merged to main at 98f9428 (merge commits, via gh stack merge of stack #23): PR #18 (gzip sources, vanished/unreadable-source coverage with source-incomplete and unreadable-twin, Codex subagent turn lookup, lowered-total rule, tryscript 0.3.0) and PR #22 (per-request model/effort e2e checks, compaction-lowered-total fixture), after senior, correctness, security and follow-up reviews with every finding dispositioned. Stack #17 restacked onto that main: #15 docs at ce226d5 (review A addressed, status refreshed), #16 at ba4d379 (reviews A/B round 1, C round 2, D focused restack review; copy-only coverage rule reverted per the user's decision with policy deferred to uro-xpd0; unverifiable fork boundaries degrade per rollout). The user authorized merging #15 and #16 once the gate passes. Draft #19 (pricing) needs a restack onto main after #16 merges. Stack #21 (#14 Cursor plan, addressed; #20 Cursor draft) is on hold by the user's decision. Open follow-ups from reviews: uro-pny9, uro-zd3m, uro-h6m9, uro-loml, uro-x3sk, uro-h2sf, uro-omlf, uro-akgu, uro-xpd0. Next: merge #15+#16, restack #19, full real-history test of merged main.
 
 2026-10-11: at the user's request, every open PR was reviewed to completion and merged: #33 (5d70b0e, uro-p9ua), #34 (68ffdae, uro-wvgc) and #19 (11b6eec, uro-381f pricing context and Codex cache-write/degrade fixes). Earlier: #15/#16/#18/#22 (10-09), #24-#28/#31/#32 (10-10), #29 (10-11). The accounting-correctness layer is merged; residual shapes are beads (uro-eh0d, uro-p12c, uro-uwv0, uro-r8si, uro-zq65, uro-3b12, uro-1uy7, uro-4v0g, uro-x146, uro-xpd0). Remaining for this slice: real-history rerun uro-mxv0 then G1 uro-d36a and full-history QA uro-ky6c; process-wide admission uro-6pi8 slices 4-8, uro-z1h1, uro-erqo; pricing table/matcher uro-wuby/uro-neii (feat/pricing-engine needs a rebase), cache metrics uro-381f. Scope question for the maintainer: the release record's 0.1.0 gates do not include pricing, while this slice requires supported cost rollups; decide whether the first alpha waits for them. No open PRs remain; Cursor stack #21 stays closed post-0.1 (uro-hdoq).
+
+
+2026-10-23: the frozen alpha slice's remaining work is now mapped in docs/project/specs/active/plan-2026-10-23-alpha-stabilization.md under epic uro-dl9d (Phase 1 uro-q2jo, Phase 2 uro-eu9x, Phase 3 uro-0h0g), which this bead now depends on. The plan keeps this bead's frozen scope as its contract, adds the 2026-10-23 alpha readiness review findings (docs/project/reviews/review-2026-10-23-alpha-readiness.md), and records two open scope decisions: uro-jzje (memory gates) and uro-04vk (--since/--until and --agent).

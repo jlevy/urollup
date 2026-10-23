@@ -5,13 +5,15 @@ title: "PR #18 A9: attach the owning thread to UnreadableSource gaps when known"
 kind: bug
 status: open
 priority: 3
-version: 3
+version: 4
 spec_path: docs/project/specs/active/plan-2026-09-13-urollup-cli-and-web.md
 labels: []
-dependencies: []
+dependencies:
+  - type: blocks
+    target: is-01m5nfwqwjgaf1665db3fhvaan
 parent_id: is-01m4fsve6qyh1655009mcb1vk3
 created_at: 2026-10-09T07:43:34.590Z
-updated_at: 2026-10-09T08:21:09.413Z
+updated_at: 2026-10-23T23:02:38.125Z
 ---
 Suggestion (Low). Review A https://github.com/jlevy/urollup/pull/18#pullrequestreview-5467179374. adapters.rs:87-91; accounting/totals.rs:211-216. Gap thread None applies to every selection in the run.
 
