@@ -228,6 +228,9 @@ Their owners (`uro-qvp1`, `uro-ni7m`, `uro-vgea`, `uro-cye3`, `uro-x8r8` and `ur
 keep those scopes outside this slice.
 This delivery slice crosses existing milestone boundaries without declaring the full G5
 pricing, tool and time workflow complete.
+As of 2026-10-23 the [alpha stabilization plan](plan-2026-10-23-alpha-stabilization.md)
+maps the slice’s remaining work to beads under epic `uro-dl9d`, which `uro-aakb` depends
+on; the table below records the slice’s original layers.
 Existing artifact and accounting owners retain their contracts.
 
 | Layer | Deliverable and acceptance | Existing owners |
