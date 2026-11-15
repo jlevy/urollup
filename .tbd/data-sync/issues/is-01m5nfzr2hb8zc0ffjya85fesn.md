@@ -5,7 +5,7 @@ title: Show list-price estimates and pricing coverage in report, daily and sessi
 kind: task
 status: open
 priority: 1
-version: 2
+version: 3
 spec_path: docs/project/specs/active/plan-2026-10-23-alpha-stabilization.md
 labels:
   - pricing
@@ -16,6 +16,10 @@ dependencies:
     target: is-01m2khsqrw2qc4khnkxmca2p88
 parent_id: is-01m5nfwr7vgz75j01zt8p449kk
 created_at: 2026-10-23T23:01:56.432Z
-updated_at: 2026-10-23T23:02:40.610Z
+updated_at: 2026-11-15T05:00:38.681Z
 ---
 The CLI integration of supported cost rollups required by the frozen alpha scope (uro-aakb); uro-wuby owns the table, uro-neii matching, uro-7nhm staleness and --require-priced. Add a list-price estimate to report totals and breakdowns, daily rows and sessions rows in table and JSON output, with the bundled table version and review date, priced, default-assumed and unpriced request and token counts (design §6.6 examples), and unknown usage shown as unpriced, never zero. Exact decimal amounts in JSON; currency stated. Start from the money and price-table work on feat/pricing-engine. Goldens cover priced, assumed and unpriced rows.
+
+## Notes
+
+2026-11-14: start from feat/pricing-engine commit 7d9a242 (money and price-table foundation); the branch's other commits are earlier versions of work merged in PR #19. The branch is 69 commits behind main.
