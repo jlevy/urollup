@@ -231,6 +231,50 @@ run Cargo offline against the locked, prefetched crates.
 PyPI uploads use the pinned uv’s `uv publish` with trusted publishing, so no publishing
 action is added.
 
+## Reviewed Versions (zstd and zod Advisories)
+
+Checked on 2026-11-15 against the crates.io and npm registries, when the cool-off cutoff
+was 2026-11-01. These versions supersede the zstd rows in the milestone 0.1 core table.
+
+`make audit` failed on four RustSec advisories against the locked zstd crates:
+
+| Advisory | Crate | What it needs |
+| --- | --- | --- |
+| RUSTSEC-2026-0391 | `zstd` | Stream encoders or decoders built `with_context` on a reused context |
+| RUSTSEC-2026-0398 | `zstd-safe` | The `seekable` feature |
+| RUSTSEC-2026-0403 | `zstd-safe` | The `legacy` feature and a streaming `write::Decoder` |
+| RUSTSEC-2026-0410 | `zstd-sys` | A `wasm32` target |
+
+None of these reaches urollup.
+The shipped binary enables only zstd’s `std` feature, reads sources through the raw
+`Decoder`, and builds for no wasm target.
+The tests use `write::Encoder` and `encode_all`, not `with_context`.
+
+The fixed 0.13-line releases, `zstd` 0.13.4 and `zstd-safe` 7.4.0, were published on
+2026-11-01, inside the cool-off.
+The 0.14 line is older and needs no source change:
+
+| Crate | Version | Published | Why, and what was held back |
+| --- | --- | --- | --- |
+| zstd (no default features) | 0.14.3 | 2026-10-16 | Fixes RUSTSEC-2026-0391; 0.14.4 (2026-11-12) held back |
+| zstd-safe | 8.2.0 | 2026-10-16 | Fixes RUSTSEC-2026-0398 and -0403; 8.3.0 (2026-11-12) held back |
+| zstd-sys | 2.1.2+zstd.1.5.7 | 2026-10-16 | Fixes RUSTSEC-2026-0410; still bundles libzstd 1.5.7; 2.1.3 (2026-11-12, adds BSD-2-Clause) held back |
+
+All three remain owned and published by the same single crates.io owner.
+Each is relicensed from MIT or MIT/Apache-2.0 to BSD-3-Clause, which `deny.toml` already
+allows. The bundled libzstd was BSD-licensed before.
+The only change to `zstd-sys`’s `build.rs` is an optional CMake backend behind a `cmake`
+feature, which urollup does not enable; no `cmake` crate enters the lockfile.
+The build script starts no process and reads no network.
+`zstd-safe`’s `build.rs` is unchanged.
+`cargo tree -p urollup -e normal,build -e features -i zstd-sys` shows only `std`. No
+other crate in `Cargo.lock` changed.
+
+`npm audit` reported GHSA-mrhx-c7xc-m3w5 (high) in `zod` below 4.6.6, reached through
+tryscript 0.3.0. tryscript 0.3.1 (2026-10-24, first-party) pins `zod` 4.6.6 (2026-10-11)
+and changes no other dependency.
+These two packages are the only lockfile changes.
+
 <!-- This document follows common-doc-guidelines.md.
 See github.com/jlevy/practical-prose and review guidelines before editing.
 -->
