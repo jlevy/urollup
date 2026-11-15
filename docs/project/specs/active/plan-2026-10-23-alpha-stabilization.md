@@ -3,7 +3,7 @@ title: Alpha Feature-Complete Stabilization
 description: Every remaining bead between main and a trustworthy, feature-complete 0.1.0 alpha, grouped into stabilization, completion and acceptance phases.
 author: Joshua Levy with LLM assistance
 date: 2026-10-23
-status: Active; beads filed, two scope decisions open
+status: Active; beads filed, two scope decisions open; in-flight work rechecked 2026-11-14
 ---
 # Feature: Alpha Feature-Complete Stabilization
 
@@ -100,6 +100,25 @@ The review found three kinds of problems instead:
 The frozen scope already requires cost rollups, memory safety and acceptance.
 It does not yet include the review’s findings or the cost display in the CLI. This plan
 adds both and maps them, with every existing gating bead, to one sequence.
+
+### In-Flight Work
+
+A 2026-11-14 check found `main` still at `beaede2` and nothing pushed since 2026-10-14.
+No branch, worktree or closed bead fixes any finding in this plan.
+Four pieces of in-flight work cover parts of it and should be reused, not redone:
+
+- **Admission slices 5 and 6:** draft PRs #40 and #41 are green on top of `beaede2`
+  (`uro-6pi8`).
+- **Admission slice 7:** uncommitted work in the local `admission-slice7` worktree
+  (`feat/admission-cli`) charges rendered output to admission and adds footprint stats.
+  It still passes the unlimited ledger with a row ceiling, so `uro-r55i` lands with or
+  after it.
+- **Pricing foundation:** `feat/pricing-engine` commit `7d9a242` holds the money and
+  price-table foundation for `uro-wuby` and `uro-unf7`. The branch’s other commits are
+  earlier versions of work merged in PR #19.
+- **`--agent`:** the draft Cursor branch `cursor-state-adapter` implements the flag
+  inside its Cursor commit `e801c7c`. `uro-n4f0` can lift the CLI part without the
+  Cursor reader. Both branches are 69 commits behind `main`.
 
 ## Design
 
