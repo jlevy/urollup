@@ -266,15 +266,32 @@ thread_local! {
     static RECENT_PRICING: RefCell<Vec<Pricing>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The context an intern refused by admission stands in with: it is in no table and no
+/// cache, and no successful result holds it (`ledger::admission`).
+static PLACEHOLDER_PRICING: PricingContext = PricingContext {
+    provider: None,
+    service_tier: None,
+    speed: None,
+    inference_geo: None,
+    conflicted: false,
+};
+
 impl Pricing {
     /// The interned context equal to `context`.
+    ///
+    /// A new context is charged to the ledger the thread is scoped to
+    /// ([`MemoryAdmission::scope`](crate::ledger::admission::MemoryAdmission::scope)) before
+    /// it is stored; when that ledger refuses, nothing is stored and a placeholder is
+    /// returned, which the stopped invocation never uses.
     pub fn new(context: PricingContext) -> Self {
         RECENT_PRICING.with(|recent| {
             let mut recent = recent.borrow_mut();
             if let Some(pricing) = recent.iter().find(|pricing| *pricing.0 == context) {
                 return *pricing;
             }
-            let pricing = intern_pricing(context);
+            let Some(pricing) = intern_pricing(context) else {
+                return Self(&PLACEHOLDER_PRICING);
+            };
             if recent.len() == RECENT_PRICING_CAPACITY {
                 recent.remove(0);
             }
@@ -299,21 +316,23 @@ pub fn interned_pricing_bytes() -> u64 {
     PRICING_INTERNED_BYTES.load(atomic::Ordering::Relaxed)
 }
 
-fn intern_pricing(context: PricingContext) -> Pricing {
+/// The interned context equal to `context`, or `None` when admission refuses a new one.
+fn intern_pricing(context: PricingContext) -> Option<Pricing> {
     let mut table = PRICING_TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(interned) = table.get(&context) {
-        return Pricing(interned);
+        return Some(Pricing(interned));
     }
     // The first context also pays the table's one-time base, its first node.
     let base =
         if table.is_empty() { crate::ledger::admission::model::PRICING_TABLE_BASE } else { 0 };
-    PRICING_INTERNED_BYTES.fetch_add(
-        crate::ledger::admission::model::pricing_intern() + base,
-        atomic::Ordering::Relaxed,
-    );
+    let charge = crate::ledger::admission::model::pricing_intern() + base;
+    if !crate::ledger::admission::charge_intern(charge) {
+        return None;
+    }
+    PRICING_INTERNED_BYTES.fetch_add(charge, atomic::Ordering::Relaxed);
     let interned: &'static PricingContext = Box::leak(Box::new(context));
     table.insert(interned);
-    Pricing(interned)
+    Some(Pricing(interned))
 }
 
 impl std::ops::Deref for Pricing {

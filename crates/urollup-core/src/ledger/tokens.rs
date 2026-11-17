@@ -155,26 +155,29 @@ fn fields_from(values: [u64; 8], present: u16) -> [Option<u64>; 8] {
     fields
 }
 
-fn intern_overflow(row: OverflowRow) -> u32 {
+/// The index of `row`'s pattern, or `None` when admission refuses a new one, which is then
+/// not stored (`ledger::admission`).
+fn intern_overflow(row: OverflowRow) -> Option<u32> {
     let mut index = OVERFLOW
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if let Some(id) = index.get(&row) {
-        return *id;
+        return Some(*id);
     }
     let mut rows = OVERFLOW_ROWS.lock().unwrap_or_else(PoisonError::into_inner);
     let id = u32::try_from(rows.len()).expect("fewer than 2^32 overflow measure patterns");
     // The first pattern also pays the tables' one-time base.
     let base =
         if rows.is_empty() { crate::ledger::admission::model::OVERFLOW_TABLE_BASE } else { 0 };
-    OVERFLOW_BYTES.fetch_add(
-        crate::ledger::admission::model::overflow_intern().saturating_add(base),
-        atomic::Ordering::Relaxed,
-    );
+    let charge = crate::ledger::admission::model::overflow_intern().saturating_add(base);
+    if !crate::ledger::admission::charge_intern(charge) {
+        return None;
+    }
+    OVERFLOW_BYTES.fetch_add(charge, atomic::Ordering::Relaxed);
     rows.push(row);
     index.insert(row, id);
-    id
+    Some(id)
 }
 
 impl Default for Measures {
@@ -198,7 +201,11 @@ impl From<TokenMeasures> for Measures {
             }
         }
         if overflow {
-            let id = intern_overflow(OverflowRow { values, present });
+            // A pattern admission refused is never stored; the empty measures stand in
+            // for it, and the stopped invocation never uses them.
+            let Some(id) = intern_overflow(OverflowRow { values, present }) else {
+                return Self::default();
+            };
             let mut compact = [0_u32; 8];
             compact[0] = id;
             return Self {

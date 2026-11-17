@@ -34,14 +34,23 @@ thread_local! {
 }
 
 impl Name {
+    /// The empty name an intern refused by admission returns instead: it is in no table
+    /// and no cache, and no successful result holds it (`ledger::admission`).
+    const PLACEHOLDER: Self = Self(&"");
+
     /// The interned name with this text.
+    ///
+    /// A new text is charged to the ledger the thread is scoped to
+    /// ([`MemoryAdmission::scope`](crate::ledger::admission::MemoryAdmission::scope)) before
+    /// it is stored; when that ledger refuses, nothing is stored and a placeholder is
+    /// returned, which the stopped invocation never uses.
     pub fn new(text: &str) -> Self {
         RECENT.with(|recent| {
             let mut recent = recent.borrow_mut();
             if let Some(name) = recent.iter().find(|name| name.as_str() == text) {
                 return *name;
             }
-            let name = intern(text);
+            let Some(name) = intern(text) else { return Self::PLACEHOLDER };
             if recent.len() == RECENT_CAPACITY {
                 recent.remove(0);
             }
@@ -65,21 +74,23 @@ pub fn interned_bytes() -> u64 {
     INTERNED_BYTES.load(atomic::Ordering::Relaxed)
 }
 
-fn intern(text: &str) -> Name {
+/// The interned name with this text, or `None` when admission refuses a new one.
+fn intern(text: &str) -> Option<Name> {
     let mut table = TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(name) = table.get(text) {
-        return *name;
+        return Some(*name);
     }
     // The first name also pays the table's one-time base, its first node.
     let base = if table.is_empty() { crate::ledger::admission::model::NAME_TABLE_BASE } else { 0 };
-    INTERNED_BYTES.fetch_add(
-        crate::ledger::admission::model::name_intern(text.len() as u64) + base,
-        atomic::Ordering::Relaxed,
-    );
+    let charge = crate::ledger::admission::model::name_intern(text.len() as u64) + base;
+    if !crate::ledger::admission::charge_intern(charge) {
+        return None;
+    }
+    INTERNED_BYTES.fetch_add(charge, atomic::Ordering::Relaxed);
     let text: &'static str = Box::leak(Box::<str>::from(text));
     let name = Name(Box::leak(Box::new(text)));
     table.insert(text, name);
-    name
+    Some(name)
 }
 
 impl From<&str> for Name {

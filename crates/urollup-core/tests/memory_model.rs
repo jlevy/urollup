@@ -1,9 +1,8 @@
 //! The admission model-bound harness (scalable-ingestion plan, "Admission Tests"): a
 //! counting global allocator measures live Rust heap and compares it with the cost model
-//! of `ledger::admission::model`.
+//! of `ledger::admission::model`, and with the ledger of an ingest that charges it.
 //!
-//! Admission is not wired into ingestion yet, so this binary checks every term it can
-//! measure from outside ingestion, each against the structure it models:
+//! It checks every term against the structure it models:
 //!
 //! - **Primitives:** vectors, hash maps (inserted, presized and churned), B-trees
 //!   (inserted and collected), stable sorts and `Arc` text, at every count up to a few
@@ -14,13 +13,23 @@
 //!   and pricing tables' first nodes, a thread's name and pricing caches, and cold name,
 //!   overflow and pricing-context interning.
 //! - **Reconciliation:** tight synthetic inputs, one per term, measured between the
-//!   [`ReconcileStage`]s where slice 5's checkpoints run, and the whole run against the
+//!   [`ReconcileStage`]s where the adapters' checkpoints run, and the whole run against the
 //!   larger phase estimate by component. Live heap is tracked at every allocation against
 //!   each checkpoint's `E`: grouping without a group's scratch from the start, with the
-//!   largest linked set's from `Order`, then finalize.
+//!   largest linked set's from `Order`, then finalize; and the pushes reconciliation
+//!   reports cover what it pushed.
+//! - **Ingests:** an adapter that charges its decode ingests every fixture and generated
+//!   corpora, at one and eight workers, under a ledger whose `E` the allocator compares
+//!   with live heap at every allocation, from before discovery to the commit: live heap
+//!   must stay within `E`, plus the Rust heap of the slots in use while workers decode
+//!   (read buffers, retained lines, join vectors, caches and decoder state; thread stacks,
+//!   zstd's C state and the unused line allowance are left out). The largest generated
+//!   corpora make `E` at least ten times that slot term on one worker. The other adapter's
+//!   peak is reported beside the forward estimate computable after the fact, until slice 6
+//!   charges its decode.
 //! - **Retained state:** each ingest's ledger, discovery and the session index against
-//!   their deep sizes, on every fixture and on generated corpora at one and eight workers,
-//!   and the caches a fresh thread that coordinates the ingest keeps afterwards.
+//!   their deep sizes, and the caches a fresh thread that coordinates the ingest keeps
+//!   afterwards.
 //! - **Query and slots:** query documents and their rendering, each decoder's heap, a long
 //!   line's scan, and zstd's context and stream.
 //! - **Readers:** lines of 3.9 MiB and 63 MiB parsed by `validate_record` and both
@@ -30,9 +39,7 @@
 //!
 //! Each check names its terms. A check fails when measured heap exceeds their sum, and the
 //! harness fails unless every term is necessary somewhere: dropping it would make some
-//! check fail. It also reports, without failing, each ingest's peak beside the forward
-//! estimate it can compute after the fact; that bound fails once slices 5 and 6 charge
-//! decode.
+//! check fail.
 //!
 //! It runs without the libtest harness, single-threaded apart from the workers it starts,
 //! so no other test's allocations reach the counters; it honors `--list`, name filters,
@@ -48,17 +55,17 @@ use std::mem::discriminant;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde_json::json;
-use urollup_core::adapters::{Ingested, claude_project, codex_rollout};
-use urollup_core::ledger::admission::MemoryAdmission;
+use urollup_core::adapters::{Decoding, Ingested, claude_project, codex_rollout};
 use urollup_core::ledger::admission::deep_size::DeepSize;
 use urollup_core::ledger::admission::model::{
     self, PhaseEstimate, ReconcileCounts, allocation, btree_collected, btree_entry, btree_map,
     btree_node, grown_vec, hash_base, hash_churned, hash_entry, hash_table, hash_with_capacity,
-    sizes, sort_scratch,
+    sort_scratch,
 };
+use urollup_core::ledger::admission::{HeapMirror, Hold, MemoryAdmission};
 use urollup_core::ledger::capacity::ObservationCapacity;
 use urollup_core::ledger::diagnostics::{Diagnostic, DiagnosticCode, compact};
 use urollup_core::ledger::entities::{
@@ -86,7 +93,7 @@ use urollup_core::sources::manifest::Representation;
 use urollup_core::sources::reader::{
     LogicalSource, ReadOptions, RecordDisposition, SourceSpec, decode, read_source,
 };
-use urollup_core::sources::roots::discover;
+use urollup_core::sources::roots::{Discovery, discover};
 
 /// Live heap by the costing rule, and its peak since the last reset.
 static LIVE: AtomicU64 = AtomicU64::new(0);
@@ -112,6 +119,17 @@ fn cost(size: usize) -> u64 {
     allocation(size as u64)
 }
 
+/// The ledger of the ingest being tracked, mirrored at every change of `E`.
+static MIRROR: HeapMirror = HeapMirror::new();
+/// Whether an ingest is tracked: live heap above `LEDGER_BASE` is compared with the
+/// mirrored `E`, plus `SLOT_TERM` while its workers decode, at every allocation, and the
+/// most it passes them by is kept, apart for decode and for the phases after it.
+static TRACKING: AtomicBool = AtomicBool::new(false);
+static LEDGER_BASE: AtomicU64 = AtomicU64::new(0);
+static SLOT_TERM: AtomicU64 = AtomicU64::new(0);
+static DECODE_EXCESS: AtomicU64 = AtomicU64::new(0);
+static LATER_EXCESS: AtomicU64 = AtomicU64::new(0);
+
 fn grow(size: usize) {
     REQUESTED.fetch_add(size as u64, Ordering::Relaxed);
     let live = LIVE.fetch_add(cost(size), Ordering::Relaxed) + cost(size);
@@ -119,6 +137,15 @@ fn grow(size: usize) {
     let limit = LIMIT.load(Ordering::Relaxed);
     if live > limit {
         EXCESS.fetch_max(live - limit, Ordering::Relaxed);
+    }
+    if TRACKING.load(Ordering::Relaxed) {
+        let decoding = MIRROR.decoding();
+        let slots = if decoding { SLOT_TERM.load(Ordering::Relaxed) } else { 0 };
+        let limit = LEDGER_BASE.load(Ordering::Relaxed) + MIRROR.heap() + slots;
+        if live > limit {
+            let excess = if decoding { &DECODE_EXCESS } else { &LATER_EXCESS };
+            excess.fetch_max(live - limit, Ordering::Relaxed);
+        }
     }
     if large(size) {
         let large = LARGE_LIVE.fetch_add(1, Ordering::Relaxed) + 1;
@@ -359,6 +386,83 @@ fn ingest(agent: Agent, root: &Path, count: usize) -> Ingested {
         Agent::Pi => unreachable!("Pi has no adapter"),
     }
     .expect("the corpus ingests")
+}
+
+/// An ingest under a ledger the allocator tracks, and the most live heap passed `E`.
+struct Tracked {
+    ingested: Ingested,
+    /// While workers decode, above `E` plus the slots' Rust heap.
+    decode_excess: u64,
+    /// From the construction checkpoint to the commit, above `E`.
+    later_excess: u64,
+    /// The largest `E`.
+    largest: u64,
+    /// The slots' Rust heap.
+    slot_term: u64,
+}
+
+/// The Rust heap of one worker slot (scalable-ingestion plan, "Admission Tests"): its
+/// read buffer and boxed reader, its retained line, its join `done` vector, its name and
+/// pricing caches, and gzip's state or zstd's input buffer when discovery found such a
+/// source. Thread stacks, zstd's C state and the unused line allowance are left out.
+fn slot_heap(discovery: &Discovery) -> u64 {
+    let has = |representation: Representation| {
+        discovery
+            .sources
+            .iter()
+            .any(|source| source.files.files().any(|(_, held)| held == representation))
+    };
+    allocation(model::READ_BUFFER)
+        + allocation(model::READER_STATE)
+        + allocation(ReadOptions::RETAINED_LINE_CAPACITY as u64)
+        + model::JOIN_DONE
+        + model::NAME_CACHE
+        + model::PRICING_CACHE
+        + if has(Representation::Gzip) { model::GZIP_DECODER } else { 0 }
+        + if has(Representation::Zstd) { allocation(model::ZSTD_INPUT_BUFFER) } else { 0 }
+}
+
+/// The ledger's own copy of its holds, which each transition makes: one B-tree node,
+/// part of the baseline rather than of `E`.
+const LEDGER_HOLDS: u64 = 1024;
+
+/// Discovers and ingests `roots` on `count` workers under a ledger whose `E` the
+/// allocator compares with live heap above the level before discovery, at every
+/// allocation: the discovery is held as its metadata, and while workers decode the
+/// slots' Rust heap is added. Slots charge nothing to this ledger (`b` is 0), so `E` is
+/// the modeled heap alone.
+fn ingest_tracked(agent: Agent, roots: &[PathBuf], count: usize) -> Tracked {
+    let start = live();
+    let discovery = discover(roots);
+    let hold = match agent {
+        Agent::Codex => codex_rollout::discovery_heap(&discovery),
+        Agent::Claude | Agent::Pi => discovery.heap(),
+    };
+    let slot_term = slot_heap(&discovery) * count.min(discovery.sources.len()).max(1) as u64;
+    let admission = MemoryAdmission::unlimited().with_heap_mirror(&MIRROR);
+    admission.hold(&[(Hold::Discovery(agent), hold)]).expect("an unlimited ledger holds");
+    LEDGER_BASE.store(start + LEDGER_HOLDS, Ordering::Relaxed);
+    SLOT_TERM.store(slot_term, Ordering::Relaxed);
+    DECODE_EXCESS.store(0, Ordering::Relaxed);
+    LATER_EXCESS.store(0, Ordering::Relaxed);
+    TRACKING.store(true, Ordering::Relaxed);
+    let decoding = Decoding { admission: &admission, workers: workers(count), slot: 0 };
+    let ingested = match agent {
+        Agent::Claude => {
+            claude_project::ingest_discovery_with_admission(discovery, true, &decoding)
+        }
+        Agent::Codex => codex_rollout::ingest_discovery_with_admission(discovery, true, &decoding),
+        Agent::Pi => unreachable!("Pi has no adapter"),
+    }
+    .expect("the corpus ingests");
+    TRACKING.store(false, Ordering::Relaxed);
+    Tracked {
+        ingested,
+        decode_excess: DECODE_EXCESS.load(Ordering::Relaxed),
+        later_excess: LATER_EXCESS.load(Ordering::Relaxed),
+        largest: admission.largest(),
+        slot_term,
+    }
 }
 
 /// The model's charge for every process intern so far: names, overflow patterns and
@@ -1129,69 +1233,6 @@ fn synthetic_input(shape: Shape, observations: usize) -> ReconcileInput {
     }
 }
 
-/// The counts a grouping checkpoint before `Order` would see in `input`: no group is built
-/// yet, so the largest linked set is 0.
-fn reconcile_counts(input: &ReconcileInput) -> ReconcileCounts {
-    let key_nodes: u64 = input
-        .requests
-        .iter()
-        .map(|observation| {
-            observation.keys.len().max(1) as u64 + u64::from(!observation.invariants.is_empty())
-        })
-        .sum::<u64>()
-        + 2 * input.links.len() as u64;
-    let models: BTreeSet<&str> = input
-        .requests
-        .iter()
-        .filter_map(|observation| observation.model.as_ref())
-        .filter(|model| model.basis == ModelBasis::Served)
-        .map(|model| model.name.as_str())
-        .collect();
-    // Each dimension's distinct names, as its conflict lists them.
-    let mut pricing: [BTreeSet<&str>; 4] = Default::default();
-    for context in input.requests.iter().filter_map(|observation| observation.pricing) {
-        let names = [
-            context.provider,
-            context.service_tier.map(|tier| tier.name),
-            context.speed,
-            context.inference_geo,
-        ];
-        for (dimension, name) in pricing.iter_mut().zip(names) {
-            dimension.extend(name.map(Name::as_str));
-        }
-    }
-    ReconcileCounts {
-        observations: input.requests.len() as u64,
-        observation_capacity: input.requests.capacity() as u64,
-        key_nodes,
-        observation_payload: input.requests.iter().map(DeepSize::heap).sum(),
-        largest_group: 0,
-        model_text: models.iter().map(|name| name.len() as u64).sum(),
-        pricing_text: pricing.iter().flatten().map(|name| name.len() as u64).sum(),
-        limit_rows: input.limit_observations.len() as u64,
-        threads: input.threads.len() as u64,
-        thread_heap: input.threads.iter().map(DeepSize::heap).sum(),
-        largest_thread_evidence: input
-            .threads
-            .iter()
-            .map(|thread| thread.evidence.len() as u64)
-            .max()
-            .unwrap_or(0),
-        links: input.links.len() as u64,
-        metadata: [
-            model::sized_vec(input.threads.capacity() as u64, sizes::THREAD),
-            input.relationships.heap(),
-            input.tool_actions.heap(),
-            input.links.heap(),
-            input.gaps.heap(),
-            input.diagnostics.heap(),
-            input.source_table.heap(),
-        ]
-        .into_iter()
-        .sum(),
-    }
-}
-
 /// The live heap and the peak since the previous stage, at each stage.
 struct Stages {
     entries: Vec<(ReconcileStage, u64, u64)>,
@@ -1224,7 +1265,7 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let case = format!("{shape:?} × {observations}");
     let base = live();
     let input = synthetic_input(shape, observations);
-    let counts = reconcile_counts(&input);
+    let counts = ReconcileCounts::of(&input);
     let finalize = model::finalize_estimate(agent, &counts);
     let mut stages = Stages { entries: Vec::with_capacity(16) };
     let mut order = (0, 0);
@@ -1235,7 +1276,13 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     // then with the largest linked set's from `Order`, then finalize. Growth that grouping
     // pushes is only known afterwards, so live heap above `E` at any allocation is checked
     // against it below.
+    // What reconciliation reports pushing, which an admission ledger charges at each push.
+    let mut reported = 0;
     let ledger = reconcile_with_stages(input, &LatestRevision, &capacity, &mut |stage| {
+        if let ReconcileStage::Pushed { bytes, .. } = stage {
+            reported += bytes;
+            return Ok(());
+        }
         let now = live();
         let peak = PEAK.swap(now, Ordering::Relaxed);
         stages.entries.push((stage, now, peak));
@@ -1251,7 +1298,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
             | ReconcileStage::KeyGraph
             | ReconcileStage::Requests
             | ReconcileStage::Sorted
-            | ReconcileStage::Finalized => None,
+            | ReconcileStage::Finalized
+            | ReconcileStage::Pushed { .. } => None,
         };
         if let Some(estimate) = estimate {
             LIMIT.store(base + estimate.total(), Ordering::Relaxed);
@@ -1298,6 +1346,8 @@ fn check_reconcile(report: &mut Report, shape: Shape, observations: usize) {
     let limits = ledger.limit_observations.len() as u64;
     let pushed = split + conflicting + ambiguous + diagnostics;
     report.bound_total("live above E", &case, excess, pushed);
+    // The pushes reconciliation reports cover what grouping pushed, read from the result.
+    report.bound_total("pushes reported", &case, pushed, reported);
     // Group scratch's pricing step is named apart: its share is what group scratch holds
     // above its lists and largest other step, which only the pricing group makes necessary.
     let scratch = model::group_scratch(agent, largest, counts.model_text, counts.pricing_text);
@@ -1475,6 +1525,12 @@ fn counts(ingested: &Ingested) -> IngestCounts {
     }
 }
 
+/// Whether `agent`'s adapter charges its decode, so that its ingest is checked against
+/// `E`; the other adapter's peak is reported beside the forward estimate instead.
+fn charges_decode(agent: Agent) -> bool {
+    matches!(agent, Agent::Codex)
+}
+
 /// Discovers and ingests `root`, checking discovery and the retained ledger against their
 /// deep heap, then reports the peak beside the forward estimate that can be computed
 /// after the fact, and checks what a fresh coordinating thread keeps once the result is
@@ -1494,7 +1550,8 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
     drop(discovery);
     for count in [1, 8] {
         let interns_before = interns();
-        let (ingested, measured) = measure(|| ingest(agent, root, count));
+        let (tracked, measured) = measure(|| ingest_tracked(agent, &roots, count));
+        let ingested = &tracked.ingested;
         let new_interns = interns() - interns_before;
         let label = format!("{}/{case} ({count}w)", agent.token());
         report.bound_total(
@@ -1503,33 +1560,48 @@ fn check_ingest(report: &mut Report, agent: Agent, case: &str, root: &Path) {
             measured.retained,
             ingested.heap() + new_interns,
         );
-        let counts = counts(&ingested);
-        // Metadata stays beside the request structure that κ covers.
-        let metadata = [
-            ingested.manifest.heap(),
-            ingested.sources.heap(),
-            ingested.threads.heap(),
-            ingested.relationships.heap(),
-            ingested.ledger.diagnostics.heap(),
-            ingested.ledger.gaps.heap(),
-            ingested.ledger.source_table.heap(),
-        ]
-        .into_iter()
-        .sum::<u64>();
-        let forward = counts.decoded * model::decoded_record(agent)
-            + counts.observations * model::kappa(agent)
-            + counts.limit_rows * model::limit_row()
-            + metadata
-            + new_interns;
-        report.note(
-            "ingest peak",
-            &label,
-            format!(
-                "peak {} vs forward estimate {forward} without payloads or worker slots ({} requested retained)",
-                measured.peak, measured.retained_requested
-            ),
-        );
-        drop(ingested);
+        if charges_decode(agent) {
+            // Live heap stays within `E` at every allocation, plus the slots' Rust heap
+            // while workers decode.
+            report.bound_total("decode above E", &label, tracked.decode_excess, 0);
+            report.bound_total("later above E", &label, tracked.later_excess, 0);
+            report.note(
+                "ingest E",
+                &label,
+                format!(
+                    "peak {} with largest E {} and slot term {} ({} requested retained)",
+                    measured.peak, tracked.largest, tracked.slot_term, measured.retained_requested
+                ),
+            );
+        } else {
+            let counts = counts(ingested);
+            // Metadata stays beside the request structure that κ covers.
+            let metadata = [
+                ingested.manifest.heap(),
+                ingested.sources.heap(),
+                ingested.threads.heap(),
+                ingested.relationships.heap(),
+                ingested.ledger.diagnostics.heap(),
+                ingested.ledger.gaps.heap(),
+                ingested.ledger.source_table.heap(),
+            ]
+            .into_iter()
+            .sum::<u64>();
+            let forward = counts.decoded * model::decoded_record(agent)
+                + counts.observations * model::kappa(agent)
+                + counts.limit_rows * model::limit_row()
+                + metadata
+                + new_interns;
+            report.note(
+                "ingest peak",
+                &label,
+                format!(
+                    "peak {} vs forward estimate {forward} without payloads or worker slots ({} requested retained)",
+                    measured.peak, measured.retained_requested
+                ),
+            );
+        }
+        drop(tracked);
     }
     // A fresh thread coordinates the ingest, as the main thread does once the discovery
     // checkpoint releases the coordinating slot, and keeps its name and pricing caches
@@ -2159,7 +2231,7 @@ fn main() {
         check_ingest(&mut report, Agent::Claude, &case, corpus.path());
     }
     for (rollouts, records, period, padding) in
-        [(2, 200, 1, 0), (4, 200, 50, 0), (4, 200, 50, 2048)]
+        [(2, 200, 1, 0), (4, 200, 50, 0), (4, 200, 50, 2048), (8, 600, 1, 0), (8, 600, 50, 512)]
     {
         let corpus = codex_corpus(rollouts, records, period, padding);
         let case = format!("generated {rollouts}×{records} limits/{period} pad {padding}");

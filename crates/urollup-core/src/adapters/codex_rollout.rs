@@ -25,7 +25,8 @@ use self::line::{
     DecodedLimits, EventType, HistoryBoundary, Line, Payload, RecordType, UsageFields,
 };
 use super::{AdapterError, Decoding, Ingested};
-use crate::ledger::admission::MemoryAdmission;
+use crate::ledger::admission::deep_size::DeepSize;
+use crate::ledger::admission::{Component, MemoryAdmission, model};
 use crate::ledger::capacity::ObservationCapacity;
 use crate::ledger::counters::{CounterEvent, RunningTotal};
 use crate::ledger::coverage::{CoverageGap, UnobservedReason};
@@ -39,7 +40,6 @@ use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdenti
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
     LatestRevision, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation,
-    reconcile_with_capacity,
 };
 use crate::ledger::scope::{ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec};
 use crate::ledger::tokens::{
@@ -127,6 +127,135 @@ pub(crate) const TURN_STATE_PER_CONTEXT: u64 = {
 pub(crate) const JOIN_PAIR_BYTES: u64 =
     size_of::<(usize, Option<Result<(ManifestEntry, DecodedRollout), AdapterError>>)>() as u64;
 
+/// What decoding and observing a rollout charge beside its records and κ, by the costing
+/// rule (scalable-ingestion plan, "Reservation Model"): the one-time bases of the
+/// structures a rollout grows, charged at its first push into each, and the per-entry
+/// shares of those it pushes into.
+mod charges {
+    use std::mem::size_of;
+
+    use super::{
+        Diagnostic, ParsedRecord, PricingContext, ProviderLimitObservation, RateLimits,
+        SettingsSnapshot, Sym, TurnContext, TurnDigest,
+    };
+    use crate::ledger::admission::model::{grown_vec_base, hash_base, hash_entry};
+    use crate::ledger::coverage::CoverageGap;
+
+    const fn size<T>() -> u64 {
+        size_of::<T>() as u64
+    }
+
+    /// Per new symbol of a rollout's string table: its end offset and its index's link to
+    /// the previous symbol with its hash, each in a vector that grows by doubling, and its
+    /// hash entry. Its text adds 3 × its bytes, as the text grows by doubling too.
+    pub(super) const SYMBOL: u64 =
+        3 * size::<usize>() + 3 * size::<Option<Sym>>() + hash_entry(size::<(u64, Sym)>());
+
+    /// A rollout's string table before its first symbol: its text, end offsets, links and
+    /// hash index.
+    pub(super) const STRING_TABLE: u64 = grown_vec_base(1)
+        + grown_vec_base(size::<usize>())
+        + grown_vec_base(size::<Option<Sym>>())
+        + hash_base(size::<(u64, Sym)>());
+
+    /// A rollout's record vector before its first record.
+    pub(super) const RECORDS: u64 = grown_vec_base(size::<ParsedRecord>());
+
+    /// A rollout's packed usage counts before their first byte; each byte adds 3, as the
+    /// buffer grows by doubling.
+    pub(super) const COUNTS: u64 = grown_vec_base(1);
+
+    /// A `thread_settings_applied` record's boxed snapshot.
+    pub(super) const SETTINGS: u64 =
+        crate::ledger::admission::model::allocation(size::<SettingsSnapshot>());
+
+    /// A thread's pricing context in observation's per-thread map, per `session_meta` or
+    /// settings record that sets one.
+    pub(super) const PRICING_ENTRY: u64 = hash_entry(size::<(Sym, PricingContext)>());
+
+    /// The per-rollout maps and vectors observation builds before their first entry: the
+    /// turn contexts, the thread pricing contexts, each thread's latest response and the
+    /// rollout's own responses (whose entries κ's construction share covers), the limit
+    /// streams' first node, and the vectors of limit rows, diagnostics and gaps; and the
+    /// transient scratch of one observation at a time, its key's derivation
+    /// ([`KEY_DERIVATION`]) and the text of its counter signature and limit stream.
+    ///
+    /// [`KEY_DERIVATION`]: crate::ledger::admission::model::KEY_DERIVATION
+    pub(super) const OBSERVE_BASES: u64 = crate::ledger::admission::model::KEY_DERIVATION
+        + hash_base(size::<(Sym, TurnContext)>())
+        + hash_base(size::<(Sym, PricingContext)>())
+        + hash_base(size::<(&str, Sym)>())
+        + hash_base(size::<Sym>())
+        + super::STREAM_NODE
+        + grown_vec_base(size::<ProviderLimitObservation>())
+        + grown_vec_base(size::<Diagnostic>())
+        + GAPS;
+
+    /// A rollout's coverage gaps: at most two, one for unverified usage and one for
+    /// inconsistent usage, each citing at most [`SAMPLE_EVIDENCE_LIMIT`] records.
+    ///
+    /// [`SAMPLE_EVIDENCE_LIMIT`]: crate::ledger::diagnostics::SAMPLE_EVIDENCE_LIMIT
+    pub(super) const GAPS: u64 =
+        crate::ledger::admission::model::grown_vec(2, size::<CoverageGap>())
+            + 2 * crate::ledger::admission::model::grown_vec(
+                crate::ledger::diagnostics::SAMPLE_EVIDENCE_LIMIT as u64,
+                size::<crate::sources::evidence::EvidenceRef>(),
+            );
+
+    /// A distinct rate-limit snapshot's shared allocation, beside its text and windows.
+    pub(super) const SNAPSHOT: u64 = crate::ledger::admission::model::arc(size::<RateLimits>());
+
+    /// A root rollout's turn digests before the first, collected and shrunk.
+    pub(super) const ROOT_TURNS: u64 = grown_vec_base(size::<TurnDigest>());
+
+    /// What `normalize` builds before its first entry, beside the per-rollout rows
+    /// decoding charged ([`super::normalized_rows`]): the source table's collected
+    /// vector and its sort's minimum scratch; the first nodes of the version, native
+    /// thread, metadata and thread maps; the bases of its relationship, observation, limit,
+    /// diagnostic and gap vectors; the duplicate-location index's and the loss summary's
+    /// first nodes, its cited evidence and its detail's first buffer; and the bases of its
+    /// turn, lineage, complete, inferring and total maps.
+    pub(super) const NORMALIZE_BASES: u64 = {
+        use crate::ledger::admission::model::{allocation, btree_node, sized_vec, sizes};
+        let string = size::<String>();
+        grown_vec_base(sizes::ID)
+            + sized_vec(48, sizes::ID)
+            + btree_node(sizes::ID, string)
+            + btree_node(string, 0)
+            + btree_node(
+                string,
+                size::<(super::SessionMeta, crate::sources::evidence::EvidenceRef)>(),
+            )
+            + btree_node(sizes::ID, sizes::THREAD)
+            + grown_vec_base(size::<crate::ledger::entities::Relationship>())
+            + grown_vec_base(sizes::OBSERVATION)
+            + grown_vec_base(size::<ProviderLimitObservation>())
+            + grown_vec_base(size::<Diagnostic>())
+            + grown_vec_base(size::<CoverageGap>())
+            + btree_node(sizes::STR, sizes::LIST)
+            + btree_node(sizes::STR, size::<u64>())
+            + grown_vec_base(size::<crate::sources::evidence::EvidenceRef>())
+            + allocation(super::LOSS_DETAIL)
+            + 2 * hash_base(string + size::<std::collections::HashSet<TurnDigest>>())
+            + hash_base(string)
+            + 2 * hash_base(sizes::STR)
+    };
+}
+
+/// The node of the per-rollout map from limit stream to its latest snapshot, which
+/// observation charges at its first stream.
+const STREAM_NODE: u64 = crate::ledger::admission::model::btree_node(
+    size_of::<LimitStream>() as u64,
+    size_of::<Arc<RateLimits>>() as u64,
+);
+
+/// Each new limit stream's entry in that map, with the copy of its limit name its key
+/// holds.
+const STREAM_ENTRY: u64 = crate::ledger::admission::model::btree_entry(
+    size_of::<LimitStream>() as u64,
+    size_of::<Arc<RateLimits>>() as u64,
+);
+
 /// Everything one rollout contributes before normalization.
 struct ParsedSource {
     /// The source ID every record of the rollout shares; `None` only without records.
@@ -152,6 +281,12 @@ struct ParsedSource {
     /// Turn-ID digests from this rollout when it is a root, collected while decoding so
     /// normalization does not walk every record again to build [`KnownTurns`].
     root_turns: Vec<TurnDigest>,
+    /// The limit rows decoding charged: one per window of each distinct rate-limit
+    /// snapshot. Observation charges any row past these where it pushes it.
+    limit_rows: u64,
+    /// The rows decoding charged for this rollout's thread and for normalization's
+    /// per-thread and per-source state ([`normalized_rows`]), which construction holds.
+    rows: u64,
 }
 
 /// One rollout after decode: usage-bearing files are observed on the worker so their
@@ -164,6 +299,8 @@ enum DecodedRollout {
 /// A rollout whose records were observed and dropped on the decoding worker.
 struct ObservedSource {
     id: Option<AnalyticalId>,
+    /// The rows decoding charged for its thread and normalization ([`ParsedSource::rows`]).
+    rows: u64,
     file_thread: String,
     metas: SourceMetas,
     root_turns: Vec<TurnDigest>,
@@ -304,6 +441,38 @@ struct SessionMeta {
 impl SessionMeta {
     fn parent(&self) -> Option<&str> {
         self.parent_thread_id.as_deref().or(self.forked_from_id.as_deref())
+    }
+}
+
+impl DeepSize for SessionMeta {
+    fn heap(&self) -> u64 {
+        let Self {
+            source,
+            thread_source,
+            project,
+            parent_thread_id,
+            forked_from_id,
+            subagent_history_start_ordinal: _,
+            paginated: _,
+            history_base: _,
+            subagent_source: _,
+        } = self;
+        [source, thread_source, project, parent_thread_id, forked_from_id]
+            .into_iter()
+            .fold(0, |total, text| total.saturating_add(text.heap()))
+    }
+}
+
+impl DeepSize for SourceMetas {
+    fn heap(&self) -> u64 {
+        let Self { cli_version, root: _, own, foreign: _, lineage: _, spawn_parent: _ } = self;
+        let own = own.as_ref().map_or(0, |own| {
+            crate::ledger::admission::model::allocation(count(
+                size_of::<(SessionMeta, EvidenceRef)>(),
+            ))
+            .saturating_add(own.0.heap())
+        });
+        cli_version.heap().saturating_add(own)
     }
 }
 
@@ -461,6 +630,13 @@ struct RateLimits {
     native: String,
 }
 
+impl DeepSize for RateLimits {
+    fn heap(&self) -> u64 {
+        let Self { limit_name, windows, native } = self;
+        limit_name.heap().saturating_add(windows.heap()).saturating_add(native.heap())
+    }
+}
+
 /// A turn's model, reasoning effort and pricing context.
 #[derive(Clone, Copy, Debug, Default)]
 struct TurnContext {
@@ -581,6 +757,13 @@ struct Strings {
     text: String,
     /// Where each symbol's text ends; each starts where the previous one ends.
     ends: Vec<usize>,
+}
+
+impl DeepSize for Strings {
+    fn heap(&self) -> u64 {
+        let Self { text, ends } = self;
+        text.heap().saturating_add(ends.heap())
+    }
 }
 
 impl Strings {
@@ -704,10 +887,18 @@ pub fn ingest_discovery_with_capacity(
 /// Reads discovered Codex rollouts under the invocation's admission ledger.
 ///
 /// The decode checkpoint charges the worker slots and releases the coordinating slot;
-/// rollouts then decode on `min(workers, slots)` threads, each read under the ledger, and
-/// each rollout's source rows are charged before its worker returns it
-/// ([`Decoding`]). A refusal returns [`AdapterError::Capacity`], or, for the row
-/// ceiling, [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
+/// rollouts then decode on `min(workers, slots)` threads, each read under the ledger.
+/// Each retained record is charged before it is pushed: the record, κ when it bears a
+/// request, its payloads and limit rows; each rollout's source rows and the rows its
+/// thread adds to later phases are charged before its worker returns it, and a rollout
+/// observed on its worker charges what observing it builds. New process interns are
+/// charged to the ledger on every thread that decodes or normalizes. The construction
+/// checkpoint then replaces decode's charges with an estimate from exact counts,
+/// reconciliation checkpoints before the key graph, at `Order` and once observations are
+/// released, and the commit holds what the ledger retains ([`super::Retained`]).
+///
+/// A refusal returns [`AdapterError::Capacity`], or, for the row ceiling,
+/// [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
 pub fn ingest_discovery_with_admission(
     discovery: Discovery,
     missing_is_error: bool,
@@ -755,10 +946,13 @@ pub fn ingest_discovery_with_admission(
     }
     let manifest = SnapshotManifest { entries, skipped_links: discovery.skipped_links };
 
-    normalize(rollouts, manifest, Arc::unwrap_or_clone(thread_ids), &decoding.row_ceiling())
+    // The coordinating thread interns as it observes waiting rollouts and reconciles.
+    let thread_ids = Arc::unwrap_or_clone(thread_ids);
+    decoding.admission.scope(|| normalize(rollouts, manifest, thread_ids, decoding))
 }
 
-/// Reads one rollout, independently of every other source, and charges its source rows.
+/// Reads one rollout, independently of every other source, and charges its source rows
+/// and the rows its thread adds to normalization and every later phase.
 fn decode_source(
     source: &DiscoveredSource,
     decoding: &Decoding<'_>,
@@ -776,6 +970,7 @@ fn decode_source(
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
+    decoding.charge(Component::Payloads, SourceDecoder::charge_new(&rollout.thread_id), &path)?;
     let mut decoder = SourceDecoder::new(&rollout.thread_id);
     let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
@@ -783,8 +978,12 @@ fn decode_source(
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
     let mut parsed = decoder.finish();
     parsed.id = entry.source.as_ref().map(|source| source.id.clone());
+    // The locator diagnostics name.
+    decoding.charge(Component::Payloads, model::allocation(count(source.locator.len())), &path)?;
     parsed.locator.clone_from(&source.locator);
     decoding.charge_source_rows(&entry, parsed.metas.cli_version.as_deref(), &path)?;
+    parsed.rows = normalized_rows(&parsed, &entry)?;
+    decoding.charge(Component::Sources, parsed.rows, &path)?;
     Ok((entry, parsed))
 }
 
@@ -817,6 +1016,19 @@ struct SourceDecoder {
     skipped: u64,
     last_limits: Option<Arc<RateLimits>>,
     observation_slots: usize,
+    /// The limit rows charged so far: one per window of each distinct snapshot.
+    limit_rows: u64,
+    /// The `turn_context` records decoded so far.
+    turn_contexts: u64,
+}
+
+/// What a rollout's decoder held before a line, so the line is charged what it added.
+struct Footprint {
+    text: usize,
+    symbols: usize,
+    counts: usize,
+    metas: u64,
+    limits: Option<Arc<RateLimits>>,
 }
 
 impl SourceDecoder {
@@ -833,7 +1045,15 @@ impl SourceDecoder {
             skipped: 0,
             last_limits: None,
             observation_slots: 0,
+            limit_rows: 0,
+            turn_contexts: 0,
         }
+    }
+
+    /// What a decoder for a rollout of `file_thread` holds before its first line: its
+    /// string table, with the thread's symbol.
+    fn charge_new(file_thread: &str) -> u64 {
+        charges::STRING_TABLE + 3 * count(file_thread.len()) + charges::SYMBOL
     }
 
     fn finish(self) -> ParsedSource {
@@ -846,6 +1066,7 @@ impl SourceDecoder {
             metas,
             skipped,
             observation_slots,
+            limit_rows,
             ..
         } = self;
         // Decoding grows the buffers by doubling; release the unused tails before the
@@ -868,6 +1089,8 @@ impl SourceDecoder {
             counter_scope,
             observation_slots,
             root_turns,
+            limit_rows,
+            rows: 0,
         }
     }
 
@@ -901,9 +1124,14 @@ impl SourceDecoder {
         let Ok(line) = Line::read(raw.bytes) else {
             return RecordDisposition::Malformed;
         };
+        let before = self.footprint();
         let Some(kind) = self.record_kind(line.record_type, line.payload, raw.evidence) else {
             return self.skip();
         };
+        // A new process intern the record named stops the invocation when it is refused.
+        if admission.is_some_and(MemoryAdmission::stopped) {
+            return RecordDisposition::Stop;
+        }
         let request_bearing = match &kind {
             RecordKind::UsageRecord(_) => true,
             RecordKind::Compacted(latest) => latest.is_some(),
@@ -914,6 +1142,11 @@ impl SourceDecoder {
         };
         if request_bearing && admission.is_some_and(|budget| !budget.reserve_row(Agent::Codex)) {
             return RecordDisposition::Stop;
+        }
+        if let Some(admission) = admission {
+            if !self.charge(admission, &kind, request_bearing, &before) {
+                return RecordDisposition::Stop;
+            }
         }
         // The `src-` ID lives on the manifest entry; evidence carries a local index.
         if can_emit_observation(&kind) {
@@ -933,6 +1166,82 @@ impl SourceDecoder {
             kind,
         });
         RecordDisposition::Decoded
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint {
+            text: self.interner.strings.text.len(),
+            symbols: self.interner.strings.ends.len(),
+            counts: self.counts.len(),
+            metas: self.metas.heap(),
+            limits: self.last_limits.clone(),
+        }
+    }
+
+    /// Charges a decoded record before it is retained (scalable-ingestion plan, "Phases and
+    /// Checkpoints"): the record, κ when it bears a request, and its payloads, which are the
+    /// strings and counts it added to its rollout's tables, the session metadata it set, its
+    /// settings snapshot, its turn state, a thread pricing entry, and a distinct rate-limit
+    /// snapshot with its limit rows. The strings and counts were added while the line was
+    /// read, so they are charged just after, within the line's own need. `false` when
+    /// admission refuses.
+    fn charge(
+        &mut self,
+        admission: &MemoryAdmission,
+        kind: &RecordKind,
+        request_bearing: bool,
+        before: &Footprint,
+    ) -> bool {
+        let records = model::decoded_record(Agent::Codex)
+            + if self.records.is_empty() { charges::RECORDS } else { 0 };
+        let kappa = if request_bearing { model::kappa(Agent::Codex) } else { 0 };
+        let strings = &self.interner.strings;
+        let counts_base =
+            if before.counts == 0 && !self.counts.is_empty() { charges::COUNTS } else { 0 };
+        let mut payloads = 3 * count(strings.text.len().saturating_sub(before.text))
+            + charges::SYMBOL * count(strings.ends.len().saturating_sub(before.symbols))
+            + 3 * count(self.counts.len().saturating_sub(before.counts))
+            + counts_base
+            + self.metas.heap().saturating_sub(before.metas);
+        let mut limits = 0;
+        match kind {
+            RecordKind::TurnContext { .. } => {
+                payloads += model::CODEX_TURN_STATE
+                    + if self.turn_contexts == 0 { charges::ROOT_TURNS } else { 0 };
+                self.turn_contexts += 1;
+            }
+            RecordKind::SessionMeta { provider, .. } => {
+                if provider.is_some() {
+                    payloads += charges::PRICING_ENTRY;
+                }
+            }
+            RecordKind::ThreadSettingsApplied { settings, .. } => {
+                if settings.is_some() {
+                    payloads += charges::SETTINGS + charges::PRICING_ENTRY;
+                }
+            }
+            RecordKind::TokenCount { limits: Some(snapshot), .. } => {
+                let shared =
+                    before.limits.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, snapshot));
+                if !shared {
+                    let rows = count(snapshot.windows.len());
+                    payloads += charges::SNAPSHOT + snapshot.heap();
+                    limits += rows * model::limit_row();
+                    self.limit_rows += rows;
+                }
+            }
+            RecordKind::TokenCount { limits: None, .. }
+            | RecordKind::UsageRecord(_)
+            | RecordKind::Compacted(_) => {}
+        }
+        [
+            (Component::Records, records),
+            (Component::Kappa, kappa),
+            (Component::Payloads, payloads),
+            (Component::Limits, limits),
+        ]
+        .into_iter()
+        .all(|(component, bytes)| bytes == 0 || admission.charge(component, bytes))
     }
 
     /// The accounting fields of a relevant record, or `None` for a record the adapter skips.
@@ -1084,6 +1393,26 @@ pub fn rollout_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     expanded
+}
+
+/// The discovery metadata a Codex ingest of `discovery` holds until it commits
+/// (scalable-ingestion plan, "Reservation Model"): the discovery itself and the map of each
+/// rollout's thread ID to its analytical ID, built from the locators before decode, an
+/// entry per rollout as an upper bound.
+pub fn discovery_heap(discovery: &Discovery) -> u64 {
+    use model::{allocation, arc, btree_entry, btree_node, sizes};
+    let string = count(size_of::<String>());
+    let entries = discovery.sources.iter().fold(0, |total: u64, source| {
+        let thread = rollout_name(&source.locator).thread_id;
+        total
+            .saturating_add(btree_entry(string, sizes::ID))
+            .saturating_add(allocation(count(thread.len())))
+    });
+    discovery
+        .heap()
+        .saturating_add(arc(count(size_of::<BTreeMap<String, AnalyticalId>>())))
+        .saturating_add(btree_node(string, sizes::ID))
+        .saturating_add(entries)
 }
 
 fn thread_ids_from_locators<'a>(
@@ -1279,26 +1608,41 @@ fn classify_counters(records: &mut [ParsedRecord], counts: &[u8], root: bool) ->
     if counted { CounterScope::Mixed } else { CounterScope::Direct }
 }
 
+/// Decodes one rollout on its worker, with the worker's new process interns charged to the
+/// invocation's ledger, and observes it there unless it waits for every rollout.
 fn decode_rollout(
     source: &DiscoveredSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
     decoding: &Decoding<'_>,
 ) -> Result<(ManifestEntry, DecodedRollout), AdapterError> {
-    let (entry, parsed) = decode_source(source, decoding)?;
-    // Only a rollout without usage records may infer where a legacy copied prefix ends
-    // from other rollouts' turn IDs, so only it waits for every rollout to decode.
-    if parsed.counter_scope == CounterScope::All {
-        Ok((entry, DecodedRollout::Pending(parsed)))
-    } else {
-        Ok((
-            entry,
-            DecodedRollout::Observed(observe_to_observed(
-                parsed,
-                thread_ids,
-                &ParentEvidence::default(),
-            )?),
-        ))
-    }
+    decoding.admission.scope(|| {
+        let (entry, parsed) = decode_source(source, decoding)?;
+        // Only a rollout without usage records may infer where a legacy copied prefix ends
+        // from other rollouts' turn IDs, so only it waits for every rollout to decode.
+        if parsed.counter_scope == CounterScope::All {
+            return Ok((entry, DecodedRollout::Pending(parsed)));
+        }
+        // What observing it holds beside what its records charged: its thread's name, its
+        // own observation vector and the tail a contradicted inference splits off, and the
+        // bases and transient scratch of the per-rollout state observation builds.
+        let thread = parsed.strings.resolve(parsed.file_thread);
+        let observing = model::allocation(count(thread.len()))
+            + model::source_observations(count(parsed.observation_slots))
+            + charges::OBSERVE_BASES;
+        if !decoding.admission.charge(Component::Kappa, observing) {
+            return Err(AdapterError::Read {
+                path: source.root.join(&source.locator),
+                source: crate::sources::reader::SourceReadError::Stopped,
+            });
+        }
+        let observed = observe_to_observed(
+            parsed,
+            thread_ids,
+            &ParentEvidence::default(),
+            decoding.admission,
+        )?;
+        Ok((entry, DecodedRollout::Observed(observed)))
+    })
 }
 
 /// Where a rollout's own records start, from its own `subagent_history_start_ordinal`, or,
@@ -1633,11 +1977,24 @@ fn same_usage(left: &TokenMeasures, right: &TokenMeasures) -> bool {
         .all(|((_, left), (_, right))| left.unwrap_or(0) == right.unwrap_or(0))
 }
 
+/// Builds a rollout's observations, limit rows, diagnostics and gaps.
+///
+/// Its own observation vector and the per-rollout bases are charged by its caller, and
+/// each record's share by decoding; what only observation knows is charged where it is
+/// pushed, before it is held: each diagnostic, each limit stream's first entry, and limit
+/// rows past those decoding charged for the rollout's distinct snapshots.
 fn observe_parsed_source(
     source: &ParsedSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
     parents: &ParentEvidence,
+    admission: &MemoryAdmission,
 ) -> Result<SourceObserve, AdapterError> {
+    let push = |diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic| {
+        admission.try_charge(Component::Payloads, model::diagnostic_of(&diagnostic))?;
+        diagnostics.push(diagnostic);
+        Ok::<(), AdapterError>(())
+    };
+    let mut limit_charges = LimitCharges { admission, rows: source.limit_rows };
     let mut observations = Vec::with_capacity(source.observation_slots);
     let mut limit_observations = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1707,13 +2064,19 @@ fn observe_parsed_source(
     {
         copied_regions = copied_regions.saturating_add(1);
         if scope == CounterScope::All && !native_boundary.is_declared() {
+            // Its evidence grows with the copied records, so it is charged before it is
+            // collected, at most one reference per record.
+            admission.try_charge(
+                Component::Payloads,
+                model::diagnostic(count(COPIED_DETAIL.len()), count(source.records.len())),
+            )?;
             let copied = legacy_copied_evidence(source, &parents.turns);
             diagnostics.push(
                 Diagnostic::new(
                     DiagnosticCode::CodexCopiedHistoryInferred,
                     thread_ids.get(file_thread_text).cloned(),
                     copied.evidence,
-                    "Codex copied-history boundary was inferred from legacy rollout records",
+                    COPIED_DETAIL,
                 )
                 .with_occurrences(copied.occurrences),
             );
@@ -2174,7 +2537,8 @@ fn observe_parsed_source(
                         thread_ids,
                         &mut previous_limits,
                         &mut limit_observations,
-                    );
+                        &mut limit_charges,
+                    )?;
                 }
                 if !cumulative && owner != Some(file_thread_text) {
                     if let Some(usage) = &last {
@@ -2280,22 +2644,28 @@ fn observe_parsed_source(
                             }
                             FirstStep::Repeated => continue,
                             FirstStep::Unseeded => {
-                                diagnostics.push(Diagnostic::new(
-                                    DiagnosticCode::CodexCounterEpochReset,
-                                    thread_ids.get(file_thread_text).cloned(),
-                                    [view.evidence],
-                                    UNSEEDED_COUNTER_DETAIL,
-                                ));
+                                push(
+                                    &mut diagnostics,
+                                    Diagnostic::new(
+                                        DiagnosticCode::CodexCounterEpochReset,
+                                        thread_ids.get(file_thread_text).cloned(),
+                                        [view.evidence],
+                                        UNSEEDED_COUNTER_DETAIL,
+                                    ),
+                                )?;
                                 counter = Some(RunningTotal::new());
                                 check_next = false;
                             }
                             FirstStep::Lowered => {
-                                diagnostics.push(Diagnostic::new(
-                                    DiagnosticCode::CodexCounterEpochReset,
-                                    thread_ids.get(file_thread_text).cloned(),
-                                    [view.evidence],
-                                    "Codex cumulative usage decreased and opened a new counter epoch",
-                                ));
+                                push(
+                                    &mut diagnostics,
+                                    Diagnostic::new(
+                                        DiagnosticCode::CodexCounterEpochReset,
+                                        thread_ids.get(file_thread_text).cloned(),
+                                        [view.evidence],
+                                        "Codex cumulative usage decreased and opened a new counter epoch",
+                                    ),
+                                )?;
                                 inherited_total = Some(total_usage);
                                 continue;
                             }
@@ -2335,28 +2705,34 @@ fn observe_parsed_source(
                     });
                     let step = tracker.observe(&total_usage, None)?;
                     if step.event == CounterEvent::Reset {
-                        diagnostics.push(Diagnostic::new(
-                            DiagnosticCode::CodexCounterEpochReset,
-                            thread_ids.get(file_thread_text).cloned(),
-                            [view.evidence],
-                            "Codex cumulative usage decreased and opened a new counter epoch",
-                        ));
+                        push(
+                            &mut diagnostics,
+                            Diagnostic::new(
+                                DiagnosticCode::CodexCounterEpochReset,
+                                thread_ids.get(file_thread_text).cloned(),
+                                [view.evidence],
+                                "Codex cumulative usage decreased and opened a new counter epoch",
+                            ),
+                        )?;
                     }
                     let Some(last) = last else { continue };
                     if estimated {
                         let context_fill = total.input.unwrap_or(0) == 0
                             && total.output.unwrap_or(0) == 0
                             && total.total.unwrap_or(0) > 0;
-                        diagnostics.push(Diagnostic::new(
-                            if context_fill {
-                                DiagnosticCode::CodexEstimateContextWindowFill
-                            } else {
-                                DiagnosticCode::CodexEstimateCompaction
-                            },
-                            thread_ids.get(file_thread_text).cloned(),
-                            [view.evidence],
-                            "Codex emitted an estimate with zero input and output tokens",
-                        ));
+                        push(
+                            &mut diagnostics,
+                            Diagnostic::new(
+                                if context_fill {
+                                    DiagnosticCode::CodexEstimateContextWindowFill
+                                } else {
+                                    DiagnosticCode::CodexEstimateCompaction
+                                },
+                                thread_ids.get(file_thread_text).cloned(),
+                                [view.evidence],
+                                "Codex emitted an estimate with zero input and output tokens",
+                            ),
+                        )?;
                         continue;
                     }
                     // Codex lowers its running total at compaction rather than restarting
@@ -2415,7 +2791,8 @@ fn observe_parsed_source(
     if unverified.occurrences > 0 {
         let subject = thread_ids.get(file_thread_text).cloned();
         let evidence = unverified.evidence;
-        diagnostics.push(
+        push(
+            &mut diagnostics,
             Diagnostic::new(
                 DiagnosticCode::CodexHistoryBoundaryUnverified,
                 subject.clone(),
@@ -2423,7 +2800,7 @@ fn observe_parsed_source(
                 UNVERIFIED_BOUNDARY_DETAIL,
             )
             .with_occurrences(unverified.occurrences),
-        );
+        )?;
         gaps.push(CoverageGap {
             reason: UnobservedReason::UnverifiedHistoryBoundary,
             thread: subject,
@@ -2445,7 +2822,8 @@ fn observe_parsed_source(
                      before it"
                 .to_owned(),
         };
-        diagnostics.push(
+        push(
+            &mut diagnostics,
             Diagnostic::new(
                 DiagnosticCode::CodexInclusiveInputUnderflow,
                 subject.clone(),
@@ -2456,7 +2834,7 @@ fn observe_parsed_source(
                 ),
             )
             .with_occurrences(inconsistent.occurrences),
-        );
+        )?;
         gaps.push(CoverageGap {
             reason: UnobservedReason::InconsistentUsage,
             thread: subject,
@@ -2470,11 +2848,13 @@ fn observe_to_observed(
     source: ParsedSource,
     thread_ids: &BTreeMap<String, AnalyticalId>,
     parents: &ParentEvidence,
+    admission: &MemoryAdmission,
 ) -> Result<ObservedSource, AdapterError> {
     let file_thread = source.strings.resolve(source.file_thread).to_owned();
-    let observed = observe_parsed_source(&source, thread_ids, parents)?;
+    let observed = observe_parsed_source(&source, thread_ids, parents, admission)?;
     Ok(ObservedSource {
         id: source.id,
+        rows: source.rows,
         file_thread,
         metas: source.metas,
         root_turns: source.root_turns,
@@ -2522,12 +2902,220 @@ fn stamp_refs(
     }
 }
 
+/// The detail of an inferred legacy copied-history boundary.
+const COPIED_DETAIL: &str =
+    "Codex copied-history boundary was inferred from legacy rollout records";
+
+/// The diagnostic details `normalize` gives a rollout's own snapshot.
+const MALFORMED_DETAIL: &str = "a complete Codex rollout line is malformed";
+const PENDING_DETAIL: &str = "the incomplete final Codex rollout line is pending";
+const DUPLICATE_DETAIL: &str = "the same Codex thread and rollout were found at multiple locations";
+const ORPHAN_DETAIL: &str = "Codex thread names a parent whose rollout was not discovered";
+
+/// The detail `snapshot_losses` writes, beside the loss kinds it lists: at most its
+/// literal text and a count, and per loss kind its token and count.
+const LOSS_DETAIL: u64 = 64;
+const LOSS_ITEM: u64 = 48;
+
+/// The rows one rollout adds to normalization and to every later phase through the session
+/// index, beside its source rows ([`model::source_rows`]), charged before its worker
+/// returns it (scalable-ingestion plan, "Reservation Model", source and thread rows).
+///
+/// - **Thread and relationship rows:** its thread's row as `normalize` builds it, with its
+///   entry in the thread map and its slot in the reconciliation input, and its
+///   relationship row when its session metadata names a parent.
+/// - **The session index's reserve:** the thread's session entry and copy, the paths of
+///   this rollout and of the source its evidence cites, and the relationship's copy.
+/// - **`normalize`'s per-thread entries:** the thread's name in its set of native threads,
+///   its ID map, its metadata map with a copy of the metadata, its turn and total maps and
+///   their sets' bases, and the sets of complete, lineage and inferring threads; its
+///   dialect version; and an orphan diagnostic when it names a parent.
+/// - **Per-source state:** its share of the source table and of the duplicate-location
+///   index, and the diagnostics and gap its snapshot can raise.
+///
+/// A thread several rollouts record is charged once per rollout, an upper bound.
+fn normalized_rows(source: &ParsedSource, entry: &ManifestEntry) -> Result<u64, AdapterError> {
+    use model::{allocation, btree_entry, diagnostic, grown_vec, hash_base, hash_entry, sizes};
+    let size = |bytes: usize| count(bytes);
+    let thread = source.strings.resolve(source.file_thread);
+    let text = allocation(size(thread.len()));
+    let own = source.metas.own.as_deref();
+    let parent = own.is_some_and(|(meta, _)| meta.parent().is_some());
+    let row = thread_row(thread, thread_identity(thread)?, own).heap();
+    let relationship = size(size_of::<Relationship>());
+    let evidence = allocation(size(size_of::<EvidenceRef>()));
+    let link = if parent { 3 * relationship + evidence } else { 0 };
+    let rows = btree_entry(sizes::ID, sizes::THREAD) + allocation(sizes::THREAD) + row + link;
+
+    let paths = std::iter::once(&entry.file).chain(&entry.twins).fold(0, |total, file| {
+        total
+            + grown_vec(1, size(size_of::<PathBuf>()))
+            + allocation(size(file.path.as_os_str().len()))
+    });
+    let index = btree_entry(sizes::ID, size(size_of::<crate::selection::IndexedSession>()))
+        + row
+        + 2 * paths
+        + if parent { relationship + link } else { 0 };
+
+    let string = size(size_of::<String>());
+    let digest_set = size(size_of::<HashSet<TurnDigest>>());
+    let maps = btree_entry(string, 0)
+        + btree_entry(string, sizes::ID)
+        + own.map_or(0, |(meta, _)| {
+            btree_entry(string, size(size_of::<(SessionMeta, EvidenceRef)>())) + text + meta.heap()
+        })
+        + source
+            .metas
+            .cli_version
+            .as_ref()
+            .map_or(0, |version| btree_entry(sizes::ID, string) + allocation(size(version.len())))
+        + 2 * (hash_entry(string + digest_set) + text + hash_base(size(size_of::<TurnDigest>())))
+        + hash_entry(string)
+        + 2 * hash_entry(sizes::STR)
+        + 4 * text
+        + if parent { diagnostic(size(ORPHAN_DETAIL.len()), 1) } else { 0 };
+
+    let losses = size(entry.failures.len() + entry.changes.len());
+    let snapshot = 8 * sizes::ID
+        + btree_entry(sizes::STR, sizes::LIST)
+        + grown_vec(1, sizes::POINTER)
+        + diagnostic(size(DUPLICATE_DETAIL.len()), 1)
+        + if entry.first_malformed.is_some() {
+            diagnostic(size(MALFORMED_DETAIL.len()), 1)
+        } else {
+            0
+        }
+        + if entry.cutoff.pending_tail.is_some() {
+            diagnostic(size(PENDING_DETAIL.len()), 1)
+        } else {
+            0
+        }
+        + if losses > 0 {
+            3 * size(size_of::<CoverageGap>())
+                + evidence
+                + losses * btree_entry(sizes::STR, size(size_of::<u64>()))
+                + diagnostic(LOSS_DETAIL + losses * LOSS_ITEM, 1)
+        } else {
+            0
+        };
+    Ok(rows + index + maps + snapshot)
+}
+
+/// The thread row `normalize` builds for the native thread `native`, from its own session
+/// metadata and the evidence that cites it, when its rollouts record one.
+fn thread_row(
+    native: &str,
+    identity: StoredIdentity,
+    meta: Option<&(SessionMeta, EvidenceRef)>,
+) -> Thread {
+    let (meta, evidence) = meta.map(|(meta, evidence)| (meta, *evidence)).unzip();
+    let mut native_key = BTreeMap::new();
+    native_key.insert("thread_id".to_owned(), native.to_owned());
+    Thread {
+        identity,
+        basis: IdentityBasis::Native,
+        aliases: Vec::new(),
+        native_key,
+        source: meta.and_then(|meta| meta.source.clone()).map_or(Basis::Unknown, Basis::Observed),
+        initiator: meta
+            .and_then(|meta| meta.thread_source.clone())
+            .map_or(Basis::Unknown, Basis::Observed),
+        purpose: Basis::Unknown,
+        execution_environment: Basis::Observed("local".to_owned()),
+        project: meta.and_then(|meta| meta.project.clone()).map_or(Basis::Unknown, Basis::Inferred),
+        account: Basis::Unknown,
+        evidence: evidence.map(|evidence| vec![evidence]).unwrap_or_default(),
+    }
+}
+
+/// The modeled heap of building the rollouts' observations (scalable-ingestion plan,
+/// "Phases and Checkpoints"), from exact counts once every worker has joined: the
+/// construction estimate of the model ([`model::construction_estimate`]) over the waiting
+/// rollouts' records and payloads and the observed rollouts' built state; plus, held once,
+/// the rows decoding charged for each rollout's thread and normalization
+/// ([`normalized_rows`]), the per-thread pricing entries and settings snapshots waiting
+/// rollouts will observe, one waiting rollout's observation bases at a time, the bases of
+/// `normalize`'s own maps and vectors, the manifest and the vector of rollouts.
+fn construction_estimate(rollouts: &[DecodedRollout], manifest: &SnapshotManifest) -> u64 {
+    let mut counts = model::ConstructionCounts::default();
+    let mut held = manifest.entries.heap()
+        + model::sized_vec(count(rollouts.len()), count(size_of::<DecodedRollout>()))
+        + charges::NORMALIZE_BASES;
+    let mut waiting = false;
+    for rollout in rollouts {
+        match rollout {
+            DecodedRollout::Pending(source) => {
+                waiting = true;
+                held += source.rows;
+                counts.decoded_records += count(source.records.len());
+                counts.largest_source_slots =
+                    counts.largest_source_slots.max(count(source.observation_slots));
+                counts.limit_rows += source.limit_rows;
+                let mut payload = source.strings.heap()
+                    + source.counts.heap()
+                    + source.metas.heap()
+                    + source.root_turns.heap()
+                    + source.locator.heap();
+                let mut snapshot: Option<&Arc<RateLimits>> = None;
+                for record in &source.records {
+                    match &record.kind {
+                        RecordKind::TurnContext { .. } => counts.turn_contexts += 1,
+                        RecordKind::UsageRecord(_) | RecordKind::Compacted(Some(_)) => {
+                            counts.request_records += 1;
+                        }
+                        RecordKind::Compacted(None) => {}
+                        RecordKind::TokenCount { usage, limits, .. } => {
+                            counts.request_records += u64::from(usage.0 != 0);
+                            if let Some(limits) = limits {
+                                if snapshot.is_none_or(|previous| !Arc::ptr_eq(previous, limits)) {
+                                    payload += charges::SNAPSHOT + limits.heap();
+                                }
+                                snapshot = Some(limits);
+                            }
+                        }
+                        RecordKind::SessionMeta { provider, .. } => {
+                            if provider.is_some() {
+                                held += charges::PRICING_ENTRY;
+                            }
+                        }
+                        RecordKind::ThreadSettingsApplied { settings, .. } => {
+                            if settings.is_some() {
+                                held += charges::SETTINGS + charges::PRICING_ENTRY;
+                            }
+                        }
+                    }
+                }
+                counts.decoded_payload += payload;
+            }
+            DecodedRollout::Observed(observed) => {
+                held += observed.rows;
+                counts.request_records += count(observed.observations.len());
+                counts.turn_contexts += count(observed.root_turns.len());
+                counts.limit_rows += count(observed.limit_observations.len());
+                counts.built_observations += observed.observations.heap()
+                    + observed.diagnostics.heap()
+                    + observed.gaps.heap();
+                counts.decoded_payload += observed.metas.heap()
+                    + observed.root_turns.heap()
+                    + observed.file_thread.heap();
+            }
+        }
+    }
+    if waiting {
+        held += charges::OBSERVE_BASES;
+    }
+    model::construction_estimate(Agent::Codex, &counts).total() + held
+}
+
+/// Builds the rollouts' observations and threads, reconciles them and commits the ledger,
+/// each phase under its admission checkpoint.
 fn normalize(
     rollouts: Vec<DecodedRollout>,
     mut manifest: SnapshotManifest,
     mut thread_ids: BTreeMap<String, AnalyticalId>,
-    capacity: &ObservationCapacity,
+    decoding: &Decoding<'_>,
 ) -> Result<Ingested, AdapterError> {
+    decoding.construct(Agent::Codex, construction_estimate(&rollouts, &manifest))?;
     let source_table = SourceTable::from_ids(
         rollouts.iter().filter_map(rollout_id).cloned().chain(
             manifest
@@ -2578,34 +3166,8 @@ fn normalize(
     for native in native_threads {
         let identity = thread_identity(&native)?;
         thread_ids.insert(native.clone(), identity.id.clone());
-        let meta = meta_by_thread.get(&native).map(|(meta, _)| meta);
-        let mut native_key = BTreeMap::new();
-        native_key.insert("thread_id".to_owned(), native.clone());
-        threads.insert(
-            identity.id.clone(),
-            Thread {
-                identity,
-                basis: IdentityBasis::Native,
-                aliases: Vec::new(),
-                native_key,
-                source: meta
-                    .and_then(|meta| meta.source.clone())
-                    .map_or(Basis::Unknown, Basis::Observed),
-                initiator: meta
-                    .and_then(|meta| meta.thread_source.clone())
-                    .map_or(Basis::Unknown, Basis::Observed),
-                purpose: Basis::Unknown,
-                execution_environment: Basis::Observed("local".to_owned()),
-                project: meta
-                    .and_then(|meta| meta.project.clone())
-                    .map_or(Basis::Unknown, Basis::Inferred),
-                account: Basis::Unknown,
-                evidence: meta_by_thread
-                    .get(&native)
-                    .map(|(_, evidence)| vec![*evidence])
-                    .unwrap_or_default(),
-            },
-        );
+        let thread = thread_row(&native, identity, meta_by_thread.get(&native));
+        threads.insert(thread.identity.id.clone(), thread);
     }
 
     let mut relationships = Vec::new();
@@ -2646,7 +3208,7 @@ fn normalize(
                 DiagnosticCode::ThreadOrphan,
                 thread_ids.get(thread).cloned(),
                 [*evidence],
-                "Codex thread names a parent whose rollout was not discovered",
+                ORPHAN_DETAIL,
             ));
         }
     }
@@ -2718,6 +3280,7 @@ fn normalize(
             parent_totals.entry(thread.to_owned()).or_default().extend(counter_totals(source));
         }
     }
+    drop((lineage_threads, inferring_parents));
     let parents = ParentEvidence { turns: known_turns, totals: parent_totals, complete };
     for rollout in rollouts {
         match rollout {
@@ -2739,7 +3302,8 @@ fn normalize(
             }
             DecodedRollout::Pending(source) => {
                 let index = source_index(&source_table, source.id.as_ref());
-                let mut observed = observe_parsed_source(&source, &thread_ids, &parents)?;
+                let mut observed =
+                    observe_parsed_source(&source, &thread_ids, &parents, decoding.admission)?;
                 stamp_refs(
                     &mut observed.observations,
                     &mut observed.limit_observations,
@@ -2757,8 +3321,15 @@ fn normalize(
         }
     }
     observations.shrink_to_fit();
+    // Only the input, the manifest and the dialect versions stay through reconciliation.
+    drop((parents, meta_by_thread, thread_ids));
 
-    let mut ledger = reconcile_with_capacity(
+    // Reconciliation's checkpoints hold the manifest and the versions beside the input,
+    // and the finalize checkpoint also the source rows built from them before the commit.
+    let held = manifest.entries.heap() + source_versions.heap();
+    let after = super::source_rows_after(&manifest.entries, &source_versions);
+    let mut ledger = decoding.reconcile(
+        Agent::Codex,
         ReconcileInput {
             threads: threads.into_values().collect(),
             relationships,
@@ -2770,7 +3341,8 @@ fn normalize(
             ..ReconcileInput::default()
         },
         &LatestRevision,
-        capacity,
+        held,
+        after,
     )?;
     ledger.coverage.copies = ledger.coverage.copies.saturating_add(copied_regions);
     ledger.diagnostics.retain(|diagnostic| diagnostic.code != DiagnosticCode::CopyWithoutOriginal);
@@ -2792,7 +3364,10 @@ fn normalize(
             snapshot,
         })
         .collect();
-    Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
+    let ingested =
+        Ingested { manifest, sources, threads, relationships, ledger, limit_observations };
+    decoding.commit(Agent::Codex, &ingested)?;
+    Ok(ingested)
 }
 
 fn legacy_copied_evidence(source: &ParsedSource, known_turns: &KnownTurns) -> CopiedEvidence {
@@ -2892,6 +3467,30 @@ fn counter_observation(
 /// The stream a limit observation collapses within: owner thread, limit name and window.
 type LimitStream = (Option<AnalyticalId>, Option<String>, &'static str);
 
+/// Charges a rollout's limit rows and limit streams where observation pushes them.
+struct LimitCharges<'a> {
+    admission: &'a MemoryAdmission,
+    /// The rows decoding charged that no pushed row has used yet.
+    rows: u64,
+}
+
+impl LimitCharges<'_> {
+    /// Charges a new limit stream's entry and its key's copy of the limit name.
+    fn stream(&self, limit_name: Option<&str>) -> Result<(), AdapterError> {
+        let name = limit_name.map_or(0, |name| model::allocation(count(name.len())));
+        Ok(self.admission.try_charge(Component::Payloads, STREAM_ENTRY + name)?)
+    }
+
+    /// Charges a limit row, unless decoding charged it with its snapshot.
+    fn row(&mut self) -> Result<(), AdapterError> {
+        if let Some(rows) = self.rows.checked_sub(1) {
+            self.rows = rows;
+            return Ok(());
+        }
+        Ok(self.admission.try_charge(Component::Limits, model::limit_row())?)
+    }
+}
+
 fn append_limits(
     record: &RecordView,
     limits: &Arc<RateLimits>,
@@ -2899,15 +3498,21 @@ fn append_limits(
     thread_ids: &BTreeMap<String, AnalyticalId>,
     previous: &mut BTreeMap<LimitStream, Arc<RateLimits>>,
     observations: &mut Vec<ProviderLimitObservation>,
-) {
+    charges: &mut LimitCharges<'_>,
+) -> Result<(), AdapterError> {
     let owner_thread = owner.and_then(|owner| thread_ids.get(owner)).cloned();
     for window in &limits.windows {
         let stream = (owner_thread.clone(), limits.limit_name.clone(), *window);
-        let repeated = previous.get(&stream).is_some_and(|last| last.native == limits.native);
+        let last = previous.get(&stream);
+        let repeated = last.is_some_and(|last| last.native == limits.native);
+        if last.is_none() {
+            charges.stream(limits.limit_name.as_deref())?;
+        }
         previous.insert(stream, Arc::clone(limits));
         if repeated {
             continue;
         }
+        charges.row()?;
         observations.push(ProviderLimitObservation {
             limit_name: limits.limit_name.as_deref().map(Name::new),
             window: Some(Name::new(window)),
@@ -2920,6 +3525,7 @@ fn append_limits(
             evidence: record.evidence,
         });
     }
+    Ok(())
 }
 
 fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec<Diagnostic> {
@@ -2933,7 +3539,7 @@ fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec
                 DiagnosticCode::MalformedLine,
                 None,
                 [*evidence],
-                "a complete Codex rollout line is malformed",
+                MALFORMED_DETAIL,
             ));
         }
         if let (Some(source), Some(tail)) = (&entry.source, entry.cutoff.pending_tail) {
@@ -2945,7 +3551,7 @@ fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec
                     tail.offset,
                     tail.length,
                 )],
-                "the incomplete final Codex rollout line is pending",
+                PENDING_DETAIL,
             ));
         }
     }
@@ -2961,7 +3567,7 @@ fn source_diagnostics(manifest: &SnapshotManifest, sources: &SourceTable) -> Vec
                 DiagnosticCode::CodexRolloutDuplicateLocation,
                 None,
                 evidence,
-                "the same Codex thread and rollout were found at multiple locations",
+                DUPLICATE_DETAIL,
             )
             .with_occurrences(u64::try_from(entries.len()).unwrap_or(u64::MAX)),
         );
@@ -3075,6 +3681,11 @@ fn codex_measures(usage: &CodexUsage) -> Result<TokenMeasures, InputBelowCache> 
 /// Normalizes a usage object that the record loop already found consistent.
 fn codex_usage(usage: &CodexUsage) -> Result<TokenMeasures, AdapterError> {
     Ok(codex_measures(usage)?)
+}
+
+/// `n` as a count of bytes or rows, saturating.
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
 }
 
 fn thread_identity(native: &str) -> Result<StoredIdentity, AdapterError> {

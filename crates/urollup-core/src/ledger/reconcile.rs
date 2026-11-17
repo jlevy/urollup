@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::Timestamp;
 
+use super::admission::{CapacityError, Component, model};
 use super::coverage::{CoverageGap, ReconcileCoverage};
 use super::diagnostics::{Diagnostic, DiagnosticCode};
 use super::entities::{
@@ -317,6 +318,10 @@ pub enum ReconcileError {
         /// The budget the ceiling was derived from, such as `8 GiB` or `25% of RAM (8 GiB)`.
         limit: String,
     },
+    /// Process-wide memory admission refused the invocation at a reconciliation stage,
+    /// where a [`reconcile_with_stages`] callback checkpoints or charges.
+    #[error(transparent)]
+    Admission(CapacityError),
 }
 
 /// The most request observations the 2 GiB fallback budget holds.
@@ -512,9 +517,12 @@ pub fn reconcile_with_capacity(
     reconcile_with_stages(input, selector, capacity, &mut |_| Ok(()))
 }
 
-/// A point inside reconciliation, in the order reconciliation passes them: where slice 5's
-/// admission checkpoints run, and where the model-bound harness measures each structure the
-/// cost model charges.
+/// A point inside reconciliation, in the order reconciliation passes them: where the
+/// adapters' admission checkpoints run and charge what reconciliation pushes, and where the
+/// model-bound harness measures each structure the cost model charges.
+///
+/// [`ReconcileStage::Pushed`] interleaves with the others, after the stage before the
+/// structures it reports and before the next.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReconcileStage {
     /// The input is unpacked and nothing is built yet.
@@ -539,6 +547,22 @@ pub enum ReconcileStage {
     Sorted,
     /// Limits, tool actions and diagnostics are finalized, just before the ledger returns.
     Finalized,
+    /// State that the counts a checkpoint sees cannot predict was just built and is about
+    /// to be held: `bytes`, by the cost model, of `component`, which admission charges where
+    /// it is pushed (scalable-ingestion plan, "Phases and Checkpoints"). The state is the
+    /// diagnostics reconciliation raises, the candidate structures and ambiguous owners a
+    /// conflicting key or request leaves, and the request vector's growth past its presized
+    /// capacity. `kept` state lasts until the ledger is finalized, so every later
+    /// checkpoint inside reconciliation carries it; the vector's growth does not, since the
+    /// finalize estimate covers every request.
+    Pushed {
+        /// What the state is charged as.
+        component: Component,
+        /// Its cost by the model.
+        bytes: u64,
+        /// Whether it is held until the ledger is finalized.
+        kept: bool,
+    },
 }
 
 /// [`reconcile_with_capacity`], calling `stage` at each [`ReconcileStage`]. The first stage
@@ -567,11 +591,13 @@ pub fn reconcile_with_stages(
     stage(ReconcileStage::Start)?;
 
     let mut registry = IdentityRegistry::new();
+    let raised = diagnostics.len();
     let threads = reconcile_threads(threads, &mut registry, &mut diagnostics)?;
     let thread_ids = canonical_thread_ids(&threads);
     let relationships = reconcile_relationships(relationships, &thread_ids)?;
     let mut observations = canonicalize_request_owners(requests, &thread_ids);
     dedupe_rereads(&mut observations, &mut diagnostics, &mut coverage);
+    push(stage, Component::Payloads, diagnostics_cost(&diagnostics[raised..]), true)?;
     stage(ReconcileStage::Canonical)?;
 
     // Register every key, linking keys that share an observation, then lineage links.
@@ -601,7 +627,10 @@ pub fn reconcile_with_stages(
 
     // One request per set, plus rare extra parts from conflicting keys; sizing up front
     // avoids doubling the widest vector of the run.
-    let mut requests = Vec::with_capacity(sets + sets / 32);
+    let presized = sets + sets / 32;
+    let mut requests = Vec::with_capacity(presized);
+    // The request vector's growth past its presized capacity charged so far.
+    let mut growth = 0;
     let mut candidates = LinkGraph::new();
     let mut start = 0;
     while let Some(&(root, _)) = order.get(start) {
@@ -610,6 +639,9 @@ pub fn reconcile_with_stages(
             .position(|(other, _)| *other != root)
             .map_or(order.len(), |offset| start + offset);
         let group = &order[start..end];
+        let raised = diagnostics.len();
+        // The ambiguous owners and conflicting-key structures this group leaves.
+        let mut structures = 0_u64;
         {
             let members: Vec<&RequestObservation> =
                 group.iter().map(|(_, index)| &observations[*index as usize]).collect();
@@ -638,6 +670,10 @@ pub fn reconcile_with_stages(
                 else {
                     continue;
                 };
+                if let Ownership::Ambiguous { candidates } = &request.ownership {
+                    structures =
+                        structures.saturating_add(model::ambiguous_owners(count(candidates.len())));
+                }
                 split_ids.push(request.id().clone());
                 requests.push(request);
             }
@@ -648,10 +684,19 @@ pub fn reconcile_with_stages(
                     split_evidence,
                     format!("observations sharing a key disagree on {}", join(split.iter())),
                 ));
+                structures =
+                    structures.saturating_add(model::conflicting_key(count(split_ids.len())));
                 for pair in split_ids.windows(2) {
                     candidates.link(&pair[0], &pair[1]);
                 }
             }
+        }
+        push(stage, Component::Payloads, diagnostics_cost(&diagnostics[raised..]), true)?;
+        push(stage, Component::Kappa, structures, true)?;
+        if requests.len() > presized {
+            let grown = model::split_growth(count(requests.len()));
+            push(stage, Component::Kappa, grown.saturating_sub(growth), false)?;
+            growth = growth.max(grown);
         }
         // The group's request is built; free what its observations own before the next.
         for (_, index) in group {
@@ -669,6 +714,7 @@ pub fn reconcile_with_stages(
 
     let mut requests = Requests::from_unsorted(requests);
     stage(ReconcileStage::Sorted)?;
+    let raised = diagnostics.len();
     let candidate_sets = resolve_candidate_sets(&candidates, &mut requests, &mut diagnostics);
     coverage.candidate_sets = count(candidate_sets.len());
     coverage.requests = count(requests.len());
@@ -683,6 +729,7 @@ pub fn reconcile_with_stages(
     let request_ids = canonical_request_ids(&requests);
     let tool_actions =
         reconcile_tool_actions(tool_actions, &request_ids, &mut registry, &mut diagnostics)?;
+    push(stage, Component::Payloads, diagnostics_cost(&diagnostics[raised..]), true)?;
     let limit_observations =
         reconcile_limit_observations(limit_observations, &thread_ids, &request_ids)?;
 
@@ -1502,6 +1549,24 @@ fn resolve_candidate_sets(
 
 fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// What `diagnostics` cost by the model: each row, detail and evidence.
+fn diagnostics_cost(diagnostics: &[Diagnostic]) -> u64 {
+    diagnostics.iter().map(model::diagnostic_of).fold(0, u64::saturating_add)
+}
+
+/// Reports `bytes` of `component` that reconciliation pushed, unless there are none.
+fn push(
+    stage: &mut dyn FnMut(ReconcileStage) -> Result<(), ReconcileError>,
+    component: Component,
+    bytes: u64,
+    kept: bool,
+) -> Result<(), ReconcileError> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    stage(ReconcileStage::Pushed { component, bytes, kept })
 }
 
 fn join<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> String {
