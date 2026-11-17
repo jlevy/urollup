@@ -19,11 +19,17 @@
 //!   [`text`](crate::sources::decode::text) and [`unsigned`] treat it.
 
 use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
+
+use crate::ledger::admission::model::{
+    QUOTA_DOCUMENT_ALLOWANCE, allocation, btree_entry, btree_node, grown_vec_base,
+};
+use crate::ledger::admission::{LargeRecord, MemoryAdmission};
 
 use crate::sources::decode::{Skip, unsigned};
 
@@ -523,10 +529,21 @@ pub(super) struct AdvisorFields<'a> {
 }
 
 impl<'a> UsageBody<'a> {
-    /// Reads one line; fails exactly when the line is not a valid JSON document.
+    /// Reads one line; fails exactly when the line is not a valid JSON document. A
+    /// `quotaLimits` document is charged to nothing.
+    #[cfg(test)]
     pub(super) fn read(bytes: &'a [u8]) -> Result<Self, serde_json::Error> {
+        Self::read_counted(bytes, &QuotaCost::new(None))
+    }
+
+    /// Reads one line, building each `quotaLimits` object under `quota`; fails when the
+    /// line is not a valid JSON document, or when admission refuses a document's cost.
+    pub(super) fn read_counted(
+        bytes: &'a [u8],
+        quota: &QuotaCost<'_>,
+    ) -> Result<Self, serde_json::Error> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-        let body = BodySeed.deserialize(&mut deserializer)?;
+        let body = BodySeed { quota }.deserialize(&mut deserializer)?;
         deserializer.end()?;
         Ok(body)
     }
@@ -559,11 +576,30 @@ impl<'de> Visitor<'de> for Unsigned {
     }
 }
 
-struct BodySeed;
+/// Implements [`DeserializeSeed`] for a seed that carries the line's quota cost, reading
+/// any value as a document would.
+macro_rules! quota_value_seed {
+    ($seed:ident) => {
+        impl<'de> DeserializeSeed<'de> for $seed<'_, '_> {
+            type Value = <Self as Visitor<'de>>::Value;
 
-any_value_seed!(BodySeed);
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_any(self)
+            }
+        }
+    };
+}
 
-impl<'de> Visitor<'de> for BodySeed {
+struct BodySeed<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
+
+quota_value_seed!(BodySeed);
+
+impl<'de> Visitor<'de> for BodySeed<'_, '_> {
     type Value = UsageBody<'de>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -574,7 +610,7 @@ impl<'de> Visitor<'de> for BodySeed {
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
         let mut top = RecordFields::default();
-        let nested = read_record_map(map, &mut top)?;
+        let nested = read_record_map(map, &mut top, self.quota)?;
         Ok(UsageBody { top, nested })
     }
 }
@@ -640,6 +676,7 @@ impl Visitor<'_> for RecordKey {
 fn read_record_map<'de, A: MapAccess<'de>>(
     mut map: A,
     fields: &mut RecordFields<'de>,
+    quota: &QuotaCost<'_>,
 ) -> Result<Option<RecordFields<'de>>, A::Error> {
     let mut nested = None;
     while let Some(field) = map.next_key_seed(RecordKey)? {
@@ -651,21 +688,28 @@ fn read_record_map<'de, A: MapAccess<'de>>(
             RecordField::Effort => fields.effort = map.next_value_seed(Text)?,
             RecordField::Cwd => fields.cwd = map.next_value_seed(Text)?,
             RecordField::IsApiErrorMessage => fields.is_api_error = map.next_value_seed(IsTrue)?,
-            RecordField::QuotaLimits => fields.quota = map.next_value_seed(ObjectSeed)?,
+            RecordField::QuotaLimits => {
+                // A repeated key keeps its last value, as a document does; the earlier one
+                // is freed first, though its cost stays charged.
+                fields.quota = None;
+                fields.quota = map.next_value_seed(QuotaObjectSeed { quota })?;
+            }
             RecordField::ApiBlockIndex => fields.api_block_index = map.next_value_seed(Unsigned)?,
             RecordField::Message => fields.message = map.next_value_seed(MessageSeed)?,
-            RecordField::Data => nested = map.next_value_seed(DataSeed)?,
+            RecordField::Data => nested = map.next_value_seed(DataSeed { quota })?,
             RecordField::Other => map.next_value_seed(Skip)?,
         }
     }
     Ok(nested)
 }
 
-struct NestedRecordSeed;
+struct NestedRecordSeed<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
 
-any_value_seed!(NestedRecordSeed);
+quota_value_seed!(NestedRecordSeed);
 
-impl<'de> Visitor<'de> for NestedRecordSeed {
+impl<'de> Visitor<'de> for NestedRecordSeed<'_, '_> {
     type Value = Option<RecordFields<'de>>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -676,17 +720,19 @@ impl<'de> Visitor<'de> for NestedRecordSeed {
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
         let mut fields = RecordFields::default();
-        let _nested = read_record_map(map, &mut fields)?;
+        let _nested = read_record_map(map, &mut fields, self.quota)?;
         Ok(Some(fields))
     }
 }
 
 /// Reads `data`; only an object with a `message` object yields a nested record.
-struct DataSeed;
+struct DataSeed<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
 
-any_value_seed!(DataSeed);
+quota_value_seed!(DataSeed);
 
-impl<'de> Visitor<'de> for DataSeed {
+impl<'de> Visitor<'de> for DataSeed<'_, '_> {
     type Value = Option<RecordFields<'de>>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -699,7 +745,7 @@ impl<'de> Visitor<'de> for DataSeed {
         let mut nested = None;
         while let Some(matches) = map.next_key_seed(KeyIs("message"))? {
             if matches {
-                nested = map.next_value_seed(NestedRecordSeed)?;
+                nested = map.next_value_seed(NestedRecordSeed { quota: self.quota })?;
             } else {
                 map.next_value_seed(Skip)?;
             }
@@ -708,21 +754,188 @@ impl<'de> Visitor<'de> for DataSeed {
     }
 }
 
-/// Reads an object as a document, keeping it only when it is an object.
-struct ObjectSeed;
+/// What the `quotaLimits` documents a line builds cost, by the costing rule, and the
+/// large-record permit's share once that passes the worker slot's allowance
+/// (scalable-ingestion plan, "Reservation Model").
+///
+/// Each node is charged before it is allocated: an object's entry in its B-tree and the
+/// tree's first node, an array element at 3 × a value and the array's base, and each key
+/// and string at its allocation. While the running cost fits
+/// [`QUOTA_DOCUMENT_ALLOWANCE`] the worker slot holds it; past that, the permit holds the
+/// whole running cost, re-entrant with a long line's share, until the cost is dropped
+/// with the line's body.
+pub(super) struct QuotaCost<'a> {
+    admission: Option<&'a MemoryAdmission>,
+    cost: Cell<u64>,
+    share: RefCell<Option<LargeRecord<'a>>>,
+}
 
-impl<'de> DeserializeSeed<'de> for ObjectSeed {
+impl<'a> QuotaCost<'a> {
+    /// No document built yet, charged to `admission` once past the allowance, or to
+    /// nothing without one.
+    pub(super) const fn new(admission: Option<&'a MemoryAdmission>) -> Self {
+        Self { admission, cost: Cell::new(0), share: RefCell::new(None) }
+    }
+
+    /// The documents' running cost.
+    pub(super) fn cost(&self) -> u64 {
+        self.cost.get()
+    }
+
+    /// Adds `bytes` to the running cost before they are allocated; `false` when the permit
+    /// refuses it, and then nothing more may be built.
+    fn add(&self, bytes: u64) -> bool {
+        let cost = self.cost.get().saturating_add(bytes);
+        self.cost.set(cost);
+        if cost <= QUOTA_DOCUMENT_ALLOWANCE {
+            return true;
+        }
+        let Some(admission) = self.admission else { return true };
+        let mut share = self.share.borrow_mut();
+        if let Some(held) = share.as_mut() {
+            return held.raise(cost);
+        }
+        *share = admission.large_record(cost);
+        share.is_some()
+    }
+
+    /// Charges `bytes` or fails the parse.
+    fn charge<E: Error>(&self, bytes: u64) -> Result<(), E> {
+        if self.add(bytes) {
+            Ok(())
+        } else {
+            Err(E::custom("admission refused a quotaLimits document"))
+        }
+    }
+}
+
+/// The size of an object's entry, as its B-tree holds it.
+const OBJECT_KEY: u64 = size_of::<String>() as u64;
+const OBJECT_VALUE: u64 = size_of::<Value>() as u64;
+
+/// Reads `quotaLimits`, building it only when it is an object; any other value is read
+/// as a document would read it and builds nothing.
+struct QuotaObjectSeed<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
+
+quota_value_seed!(QuotaObjectSeed);
+
+impl<'de> Visitor<'de> for QuotaObjectSeed<'_, '_> {
     type Value = Option<Map<String, Value>>;
 
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        Ok(match Value::deserialize(deserializer)? {
-            Value::Object(object) => Some(object),
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_) => None,
-        })
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    lenient_visits!(None, [bool, numbers, str, unit]);
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        quota_object(map, self.quota).map(Some)
+    }
+}
+
+/// Builds an object, charging each entry before it is inserted.
+fn quota_object<'de, A: MapAccess<'de>>(
+    mut map: A,
+    quota: &QuotaCost<'_>,
+) -> Result<Map<String, Value>, A::Error> {
+    let mut object = Map::new();
+    let mut first = true;
+    while let Some(key) = map.next_key_seed(QuotaText { quota })? {
+        let value = map.next_value_seed(QuotaValue { quota })?;
+        let mut entry = btree_entry(OBJECT_KEY, OBJECT_VALUE);
+        if std::mem::take(&mut first) {
+            entry = entry.saturating_add(btree_node(OBJECT_KEY, OBJECT_VALUE));
+        }
+        quota.charge::<A::Error>(entry)?;
+        object.insert(key, value);
+    }
+    Ok(object)
+}
+
+/// Reads a key or string, charging its allocation before it is made.
+struct QuotaText<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
+
+impl<'de> DeserializeSeed<'de> for QuotaText<'_, '_> {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for QuotaText<'_, '_> {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E: Error>(self, text: &str) -> Result<String, E> {
+        self.quota.charge::<E>(allocation(text.len() as u64))?;
+        Ok(text.to_owned())
+    }
+}
+
+/// Reads any value as `serde_json::Value` does, charging each node before it is built.
+struct QuotaValue<'q, 'a> {
+    quota: &'q QuotaCost<'a>,
+}
+
+quota_value_seed!(QuotaValue);
+
+impl<'de> Visitor<'de> for QuotaValue<'_, '_> {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E: Error>(self, value: bool) -> Result<Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_f64<E: Error>(self, value: f64) -> Result<Value, E> {
+        Ok(serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E: Error>(self, text: &str) -> Result<Value, E> {
+        QuotaText { quota: self.quota }.visit_str(text).map(Value::String)
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut values = Vec::new();
+        loop {
+            let mut element = 3 * OBJECT_VALUE;
+            if values.is_empty() {
+                element = element.saturating_add(grown_vec_base(OBJECT_VALUE));
+            }
+            // Charged before the element is read, so its own nodes come after its slot.
+            self.quota.charge::<A::Error>(element)?;
+            match seq.next_element_seed(QuotaValue { quota: self.quota })? {
+                Some(value) => values.push(value),
+                None => return Ok(Value::Array(values)),
+            }
+        }
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Value, A::Error> {
+        quota_object(map, self.quota).map(Value::Object)
     }
 }
 

@@ -27,8 +27,10 @@ use serde_json::Value;
 
 use self::line::{LineHead, LineType, RecordFields, SubagentMetadata, UsageBody};
 use super::{AdapterError, Decoding, Ingested};
-use crate::ledger::admission::MemoryAdmission;
+use crate::ledger::admission::deep_size::DeepSize;
+use crate::ledger::admission::{Component, MemoryAdmission, model};
 use crate::ledger::capacity::ObservationCapacity;
+use crate::ledger::coverage::CoverageGap;
 use crate::ledger::diagnostics::{Diagnostic, DiagnosticCode};
 use crate::ledger::entities::{
     Basis, Confidence, ModelBasis, ModelName, ModelUsage, Pricing, PricingContext,
@@ -39,7 +41,7 @@ use crate::ledger::identity::{AnalyticalId, IdPrefix, KeyComponent, StoredIdenti
 use crate::ledger::names::Name;
 use crate::ledger::reconcile::{
     NativeSequence, ObservationRole, OwnerEvidence, ReconcileInput, RequestObservation,
-    RevisionChoice, RevisionSelector, reconcile_with_capacity,
+    RevisionChoice, RevisionSelector,
 };
 use crate::ledger::scope::{
     ComponentRole, ComponentSlot, IdScope, IdentityBasis, KeySpec, ScopedKey,
@@ -151,6 +153,126 @@ pub(crate) const BLOCK_DISAGREEMENT: &str =
 /// The `(index, result)` pair a worker of the parallel join holds per transcript.
 pub(crate) const JOIN_PAIR_BYTES: u64 =
     size_of::<(usize, Option<Result<DecodedSource, AdapterError>>)>() as u64;
+
+/// What decoding a transcript charges beside its records and κ, by the costing rule
+/// (scalable-ingestion plan, "Reservation Model"): the one-time bases of the structures a
+/// transcript grows, charged at its first push into each, and the per-entry shares of the
+/// structures it and the merge push into.
+mod charges {
+    use std::mem::size_of;
+    use std::sync::Arc;
+
+    use super::{Digest, NativeThread, ParsedRecord, Sym};
+    use crate::ledger::admission::model::{
+        allocation, btree_entry, grown_vec, grown_vec_base, hash_base, hash_entry, sizes,
+    };
+    use crate::ledger::entities::{Relationship, RelationshipKind};
+    use crate::ledger::identity::AnalyticalId;
+    use crate::sources::evidence::EvidenceRef;
+
+    const fn size<T>() -> u64 {
+        size_of::<T>() as u64
+    }
+
+    /// Per new string beside its shared text: its slot and its entry in the transcript's
+    /// table, which grow by doubling, the same in the table the merge builds, and its place
+    /// in the merge's remapping.
+    pub(super) const SYMBOL: u64 =
+        2 * (3 * size::<Arc<str>>() + hash_entry(size::<(Arc<str>, Sym)>())) + size::<Sym>();
+
+    /// A transcript's string table before its first string, and its remapping's allocation.
+    pub(super) const STRING_TABLE: u64 =
+        grown_vec_base(size::<Arc<str>>()) + hash_base(size::<(Arc<str>, Sym)>()) + 32;
+
+    /// A transcript's record vector before its first record.
+    pub(super) const RECORDS: u64 = grown_vec_base(size::<ParsedRecord>());
+
+    /// Per tool use a record reports, in a vector that grows by doubling.
+    pub(super) const TOOL_USE: u64 = 3 * size::<(Digest, usize)>();
+
+    /// A transcript's tool uses before the first.
+    pub(super) const TOOL_USES: u64 = grown_vec_base(size::<(Digest, usize)>());
+
+    /// A run of sidechain records, as its transcript's facts list it.
+    type Run = (NativeThread, EvidenceRef, Option<EvidenceRef>);
+
+    /// Per run of sidechain records, in a vector that grows by doubling.
+    pub(super) const INLINE_RUN: u64 = 3 * size::<Run>();
+
+    /// A transcript's runs before the first.
+    pub(super) const INLINE_RUNS: u64 = grown_vec_base(size::<Run>());
+
+    /// A record's evidence in its thread's row, collected into a vector that grows by
+    /// doubling before it is sorted and shrunk.
+    pub(super) const THREAD_EVIDENCE: u64 = 3 * size::<EvidenceRef>();
+
+    /// A relationship `thread_graph` builds: its native tuple and its row, each in a vector
+    /// that grows by doubling, its evidence, and its copy in the session index at 4 × its row
+    /// with its evidence.
+    pub(super) const RELATIONSHIP: u64 =
+        3 * size::<(RelationshipKind, NativeThread, NativeThread, EvidenceRef)>()
+            + 7 * size::<Relationship>()
+            + 2 * allocation(size::<EvidenceRef>());
+
+    /// Per native thread, what `thread_graph` builds beside its row's heap: its entries in
+    /// the native-thread set, the sorted thread list with its sort's scratch, the evidence,
+    /// project and ID maps and the thread map, its slot in the reconciliation input and its
+    /// evidence vector's base; and its session's entry in the session index. The row's heap
+    /// is charged apart, twice: the row and the index's copy.
+    pub(super) const THREAD_ENTRIES: u64 = hash_entry(size::<NativeThread>())
+        + 2 * size::<NativeThread>()
+        + hash_entry(size::<(NativeThread, Vec<EvidenceRef>)>())
+        + hash_entry(size::<(NativeThread, Sym)>())
+        + hash_entry(size::<(NativeThread, AnalyticalId)>())
+        + btree_entry(sizes::ID, sizes::THREAD)
+        + allocation(sizes::THREAD)
+        + grown_vec_base(size::<EvidenceRef>())
+        + btree_entry(sizes::ID, size::<crate::selection::IndexedSession>());
+
+    /// Per subagent sidecar: its metadata's entries in `thread_graph`'s sorted list, purpose
+    /// map, sidecar map with its list's base and spawned set, and its tool use in the merge's
+    /// set of spawning tool uses.
+    pub(super) const SIDECAR: u64 = size::<usize>()
+        + hash_entry(size::<(NativeThread, &str)>())
+        + hash_entry(size::<(NativeThread, Vec<usize>)>())
+        + grown_vec(1, size::<usize>())
+        + hash_entry(size::<NativeThread>())
+        + hash_entry(size::<Digest>());
+
+    /// What construction builds before its first entry, beside the rows decoding charged:
+    /// the merged string table, the set of spawning tool uses and the map of their records,
+    /// the subagent metadata list; `thread_graph`'s sets, maps and lists and its thread
+    /// map's first node; the version map's first node; the source table's collected vector
+    /// and its sort's minimum scratch; the ambiguity diagnostics' map; the observation,
+    /// limit, diagnostic and gap vectors; and the loss summary's map, its cited evidence and
+    /// its detail's first buffer.
+    pub(super) const CONSTRUCTION_BASES: u64 = {
+        use crate::ledger::admission::model::{btree_node, sized_vec};
+        grown_vec_base(size::<Arc<str>>())
+            + hash_base(size::<(Arc<str>, Sym)>())
+            + hash_base(size::<Digest>())
+            + hash_base(size::<(Digest, Vec<(usize, usize)>)>())
+            + grown_vec_base(size::<super::SubagentMeta>())
+            + 4 * hash_base(size::<NativeThread>())
+            + 2 * hash_base(size::<(NativeThread, Vec<EvidenceRef>)>())
+            + 3 * hash_base(size::<(NativeThread, AnalyticalId)>())
+            + grown_vec_base(size::<(RelationshipKind, NativeThread, NativeThread, EvidenceRef)>())
+            + grown_vec_base(size::<Relationship>())
+            + 3 * grown_vec_base(size::<usize>())
+            + btree_node(sizes::ID, sizes::THREAD)
+            + btree_node(sizes::ID, size::<String>())
+            + grown_vec_base(sizes::ID)
+            + sized_vec(48, sizes::ID)
+            + btree_node(sizes::STR, size::<Vec<EvidenceRef>>())
+            + grown_vec_base(sizes::OBSERVATION)
+            + grown_vec_base(size::<crate::ledger::entities::ProviderLimitObservation>())
+            + grown_vec_base(size::<crate::ledger::diagnostics::Diagnostic>())
+            + grown_vec_base(size::<crate::ledger::coverage::CoverageGap>())
+            + btree_node(sizes::STR, size::<u64>())
+            + grown_vec_base(size::<EvidenceRef>())
+            + allocation(super::LOSS_DETAIL)
+    };
+}
 
 /// A 128-bit SHA-256 digest of a native ID that only joins records, never appears in
 /// output, and so need not be kept as text.
@@ -592,10 +714,20 @@ pub fn ingest_discovery_with_capacity(
 /// Reads discovered Claude Code transcripts under the invocation's admission ledger.
 ///
 /// The decode checkpoint charges the worker slots and releases the coordinating slot;
-/// transcripts then decode on `min(workers, slots)` threads, each read under the ledger,
-/// and each transcript's source rows are charged before its worker returns it
-/// ([`Decoding`]). A refusal returns [`AdapterError::Capacity`], or, for the row
-/// ceiling, [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
+/// transcripts then decode on `min(workers, slots)` threads, each read under the ledger.
+/// Each line is charged what it retains before its record is pushed: the record, κ for a
+/// request record, its extras, tool uses and limit rows, its evidence in its thread's row,
+/// the strings it interned, and a `quotaLimits` object node by node, past the slot's
+/// allowance under the large-record permit. Each transcript's source rows and the rows of
+/// the threads it names are charged before its worker returns it, and new process interns
+/// are charged on every thread that decodes or normalizes. The construction checkpoint
+/// then replaces decode's charges with an estimate from exact counts, the merge and
+/// observation building charge what they push, reconciliation checkpoints before the key
+/// graph, at `Order` and once observations are released, and the commit holds what the
+/// ledger retains ([`super::Retained`]).
+///
+/// A refusal returns [`AdapterError::Capacity`], or, for the row ceiling,
+/// [`crate::ledger::reconcile::ReconcileError::CapacityExceeded`].
 pub fn ingest_discovery_with_admission(
     discovery: Discovery,
     missing_is_error: bool,
@@ -627,8 +759,13 @@ pub fn ingest_discovery_with_admission(
             .iter()
             .map(|source| (source.facts.source_id.as_ref(), source.facts.version.as_deref())),
     )?;
-    let (corpus, manifest) = Corpus::merge(decoded, discovery.skipped_links);
-    normalize(corpus, manifest, &decoding.row_ceiling())
+    decoding.construct(Agent::Claude, construction_estimate(&decoded))?;
+    // The coordinating thread interns as it builds observations and reconciles.
+    let skipped_links = discovery.skipped_links;
+    decoding.admission.scope(|| {
+        let (corpus, manifest) = Corpus::merge(decoded, skipped_links, decoding.admission)?;
+        normalize(corpus, manifest, decoding)
+    })
 }
 
 /// Everything one transcript contributes before normalization.
@@ -641,11 +778,23 @@ struct DecodedSource {
     tool_uses: Vec<(Digest, usize)>,
     /// The table that this source's symbols index.
     strings: Strings,
+    /// The source and thread rows decoding charged for this transcript: its runs, its
+    /// records' evidence and fork relationships, and the rows of the threads it names
+    /// ([`transcript_rows`]), which construction holds.
+    rows: u64,
 }
 
 /// Reads one transcript and its subagent sidecar, independently of every other source,
-/// and charges its source rows.
+/// with its worker's new process interns charged to the invocation's ledger; charges its
+/// source rows and the rows its threads add to later phases.
 fn decode_source(
+    source: &DiscoveredSource,
+    decoding: &Decoding<'_>,
+) -> Result<DecodedSource, AdapterError> {
+    decoding.admission.scope(|| decode_scoped(source, decoding))
+}
+
+fn decode_scoped(
     source: &DiscoveredSource,
     decoding: &Decoding<'_>,
 ) -> Result<DecodedSource, AdapterError> {
@@ -661,11 +810,16 @@ fn decode_source(
         .files
         .primary()
         .map_or_else(|| source.root.join(&source.locator), |(path, _)| path.to_owned());
+    // The string table, with the strings of the file's thread.
+    let table = decoder.strings.strings.iter().fold(charges::STRING_TABLE, |total, text| {
+        total + model::arc(count(text.len())) + charges::SYMBOL
+    });
+    decoding.charge(Component::Payloads, table, &path)?;
     let entry = read_source(&spec, &source.files, &ReadOptions::default(), admission, |raw| {
         decoder.decode_with_admission(raw, Some(admission))
     })
     .map_err(|source| AdapterError::Read { path: path.clone(), source })?;
-    let SourceDecoder { mut strings, mut facts, mut records, mut tool_uses, .. } = decoder;
+    let SourceDecoder { mut strings, mut facts, mut records, mut tool_uses, rows, .. } = decoder;
     if let Some(identity) = &entry.source {
         facts.source_id = Some(identity.id.clone());
     }
@@ -677,6 +831,10 @@ fn decode_source(
     let mut subagent_meta = None;
     if facts.thread.agent.is_some() {
         if let (Some(identity), Some(meta)) = (entry.source.as_ref(), read_subagent_meta(&path)?) {
+            let agent_type = meta.agent_type.as_ref();
+            let kept =
+                agent_type.map_or(0, |agent_type| model::allocation(count(agent_type.len())));
+            decoding.charge(Component::Payloads, kept, &path)?;
             subagent_meta = Some(SubagentMeta {
                 child: facts.thread,
                 tool_use: meta.tool_use_id.as_deref().map(digest),
@@ -687,8 +845,113 @@ fn decode_source(
         }
     }
     decoding.charge_source_rows(&entry, facts.version.as_deref(), &path)?;
-    Ok(DecodedSource { entry, facts, subagent_meta, records, tool_uses, strings })
+    let threads = transcript_rows(&facts, &records, &strings, subagent_meta.as_ref(), &entry)?;
+    decoding.charge(Component::Sources, threads, &path)?;
+    Ok(DecodedSource {
+        entry,
+        facts,
+        subagent_meta,
+        records,
+        tool_uses,
+        strings,
+        rows: rows + threads,
+    })
 }
+
+/// The rows one transcript adds to normalization and every later phase through the
+/// session index, beside its source rows and the shares its lines charged (scalable-
+/// ingestion plan, "Reservation Model", source and thread rows), charged before its
+/// worker returns it.
+///
+/// - **Threads:** each native thread it names, its own, each record's and the main thread
+///   of each session its records name, and each inline thread: the row `thread_graph`
+///   builds (now `native_thread_row`, built here to size it, with this transcript's
+///   project) and the session index's copy, the entries `thread_graph` and the index hold
+///   for it ([`charges::THREAD_ENTRIES`]), and this transcript's paths as the session's,
+///   twice, for its own and its evidence's match.
+/// - **Relationships:** two for each run of sidechain records and the spawn of a subagent
+///   transcript, and its sidecar's entries ([`charges::SIDECAR`]).
+/// - **Per-source state:** its evidence in its thread's row and each run's, its dialect
+///   version in the version map, its share of the source table, and the gap and loss summary
+///   its snapshot can raise.
+///
+/// A thread several transcripts name is charged once per transcript, an upper bound.
+fn transcript_rows(
+    facts: &SourceFacts,
+    records: &[ParsedRecord],
+    strings: &Strings,
+    meta: Option<&SubagentMeta>,
+    entry: &ManifestEntry,
+) -> Result<u64, AdapterError> {
+    use model::{allocation, btree_entry, diagnostic, grown_vec, sizes};
+    let key = |thread: &NativeThread| {
+        (
+            thread.session.0.get(),
+            thread.agent.map_or(0, |agent| agent.0.get()),
+            thread.inline_digest.map_or(0, |digest| digest.0.get()),
+        )
+    };
+    let mut threads: Vec<NativeThread> =
+        Vec::with_capacity(1 + 2 * records.len() + facts.inline_threads.len());
+    threads.push(facts.thread);
+    for record in records {
+        threads.push(record.thread);
+        threads.push(NativeThread::main(record.recorded_session()));
+    }
+    threads.extend(facts.inline_threads.iter().map(|(inline, _, _)| *inline));
+    threads.sort_unstable_by_key(key);
+    threads.dedup();
+    let paths = std::iter::once(&entry.file).chain(&entry.twins).fold(0, |total, file| {
+        total
+            + grown_vec(1, count(size_of::<PathBuf>()))
+            + allocation(count(file.path.as_os_str().len()))
+    });
+    // A thread takes the project of the first transcript or record naming one; this
+    // transcript's longest stands in for it.
+    let project = std::iter::once(facts.project)
+        .chain(records.iter().map(|record| record.project))
+        .flatten()
+        .max_by_key(|project| strings.resolve(*project).len());
+    let mut rows = 0;
+    for native in threads {
+        let purpose =
+            meta.filter(|meta| meta.child == native).and_then(|meta| meta.agent_type.as_deref());
+        let row = native_thread_row(
+            native,
+            native.identity(strings)?,
+            strings,
+            purpose,
+            project,
+            Vec::new(),
+        );
+        rows += charges::THREAD_ENTRIES + 2 * row.heap() + 2 * paths;
+    }
+    let runs = count(facts.inline_threads.len());
+    rows += 2 * runs * charges::RELATIONSHIP
+        + if facts.thread.agent.is_some() { charges::RELATIONSHIP } else { 0 }
+        + if meta.is_some() { charges::SIDECAR } else { 0 };
+    let losses = count(entry.failures.len() + entry.changes.len());
+    rows += (1 + runs) * charges::THREAD_EVIDENCE
+        + count(size_of::<usize>())
+        + facts.version.as_ref().map_or(0, |version| {
+            btree_entry(sizes::ID, count(size_of::<String>())) + allocation(count(version.len()))
+        })
+        + 9 * sizes::ID
+        + if losses > 0 {
+            3 * count(size_of::<CoverageGap>())
+                + allocation(count(size_of::<EvidenceRef>()))
+                + losses * btree_entry(sizes::STR, count(size_of::<u64>()))
+                + diagnostic(LOSS_DETAIL + losses * LOSS_ITEM, 1)
+        } else {
+            0
+        };
+    Ok(rows)
+}
+
+/// The detail `snapshot_losses` writes, beside the loss kinds it lists: at most its
+/// literal text and a count, and per loss kind its token and count.
+const LOSS_DETAIL: u64 = 64;
+const LOSS_ITEM: u64 = 48;
 
 fn read_subagent_meta(transcript: &Path) -> Result<Option<SubagentMetadata>, AdapterError> {
     read_subagent_meta_with_limit(transcript, MAX_SUBAGENT_META_BYTES)
@@ -732,6 +995,15 @@ struct SourceDecoder {
     facts: SourceFacts,
     records: Vec<ParsedRecord>,
     tool_uses: Vec<(Digest, usize)>,
+    /// The source and thread rows its lines charged so far.
+    rows: u64,
+}
+
+/// What a transcript's decoder held before a line, so the line is charged what it added.
+struct Footprint {
+    symbols: usize,
+    version: bool,
+    inline_threads: usize,
 }
 
 impl SourceDecoder {
@@ -754,12 +1026,47 @@ impl SourceDecoder {
             },
             records: Vec::new(),
             tool_uses: Vec::new(),
+            rows: 0,
         }
     }
 
     #[cfg(test)]
     fn decode(&mut self, raw: &RawRecord<'_>) -> RecordDisposition {
         self.decode_with_admission(raw, None)
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint {
+            symbols: self.strings.strings.len(),
+            version: self.facts.version.is_some(),
+            inline_threads: self.facts.inline_threads.len(),
+        }
+    }
+
+    /// What the line read since `before` added to the transcript's string table, version
+    /// and sidechain runs, which exist once the line is read and so are charged just after,
+    /// within the line's own need: each new string's shared text and its slots in this
+    /// table and the merged one, the version's copy, and each run's entry. Payloads come
+    /// first, then the runs as source rows; an inline thread's own rows are charged with its
+    /// transcript's.
+    fn line_growth(&self, before: &Footprint) -> (u64, u64) {
+        let symbols = self.strings.strings.get(before.symbols..).unwrap_or_default();
+        let mut payloads = symbols
+            .iter()
+            .fold(0, |total: u64, text| total + model::arc(count(text.len())) + charges::SYMBOL);
+        if !before.version {
+            payloads += self
+                .facts
+                .version
+                .as_ref()
+                .map_or(0, |version| model::allocation(count(version.len())));
+        }
+        let runs = self.facts.inline_threads.len().saturating_sub(before.inline_threads);
+        if runs > 0 && before.inline_threads == 0 {
+            payloads += charges::INLINE_RUNS;
+        }
+        let rows = count(runs) * charges::INLINE_RUN;
+        (payloads, rows)
     }
 
     fn decode_with_admission(
@@ -770,6 +1077,7 @@ impl SourceDecoder {
         if admission.is_some_and(MemoryAdmission::stopped) {
             return RecordDisposition::Stop;
         }
+        let before = self.footprint();
         let facts = &mut self.facts;
         if facts.evidence.is_none() {
             facts.evidence = Some(*raw.evidence);
@@ -810,7 +1118,7 @@ impl SourceDecoder {
             child
         };
         if !head.bears_usage() {
-            return RecordDisposition::Skipped;
+            return self.skip_line(admission, &before);
         }
         // The head's copies of escaped strings go before the body pass parses the line
         // again, so the two passes never hold them beside the body's scratch, and a line
@@ -818,9 +1126,15 @@ impl SourceDecoder {
         let line_type = head.line_type;
         drop(head);
         // The head proved the line is a valid document that bears usage. The body pass
-        // keeps accounting fields and never builds a parent document.
-        let Ok(body) = UsageBody::read(raw.bytes) else {
-            return RecordDisposition::Malformed;
+        // keeps accounting fields and never builds a parent document; a `quotaLimits`
+        // object it builds is charged node by node.
+        let quota = line::QuotaCost::new(admission);
+        let body = match UsageBody::read_counted(raw.bytes, &quota) {
+            Ok(body) => body,
+            Err(_) if admission.is_some_and(MemoryAdmission::stopped) => {
+                return RecordDisposition::Stop;
+            }
+            Err(_) => return RecordDisposition::Malformed,
         };
         let (fields, session, forced_copy, request_record) = match line_type {
             LineType::Assistant => {
@@ -830,13 +1144,13 @@ impl SourceDecoder {
             }
             LineType::Progress => {
                 let Some(nested) = &body.nested else {
-                    return RecordDisposition::Skipped;
+                    return self.skip_line(admission, &before);
                 };
                 // A nested record takes the session of the progress record that carries it.
                 let session = body.top.session.as_deref().or(nested.session.as_deref());
                 (nested, session, true, true)
             }
-            LineType::Other => return RecordDisposition::Skipped,
+            LineType::Other => return self.skip_line(admission, &before),
         };
         if request_record && admission.is_some_and(|budget| !budget.reserve_row(Agent::Claude)) {
             return RecordDisposition::Stop;
@@ -851,10 +1165,89 @@ impl SourceDecoder {
         } else {
             record_thread
         };
+        let foreign = !record_thread.is_child()
+            && session
+                .is_some_and(|session| session != self.strings.resolve(record_thread.session));
+        let charges = self.record_charges(fields, request_record, foreign);
+        if !self.charge(admission, &charges) {
+            return RecordDisposition::Stop;
+        }
         let record =
             self.record(raw.evidence, record_thread, fields, session, forced_copy, request_record);
+        if !self.charge_line(admission, &before) {
+            return RecordDisposition::Stop;
+        }
         self.records.push(record);
         RecordDisposition::Decoded
+    }
+
+    /// Charges `charges`, keeping the source and thread rows among them; `false` at the
+    /// first refusal. Without a ledger nothing is charged.
+    fn charge(
+        &mut self,
+        admission: Option<&MemoryAdmission>,
+        charges: &[(Component, u64)],
+    ) -> bool {
+        let Some(admission) = admission else { return true };
+        if !charge_all(admission, charges) {
+            return false;
+        }
+        for (component, bytes) in charges {
+            if *component == Component::Sources {
+                self.rows += bytes;
+            }
+        }
+        true
+    }
+
+    /// Charges what the line added since `before` ([`Self::line_growth`]).
+    fn charge_line(&mut self, admission: Option<&MemoryAdmission>, before: &Footprint) -> bool {
+        let (payloads, rows) = self.line_growth(before);
+        self.charge(admission, &[(Component::Payloads, payloads), (Component::Sources, rows)])
+    }
+
+    /// Ends a line that retains no record, once what it added is charged.
+    fn skip_line(
+        &mut self,
+        admission: Option<&MemoryAdmission>,
+        before: &Footprint,
+    ) -> RecordDisposition {
+        if self.charge_line(admission, before) {
+            RecordDisposition::Skipped
+        } else {
+            RecordDisposition::Stop
+        }
+    }
+
+    /// What a request-bearing record is charged before it is built (scalable-ingestion
+    /// plan, "Phases and Checkpoints"): the decoded record and, for a request record, κ;
+    /// its extras and tool uses; its evidence in its thread's row, and for a replay
+    /// recorded under another session, that session's fork relationship; and a limit row
+    /// for each limit it reports. The strings it interns are charged with the line's.
+    fn record_charges(
+        &self,
+        fields: &RecordFields<'_>,
+        request_record: bool,
+        foreign: bool,
+    ) -> [(Component, u64); 5] {
+        let records = model::decoded_record(Agent::Claude)
+            + if self.records.is_empty() { charges::RECORDS } else { 0 };
+        let kappa = if request_record { model::kappa(Agent::Claude) } else { 0 };
+        let tools = count(fields.message.tool_use_ids.len());
+        let mut payloads = extras_cost(fields) + tools * charges::TOOL_USE;
+        if tools > 0 && self.tool_uses.is_empty() {
+            payloads += charges::TOOL_USES;
+        }
+        let rows = charges::THREAD_EVIDENCE + if foreign { charges::RELATIONSHIP } else { 0 };
+        let limits =
+            u64::from(fields.quota.is_some()) + u64::from(usage_limit_text(fields).is_some());
+        [
+            (Component::Records, records),
+            (Component::Kappa, kappa),
+            (Component::Payloads, payloads),
+            (Component::Sources, rows),
+            (Component::Limits, limits * model::limit_row()),
+        ]
     }
 
     /// The accounting fields of a request-bearing record.
@@ -927,6 +1320,11 @@ impl SourceDecoder {
     }
 }
 
+/// Charges each of `charges` in turn; `false` at the first refusal.
+fn charge_all(admission: &MemoryAdmission, charges: &[(Component, u64)]) -> bool {
+    charges.iter().all(|(component, bytes)| *bytes == 0 || admission.charge(*component, *bytes))
+}
+
 /// A request's recorded pricing context, interned so identical contexts share storage.
 /// A field the record omits stays unknown; it never comes from an earlier request.
 fn pricing_context(fields: &line::PricingFields<'_>) -> Option<Pricing> {
@@ -957,6 +1355,31 @@ fn record_extras(fields: &RecordFields<'_>) -> Option<Box<RecordExtras>> {
         .then(|| Box::new(extras))
 }
 
+/// What a record's extras cost by the costing rule, before they are built: their box, the
+/// advisors and their model names, a `quotaLimits` object's sorted view and native text
+/// with its limit name, and a usage-limit message. `quota_limits` writes the native text
+/// once into a buffer of the length a counting serializer reports.
+fn extras_cost(fields: &RecordFields<'_>) -> u64 {
+    let advisors = &fields.message.advisors;
+    let limit_text = usage_limit_text(fields);
+    if advisors.is_empty() && fields.quota.is_none() && limit_text.is_none() {
+        return 0;
+    }
+    let text = |text: &str| model::allocation(count(text.len()));
+    let advisors = model::sized_vec(count(advisors.len()), count(size_of::<AdvisorUsage>()))
+        + advisors.iter().filter_map(|advisor| advisor.model.as_deref()).map(text).sum::<u64>();
+    let quota = fields.quota.as_ref().map_or(0, |quota| {
+        let entry = count(size_of::<&String>());
+        model::btree_collected(count(quota.len()), entry, count(size_of::<&Value>()))
+            + model::allocation(native_length(quota))
+            + quota.get("rateLimitType").and_then(Value::as_str).map_or(0, text)
+    });
+    model::allocation(count(size_of::<RecordExtras>()))
+        + advisors
+        + quota
+        + limit_text.map_or(0, text)
+}
+
 fn advisor_usage(fields: &RecordFields<'_>) -> Vec<AdvisorUsage> {
     fields
         .message
@@ -973,12 +1396,42 @@ fn advisor_usage(fields: &RecordFields<'_>) -> Vec<AdvisorUsage> {
         .collect()
 }
 
+/// Counts the bytes written to it.
+struct Counter(u64);
+
+impl std::io::Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(count(bytes.len()));
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The length of a `quotaLimits` object's native text: its entries, sorted by key, as
+/// compact JSON. The object's own order is its keys', so it serializes as its view does.
+fn native_length(quota: &serde_json::Map<String, Value>) -> u64 {
+    let mut counter = Counter(0);
+    if serde_json::to_writer(&mut counter, quota).is_err() {
+        return 0;
+    }
+    counter.0
+}
+
 fn quota_limits(fields: &RecordFields<'_>) -> Option<QuotaLimits> {
     let quota = fields.quota.as_ref()?;
     let sorted: BTreeMap<&String, &Value> = quota.iter().collect();
+    // Written once into a buffer of exactly its length, so it never grows or shrinks.
+    let mut native = Vec::with_capacity(usize::try_from(native_length(quota)).unwrap_or(0));
+    let native = match serde_json::to_writer(&mut native, &sorted) {
+        Ok(()) => String::from_utf8(native).unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     Some(QuotaLimits {
         limit_name: quota.get("rateLimitType").and_then(Value::as_str).map(Box::from),
-        native: serde_json::to_string(&sorted).unwrap_or_default().into_boxed_str(),
+        native: native.into_boxed_str(),
     })
 }
 
@@ -1013,7 +1466,8 @@ impl Corpus {
     fn merge(
         decoded: Vec<DecodedSource>,
         skipped_links: Vec<SkippedLink>,
-    ) -> (Self, SnapshotManifest) {
+        admission: &MemoryAdmission,
+    ) -> Result<(Self, SnapshotManifest), AdapterError> {
         let spawning_tool_uses: HashSet<Digest> =
             decoded.iter().filter_map(|source| source.subagent_meta.as_ref()?.tool_use).collect();
         let mut corpus = Self {
@@ -1026,8 +1480,15 @@ impl Corpus {
         let mut manifest =
             SnapshotManifest { entries: Vec::with_capacity(decoded.len()), skipped_links };
         for source in decoded {
-            let DecodedSource { entry, mut facts, subagent_meta, mut records, tool_uses, strings } =
-                source;
+            let DecodedSource {
+                entry,
+                mut facts,
+                subagent_meta,
+                mut records,
+                tool_uses,
+                strings,
+                rows: _,
+            } = source;
             let remap = corpus.strings.absorb(strings);
             facts.remap(&remap);
             for record in &mut records {
@@ -1038,6 +1499,17 @@ impl Corpus {
                 corpus.chunks.push(RecordChunk { source: id.clone(), records });
                 for (tool_use, record) in tool_uses {
                     if spawning_tool_uses.contains(&tool_use) {
+                        // Each record that reports a spawning tool use, charged where it is
+                        // pushed: the tool use's entry and list base once, then its slot.
+                        let reported = corpus.tool_records.get(&tool_use).map_or(0, Vec::len);
+                        let mut charge = 3 * count(size_of::<(usize, usize)>());
+                        if reported == 0 {
+                            charge +=
+                                model::hash_entry(
+                                    count(size_of::<(Digest, Vec<(usize, usize)>)>()),
+                                ) + model::grown_vec_base(count(size_of::<(usize, usize)>()));
+                        }
+                        admission.try_charge(Component::Sources, charge)?;
                         corpus.tool_records.entry(tool_use).or_default().push((chunk, record));
                     }
                 }
@@ -1048,7 +1520,7 @@ impl Corpus {
             manifest.entries.push(entry);
             corpus.facts.push(facts);
         }
-        (corpus, manifest)
+        Ok((corpus, manifest))
     }
 
     fn records(&self) -> impl Iterator<Item = (&AnalyticalId, &ParsedRecord)> {
@@ -1056,6 +1528,105 @@ impl Corpus {
             .iter()
             .flat_map(|chunk| chunk.records.iter().map(move |record| (&chunk.source, record)))
     }
+}
+
+impl DeepSize for Strings {
+    fn heap(&self) -> u64 {
+        let Self { symbols, strings } = self;
+        let texts = strings
+            .iter()
+            .fold(0, |total: u64, text| total.saturating_add(model::arc(count(text.len()))));
+        // The frozen table's map is empty, so its entries are charged by their count.
+        model::sized_vec(count(strings.capacity()), count(size_of::<Arc<str>>()))
+            .saturating_add(texts)
+            .saturating_add(model::hash_table(
+                count(symbols.len()),
+                count(size_of::<(Arc<str>, Sym)>()),
+            ))
+    }
+}
+
+impl DeepSize for AdvisorUsage {
+    fn heap(&self) -> u64 {
+        let Self { model, input: _, cache_read: _, cache_write: _, output: _, reasoning: _ } = self;
+        model.heap()
+    }
+}
+
+impl DeepSize for RecordExtras {
+    fn heap(&self) -> u64 {
+        let Self { advisors, quota, limit_text } = self;
+        let quota = quota.as_ref().map_or(0, |QuotaLimits { limit_name, native }| {
+            limit_name.heap().saturating_add(native.heap())
+        });
+        advisors.heap().saturating_add(quota).saturating_add(limit_text.heap())
+    }
+}
+
+impl DeepSize for SourceFacts {
+    fn heap(&self) -> u64 {
+        let Self {
+            thread: _,
+            source_id: _,
+            evidence: _,
+            version,
+            project: _,
+            last_main_evidence: _,
+            active_inline: _,
+            inline_threads,
+        } = self;
+        let runs = model::sized_vec(
+            count(inline_threads.capacity()),
+            count(size_of::<(NativeThread, EvidenceRef, Option<EvidenceRef>)>()),
+        );
+        version.heap().saturating_add(runs)
+    }
+}
+
+/// The modeled heap of building the transcripts' observations (scalable-ingestion plan,
+/// "Phases and Checkpoints"), from exact counts once every worker has joined: the
+/// construction estimate of the model ([`model::construction_estimate`]) over the decoded
+/// records, the request records among them, their limit rows and the payloads the
+/// transcripts own (string tables, tool uses, facts, extras and sidecars); plus, held once,
+/// the rows decoding charged for each transcript ([`DecodedSource::rows`]), each advisor
+/// record's per-model usage list, the merge's vectors and the largest transcript's
+/// remapping, the bases of what construction builds ([`charges::CONSTRUCTION_BASES`]), one
+/// observation's key derivation, and the manifest entries.
+fn construction_estimate(decoded: &[DecodedSource]) -> u64 {
+    let mut counts = model::ConstructionCounts::default();
+    let sources = count(decoded.len());
+    let mut held = model::sized_vec(sources, count(size_of::<DecodedSource>()))
+        + model::sized_vec(sources, count(size_of::<RecordChunk>()))
+        + model::sized_vec(sources, count(size_of::<SourceFacts>()))
+        + model::sized_vec(sources, model::sizes::MANIFEST_ENTRY)
+        + charges::CONSTRUCTION_BASES
+        + model::KEY_DERIVATION;
+    let mut largest_remap = 0;
+    for source in decoded {
+        held += source.rows + source.entry.heap();
+        largest_remap = largest_remap.max(model::sized_vec(count(source.strings.strings.len()), 4));
+        counts.decoded_records += count(source.records.len());
+        let mut payload = source.strings.heap()
+            + source.tool_uses.heap()
+            + source.facts.heap()
+            + source.subagent_meta.as_ref().map_or(0, |meta| meta.agent_type.heap());
+        for record in &source.records {
+            counts.request_records += u64::from(record.request_record);
+            let Some(extras) = &record.extras else { continue };
+            payload += model::allocation(count(size_of::<RecordExtras>())) + extras.heap();
+            counts.limit_rows +=
+                u64::from(extras.quota.is_some()) + u64::from(extras.limit_text.is_some());
+            if !extras.advisors.is_empty() {
+                held += model::allocation(count(size_of::<Vec<ModelUsage>>()))
+                    + model::grown_vec(
+                        count(extras.advisors.len() + 1),
+                        count(size_of::<ModelUsage>()),
+                    );
+            }
+        }
+        counts.decoded_payload += payload;
+    }
+    model::construction_estimate(Agent::Claude, &counts).total() + held + largest_remap
 }
 
 /// Which thread first recorded each message and uuid, by digest.
@@ -1125,10 +1696,12 @@ fn ambiguous_messages(corpus: &Corpus, owners: &Owners) -> HashSet<Digest> {
     models.into_iter().filter_map(|(message, first)| first.is_none().then_some(message)).collect()
 }
 
+/// Builds the transcripts' observations and threads, reconciles them and commits the
+/// ledger, each phase under its admission checkpoint.
 fn normalize(
     corpus: Corpus,
     mut manifest: SnapshotManifest,
-    capacity: &ObservationCapacity,
+    decoding: &Decoding<'_>,
 ) -> Result<Ingested, AdapterError> {
     let mut source_versions: BTreeMap<AnalyticalId, String> = BTreeMap::new();
     for facts in &corpus.facts {
@@ -1138,7 +1711,7 @@ fn normalize(
     }
     // Building the input consumes the corpus and drops every map it needed, so only the
     // input is alive while reconciliation reaches its peak.
-    let mut input = reconcile_input(corpus)?;
+    let mut input = reconcile_input(corpus, decoding.admission)?;
     for entry in &mut manifest.entries {
         if let (Some(source), Some(evidence)) = (&entry.source, &mut entry.first_malformed) {
             *evidence = stamp_ref(&input.source_table, &source.id, *evidence);
@@ -1150,7 +1723,11 @@ fn normalize(
     });
     input.diagnostics.extend(losses);
     input.gaps.extend(gaps);
-    let mut ledger = reconcile_with_capacity(input, &ClaudeBlockSelector, capacity)?;
+    // Reconciliation's checkpoints hold the manifest and the versions beside the input,
+    // and the finalize checkpoint also the source rows built from them before the commit.
+    let held = manifest.entries.heap() + source_versions.heap();
+    let after = super::source_rows_after(&manifest.entries, &source_versions);
+    let mut ledger = decoding.reconcile(Agent::Claude, input, &ClaudeBlockSelector, held, after)?;
     for diagnostic in &mut ledger.diagnostics {
         diagnostic.code = match diagnostic.code {
             DiagnosticCode::RevisionDisagreement => DiagnosticCode::ClaudeBlockUsageConflict,
@@ -1184,6 +1761,12 @@ fn normalize(
             | DiagnosticCode::ThreadOrphan) => code,
         };
     }
+    // The sort's scratch, charged before it is allocated.
+    let scratch = model::sort_scratch(
+        count(ledger.diagnostics.len()),
+        count(size_of::<crate::ledger::diagnostics::Diagnostic>()),
+    );
+    decoding.admission.try_charge(Component::Payloads, scratch)?;
     ledger.diagnostics.sort();
     let threads = std::mem::take(&mut ledger.threads);
     let relationships = std::mem::take(&mut ledger.relationships);
@@ -1203,7 +1786,10 @@ fn normalize(
             snapshot,
         })
         .collect();
-    Ok(Ingested { manifest, sources, threads, relationships, ledger, limit_observations })
+    let ingested =
+        Ingested { manifest, sources, threads, relationships, ledger, limit_observations };
+    decoding.commit(Agent::Claude, &ingested)?;
+    Ok(ingested)
 }
 
 fn source_index(table: &SourceTable, source: &AnalyticalId) -> u32 {
@@ -1215,7 +1801,14 @@ fn stamp_ref(table: &SourceTable, id: &AnalyticalId, evidence: EvidenceRef) -> E
 }
 
 /// Builds the reconciliation input, consuming the corpus chunk by chunk.
-fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
+///
+/// What construction pushes that its counts cannot predict is charged to `admission` where
+/// it is pushed: each diagnostic, and the evidence the ambiguity diagnostics collect. The
+/// observation vector is shrunk before grouping, as the model's grouping share assumes.
+fn reconcile_input(
+    mut corpus: Corpus,
+    admission: &MemoryAdmission,
+) -> Result<ReconcileInput, AdapterError> {
     let source_table = SourceTable::from_ids(
         corpus
             .chunks
@@ -1244,7 +1837,8 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
     }
     let owners = Owners::new(&corpus);
     let ambiguous = ambiguous_messages(&corpus, &owners);
-    let mut diagnostics = ambiguity_diagnostics(&corpus, &ambiguous, &owners, &source_table);
+    let mut diagnostics =
+        ambiguity_diagnostics(&corpus, &ambiguous, &owners, &source_table, admission)?;
     let (threads, relationships, ids) = thread_graph(&corpus, &source_table)?;
     let Corpus { strings, chunks, facts, subagent_meta, tool_records } = corpus;
     drop((facts, subagent_meta, tool_records));
@@ -1263,18 +1857,21 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
                 continue;
             }
             if let Some((flat, breakdown)) = cache_breakdown_mismatch(&record) {
-                diagnostics.push(Diagnostic::new(
+                let diagnostic = Diagnostic::new(
                     DiagnosticCode::UsageInconsistency,
                     None,
                     [evidence],
                     format!(
                         "Claude cache creation total {flat} differs from its lifetime breakdown {breakdown}"
                     ),
-                ));
+                );
+                admission.try_charge(Component::Payloads, model::diagnostic_of(&diagnostic))?;
+                diagnostics.push(diagnostic);
             }
             observations.push(observe(&record, evidence, &strings, &owners, &ambiguous, &ids)?);
         }
     }
+    observations.shrink_to_fit();
 
     Ok(ReconcileInput {
         threads,
@@ -1288,37 +1885,56 @@ fn reconcile_input(mut corpus: Corpus) -> Result<ReconcileInput, AdapterError> {
 }
 
 /// One conflicting-key diagnostic per ambiguous message, in message ID order, citing its
-/// non-replayed records.
+/// non-replayed records; each evidence reference and diagnostic is charged to `admission`
+/// where it is pushed.
 fn ambiguity_diagnostics(
     corpus: &Corpus,
     ambiguous: &HashSet<Digest>,
     owners: &Owners,
     sources: &SourceTable,
-) -> Vec<Diagnostic> {
+    admission: &MemoryAdmission,
+) -> Result<Vec<Diagnostic>, AdapterError> {
     if ambiguous.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    let evidence = count(size_of::<EvidenceRef>());
+    let list = count(size_of::<Vec<EvidenceRef>>());
     let mut evidence_by_message: BTreeMap<&str, Vec<EvidenceRef>> = BTreeMap::new();
     for (source, record) in corpus.records() {
         let Some(message) = &record.message else { continue };
         if ambiguous.contains(&message.digest) && !record.is_replayed(owners) {
+            let text = corpus.strings.resolve(message.text);
+            let mut charge = 3 * evidence;
+            if !evidence_by_message.contains_key(text) {
+                charge += model::btree_entry(model::sizes::STR, list)
+                    + model::grown_vec_base(evidence)
+                    + if evidence_by_message.is_empty() {
+                        model::btree_node(model::sizes::STR, list)
+                    } else {
+                        0
+                    };
+            }
+            admission.try_charge(Component::Payloads, charge)?;
             evidence_by_message
-                .entry(corpus.strings.resolve(message.text))
+                .entry(text)
                 .or_default()
                 .push(record.evidence(source_index(sources, source)));
         }
     }
-    evidence_by_message
-        .into_iter()
-        .map(|(message_id, evidence)| {
-            Diagnostic::new(
-                DiagnosticCode::ConflictingSharedKey,
-                None,
-                evidence,
-                format!("Claude message ID {message_id} is reused by conflicting responses"),
-            )
-        })
-        .collect()
+    let mut diagnostics = Vec::with_capacity(evidence_by_message.len());
+    for (message_id, evidence) in evidence_by_message {
+        let diagnostic = Diagnostic::new(
+            DiagnosticCode::ConflictingSharedKey,
+            None,
+            evidence,
+            format!("Claude message ID {message_id} is reused by conflicting responses"),
+        );
+        // Its evidence was charged as it was collected.
+        let detail = model::diagnostic_detail(count(diagnostic.detail.capacity()));
+        admission.try_charge(Component::Payloads, model::DIAGNOSTIC_ROW + detail)?;
+        diagnostics.push(diagnostic);
+    }
+    Ok(diagnostics)
 }
 
 type ThreadGraph = (Vec<Thread>, Vec<Relationship>, HashMap<NativeThread, AnalyticalId>);
@@ -1475,42 +2091,15 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
     for native in native_threads {
         let identity = native.identity(strings)?;
         ids.insert(native, identity.id.clone());
-        let mut native_key = BTreeMap::new();
-        if native.inline_digest.is_none() {
-            native_key.insert("session_id".to_owned(), strings.resolve(native.session).to_owned());
-            if let Some(agent) = native.agent {
-                native_key.insert("agent_id".to_owned(), strings.resolve(agent).to_owned());
-            }
-        }
-        threads.insert(
-            identity.id.clone(),
-            Thread {
-                identity,
-                basis: native.basis(),
-                aliases: Vec::new(),
-                native_key,
-                source: Basis::Observed(
-                    if native.inline_digest.is_some() {
-                        "inline-sidechain"
-                    } else if native.agent.is_some() {
-                        "subagent"
-                    } else {
-                        "cli"
-                    }
-                    .to_owned(),
-                ),
-                initiator: Basis::Unknown,
-                purpose: purpose_by_thread
-                    .get(&native)
-                    .map_or(Basis::Unknown, |purpose| Basis::Observed((*purpose).to_owned())),
-                execution_environment: Basis::Observed("local".to_owned()),
-                project: project_by_thread.get(&native).map_or(Basis::Unknown, |project| {
-                    Basis::Observed(strings.resolve(*project).to_owned())
-                }),
-                account: Basis::Unknown,
-                evidence: thread_evidence.remove(&native).unwrap_or_default(),
-            },
+        let thread = native_thread_row(
+            native,
+            identity,
+            strings,
+            purpose_by_thread.get(&native).copied(),
+            project_by_thread.get(&native).copied(),
+            thread_evidence.remove(&native).unwrap_or_default(),
         );
+        threads.insert(thread.identity.id.clone(), thread);
     }
 
     let relationships = relationships
@@ -1530,6 +2119,48 @@ fn thread_graph(corpus: &Corpus, sources: &SourceTable) -> Result<ThreadGraph, A
         })
         .collect();
     Ok((threads.into_values().collect(), relationships, ids))
+}
+
+/// The thread row `thread_graph` builds for `native`, with the purpose its sidecar
+/// records, the project its files or records name, and the evidence that cites it.
+fn native_thread_row(
+    native: NativeThread,
+    identity: StoredIdentity,
+    strings: &Strings,
+    purpose: Option<&str>,
+    project: Option<Sym>,
+    evidence: Vec<EvidenceRef>,
+) -> Thread {
+    let mut native_key = BTreeMap::new();
+    if native.inline_digest.is_none() {
+        native_key.insert("session_id".to_owned(), strings.resolve(native.session).to_owned());
+        if let Some(agent) = native.agent {
+            native_key.insert("agent_id".to_owned(), strings.resolve(agent).to_owned());
+        }
+    }
+    Thread {
+        identity,
+        basis: native.basis(),
+        aliases: Vec::new(),
+        native_key,
+        source: Basis::Observed(
+            if native.inline_digest.is_some() {
+                "inline-sidechain"
+            } else if native.agent.is_some() {
+                "subagent"
+            } else {
+                "cli"
+            }
+            .to_owned(),
+        ),
+        initiator: Basis::Unknown,
+        purpose: purpose.map_or(Basis::Unknown, |purpose| Basis::Observed(purpose.to_owned())),
+        execution_environment: Basis::Observed("local".to_owned()),
+        project: project
+            .map_or(Basis::Unknown, |project| Basis::Observed(strings.resolve(project).to_owned())),
+        account: Basis::Unknown,
+        evidence,
+    }
 }
 
 /// The request observation of one request record.
@@ -1819,6 +2450,11 @@ fn compare_claude_revision(left: &RequestObservation, right: &RequestObservation
         .then_with(|| right.evidence.source.cmp(&left.evidence.source))
 }
 
+/// `n` as a count of bytes or rows, saturating.
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
 /// The thread a transcript's location implies: the session of its file or directory,
 /// with the agent ID of a file under `subagents/`.
 fn thread_from_path(locator: &str, strings: &mut Strings) -> NativeThread {
@@ -1878,7 +2514,18 @@ pub fn read_line_fields(line: &[u8]) -> bool {
     let Ok(head) = LineHead::read(line, true, true, true) else { return false };
     let bears_usage = head.bears_usage();
     drop(head);
-    !bears_usage || UsageBody::read(line).is_ok()
+    !bears_usage || UsageBody::read_counted(line, &line::QuotaCost::new(None)).is_ok()
+}
+
+/// Reads a usage-bearing line's body as decoding does, without a ledger, and returns what
+/// the `quotaLimits` documents it builds cost by the costing rule, or `None` when the line
+/// is not a valid document. The admission model-bound harness measures the documents' heap
+/// against it.
+#[doc(hidden)]
+pub fn read_quota_cost(line: &[u8]) -> Option<u64> {
+    let quota = line::QuotaCost::new(None);
+    drop(UsageBody::read_counted(line, &quota).ok()?);
+    Some(quota.cost())
 }
 
 /// Reads and parses the `.meta.json` sidecar beside the subagent transcript `transcript`
