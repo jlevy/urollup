@@ -125,8 +125,11 @@ The design lives in `docs/urollup-design.md`, the entry point for goals, layers,
 decisions, open questions and the CLI flag index.
 Planning docs live under `docs/project/`:
 
-- `specs/active/`: product, scalable ingestion, first release and the
-  [usage-analysis workflow](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md).
+- `specs/active/`: product, scalable ingestion, first release, the
+  [usage-analysis workflow](docs/project/specs/active/plan-2026-09-20-usage-analysis-workflow.md)
+  and the
+  [alpha stabilization plan](docs/project/specs/active/plan-2026-10-23-alpha-stabilization.md),
+  which maps every remaining alpha bead (`uro-dl9d`).
 - `research/`: background research briefs.
 - `reviews/`: governing reviews, including the
   [PR stack and memory audit](docs/project/reviews/review-2026-09-19-pr-stack-and-memory.md).

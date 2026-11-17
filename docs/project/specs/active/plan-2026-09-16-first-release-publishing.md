@@ -55,6 +55,14 @@ is not confused with a publishable release:
 | Packaging rehearsal | Every archive, wheel and Cargo package is built and validated through the credential-free release path, with the complete manifest and no external writes | Machinery implemented in [PR #36](https://github.com/jlevy/urollup/pull/36) on 2026-10-13 ([Phase 1 notes](#phase-1-implementation-notes)); its dispatch rehearsals on the pull-request branch, linked from the PR, built, natively validated and assembled all ten artifacts and both Cargo packages with no external writes. Still open: the maintainer’s environment and publisher setup ([runbook](../../../publishing.md#maintainer-setup-before-the-first-tag)) and a rehearsal of the accepted 0.1.0 commit on `main` |
 | Publication | The accepted 0.1 commit is merged, release documentation is final, protected publishers are configured, `v0.1.0` is approved, and every registry-backed installation probe passes | Blocked by local acceptance and the packaging rehearsal |
 
+On 2026-10-23 the [alpha stabilization plan](plan-2026-10-23-alpha-stabilization.md)
+(epic `uro-dl9d`) mapped every remaining bead for these gates.
+That covers the honesty, robustness and accounting defects the
+[alpha readiness review](../../reviews/review-2026-10-23-alpha-readiness.md) found on
+`beaede2`, the CLI cost display, and the acceptance and release beads.
+Its Phase 1 (`uro-q2jo`) and Phase 2 (`uro-eu9x`) epics block milestone 0.1
+(`uro-n8h5`), and G1 also waits on Phase 1.
+
 The local alpha can be installed and exercised before packaging machinery exists.
 Publication begins only after both the product-acceptance and packaging-rehearsal gates
 pass; neither gate is evidence for the other.
@@ -77,7 +85,11 @@ above. PRs #16 and #18 merged on 2026-10-09, PRs #26 and #32 on 2026-10-10, and 
 Guardian and subagent defect (`uro-jqc3`) and the copied Claude subagent defect
 (`uro-wvgc`), and review of the `uro-jqc3` fix found the related migrated-fork defect
 (`uro-p9ua`). Codex and Claude totals stay provisional until the comparison is rerun on
-`main` with these fixes (`uro-mxv0`).
+`main` with these fixes (`uro-mxv0`). The 2026-10-23 review found further defects on
+`beaede2`, among them a Codex double count (`uro-lk0l`), silent drops reported as
+complete (`uro-a1tn`, `uro-v65i`, `uro-84j2`) and whole-run aborts (`uro-57db`,
+`uro-3vde`). Phase 1 of the
+[alpha stabilization plan](plan-2026-10-23-alpha-stabilization.md) lists them all.
 
 - **Codex paginated-fork double count (`uro-kpbp`):** a paginated child rollout that
   copies its parent’s history before an explicit boundary counts that copied prefix
